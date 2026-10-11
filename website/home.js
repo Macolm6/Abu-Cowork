@@ -100,18 +100,6 @@
     }, 1800);
   }
 
-  // ── Star count on the GitHub button ──
-  // The count comes from GitHub's public API; when it cannot be read the button shows "GitHub" alone.
-  fetch('https://api.github.com/repos/PM-Shawn/Abu-Cowork')
-    .then((resp) => (resp.ok ? resp.json() : null))
-    .then((repo) => {
-      if (!repo) return;
-      const stars = document.getElementById('stars');
-      stars.textContent = `★ ${repo.stargazers_count.toLocaleString('en-US')}`;
-      stars.hidden = false;
-    })
-    .catch(() => {});
-
   // ── Product preview ──
   // A tab loads its whole-window screenshot on first use and fades it in. The screenshots that exist in the dark appearance follow the system setting.
   const gallery = document.getElementById('gallery');

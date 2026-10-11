@@ -39,10 +39,13 @@ test('home script uses the dedicated bilingual Electron release metadata', () =>
 });
 
 test('the GitHub API serves the star count only', () => {
-  assert.equal(script.split('api.github.com').length - 1, 1, 'home.js must call the GitHub API exactly once');
-  assert.ok(script.includes("fetch('https://api.github.com/repos/PM-Shawn/Abu-Cowork')"));
-  assert.ok(script.includes("document.getElementById('stars')"));
-  assert.ok(!script.includes('/releases/latest'), 'installer links must not come from the GitHub API');
+  // The shared script reads the count for every page that shows it; the home script does not touch the API.
+  const shared = fs.readFileSync(path.join(root, 'website/site.js'), 'utf8');
+  assert.equal(shared.split('api.github.com').length - 1, 1, 'site.js must call the GitHub API exactly once');
+  assert.ok(shared.includes("fetch('https://api.github.com/repos/PM-Shawn/Abu-Cowork')"));
+  assert.ok(shared.includes("document.getElementById('stars')"));
+  assert.ok(!script.includes('api.github.com'), 'home.js must not call the GitHub API');
+  assert.ok(!script.includes('/releases/latest') && !shared.includes('/releases/latest'), 'installer links must not come from the GitHub API');
 });
 
 for (const page of pages) {

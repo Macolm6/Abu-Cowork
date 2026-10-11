@@ -34,4 +34,18 @@
     el.style.transitionDelay = `${(i % 4) * 70}ms`;
     observer.observe(el);
   });
+
+  // Star count beside the repository's name, on the pages that have a place for it.
+  // The count comes from GitHub's public API; when it cannot be read the place stays empty.
+  const stars = document.getElementById('stars');
+  if (stars) {
+    fetch('https://api.github.com/repos/PM-Shawn/Abu-Cowork')
+      .then((resp) => (resp.ok ? resp.json() : null))
+      .then((repo) => {
+        if (!repo) return;
+        stars.textContent = `★ ${repo.stargazers_count.toLocaleString('en-US')}`;
+        stars.hidden = false;
+      })
+      .catch(() => {});
+  }
 })();

@@ -36,6 +36,7 @@ const pairs = [
   { zh: 'enterprise.zh-CN.html', en: 'enterprise.html' },
   { zh: 'docs.zh-CN.html', en: 'docs.html' },
   { zh: 'platform.zh-CN.html', en: 'platform.html' },
+  { zh: 'community.zh-CN.html', en: 'community.html' },
 ];
 const pages = pairs.flatMap((pair) => [pair.zh, pair.en]);
 const homeZh = read('index.zh-CN.html');
@@ -123,25 +124,66 @@ test('eight user quotes in two rows, one in brand green', () => {
   assert.ok(homeEn.includes("Translated from users' messages in Chinese"), 'the English page says the quotes are translations');
 });
 
-test('community section carries the WeChat QR code and four channels', () => {
+test('community section carries the WeChat QR code and five channels', () => {
   for (const source of [homeZh, homeEn]) {
     assert.ok(source.includes('<img src="assets/wechat-qr.png" width="448" height="448"'));
-    assert.equal(count(source, '<span class="channel-name">'), 4);
+    assert.equal(count(source, '<span class="channel-name">'), 5);
     assert.ok(source.includes('href="https://xhslink.com/m/8ruHynC0jPB"'));
     assert.ok(source.includes('href="https://x.com/pmshawn_x"'));
+    assert.ok(source.includes('href="https://discord.gg/eY3zH3XGqE"'));
     // Each channel shows its account name; the names stay in their original form in both languages.
     assert.deepEqual(
       [...source.matchAll(/<span class="channel-account">([^<]+)<\/span>/g)].map((match) => match[1]),
-      ['Shawn的AI产品小记', 'Shawn的产品笔记', '@pmshawn_x', 'PM-Shawn/Abu-Cowork'],
+      ['Shawn的AI产品小记', 'Shawn的产品笔记', '@pmshawn_x', 'PM-Shawn/Abu-Cowork', 'Abu'],
     );
-    assert.equal(count(source, '<span class="channel-desc">'), 4);
+    assert.equal(count(source, '<span class="channel-desc">'), 5);
   }
   assert.deepEqual(
     [...homeZh.matchAll(/<span class="channel-desc">([^<]+)<\/span>/g)].map((match) => match[1]),
-    ['使用技巧和产品动态', '在微信里搜索这个名字', '新版本和开发进展', 'Star、提 Issue、贡献代码'],
+    ['使用技巧和产品动态', '在微信里搜索这个名字', '新版本和开发进展', 'Star、提 Issue、贡献代码', '英文社区'],
   );
   assert.ok(homeZh.includes('微信扫一扫 · 备注 Abu'));
+  // The English home page leads the card with the Discord server; the Chinese one with the WeChat group.
+  assert.ok(homeEn.includes('<a class="btn btn-fill" href="https://discord.gg/eY3zH3XGqE" target="_blank" rel="noopener">Join the Discord</a>'));
+  assert.ok(!homeZh.includes('class="join-actions"'));
   assert.ok(fs.statSync(path.join(websiteDir, 'assets/wechat-qr.png')).size > 0);
+});
+
+test('community pages offer the group, GitHub and the channels to follow', () => {
+  const discord = 'https://discord.gg/eY3zH3XGqE';
+  const repo = 'https://github.com/PM-Shawn/Abu-Cowork';
+  for (const [file, cells, accounts] of [
+    ['community.zh-CN.html', ['Star', '提 Issue', '提交代码', '报告安全问题'], ['Shawn的AI产品小记', 'Shawn的产品笔记', '@pmshawn_x', 'Abu']],
+    ['community.html', ['Star', 'Issues', 'Pull requests', 'Security'], ['Shawn的AI产品小记', 'Shawn的产品笔记', '@pmshawn_x', 'Abu']],
+  ]) {
+    const source = read(file);
+    for (const id of ['main-content', 'group', 'github', 'follow', 'stars']) {
+      assert.ok(source.includes(` id="${id}"`), `${file} is missing #${id}`);
+    }
+    const group = source.slice(source.indexOf(' id="group"'), source.indexOf(' id="github"'));
+    assert.ok(group.includes('<img src="assets/wechat-qr.png" width="448" height="448"'), `${file}: the first block carries the WeChat QR code`);
+    const github = source.slice(source.indexOf(' id="github"'), source.indexOf(' id="follow"'));
+    assert.deepEqual([...github.matchAll(/<span class="cell-name">([^<]+)<\/span>/g)].map((match) => match[1]), cells, file);
+    assert.deepEqual(
+      [...github.matchAll(/<a class="cell reveal" href="([^"]+)" target="_blank" rel="noopener">/g)].map((match) => match[1]),
+      [repo, `${repo}/issues/new/choose`, `${repo}/pulls`, `${repo}/security/policy`],
+      file,
+    );
+    assert.ok(github.includes('<span class="stars" id="stars" hidden></span>'), `${file}: the star count has its place beside the repository name`);
+    const follow = source.slice(source.indexOf(' id="follow"'));
+    assert.deepEqual([...follow.matchAll(/<span class="channel-account">([^<]+)<\/span>/g)].map((match) => match[1]), accounts, file);
+    assert.ok(follow.includes(`href="${discord}"`), `${file}: the Discord server is listed`);
+    assert.ok(source.includes('<script src="site.js"></script>'), `${file} loads the shared script, which reads the star count`);
+    assert.doesNotMatch(source, /不是[^。]*而是/);
+  }
+  const zh = read('community.zh-CN.html');
+  const en = read('community.html');
+  assert.ok(zh.includes('<figcaption class="eyebrow">微信扫一扫 · 备注 Abu</figcaption>'));
+  assert.ok(!zh.includes('class="join-actions"'), 'the Chinese page leads with the WeChat group');
+  assert.ok(en.includes(`<a class="btn btn-fill" href="${discord}" target="_blank" rel="noopener">Join the Discord</a>`), 'the English page leads with the Discord server');
+  // Both home pages send a reader who needs help to the community page.
+  assert.ok(homeZh.includes('<a class="small finale-link" href="community.zh-CN.html">'));
+  assert.ok(homeEn.includes('<a class="small finale-link" href="community.html">'));
 });
 
 test('release notes live on the documentation page, the home page keeps version and downloads', () => {
@@ -182,8 +224,8 @@ test('navigation stays in place and lists the same eight entries on every page',
     assert.deepEqual(navLabels(read(pair.zh)), labels.zh, pair.zh);
     assert.deepEqual(navLabels(read(pair.en)), labels.en, pair.en);
   }
-  assert.deepEqual(navTargets(homeZh), ['#preview', '#abilities', '#scenes', '#tech', 'enterprise.zh-CN.html', 'platform.zh-CN.html', 'docs.zh-CN.html', '#community']);
-  assert.deepEqual(navTargets(homeEn), ['#preview', '#abilities', '#scenes', '#tech', 'enterprise.html', 'platform.html', 'docs.html', '#community']);
+  assert.deepEqual(navTargets(homeZh), ['#preview', '#abilities', '#scenes', '#tech', 'enterprise.zh-CN.html', 'platform.zh-CN.html', 'docs.zh-CN.html', 'community.zh-CN.html']);
+  assert.deepEqual(navTargets(homeEn), ['#preview', '#abilities', '#scenes', '#tech', 'enterprise.html', 'platform.html', 'docs.html', 'community.html']);
   for (const id of ['preview', 'how', 'abilities', 'scenes', 'voices', 'safe', 'tech', 'community', 'start']) {
     assert.ok(homeZh.includes(` id="${id}"`) && homeEn.includes(` id="${id}"`), `home pages are missing #${id}`);
   }
@@ -193,7 +235,8 @@ test('navigation stays in place and lists the same eight entries on every page',
 test('Chinese and English pages share one structure', () => {
   for (const pair of pairs) {
     const zh = read(pair.zh);
-    const en = read(pair.en);
+    // English pages lead their community card with a button to the Discord server, which the Chinese pages do not have.
+    const en = read(pair.en).replace(/<div class="join-actions">[\s\S]*?<\/div>/, '');
     // The English home page adds one line under the quotes saying they are translations.
     const enClasses = attributeValues(en, 'class').filter((value) => value !== 'wrap eyebrow voices-note');
     // Chinese titles wrap their line-end punctuation in a span that the English titles do not need.
@@ -216,6 +259,8 @@ test('language entry points redirect, documentation pages keep their language', 
     ['enterprise.html', 'enterprise.zh-CN.html', 'zh'],
     ['platform.zh-CN.html', 'platform.html', 'en'],
     ['platform.html', 'platform.zh-CN.html', 'zh'],
+    ['community.zh-CN.html', 'community.html', 'en'],
+    ['community.html', 'community.zh-CN.html', 'zh'],
   ]) {
     const source = read(file);
     assert.ok(source.includes("localStorage.getItem('abu-lang')"), `${file} must read the remembered language`);
