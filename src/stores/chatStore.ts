@@ -653,7 +653,11 @@ interface ChatActions {
   switchConversation: (id: string) => Promise<void>;
   setConversationWorkspace: (convId: string, path: string | null) => void;
   setConversationProject: (convId: string, projectId: string | undefined) => void;
-  setConversationModel: (convId: string, model: { providerId: string; modelId: string } | undefined) => void;
+  setConversationModel: (
+    convId: string,
+    model: { providerId: string; modelId: string } | undefined,
+    options?: { durable?: boolean },
+  ) => void;
   /** Pin / clear the team whose leader runs this conversation (persisted in the index). */
   setConversationTeamId: (convId: string, teamId: string | undefined) => void;
   /** Goal mode: write the conversation's goal (undefined clears it). Callers go through goalService. */
@@ -1075,9 +1079,11 @@ export const useChatStore = create<ChatStore>()(
 
       // Pin a model to a conversation (undefined = clear → inherit global).
       // Updates both the loaded conversation and the index entry, then persists
-      // the entry. agentLoop reads conv.model first and pins on first run; the
-      // ModelSelector writes it on explicit pick.
-      setConversationModel: (convId, model) => {
+      // the entry. agentLoop reads conv.model first and pins on first run: that
+      // write is best effort and stays out of the conversation's durability
+      // barrier, so it cannot end the run that made it. A pick by the user
+      // (`durable`) is on disk before its write reports done.
+      setConversationModel: (convId, model, options) => {
         set((state) => {
           const conv = state.conversations[convId];
           if (conv) {
@@ -1087,7 +1093,14 @@ export const useChatStore = create<ChatStore>()(
             state.conversationIndex[convId].model = model;
           }
         });
-        persistConversationIndexEntry(convId);
+        if (options?.durable) {
+          persistConversationIndexEntry(convId);
+          return;
+        }
+        import('../core/session/conversationStorage').then(({ updateIndexEntry }) => {
+          const meta = get().conversationIndex[convId];
+          if (meta) updateIndexEntry(meta).catch(() => {});
+        });
       },
 
       setConversationGoal: (convId, goal) => {
@@ -1353,7 +1366,9 @@ export const useChatStore = create<ChatStore>()(
         if (get().loadFailures[convId]) return;
         let newTitle: string | undefined;
         let welcome: Message | undefined;
-        let persistedMessage = message;
+        let persistedMessage: Message = message.role === 'assistant' && message.fileCards === undefined
+          ? { ...message, fileCards: 'declared' }
+          : message;
         set((state) => {
           // Clear expert intro banner once the conversation has any real
           // content — welcome screen is gone, banner has nothing to render on.
