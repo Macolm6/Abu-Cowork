@@ -219,7 +219,7 @@ An app is Abu prepared for one line of work: its own home page, a few groups of 
 
 Choose **Create app** in the switcher and describe, in the conversation, who the app is for, which groups of scenes it offers and who handles each. Abu uses the experts and teams you already have first and creates new ones only when needed. When it is done, an **App preview** appears in the conversation: the home, who handles each scene, **Experts to be created** and **Expert teams to be created**. **Confirm** adds the new experts and teams to your own on the **Experts** page, puts the app in the switcher and opens its home page; **Modify** lets you say what to change.
 
-An app you made lives only on this computer. Removing it first warns that **You made this app yourself; once removed it cannot be added back**. The rules for making and publishing apps are in the [app developer spec](app-spec.md).
+An app you made lives only on this computer. Removing it first warns that **You made this app yourself; once removed it cannot be added back**. The rules for making and publishing apps are in the [app spec](app-spec.md) (in Chinese).
 
 ## Toolbox: Skills, Agents, and Connectors
 
