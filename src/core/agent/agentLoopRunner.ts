@@ -3293,11 +3293,16 @@ async function runSingleAgentLoopDispatchedWithOwnership(
   useTeamConfirmationStore.getState().beginRetry(conversationId, ownedLoopId, options.teamConfirmationRetryId);
   // The record of what this turn changes on disk is a side write, handled like
   // the output snapshots in toolExecutor.ts: a failure is logged and never
-  // decides whether or how the turn runs. Awaited, so the workspace is listed
-  // before the run can write to it.
-  await beginTurnChanges(conversationId, ownedLoopId, entryConversation?.workspacePath ?? null, {
-    scopeId: options.authorizationScopeId,
-  }).catch((error: unknown) => {
+  // decides whether or how the turn runs. Each venue awaits it once its run is
+  // registered and before the run can write, so the workspace is listed first
+  // and nothing is awaited between the concurrency guard and the registration.
+  const turnChangesScopeId = options.authorizationScopeId;
+  const beginTurnRecord = (): Promise<void> => beginTurnChanges(
+    conversationId,
+    ownedLoopId,
+    entryConversation?.workspacePath ?? null,
+    { scopeId: turnChangesScopeId },
+  ).catch((error: unknown) => {
     logger.warn('turn changes: begin failed', {
       conversationId,
       runId: ownedLoopId,
@@ -3310,6 +3315,9 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     // process bridge, so the loop runs in this renderer. Not a failure
     // fallback — Electron never reaches this branch (#549).
     await ensureBuiltinBrowserRuntime();
+    // The loop registers its own run, so this venue begins the record last
+    // before handing over to it.
+    await beginTurnRecord();
     let localUserMessageId: string | undefined;
     try {
       const result = await runAgentLoop(
@@ -3411,6 +3419,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
   // the shell row was just added above.
   options?.onMessageTaken?.(clientMessageId);
   shellChatDelta.setConversationStatus(conversationId, 'running');
+  await beginTurnRecord();
   try {
     await waitForConversationPersistence(conversationId);
   } catch (error) {

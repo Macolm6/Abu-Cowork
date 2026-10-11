@@ -3824,6 +3824,23 @@ describe('agentLoopRunner', () => {
         expect(endTurnMock).toHaveBeenCalledExactlyOnceWith(runId, { workspacePath: '/Users/me/project' });
       });
 
+      it('begins the turn once the run is registered: the user row is added and the conversation is running', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+        const registeredAtBegin: boolean[] = [];
+        beginTurnMock.mockImplementationOnce(async () => {
+          registeredAtBegin.push(
+            chatStoreAddMessageMock.mock.calls.length === 1
+            && chatDeltaSetConversationStatusMock.mock.calls.some(([id, status]) => id === 'conv-1' && status === 'running'),
+          );
+        });
+
+        await runAgentLoopDispatched('conv-1', 'hello');
+
+        expect(registeredAtBegin).toEqual([true]);
+        expect(beginTurnMock.mock.invocationCallOrder[0]).toBeLessThan(sidecarRequestMock.mock.invocationCallOrder[0]);
+      });
+
       it('lists the workspace inside the authorization scope of a background run', async () => {
         const { runAgentLoopDispatched } = await importFresh();
         isInteractiveDesktopMock.mockReturnValue(false);
