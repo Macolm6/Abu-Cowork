@@ -355,10 +355,11 @@ export function PluginDisclosureSections({ disclosure: d }: { disclosure: Instal
         <Section icon={AppIcons.agent} title={tb.pluginsDisclosureAgents}>
           <ul className="space-y-1">
             {d.agents.map((agent) => {
-              // A conflicting entry is disclosed, not installed: it is
-              // greyed and carries the one-line reason, so the user reads
-              // "this one will not arrive" before confirming rather than
-              // wondering afterwards where it went.
+              // A conflicting entry is disclosed, not installed: its name
+              // and description are faded and it carries the one-line
+              // reason at full strength, so the user reads "this one will
+              // not arrive" before confirming rather than wondering
+              // afterwards where it went.
               const reason = skipReason(agent.conflict, tb);
               return (
                 <li
@@ -368,7 +369,7 @@ export function PluginDisclosureSections({ disclosure: d }: { disclosure: Instal
                   className={cn(ITEM, 'text-label-secondary')}
                 >
                   <p className="text-ui">
-                    <span className="font-medium">{agent.name}</span>
+                    <span className={cn('font-medium', reason && 'opacity-60')}>{agent.name}</span>
                     {reason && (
                       <span className="ml-2 text-ui-sm">
                         {reason}
@@ -376,7 +377,7 @@ export function PluginDisclosureSections({ disclosure: d }: { disclosure: Instal
                     )}
                   </p>
                   {agent.description && (
-                    <p className="mt-1 text-ui-sm">
+                    <p className={cn('mt-1 text-ui-sm', reason && 'opacity-60')}>
                       {agent.description}
                     </p>
                   )}
