@@ -23,9 +23,13 @@ import {
   type ElectronDataRoot,
 } from './electronHelpers';
 import { CHAT_PLACEHOLDER, READY_TIMEOUT, startOpenAiMock, waitForApp, type OpenAiMock } from './openAiMock';
+import { persistedStoreVersion } from './storeVersions';
 
 const REFUSAL = 'open-refused:runs-by-default';
 const SYMLINKS = process.platform !== 'win32';
+const PROJECT_NAME = 'E2E 打开文件';
+const FINAL_TEXT = '文件都在这里。';
+const REPLY_TIMEOUT = 60_000;
 
 interface OpenerRecord { opened: string[]; revealed: string[]; external: string[] }
 
@@ -59,9 +63,11 @@ function invokeFromPage(page: Page, command: string, args: Record<string, unknow
   }, [command, args] as const);
 }
 
-function makeFixtures(root: ElectronDataRoot) {
-  const dir = path.join(root.appDataDir, 'open-fixtures');
-  fs.mkdirSync(dir, { recursive: true });
+function makeFixtures(parent: string) {
+  const made = path.join(parent, 'workspace');
+  fs.mkdirSync(made, { recursive: true });
+  // The native form: the opener hands the shell the real path, with a Windows short name expanded.
+  const dir = fs.realpathSync.native(made);
   const notes = path.join(dir, 'notes.txt');
   const script = path.join(dir, 'setup.command');
   const linked = path.join(dir, 'report.pdf');
@@ -70,7 +76,7 @@ function makeFixtures(root: ElectronDataRoot) {
   fs.writeFileSync(script, 'exit 0\n');
   fs.writeFileSync(python, 'pass\n');
   if (SYMLINKS) fs.symlinkSync(script, linked);
-  return { dir: fs.realpathSync(dir), notes, script, linked, python };
+  return { dir, notes, script, linked, python };
 }
 
 /** The file card that shows this file name. */
@@ -99,7 +105,7 @@ test.describe('open with the default application', () => {
     const launched = await launchAbuElectron(dataRoot);
     app = launched.app;
     await recordSystemOpener(app);
-    const files = makeFixtures(dataRoot);
+    const files = makeFixtures(dataRoot.rootDir);
     const page = await app.firstWindow({ timeout: READY_TIMEOUT });
     await page.waitForLoadState('domcontentloaded');
 
@@ -110,6 +116,7 @@ test.describe('open with the default application', () => {
     expect(await invokeFromPage(page, 'plugin:shell|open', { path: files.script })).toContain(REFUSAL);
     expect(await invokeFromPage(page, 'plugin:shell|open', { path: pathToFileURL(files.script).href })).toContain(REFUSAL);
     expect(await invokeFromPage(page, 'plugin:opener|open_url', { url: pathToFileURL(files.script).href })).toContain(REFUSAL);
+    expect(await invokeFromPage(page, 'plugin:opener|open_url', { url: files.script })).toContain(REFUSAL);
     if (SYMLINKS) {
       expect(await invokeFromPage(page, 'plugin:opener|open_path', { path: files.linked })).toContain(REFUSAL);
     }
@@ -117,37 +124,60 @@ test.describe('open with the default application', () => {
     expect(await invokeFromPage(page, 'plugin:opener|open_url', { url: 'https://example.com/setup.command' })).toBe('ok');
 
     expect(await openerRecord(app)).toEqual({
-      opened: [path.join(files.dir, 'notes.txt'), files.dir],
+      opened: [files.notes, files.dir],
       revealed: [],
       external: ['https://example.com/setup.command'],
     });
   });
 
   test('a file card opens a document and only shows a file the system would run in the file manager', async () => {
+    test.setTimeout(150_000);
     dataRoot = createElectronDataRoot();
-    const files = makeFixtures(dataRoot);
-    const mentioned = [files.notes, files.script, files.python, ...(SYMLINKS ? [files.linked] : [])];
-    mock = await startOpenAiMock([{ kind: 'complete', responseText: mentioned.map((file) => `文件位置: \`${file}\``).join('\n\n') }]);
+    const files = makeFixtures(dataRoot.rootDir);
+    const presented = ['notes.txt', 'setup.command', 'job.py', ...(SYMLINKS ? ['report.pdf'] : [])];
+    mock = await startOpenAiMock([
+      { kind: 'tool-call', toolCallId: 'call-present', toolName: 'present_files', arguments: { files: presented.map((name) => ({ path: name })) } },
+      { kind: 'complete', responseText: FINAL_TEXT },
+    ]);
     const launched = await launchAbuElectron(dataRoot);
     app = launched.app;
     await recordSystemOpener(app);
     const page = await app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForApp(page);
+    await page.evaluate(({ name, workspacePath, version }) => {
+      window.localStorage.setItem('abu-projects', JSON.stringify({
+        state: {
+          projects: {
+            'project-open': {
+              id: 'project-open', name, workspacePath, pinned: false, archived: false,
+              createdAt: 1_800_000_000_000, updatedAt: 1_800_000_000_000, lastActiveAt: 1_800_000_000_000,
+            },
+          },
+        },
+        version,
+      }));
+    }, { name: PROJECT_NAME, workspacePath: files.dir, version: persistedStoreVersion('abu-projects') });
     await dismissFirstRunOverlays(page);
-    await configureLocalMockProvider(page, mock.baseUrl);
+    await configureLocalMockProvider(page, mock.baseUrl, { supportsTools: true, permissionMode: 'standard' });
+    await page.getByRole('button', { name: PROJECT_NAME, exact: true })
+      .locator('xpath=..')
+      .getByRole('button', { name: '新任务', exact: true })
+      .click();
 
     const input = page.getByPlaceholder(CHAT_PLACEHOLDER);
     await expect(input).toBeEditable({ timeout: READY_TIMEOUT });
     await input.fill('列出刚才的文件');
     await input.press('Enter');
+    await expect(page.getByText(FINAL_TEXT)).toBeVisible({ timeout: REPLY_TIMEOUT });
 
     const notesCard = fileCard(page, 'notes.txt');
-    await expect(notesCard).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(notesCard).toBeVisible({ timeout: REPLY_TIMEOUT });
     await notesCard.getByRole('button', { name: '打开', exact: true }).click();
-    await expect.poll(async () => (await openerRecord(app!)).opened).toEqual([path.join(files.dir, 'notes.txt')]);
+    await expect.poll(async () => (await openerRecord(app!)).opened).toEqual([files.notes]);
 
     const scriptCard = fileCard(page, 'setup.command');
     await expect(scriptCard.getByRole('button', { name: '打开', exact: true })).toHaveCount(0);
+    await expect(scriptCard.getByRole('button')).toHaveCount(2);
     await scriptCard.getByRole('button', { name: '在文件管理器中显示', exact: true }).click();
     await expect.poll(async () => (await openerRecord(app!)).revealed).toEqual([files.script]);
 
@@ -164,11 +194,12 @@ test.describe('open with the default application', () => {
     // The preview toolbar: a script the system would run has no open-in-app button, a document has one.
     const openInApp = page.getByRole('button', { name: '用本地应用打开', exact: true });
     await fileCard(page, 'job.py').getByTitle('点击预览', { exact: true }).click();
+    await expect(page.getByRole('tab', { name: 'job.py', exact: true })).toHaveAttribute('aria-selected', 'true', { timeout: READY_TIMEOUT });
     await expect(page.getByRole('button', { name: '历史版本', exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(openInApp).toHaveCount(0);
     await notesCard.getByTitle('点击预览', { exact: true }).click();
     await expect(openInApp).toBeVisible({ timeout: READY_TIMEOUT });
 
-    expect((await openerRecord(app)).opened).toEqual([path.join(files.dir, 'notes.txt')]);
+    expect((await openerRecord(app)).opened).toEqual([files.notes]);
   });
 });
