@@ -1,4 +1,4 @@
-import { defineConfig, normalizePath, type Plugin } from 'vite'
+import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
@@ -35,25 +35,6 @@ const enterprisePeerPackages = [
   'fflate',
   'lucide-react',
 ]
-const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-const enterprisePeerImport = new RegExp(`^(?:${enterprisePeerPackages.map(escapeRegExp).join('|')})(?=$|/)`)
-const enterpriseModulesRoot = `${normalizePath(path.resolve(__dirname, '../Abu-enterprise-modules'))}/`
-const hostImporter = normalizePath(path.resolve(__dirname, 'src/main.tsx'))
-
-// Enterprise modules live beside this checkout and have no node_modules of their own. A shared
-// package imported there is resolved as an import written in this application: the package's
-// `exports` choose the entry, as they do for the application's own imports, so both get the
-// same file and the build holds one copy of each package and of what it imports.
-function enterprisePeersFromHost(): Plugin {
-  return {
-    name: 'abu:enterprise-peers-from-host',
-    enforce: 'pre',
-    resolveId(source, importer, options) {
-      if (!importer || !importer.startsWith(enterpriseModulesRoot) || !enterprisePeerImport.test(source)) return null
-      return this.resolve(source, hostImporter, { ...options, skipSelf: true })
-    },
-  }
-}
 
 console.log(`[vite] ABU_BUILD_TARGET=${BUILD_TARGET} → @enterprise-modules → ${enterpriseModulesPath}`)
 
@@ -66,12 +47,18 @@ export default defineConfig({
     // settings entry + bind flow) is gated on this so it never shows in OSS builds.
     __ENTERPRISE_BUILD__: JSON.stringify(BUILD_TARGET === 'enterprise'),
   },
-  plugins: [...(BUILD_TARGET === 'enterprise' ? [enterprisePeersFromHost()] : []), react(), tailwindcss()],
+  plugins: [react(), tailwindcss()],
   resolve: {
     alias: [
       { find: /^@enterprise-modules(?=$|\/)/, replacement: enterpriseModulesPath },
       { find: /^@\//, replacement: `${srcPath}/` },
     ],
+    // Enterprise modules live beside this checkout and have no node_modules of
+    // their own. `dedupe` resolves each of these packages from this application
+    // root whoever imports it, through the package's `exports`: the enterprise
+    // modules and the application get the same file, and the build holds one
+    // copy of each package and of what it imports (zustand's immer middleware
+    // and the stores share one immer).
     dedupe: enterprisePeerPackages,
   },
   clearScreen: false,

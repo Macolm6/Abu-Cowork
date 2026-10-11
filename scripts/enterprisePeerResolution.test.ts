@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { createServer, normalizePath, type ViteDevServer } from 'vite';
+import { BuildEnvironment, createIdResolver, normalizePath, resolveConfig } from 'vite';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // A file of the application, and a file of the overlay beside this checkout. Neither is read:
@@ -13,27 +13,19 @@ function inPackage(file: string): string {
   return normalizePath(path.join(root, 'node_modules', file));
 }
 
+// The production build's own resolution of an import, under the enterprise build target.
 describe('shared packages in the enterprise build', () => {
-  let server: ViteDevServer;
-
-  async function resolve(source: string, importer: string): Promise<string | undefined> {
-    const resolved = await server.environments.client.pluginContainer.resolveId(source, importer);
-    return resolved?.id.replace(/\?.*$/, '');
-  }
+  let resolve: (source: string, importer: string) => Promise<string | undefined>;
 
   beforeAll(async () => {
     vi.stubEnv('ABU_BUILD_TARGET', 'enterprise');
-    server = await createServer({
-      root,
-      configFile: path.join(root, 'vite.config.ts'),
-      logLevel: 'silent',
-      server: { middlewareMode: true, ws: false },
-      optimizeDeps: { noDiscovery: true, include: [] },
-    });
+    const config = await resolveConfig({ root, configFile: path.join(root, 'vite.config.ts'), logLevel: 'silent' }, 'build');
+    const environment = new BuildEnvironment('client', config);
+    const resolver = createIdResolver(config);
+    resolve = async (source, importer) => (await resolver(environment, source, importer))?.replace(/\?.*$/, '');
   });
 
-  afterAll(async () => {
-    await server.close();
+  afterAll(() => {
     vi.unstubAllEnvs();
   });
 
@@ -53,6 +45,12 @@ describe('shared packages in the enterprise build', () => {
     }
   });
 
+  it('gives the immer middleware the copy of immer the stores import', async () => {
+    const fromStore = await resolve('immer', hostFile);
+    expect(fromStore).toBe(inPackage('immer/dist/immer.mjs'));
+    expect(await resolve('immer', inPackage('zustand/esm/middleware/immer.mjs'))).toBe(fromStore);
+  });
+
   it('resolves every other shared package for the overlay to the file the application gets', async () => {
     const sources = [
       'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client',
@@ -63,7 +61,7 @@ describe('shared packages in the enterprise build', () => {
     ];
     for (const source of sources) {
       const fromHost = await resolve(source, hostFile);
-      expect(fromHost, `${source} from the application`).toMatch(/\/node_modules\//);
+      expect(fromHost, `${source} from the application`).toContain(inPackage(''));
       expect(await resolve(source, overlayFile), `${source} from the overlay`).toBe(fromHost);
     }
   });
