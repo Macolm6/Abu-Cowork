@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig, normalizePath, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
@@ -36,12 +36,24 @@ const enterprisePeerPackages = [
   'lucide-react',
 ]
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-const enterprisePeerAliases = BUILD_TARGET === 'enterprise'
-  ? enterprisePeerPackages.map((pkg) => ({
-      find: new RegExp(`^${escapeRegExp(pkg)}(?=$|/)`),
-      replacement: path.resolve(__dirname, 'node_modules', pkg),
-    }))
-  : []
+const enterprisePeerImport = new RegExp(`^(?:${enterprisePeerPackages.map(escapeRegExp).join('|')})(?=$|/)`)
+const enterpriseModulesRoot = `${normalizePath(path.resolve(__dirname, '../Abu-enterprise-modules'))}/`
+const hostImporter = normalizePath(path.resolve(__dirname, 'src/main.tsx'))
+
+// Enterprise modules live beside this checkout and have no node_modules of their own. A shared
+// package imported there is resolved as an import written in this application: the package's
+// `exports` choose the entry, as they do for the application's own imports, so both get the
+// same file and the build holds one copy of each package and of what it imports.
+function enterprisePeersFromHost(): Plugin {
+  return {
+    name: 'abu:enterprise-peers-from-host',
+    enforce: 'pre',
+    resolveId(source, importer, options) {
+      if (!importer || !importer.startsWith(enterpriseModulesRoot) || !enterprisePeerImport.test(source)) return null
+      return this.resolve(source, hostImporter, { ...options, skipSelf: true })
+    },
+  }
+}
 
 console.log(`[vite] ABU_BUILD_TARGET=${BUILD_TARGET} → @enterprise-modules → ${enterpriseModulesPath}`)
 
@@ -54,17 +66,12 @@ export default defineConfig({
     // settings entry + bind flow) is gated on this so it never shows in OSS builds.
     __ENTERPRISE_BUILD__: JSON.stringify(BUILD_TARGET === 'enterprise'),
   },
-  plugins: [react(), tailwindcss()],
+  plugins: [...(BUILD_TARGET === 'enterprise' ? [enterprisePeersFromHost()] : []), react(), tailwindcss()],
   resolve: {
     alias: [
       { find: /^@enterprise-modules(?=$|\/)/, replacement: enterpriseModulesPath },
       { find: /^@\//, replacement: `${srcPath}/` },
-      ...enterprisePeerAliases,
     ],
-    // Enterprise modules are a sibling peer-dependency package. Vite 8's
-    // Rolldown resolver otherwise starts from the external importer's path and
-    // cannot see the host node_modules directory. Resolve every shared runtime
-    // from this application root so OSS and Enterprise builds use one copy.
     dedupe: enterprisePeerPackages,
   },
   clearScreen: false,
