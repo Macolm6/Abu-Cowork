@@ -28,6 +28,8 @@ import { isCompactBoundary } from '@/core/context/compactBoundary';
 import { isBrowserRunReportMessage } from '@/core/observability/browserRunReport';
 import { isMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
 import { normalizeUpstreamErrorDetails, sanitizeUntrustedLlmErrorText } from '@/core/llm/adapter';
+import { fileChangeWithoutHunks } from '@/core/files/fileChangeBudget';
+import type { FileChange } from '@/types/fileChange';
 
 export const SHARE_SCHEMA_VERSION = 1 as const;
 
@@ -337,16 +339,15 @@ function redactToolCall(
   if (out.fileChange) {
     const path = redactText(out.fileChange.path);
     onRedaction(path);
-    // The first character of a hunk line is its diff marker, not file text.
-    const hunks = out.fileChange.hunks?.map((hunk) => ({
-      ...hunk,
-      lines: hunk.lines.map((line) => {
-        const text = redactText(line.slice(1));
-        onRedaction(text);
-        return line.slice(0, 1) + text.text;
-      }),
-    }));
-    out.fileChange = { ...out.fileChange, path: path.text, ...(hunks ? { hunks } : {}) };
+    const change: FileChange = { ...out.fileChange, path: path.text };
+    // Hunks go out only as they are: the file text is checked as one string,
+    // so a rule that spans lines applies, and a change with shortened lines
+    // may hold a credential no rule recognizes.
+    const text = redactText(
+      (change.hunks ?? []).flatMap((hunk) => hunk.lines.map((line) => line.slice(1))).join('\n'),
+    );
+    onRedaction(text);
+    out.fileChange = text.count > 0 || change.cut ? fileChangeWithoutHunks(change) : change;
   }
   return out;
 }

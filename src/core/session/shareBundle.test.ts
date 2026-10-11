@@ -118,54 +118,117 @@ describe('buildShareBundle', () => {
     expect(JSON.stringify(bundle)).toContain('[REDACTED:anthropic-key]');
   });
 
-  it('redacts the path and the hunk text of a tool call file change', async () => {
-    const conv = makeConv([
-      {
-        id: 'm1',
-        role: 'assistant',
-        content: 'edited',
-        timestamp: 1,
-        toolCalls: [{
-          id: 't1',
-          name: 'edit_file',
-          input: { path: '/Users/alice/projects/secret/config.ts' },
-          result: 'Successfully edited',
-          fileChange: {
-            path: '/Users/alice/projects/secret/config.ts',
-            kind: 'modify',
-            added: 1,
-            deleted: 1,
-            hunks: [{
-              oldStart: 1,
-              oldLines: 2,
-              newStart: 1,
-              newLines: 2,
-              lines: [
-                ' import x from "/Users/alice/lib/x";',
-                '-const key = "old";',
-                '+const key = "sk-ant-abcdefghijklmnopqrstuvwxyz123456";',
-              ],
-            }],
-          },
+  describe('tool call file change', () => {
+    function fileChangeConv(fileChange: NonNullable<NonNullable<Message['toolCalls']>[number]['fileChange']>): Conversation {
+      return makeConv([
+        {
+          id: 'm1',
+          role: 'assistant',
+          content: 'edited',
+          timestamp: 1,
+          toolCalls: [{ id: 't1', name: 'edit_file', input: { path: fileChange.path }, result: 'Successfully edited', fileChange }],
+        },
+      ]);
+    }
+
+    it('redacts the path and drops the hunks that hold a credential', async () => {
+      const conv = fileChangeConv({
+        path: '/Users/alice/projects/secret/config.ts',
+        kind: 'modify',
+        added: 1,
+        deleted: 1,
+        hunks: [{
+          oldStart: 1,
+          oldLines: 2,
+          newStart: 1,
+          newLines: 2,
+          lines: [
+            ' import x from "./x";',
+            '-const key = "old";',
+            '+const key = "sk-ant-abcdefghijklmnopqrstuvwxyz123456";',
+          ],
         }],
-      },
-    ]);
+      });
 
-    const bundle = await buildShareBundle(conv);
-    const fileChange = bundle.messages[0].toolCalls?.[0].fileChange;
+      const bundle = await buildShareBundle(conv);
+      const fileChange = bundle.messages[0].toolCalls?.[0].fileChange;
 
-    expect(fileChange?.path).toBe(bundle.messages[0].toolCalls?.[0].input.path);
-    expect(fileChange?.path).not.toContain('alice');
-    expect(fileChange?.added).toBe(1);
-    expect(fileChange?.deleted).toBe(1);
-    const lines = fileChange?.hunks?.[0].lines ?? [];
-    expect(lines).toHaveLength(3);
-    expect(lines[0].startsWith(' ')).toBe(true);
-    expect(lines[1]).toBe('-const key = "old";');
-    expect(lines[2]).toBe('+const key = "[REDACTED:anthropic-key]";');
-    expect(JSON.stringify(fileChange)).not.toContain('alice');
-    expect(JSON.stringify(fileChange)).not.toContain('sk-ant-abc');
-    expect(conv.messages[0].toolCalls?.[0].fileChange?.path).toBe('/Users/alice/projects/secret/config.ts');
+      expect(fileChange?.path).toBe(bundle.messages[0].toolCalls?.[0].input.path);
+      expect(fileChange?.path).not.toContain('alice');
+      expect(fileChange).toEqual({ path: fileChange?.path, kind: 'modify', added: 1, deleted: 1, cut: true });
+      expect(JSON.stringify(bundle)).not.toContain('sk-ant-abc');
+      expect(bundle.stats.redactionCount).toBeGreaterThan(0);
+      expect(conv.messages[0].toolCalls?.[0].fileChange?.hunks).toHaveLength(1);
+    });
+
+    it('drops the hunks that hold a private key spread over several lines', async () => {
+      const keyBody = 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj';
+      const conv = fileChangeConv({
+        path: '/work/deploy/id_rsa',
+        kind: 'create',
+        added: 4,
+        deleted: 0,
+        hunks: [{
+          oldStart: 0,
+          oldLines: 0,
+          newStart: 1,
+          newLines: 4,
+          lines: [
+            '+-----BEGIN RSA PRIVATE KEY-----',
+            `+${keyBody}`,
+            `+${keyBody.split('').reverse().join('')}`,
+            '+-----END RSA PRIVATE KEY-----',
+          ],
+        }],
+      });
+
+      const bundle = await buildShareBundle(conv);
+      const fileChange = bundle.messages[0].toolCalls?.[0].fileChange;
+
+      expect(fileChange).toEqual({ path: '/work/deploy/id_rsa', kind: 'create', added: 4, deleted: 0, cut: true });
+      expect(JSON.stringify(bundle)).not.toContain(keyBody);
+      expect(bundle.stats.redactionCount).toBeGreaterThan(0);
+    });
+
+    it('drops the hunks of a change whose lines were shortened', async () => {
+      // A credential cut short by the line limit no longer has the shape a rule matches.
+      const shortened = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkw';
+      const conv = fileChangeConv({
+        path: '/work/session.txt',
+        kind: 'modify',
+        added: 1,
+        deleted: 0,
+        cut: true,
+        hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, lines: [' token:', `+${shortened}`] }],
+      });
+
+      const bundle = await buildShareBundle(conv);
+      const fileChange = bundle.messages[0].toolCalls?.[0].fileChange;
+
+      expect(fileChange).toEqual({ path: '/work/session.txt', kind: 'modify', added: 1, deleted: 0, cut: true });
+      expect(JSON.stringify(bundle)).not.toContain(shortened);
+    });
+
+    it('keeps the hunks of a change without sensitive text', async () => {
+      const hunks = [{
+        oldStart: 1,
+        oldLines: 2,
+        newStart: 1,
+        newLines: 2,
+        lines: [' # Notes', '-first draft', '+second draft'],
+      }];
+      const conv = fileChangeConv({ path: '/work/notes.md', kind: 'modify', added: 1, deleted: 1, hunks });
+
+      const bundle = await buildShareBundle(conv);
+
+      expect(bundle.messages[0].toolCalls?.[0].fileChange).toEqual({
+        path: '/work/notes.md',
+        kind: 'modify',
+        added: 1,
+        deleted: 1,
+        hunks,
+      });
+    });
   });
 
   it('allowlists and redacts provider error details before sharing', async () => {
