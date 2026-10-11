@@ -766,7 +766,7 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t 
             already rendered above by renderThinkingDetail (inline / collapsible). */}
         {step.detail && !isThinking && !completionMsg && !typeLabel && !step.detailBlocks?.length && (
           <div className="mt-1">
-            <span className="inline-flex h-5 items-center rounded-control bg-fill px-2 font-code text-ui-sm text-label-tertiary">
+            <span className="inline-flex h-5 items-center rounded-control bg-fill px-2 font-code text-ui-sm text-label-secondary">
               {getFileName(step.detail)}
             </span>
           </div>

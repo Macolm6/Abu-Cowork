@@ -365,18 +365,18 @@ export function PluginDisclosureSections({ disclosure: d }: { disclosure: Instal
                   key={`${agent.name}:${agent.conflict ?? ''}`}
                   data-testid="plugin-disclosure-agent"
                   aria-disabled={reason ? true : undefined}
-                  className={cn(ITEM, reason ? 'text-label-tertiary' : 'text-label-secondary')}
+                  className={cn(ITEM, 'text-label-secondary')}
                 >
                   <p className="text-ui">
                     <span className="font-medium">{agent.name}</span>
                     {reason && (
-                      <span className="ml-2 text-ui-sm text-label-tertiary">
+                      <span className="ml-2 text-ui-sm">
                         {reason}
                       </span>
                     )}
                   </p>
                   {agent.description && (
-                    <p className="mt-1 text-ui-sm text-label-tertiary">
+                    <p className="mt-1 text-ui-sm">
                       {agent.description}
                     </p>
                   )}
@@ -393,8 +393,8 @@ export function PluginDisclosureSections({ disclosure: d }: { disclosure: Instal
             {d.teams!.map((team) => (
               <li key={team.id} data-testid="plugin-disclosure-team" className={cn(ITEM, 'text-label-secondary')}>
                 <p className="text-ui"><span className="font-medium">{resolveText(team.name)}</span></p>
-                <p className="mt-1 text-ui-sm text-label-tertiary">{resolveText(team.description)}</p>
-                <p className="mt-1 text-ui-sm text-label-tertiary">{team.memberRoleIds.map((roleId) => roleIdAgentName(roleId) ?? roleId).join('、')}</p>
+                <p className="mt-1 text-ui-sm">{resolveText(team.description)}</p>
+                <p className="mt-1 text-ui-sm">{team.memberRoleIds.map((roleId) => roleIdAgentName(roleId) ?? roleId).join('、')}</p>
               </li>
             ))}
           </ul>
