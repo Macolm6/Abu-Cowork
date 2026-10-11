@@ -28,6 +28,7 @@ const SNAPSHOT_SWEEP_MARKER_FILENAME = '.snapshot-sweep-version';
 const CHECKPOINT_FILENAME = 'checkpoint.json';
 const OUTPUTS_DIRNAME = 'outputs';
 const RESULTS_DIRNAME = 'results';
+const CHANGES_DIRNAME = 'changes';
 
 /**
  * Everything `createConversationPaths` places directly under the conversations
@@ -108,6 +109,7 @@ export interface ConversationPaths {
   checkpointPath(convId: string): string;
   outputsDir(convId: string): string;
   resultsDir(convId: string): string;
+  changesDir(convId: string): string;
   legacySessionDir(convId: string): string;
   conversationIdOfMessagesPath(filePath: string): string | undefined;
 }
@@ -132,6 +134,7 @@ export function createConversationPaths(appDataDir: string): ConversationPaths {
     checkpointPath: (convId) => under(root, convId, CHECKPOINT_FILENAME),
     outputsDir: (convId) => under(root, convId, OUTPUTS_DIRNAME),
     resultsDir: (convId) => under(root, convId, RESULTS_DIRNAME),
+    changesDir: (convId) => under(root, convId, CHANGES_DIRNAME),
     legacySessionDir: (convId) => under(legacySessionsRoot, convId),
     conversationIdOfMessagesPath: (filePath) => {
       const parts = filePath.split('/');
