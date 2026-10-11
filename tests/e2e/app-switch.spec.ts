@@ -227,6 +227,29 @@ test.describe.serial('apps', () => {
     await expect(page.getByTestId('chat-title-app-badge')).toContainText(APP_NAME);
   });
 
+  test('新任务 pressed again with the home in view: the next conversation is still the app\'s, on its team', async () => {
+    await showSidebar(page);
+    const newTask = page.getByLabel('Main navigation').getByRole('button', { name: NEW_TASK });
+    await newTask.click();
+    await expect(page.getByTestId('app-home-title')).toHaveText(APP_NAME);
+    await expect(page.getByTestId('composer-team-chip')).toContainText('店铺运营小组');
+    await newTask.click();
+    await expect(page.getByTestId('app-home-title')).toHaveText(APP_NAME);
+    await expect(page.getByTestId('composer-team-chip')).toContainText('店铺运营小组');
+
+    const boundBefore = await page.getByTestId('conversation-app-icon').count();
+    const before = llm.requests.length;
+    const composer = page.locator('[data-chat-composer]');
+    await composer.click();
+    await page.keyboard.type('这个月的差评集中在哪些商品？');
+    await composer.press('Enter');
+    await expect.poll(() => llm.requests.slice(before).some((request) => request.system.includes(`inside the app "${APP_NAME}"`)), { timeout: READY_TIMEOUT }).toBe(true);
+    await expect(page.getByTestId('chat-title-app-badge')).toContainText(APP_NAME, { timeout: READY_TIMEOUT });
+    await expect(page.getByTestId('chat-title-team-badge')).toContainText('店铺运营小组');
+    await showSidebar(page);
+    await expect(page.getByTestId('conversation-app-icon')).toHaveCount(boundBefore + 1);
+  });
+
   test('创建应用 chosen inside the app opens a conversation of the general shell; the app keeps its own conversations', async () => {
     await showSidebar(page);
     await expect(page.getByTestId('app-switcher-current')).toHaveText(APP_NAME);
