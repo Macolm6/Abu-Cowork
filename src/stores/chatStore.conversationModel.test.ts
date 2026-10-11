@@ -41,10 +41,10 @@ beforeEach(() => {
 });
 
 describe('a conversation\'s model is persisted with the conversation', () => {
-  it('a picked model is on disk by the time its write reports done', async () => {
+  it('a model the user picked is on disk by the time its write reports done', async () => {
     const id = useChatStore.getState().createConversation(null, { skipActivate: true });
     await waitForConversationPersistence(id);
-    useChatStore.getState().setConversationModel(id, MODEL_Y);
+    useChatStore.getState().setConversationModel(id, MODEL_Y, { durable: true });
 
     expect(useChatStore.getState().conversations[id].model).toEqual(MODEL_Y);
     expect(useChatStore.getState().conversationIndex[id].model).toEqual(MODEL_Y);
@@ -54,14 +54,30 @@ describe('a conversation\'s model is persisted with the conversation', () => {
     expect(indexEntryFlushedToDisk(id)?.model).toEqual(MODEL_Y);
   });
 
-  it('a cleared model is gone from disk by the time its write reports done', async () => {
+  it('a user pick whose index write fails ends the conversation at its durability barrier', async () => {
     const id = useChatStore.getState().createConversation(null, { skipActivate: true });
-    useChatStore.getState().setConversationModel(id, MODEL_Y);
     await waitForConversationPersistence(id);
-    useChatStore.getState().setConversationModel(id, undefined);
 
+    vi.mocked(invoke).mockRejectedValue(new Error('disk unavailable'));
+    try {
+      useChatStore.getState().setConversationModel(id, MODEL_Y, { durable: true });
+      await expect(waitForConversationPersistence(id)).rejects.toThrow('disk unavailable');
+    } finally {
+      vi.mocked(invoke).mockReset();
+    }
+  });
+
+  it('a pin a run writes stays out of the barrier, so a failed index write cannot end the run that wrote it', async () => {
+    const id = useChatStore.getState().createConversation(null, { skipActivate: true });
     await waitForConversationPersistence(id);
-    expect(indexEntryFlushedToDisk(id)?.model).toBeUndefined();
-    expect(indexEntryFlushedToDisk(id)).toBeDefined();
+
+    vi.mocked(invoke).mockRejectedValue(new Error('disk unavailable'));
+    try {
+      useChatStore.getState().setConversationModel(id, MODEL_Y);
+      expect(useChatStore.getState().conversationIndex[id].model).toEqual(MODEL_Y);
+      await expect(waitForConversationPersistence(id)).resolves.toBeUndefined();
+    } finally {
+      vi.mocked(invoke).mockReset();
+    }
   });
 });
