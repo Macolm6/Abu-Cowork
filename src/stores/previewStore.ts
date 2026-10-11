@@ -77,10 +77,23 @@ export type WorkspaceTab = (
   | { id: string; kind: 'terminal' }
   | { id: string; kind: 'subagent'; identity: BatchIdentity; taskIndex: number; title: string }
   | { id: string; kind: 'team'; conversationId: string }
+  // The files one turn changed, compared one at a time; `fileIndex` is the file in view.
+  | { id: string; kind: 'changes'; conversationId: string; loopId: string; fileIndex: number; title: string }
 ) & { ownerConversationId?: string };
 
 export function teamTabId(conversationId: string): string {
   return `team:${conversationId}`;
+}
+
+export function turnChangesTabId(conversationId: string, loopId: string): string {
+  return `changes:${conversationId}:${loopId}`;
+}
+
+export interface TurnChangesTarget {
+  conversationId: string;
+  loopId: string;
+  fileIndex: number;
+  title: string;
 }
 
 /**
@@ -224,6 +237,11 @@ interface PreviewState {
   openSubagent: (identity: BatchIdentity, taskIndex: number, title: string) => string;
   // Open (or activate) the singleton team overview tab of a team-pinned conversation.
   openTeam: (conversationId: string, options?: { activate?: boolean }) => string;
+  // Open the changes tab of a turn, or return to the one already open for that
+  // turn, on the file `target.fileIndex` names.
+  openTurnChanges: (target: TurnChangesTarget) => string;
+  // Show another file in a changes tab. No-op for any other tab.
+  selectTurnChangesFile: (id: string, fileIndex: number) => void;
   // Make an existing tab the active one. No-op if the id doesn't exist.
   activateTab: (id: string) => void;
   consumeFocusTabRequest: (id: string) => void;
@@ -508,6 +526,25 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
     commitTabs(nextTabs, activate ? id : activeTabId ?? id, activate ? { focusTabId: id } : {});
     if (activate) expandRightPanel();
     return id;
+  },
+
+  openTurnChanges: ({ conversationId, loopId, fileIndex, title }) => {
+    const { tabs } = get();
+    const id = turnChangesTabId(conversationId, loopId);
+    const next: WorkspaceTab = { id, kind: 'changes', conversationId, loopId, fileIndex, title, ...ownerScope() };
+    const nextTabs = tabs.some((tab) => tab.id === id)
+      ? tabs.map((tab) => (tab.id === id ? next : tab))
+      : [...tabs, next];
+    commitTabs(nextTabs, id);
+    expandRightPanel();
+    return id;
+  },
+
+  selectTurnChangesFile: (id, fileIndex) => {
+    const { tabs, activeTabId } = get();
+    const tab = tabs.find((candidate) => candidate.id === id);
+    if (!tab || tab.kind !== 'changes' || tab.fileIndex === fileIndex) return;
+    commitTabs(tabs.map((candidate) => (candidate.id === id ? { ...tab, fileIndex } : candidate)), activeTabId);
   },
 
   openSubagent: (identity, taskIndex, title) => {

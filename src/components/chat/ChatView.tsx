@@ -74,7 +74,7 @@ import { Tag } from '@/components/ds/tag';
 import { TextField } from '@/components/ds/text-field';
 import UsageChip from './UsageChip';
 import { shouldShowTypingIndicator } from './typingIndicator';
-import { groupMessagesByLoop } from './messageGrouping';
+import { groupMessagesByLoop, lastGroupIndexByLoop } from './messageGrouping';
 import { ThinkingStatusLine, AssistantRowAvatar } from './ThinkingStatusLine';
 import { useConversationTeamLeader } from '@/components/team/useConversationTeamLeader';
 import AgentAvatar from '@/components/common/AgentAvatar';
@@ -1156,6 +1156,7 @@ export default function ChatView({
   // Goal-round openers are internal rows too, but render as a round marker.
   const visibleMessages = messages.filter(m => !m.isSystem || m.isRecoveryNotice || m.goalRound);
   const messageGroups = groupMessagesByLoop(visibleMessages);
+  const lastGroupOfLoop = lastGroupIndexByLoop(messageGroups);
   useLayoutEffect(() => {
     if (!scrollParentEl || !activeConvId) return;
     const conversation = useChatStore.getState().conversations[activeConvId];
@@ -1818,6 +1819,7 @@ export default function ChatView({
                       conversationId={activeConv.id}
                       messages={group.slice(1)}
                       isLastGroup={index === messageGroups.length - 1}
+                      isLastGroupOfLoop={lastGroupOfLoop.get(group[0].loopId ?? '') === index}
                       highlightMessageId={highlightedMessageId}
                     />
                   )}
@@ -1833,6 +1835,7 @@ export default function ChatView({
                   conversationId={activeConv.id}
                   messages={group}
                   isLastGroup={index === messageGroups.length - 1}
+                  isLastGroupOfLoop={lastGroupOfLoop.get(group[0].loopId ?? '') === index}
                   highlightMessageId={highlightedMessageId}
                 />
               )

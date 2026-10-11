@@ -334,6 +334,16 @@ export interface TranslationDict {
     showAllDiffLines: string;
     /** Closing line of a diff whose saved lines stop before the end of the change. */
     diffCut: string;
+    /** Title of the card under a reply that lists the files the turn changed; `{count}` is the number of files. */
+    changedFilesTitle: string;
+    /** Title of that card when the turn changed one file; `{name}` is the file name. */
+    changedFileSingleTitle: string;
+    /** Status of a changed file that has no line counts. */
+    changeCreated: string;
+    changeModified: string;
+    changeDeleted: string;
+    /** Last line of the card when the turn changed more files than it lists; `{count}` is the number left out. */
+    moreChangedFiles: string;
     userMessageShowMore: string;
     userMessageCollapse: string;
     runPending: string;
@@ -2955,6 +2965,10 @@ export interface TranslationDict {
     workspace: string;
     files: string;
     preview: string;
+    /** Title of the tab that compares the one file a turn changed; `{name}` is the file name. */
+    changesTabSingle: string;
+    /** Title of that tab for several files; `{name}` is the first file name, `{count}` the number of files. */
+    changesTabMany: string;
     noWorkspaceSelected: string;
     selectWorkspace: string;
     noFilesModified: string;

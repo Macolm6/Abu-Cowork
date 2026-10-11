@@ -97,9 +97,9 @@ function WorkspacePanelImpl() {
                 <BrowserTab tabId={tab.id} url={tab.url} />
               ) : tab.kind === 'team' ? (
                 <TeamTab conversationId={tab.conversationId} />
-              ) : (
+              ) : tab.kind === 'subagent' ? (
                 <SubagentTab identity={tab.identity} taskIndex={tab.taskIndex} title={tab.title} />
-              )}
+              ) : null}
             </div>
           ))}
         </div>

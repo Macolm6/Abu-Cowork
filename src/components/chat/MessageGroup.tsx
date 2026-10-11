@@ -20,6 +20,7 @@ import SmoothHeight from './SmoothHeight';
 import BatchProgress from './BatchProgress';
 import MarkdownRenderer from './MarkdownRenderer';
 import FileAttachment, { ImagePreviewCard, ImageThumbnail, isImageFile } from './FileAttachment';
+import ChangedFilesCard from './ChangedFilesCard';
 import SourcesSection from './SourcesSection';
 import { getConversationAgentState, useChatStore, useActiveConversation } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
@@ -67,6 +68,10 @@ interface MessageGroupProps {
   conversationId: string;
   messages: Message[];
   isLastGroup?: boolean;
+  // Whether this is the last group of its loopId. A loop spans two groups when
+  // a compaction marker falls inside it; the changed-files card belongs to the
+  // last one.
+  isLastGroupOfLoop?: boolean;
   // When set and this group contains that message, briefly ring-highlight the
   // group (search-hit jump target). Cleared by the parent after a timeout.
   highlightMessageId?: string | null;
@@ -537,7 +542,7 @@ export function streamingTurnHasRenderableContent(msg: Message | undefined): boo
  * User messages render standalone, assistant messages share one avatar.
  * Renders text → merged tool steps, with consecutive tool-only turns combined.
  */
-export default function MessageGroup({ conversationId, messages, isLastGroup: isLastGroupProp = false, highlightMessageId = null }: MessageGroupProps) {
+export default function MessageGroup({ conversationId, messages, isLastGroup: isLastGroupProp = false, isLastGroupOfLoop = false, highlightMessageId = null }: MessageGroupProps) {
   const { t } = useI18n();
   // Separate user and assistant messages
   const userMsg = messages.find((m) => m.role === 'user');
@@ -1485,6 +1490,11 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
                   </Pressable>
                 )}
               </>
+            )}
+
+            {/* What the turn changed on disk, once per loop and once the run has ended. */}
+            {isLastGroupOfLoop && isGroupDone && loopId && (
+              <ChangedFilesCard conversationId={conversationId} loopId={loopId} />
             )}
 
             {/* Sources section - below file attachments */}

@@ -1130,6 +1130,81 @@ describe('delayed popup ownership', () => {
     store().openBrowser('https://late.example', '__abu-browser-automation__late', undefined, source);
     expect(store().tabs).toEqual([]);
   });
+  describe('openTurnChanges', () => {
+    const store = () => usePreviewStore.getState();
+    const target = { conversationId: 'conv-a', loopId: 'loop-1', fileIndex: 0, title: 'Changes: plan.md' };
+
+    it('opens a changes tab for the turn, activates it and expands the panel', () => {
+      useSettingsStore.getState().setRightPanelCollapsed(true);
+      store().closeTabsForConversationSwitch('conv-a');
+
+      const id = store().openTurnChanges({ ...target, fileIndex: 2 });
+
+      expect(store().tabs).toEqual([{
+        id,
+        kind: 'changes',
+        conversationId: 'conv-a',
+        loopId: 'loop-1',
+        fileIndex: 2,
+        title: 'Changes: plan.md',
+        ownerConversationId: 'conv-a',
+      }]);
+      expect(store().activeTabId).toBe(id);
+      expect(useSettingsStore.getState().rightPanelCollapsed).toBe(false);
+    });
+
+    it('returns to the tab of the same turn and moves it to the file asked for', () => {
+      store().closeTabsForConversationSwitch('conv-a');
+      const first = store().openTurnChanges(target);
+      store().openPreview('/ws/plan.md');
+
+      const second = store().openTurnChanges({ ...target, fileIndex: 3, title: 'Changes: plan.md and 4 files' });
+
+      expect(second).toBe(first);
+      expect(store().tabs.filter((tab) => tab.kind === 'changes')).toHaveLength(1);
+      expect(store().tabs.find((tab) => tab.id === first)).toMatchObject({ fileIndex: 3, title: 'Changes: plan.md and 4 files' });
+      expect(store().activeTabId).toBe(first);
+    });
+
+    it('opens a tab per turn', () => {
+      store().closeTabsForConversationSwitch('conv-a');
+      const first = store().openTurnChanges(target);
+      const second = store().openTurnChanges({ ...target, loopId: 'loop-2' });
+      expect(second).not.toBe(first);
+      expect(store().tabs.map((tab) => tab.kind)).toEqual(['changes', 'changes']);
+    });
+
+    it('selectTurnChangesFile moves a changes tab to another file and leaves other tabs alone', () => {
+      store().closeTabsForConversationSwitch('conv-a');
+      const id = store().openTurnChanges(target);
+      store().openPreview('/ws/plan.md');
+      const previewId = store().activeTabId as string;
+
+      store().selectTurnChangesFile(id, 4);
+      store().selectTurnChangesFile(previewId, 4);
+      store().selectTurnChangesFile('missing', 4);
+
+      expect(store().tabs.find((tab) => tab.id === id)).toMatchObject({ kind: 'changes', fileIndex: 4 });
+      expect(store().tabs.find((tab) => tab.id === previewId)).toEqual(
+        { id: previewId, kind: 'preview', filePath: '/ws/plan.md', ownerConversationId: 'conv-a' },
+      );
+      expect(store().activeTabId).toBe(previewId);
+    });
+
+    it('shows the tab only in its conversation and closes it with the conversation', () => {
+      store().closeTabsForConversationSwitch('conv-a');
+      const id = store().openTurnChanges(target);
+
+      store().closeTabsForConversationSwitch('conv-b');
+      expect(getVisibleTabs(store())).toEqual([]);
+      store().closeTabsForConversationSwitch('conv-a');
+      expect(getVisibleTabs(store()).map((tab) => tab.id)).toEqual([id]);
+
+      store().closeOwnedTabsForConversation('conv-a');
+      expect(store().tabs).toEqual([]);
+    });
+  });
+
   it('does not recreate a deleted current conversation snapshot on the next switch', () => {
     const store = () => usePreviewStore.getState();
     store().closeTabsForConversationSwitch('a');
