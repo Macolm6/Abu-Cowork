@@ -14,6 +14,11 @@ vi.mock('@/stores/chatStore', () => ({
   useChatStore: { getState: () => getStateMock() },
 }));
 
+const captureBeforeMock = vi.fn();
+vi.mock('@/core/session/turnChanges', () => ({
+  captureBefore: (...args: unknown[]) => captureBeforeMock(...args),
+}));
+
 let mod: typeof import('./aiEditSnapshots');
 
 describe('snapshotBeforeAiEdit', () => {
@@ -29,6 +34,8 @@ describe('snapshotBeforeAiEdit', () => {
     // test starts from the same resolved-by-default baseline.
     snapshotVersionMock.mockReset();
     snapshotVersionMock.mockResolvedValue(undefined);
+    captureBeforeMock.mockReset();
+    captureBeforeMock.mockResolvedValue(undefined);
     vi.mocked(exists).mockResolvedValue(true);
     vi.mocked(stat).mockResolvedValue({ size: 100 } as Awaited<ReturnType<typeof stat>>);
     vi.mocked(readTextFile).mockResolvedValue('disk content');
@@ -180,6 +187,51 @@ describe('snapshotBeforeAiEdit', () => {
       await mod.snapshotBeforeAiEdit('/w/known.html', { loopId: 'loop1', knownContent: 'already read' });
       expect(vi.mocked(exists)).not.toHaveBeenCalled();
       expect(snapshotVersionMock).toHaveBeenCalledWith('/w/known.html', 'already read', expect.anything());
+    });
+  });
+
+  describe('the turn capture', () => {
+    it('captures the file for the turn before the version snapshot, on every call', async () => {
+      await mod.snapshotBeforeAiEdit('/w/a.html', { loopId: 'loop1' });
+      await mod.snapshotBeforeAiEdit('/w/a.html', { loopId: 'loop1' });
+
+      expect(captureBeforeMock.mock.calls).toEqual([['loop1', '/w/a.html'], ['loop1', '/w/a.html']]);
+      expect(captureBeforeMock.mock.invocationCallOrder[0]).toBeLessThan(snapshotVersionMock.mock.invocationCallOrder[0]);
+    });
+
+    it('captures a file that does not exist yet', async () => {
+      vi.mocked(exists).mockResolvedValue(false);
+      await mod.snapshotBeforeAiEdit('/w/new.html', { loopId: 'loop1' });
+      expect(captureBeforeMock).toHaveBeenCalledWith('loop1', '/w/new.html');
+    });
+
+    it('captures nothing without a loop id', async () => {
+      await mod.snapshotBeforeAiEdit('/w/a.html', {});
+      await mod.captureTurnFileBefore('/w/a.html', undefined);
+      expect(captureBeforeMock).not.toHaveBeenCalled();
+    });
+
+    it('still snapshots the version, and does not throw, when the capture fails', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      captureBeforeMock.mockRejectedValueOnce(new Error('capture failed'));
+
+      await expect(mod.snapshotBeforeAiEdit('/w/a.html', { loopId: 'loop1' })).resolves.toBeUndefined();
+
+      expect(snapshotVersionMock).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('turn capture failed'), '/w/a.html', expect.any(Error));
+      warn.mockRestore();
+    });
+
+    it('captureTurnFileBefore captures without a version snapshot', async () => {
+      await mod.captureTurnFileBefore('/w/gone.html', 'loop1');
+      expect(captureBeforeMock).toHaveBeenCalledWith('loop1', '/w/gone.html');
+      expect(snapshotVersionMock).not.toHaveBeenCalled();
+    });
+
+    it('snapshotVersionBeforeAiEdit snapshots the version without a capture', async () => {
+      await mod.snapshotVersionBeforeAiEdit('/w/a.html', { loopId: 'loop1' });
+      expect(snapshotVersionMock).toHaveBeenCalledTimes(1);
+      expect(captureBeforeMock).not.toHaveBeenCalled();
     });
   });
 });

@@ -270,7 +270,10 @@ test('a file renamed before it is presented gets one card, under its new name', 
   expect(fs.existsSync(path.join(workspace, '终稿.md'))).toBe(true);
   await expect(fileCards(page)).toHaveCount(1);
   await expect(cardOf(page, '终稿.md')).toContainText('定稿');
-  await expect(page.getByTitle('初稿.md', { exact: true })).toHaveCount(0);
+  await expect(cardOf(page, '初稿.md')).toHaveCount(0);
+  const changed = page.getByTestId('changed-files-card');
+  await expect(changed.getByTitle('初稿.md', { exact: true })).toContainText('已删除');
+  await expect(changed.getByTitle('终稿.md', { exact: true })).toContainText('新建');
 });
 
 test('a card leaves when its file is moved away and returns when the file is back', async () => {

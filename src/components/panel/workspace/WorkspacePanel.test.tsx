@@ -31,6 +31,11 @@ vi.mock('./BrowserTab', () => ({
 vi.mock('./SummaryBody', () => ({
   default: () => <div>Summary body</div>,
 }));
+vi.mock('./ChangesTab', () => ({
+  default: (props: { tabId: string; conversationId: string; loopId: string; fileIndex: number }) => (
+    <div>Changes tab {props.tabId} {props.conversationId} {props.loopId} {props.fileIndex}</div>
+  ),
+}));
 
 const identity: BatchIdentity = { conversationId: 'conv-workspace-panel', batchToolCallId: 'batch-1' };
 const subagentTab: WorkspaceTab = {
@@ -120,6 +125,33 @@ describe('WorkspacePanel', () => {
     expect(screen.getByText('Preview /tmp/a.ts')).toHaveAttribute('data-line-request', '2');
     expect(screen.getByText('Preview /tmp/b.ts')).not.toHaveAttribute('data-line');
     expect(screen.getByText('Preview /tmp/b.ts')).not.toHaveAttribute('data-line-request');
+  });
+
+  it('renders the changes tab of a turn with the conversation, loop and file it names', () => {
+    usePreviewStore.setState({
+      tabs: [{ id: 'changes:conv-a:loop-1', kind: 'changes', conversationId: 'conv-a', loopId: 'loop-1', fileIndex: 2, title: 'Changes: plan.md' }],
+      activeTabId: 'changes:conv-a:loop-1',
+    });
+
+    renderPanel();
+
+    const panel = screen.getByRole('tabpanel', { name: /Changes: plan\.md/ });
+    expect(panel).toHaveTextContent('Changes tab changes:conv-a:loop-1 conv-a loop-1 2');
+  });
+
+  it('mounts no changes tab body for a tab another conversation owns', () => {
+    usePreviewStore.setState({
+      tabs: [{
+        id: 'changes:conv-b:loop-1', kind: 'changes', conversationId: 'conv-b', loopId: 'loop-1', fileIndex: 0,
+        title: 'Changes: plan.md', ownerConversationId: 'conv-b',
+      }],
+      currentConversationId: 'conv-a',
+      activeTabId: null,
+    });
+
+    renderPanel();
+
+    expect(screen.queryByText(/Changes tab/)).toBeNull();
   });
 
   it('renders a subagent workspace panel from explicit identity and task index', () => {

@@ -60,6 +60,12 @@ import {
 } from '@tauri-apps/plugin-fs';
 import { request as sidecarRequest, getSidecarStatus, SidecarRpcError } from '../sidecar/sidecarManager';
 import { createLogger } from '../logging/logger';
+import {
+  walkWorkspaceFiles,
+  type WorkspaceFileList,
+  type WorkspaceListLimits,
+  type WorkspaceWalkIo,
+} from '../files/workspaceFileWalk';
 
 const logger = createLogger('fs-transport');
 
@@ -200,6 +206,29 @@ export async function readDir(path: string): Promise<FsDirEntry[]> {
     path,
     async () => (await sidecarRequest('fs.readDir', { path }, FS_REQUEST_TIMEOUT_MS)) as FsDirEntry[],
     () => tauriReadDir(path),
+  );
+}
+
+const localWalkIo: WorkspaceWalkIo = {
+  readDir: (path) => tauriReadDir(path),
+  stat: async (path) => {
+    const info = await tauriStat(path);
+    return { size: info.size, mtimeMs: info.mtime ? info.mtime.getTime() : null };
+  },
+};
+
+/**
+ * The regular files under a workspace folder with size and modification time,
+ * or `{ exceeded: true }` past `limits.maxEntries`. Runs where `readDir` runs:
+ * in the sidecar while it is up, through plugin-fs otherwise. The caller has
+ * checked that the folder may be read (`core/files/workspaceFiles.ts`).
+ */
+export async function listWorkspaceFiles(root: string, limits: WorkspaceListLimits): Promise<WorkspaceFileList> {
+  return withSidecarFallback<WorkspaceFileList>(
+    'fs.listWorkspaceFiles',
+    root,
+    async () => (await sidecarRequest('fs.listWorkspaceFiles', { path: root, limits }, FS_REQUEST_TIMEOUT_MS)) as WorkspaceFileList,
+    () => walkWorkspaceFiles(root, limits, localWalkIo),
   );
 }
 

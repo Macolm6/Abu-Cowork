@@ -208,4 +208,39 @@ describe('durable tool-result storage budget', () => {
       source: { data: 'ZGlzcGxheQ==' },
     });
   });
+
+  describe('file change of a tool call', () => {
+    const editCall: ToolCall = {
+      id: 'call-edit',
+      name: 'edit_file',
+      input: { path: '/w/plan.md', old_content: 'a', new_content: 'b' },
+      result: 'Successfully edited /w/plan.md: replaced 1 line(s) with 1 line(s)',
+      startTime: 1,
+      endTime: 2,
+      fileChange: {
+        path: '/w/plan.md',
+        kind: 'modify',
+        added: 1,
+        deleted: 1,
+        hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b'] }],
+      },
+    };
+
+    it('stays whole on a call that fits the budget', () => {
+      const message: Message = { id: 'assistant-1', role: 'assistant', content: '', timestamp: 1, toolCalls: [editCall] };
+      expect(boundMessageToolResultContentForDisk(message)).toBe(message);
+    });
+
+    it('keeps path, kind and counts and marks the dropped hunks when the call is reduced', () => {
+      const reduced: ToolCall = {
+        ...editCall,
+        fileChange: { path: '/w/plan.md', kind: 'modify', added: 1, deleted: 1, cut: true },
+      };
+
+      const bounded = boundToolCallRichContent([editCall], { maxBytes: jsonBytes([reduced]) })!;
+
+      expect(bounded).toEqual([reduced]);
+      expect(jsonBytes([editCall])).toBeGreaterThan(jsonBytes([reduced]));
+    });
+  });
 });
