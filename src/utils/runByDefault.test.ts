@@ -2,6 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { RUN_BY_DEFAULT_EXTENSIONS, isRunByDefault } from './runByDefault';
 
 describe('isRunByDefault', () => {
+  it.each(['C:\\w\\job.js', 'C:\\w\\job.py', 'C:\\w\\job.pyw', 'C:\\w\\job.sh', 'C:\\w\\job.rb', 'C:\\w\\job.pl'])(
+    'a script its runtime starts on open: %s',
+    (path) => {
+      expect(isRunByDefault(path)).toBe(true);
+    },
+  );
+
   it.each([
     '/Applications/Tool.app',
     '/Applications/Tool.app/',
@@ -92,6 +99,10 @@ describe('isRunByDefault', () => {
   });
 
   it.each([
+    '/w/main.ts',
+    '/w/module.mjs',
+    '/w/setup.ps1',
+    '/w/build.zsh',
     '/w/report.doc',
     '/w/letter.rtf',
     '/w/notes.pages',
@@ -103,7 +114,7 @@ describe('isRunByDefault', () => {
     '/w/setup.exe.txt',
     '/w/Tool.app/Contents/Info.plist',
     'C:\\w\\报告.doc',
-  ])('a document another application shows: %s', (path) => {
+  ])('a file another application shows: %s', (path) => {
     expect(isRunByDefault(path)).toBe(false);
   });
 

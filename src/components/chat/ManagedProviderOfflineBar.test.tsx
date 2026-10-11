@@ -75,7 +75,7 @@ describe('ManagedProviderOfflineBar', () => {
     expect(screen.getByRole('status')).toHaveTextContent('暂时连不上 MAZG 的模型服务');
     await userEvent.click(screen.getByRole('button', { name: '用我自己的模型' }));
 
-    expect(setConversationModel).toHaveBeenCalledWith('conv-1', { providerId: 'mine', modelId: 'mine-b' });
+    expect(setConversationModel).toHaveBeenCalledWith('conv-1', { providerId: 'mine', modelId: 'mine-b' }, { durable: true });
     expect(useSettingsStore.getState().activeModel).toEqual({ providerId: 'org-models', modelId: 'org-model' });
   });
 
@@ -107,7 +107,7 @@ describe('ManagedProviderOfflineBar', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '用我自己的模型' }));
 
-    expect(setConversationModel).toHaveBeenCalledWith('conv-1', { providerId: 'other', modelId: 'other-a' });
+    expect(setConversationModel).toHaveBeenCalledWith('conv-1', { providerId: 'other', modelId: 'other-a' }, { durable: true });
   });
 
   it('shows the notice without a button when the user has no model of their own', () => {
