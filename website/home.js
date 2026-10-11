@@ -81,15 +81,21 @@
   // ── Model name in the hero's second line ──
   // Every 1.8 s the list moves up one name. A copy of the first name sits at the end; after reaching it the list jumps back to the start, so the roll looks continuous.
   // The slot is as wide as the longest name (the list is a one-column grid), so the words before it stay where they are.
+  // The wavy line under the slot does not roll: it stays in place and takes the width of the name in view.
+  const rotor = document.getElementById('rotor');
   const rotorList = document.getElementById('rotorList');
+  const names = [...rotorList.children];
+  const underline = (i) => rotor.style.setProperty('--wave', `${names[i % names.length].getBoundingClientRect().width}px`);
+  underline(0);
+  document.fonts.ready.then(() => underline(0));
   if (!reduced) {
-    const names = [...rotorList.children];
     rotorList.appendChild(names[0].cloneNode(true));
     let index = 0;
     setInterval(() => {
       index += 1;
       rotorList.style.transition = '';
       rotorList.style.transform = `translateY(${-index * 1.4}em)`;
+      underline(index);
       if (index === names.length) {
         setTimeout(() => {
           index = 0;
