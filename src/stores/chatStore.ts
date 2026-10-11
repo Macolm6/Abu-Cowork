@@ -329,9 +329,9 @@ function persistMessageReplacement(convId: string, message: Message): void {
  * Write a conversation's index entry to `index.json` through that
  * conversation's serial persistence queue. `updateIndexEntry` alone only
  * updates the in-memory index and arms a two-second debounce, so the flush is
- * explicit: a permission mode the user just lowered has to be on disk before
- * the write reports done, or a quit inside that window leaves the higher mode
- * for the next start. A rejection is kept by the queue and ends the
+ * explicit: a permission mode the user just lowered, or a model the user just
+ * picked, has to be on disk before the write reports done, or a quit inside
+ * that window leaves the earlier value for the next start. A rejection is kept by the queue and ends the
  * conversation's next dispatch at its durability barrier
  * (`waitForConversationPersistence`) like any other failed write.
  */
@@ -656,7 +656,11 @@ interface ChatActions {
   switchConversation: (id: string) => Promise<void>;
   setConversationWorkspace: (convId: string, path: string | null) => void;
   setConversationProject: (convId: string, projectId: string | undefined) => void;
-  setConversationModel: (convId: string, model: { providerId: string; modelId: string } | undefined) => void;
+  setConversationModel: (
+    convId: string,
+    model: { providerId: string; modelId: string } | undefined,
+    options?: { durable?: boolean },
+  ) => void;
   /** Pin / clear the team whose leader runs this conversation (persisted in the index). */
   setConversationTeamId: (convId: string, teamId: string | undefined) => void;
   /** Goal mode: write the conversation's goal (undefined clears it). Callers go through goalService. */
@@ -1077,10 +1081,12 @@ export const useChatStore = create<ChatStore>()(
       },
 
       // Pin a model to a conversation (undefined = clear → inherit global).
-      // Mirrors setConversationProject: updates both the loaded conversation and
-      // the index entry, then persists to disk. agentLoop reads conv.model first
-      // and pins on first run; the ModelSelector writes it on explicit pick.
-      setConversationModel: (convId, model) => {
+      // Updates both the loaded conversation and the index entry, then persists
+      // the entry. agentLoop reads conv.model first and pins on first run: that
+      // write is best effort and stays out of the conversation's durability
+      // barrier, so it cannot end the run that made it. A pick by the user
+      // (`durable`) is on disk before its write reports done.
+      setConversationModel: (convId, model, options) => {
         set((state) => {
           const conv = state.conversations[convId];
           if (conv) {
@@ -1090,7 +1096,10 @@ export const useChatStore = create<ChatStore>()(
             state.conversationIndex[convId].model = model;
           }
         });
-        // Persist to disk index
+        if (options?.durable) {
+          persistConversationIndexEntry(convId);
+          return;
+        }
         import('../core/session/conversationStorage').then(({ updateIndexEntry }) => {
           const meta = get().conversationIndex[convId];
           if (meta) updateIndexEntry(meta).catch(() => {});

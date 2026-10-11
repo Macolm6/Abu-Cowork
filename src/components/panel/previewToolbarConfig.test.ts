@@ -45,12 +45,30 @@ describe('offersOpenInApp', () => {
     expect(offersOpenInApp('unsupported', path)).toBe(true);
   });
   it.each([
-    ['code', '/w/build.sh'],
-    ['code', '/w/tool.py'],
-    ['code', '/w/tool.js'],
+    ['code', '/w/build.zsh'],
+    ['code', '/w/tool.ts'],
     ['pdf', '/w/report.pdf'],
     ['image', 'data:image/png;base64,AAAA'],
   ] as const)('is on for a previewed %s file: %s', (type, path) => {
     expect(offersOpenInApp(type, path)).toBe(true);
+  });
+  it.each(['/w/build.sh', '/w/tool.py', '/w/tool.js', '/w/tool.rb', 'C:\\w\\tool.py'])('is off for %s, previewed code the system would run', (path) => {
+    expect(offersOpenInApp('code', path)).toBe(false);
+  });
+});
+
+describe('getToolbarButtons for code', () => {
+  it('code the system shows in an editor keeps openInApp', () => {
+    for (const filePath of ['/w/main.ts', '/w/main.rs', '/w/config.json', '/w/build.zsh', '/w/query.sql']) {
+      expect(getToolbarButtons('code', filePath).openInApp).toBe(true);
+    }
+  });
+  it('code the system would run gets no openInApp, and keeps the rest', () => {
+    for (const filePath of ['/w/job.sh', '/w/job.py', '/w/job.js', '/w/job.rb', 'C:\\w\\job.py']) {
+      const b = getToolbarButtons('code', filePath);
+      expect(b.openInApp).toBe(false);
+      expect(b.fullscreen).toBe(true);
+      expect(b.versionHistory).toBe(true);
+    }
   });
 });
