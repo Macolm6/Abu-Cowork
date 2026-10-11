@@ -12,7 +12,13 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useTeamStore, type Team } from '@/stores/teamStore';
 import type { AppDefinition } from '@/types/app';
 import { GENERAL_APP_ID } from '@/types/app';
+import { createPluginAuthor, listPluginAuthors, type PluginAuthor } from '@/core/plugin/authorBridge';
+import { petMessageConversation } from '@/core/pet/petQuickMessage';
+import { usePluginAuthorStore } from '@/stores/pluginAuthorStore';
 import AppHome from './AppHome';
+
+vi.mock('@/core/plugin/authorBridge', () => ({ deletePluginAuthor: vi.fn(), bindPluginAuthor: vi.fn(), createPluginAuthor: vi.fn(), listPluginAuthors: vi.fn(), preparePluginAuthor: vi.fn(), validatePluginAuthor: vi.fn() }));
+const draft: PluginAuthor = { id: 'a'.repeat(32), createdAt: '2026-10-12', conversationId: null, name: null, prepared: null, sourceDir: '/home/Abu Plugins/a', marketplace: 'author-a', key: null };
 
 // The home of an app owns what the next conversation started there carries: the app binding for
 // the mode and scene in view, and the app's default team. It keeps both ready for as long as it
@@ -105,5 +111,44 @@ describe('the app home keeps the next conversation bound to its app', () => {
     expect(created().teamId).toBeUndefined();
     expect(chat().pendingAppBinding).toBeUndefined();
     expect(chat().pendingTeamId).toBeUndefined();
+  });
+
+  it('leaves the creation conversation of 「创建插件」 unbound, in the general shell or in the app the organization keeps the employee in', async () => {
+    vi.mocked(createPluginAuthor).mockResolvedValue(draft);
+    vi.mocked(listPluginAuthors).mockResolvedValue([draft]);
+    renderHome();
+    for (const leaveApp of [true, false]) {
+      useAppStore.setState({ selectedAppId: shop.appId });
+      act(() => { chat().startNewConversation(); });
+      expect(chat().pendingAppBinding).toMatchObject({ appId: shop.appId });
+      await act(async () => { await usePluginAuthorStore.getState().create({ leaveApp }); });
+      expect(useAppStore.getState().selectedAppId).toBe(leaveApp ? GENERAL_APP_ID : shop.appId);
+      expect(created().workspacePath).toBe(draft.sourceDir);
+      expect(created().appBinding).toBeUndefined();
+      expect(created().teamId).toBeUndefined();
+    }
+  });
+
+  it('leaves the conversation a pet message starts unbound, in the general shell or in the app the organization keeps the employee in', () => {
+    renderHome();
+    for (const leaveApp of [true, false]) {
+      useAppStore.setState({ selectedAppId: shop.appId });
+      act(() => { chat().startNewConversation(); });
+      expect(chat().pendingAppBinding).toMatchObject({ appId: shop.appId });
+      act(() => { petMessageConversation(null, { leaveApp }); });
+      expect(useAppStore.getState().selectedAppId).toBe(leaveApp ? GENERAL_APP_ID : shop.appId);
+      expect(created().appBinding).toBeUndefined();
+      expect(created().teamId).toBeUndefined();
+    }
+  });
+
+  it('binds the next task started on the home after a conversation of the general shell opened there', () => {
+    renderHome();
+    act(() => { petMessageConversation(null, { leaveApp: false }); });
+    expect(created().appBinding).toBeUndefined();
+    act(() => { chat().startNewConversation(); });
+    act(() => { chat().createConversation(null); });
+    expect(created().appBinding).toMatchObject({ appId: shop.appId, modeId: 'service' });
+    expect(created().teamId).toBe(team.id);
   });
 });
