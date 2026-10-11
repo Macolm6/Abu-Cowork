@@ -17,7 +17,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { agentRunContext, type AgentRunContext } from '../agentRunContext';
 import * as rpcClient from '../rpcClient';
 import * as runtimeTrace from '../runtimeTrace';
-import { snapshotBeforeAiEdit } from './aiEditSnapshotsRun';
+import { captureTurnFileBefore, snapshotBeforeAiEdit } from './aiEditSnapshotsRun';
 
 function makeCtx(overrides?: Partial<AgentRunContext>): AgentRunContext {
   return {
@@ -111,5 +111,33 @@ describe('aiEditSnapshotsRun shim', () => {
 
   it('throws a clear wiring-bug error when called outside an active agentRunContext scope', async () => {
     await expect(snapshotBeforeAiEdit('/tmp/x.txt', {})).rejects.toThrow(/agent run context accessed outside/);
+  });
+
+  describe('captureTurnFileBefore', () => {
+    it('forwards as an awaited request that asks for the turn capture only', async () => {
+      const spy = vi.spyOn(rpcClient, 'sendRequest').mockResolvedValue(null);
+      await agentRunContext.run(makeCtx({ runId: 'run-1' }), () => captureTurnFileBefore('/w/old.md', 'loop-1'));
+      expect(spy).toHaveBeenCalledWith('snapshot.beforeAiEdit', {
+        runId: 'run-1',
+        path: '/w/old.md',
+        opts: { captureOnly: true },
+      });
+    });
+
+    it('swallows a rejected request and records a runtime event without the path', async () => {
+      const traced = vi.spyOn(runtimeTrace, 'traceSidecarRuntimeEvent').mockImplementation(() => {});
+      vi.spyOn(rpcClient, 'sendRequest').mockRejectedValue(new Error('shell disconnected'));
+
+      await expect(
+        agentRunContext.run(makeCtx({ runId: 'run-1' }), () => captureTurnFileBefore('/w/secret-name.md', 'loop-1')),
+      ).resolves.toBeUndefined();
+
+      expect(traced).toHaveBeenCalledWith('sidecar.ai_edit_snapshot_failed', expect.objectContaining({
+        runId: 'run-1',
+        method: 'snapshot.beforeAiEdit',
+        outcome: 'error',
+      }));
+      expect(JSON.stringify(traced.mock.calls)).not.toContain('secret-name');
+    });
   });
 });

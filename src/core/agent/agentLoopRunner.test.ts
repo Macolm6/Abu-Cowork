@@ -194,8 +194,17 @@ vi.mock('./defaultWorkspace', () => ({
 }));
 
 const snapshotBeforeAiEditMock = vi.fn().mockResolvedValue(undefined);
+const captureTurnFileBeforeMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('../../utils/aiEditSnapshots', () => ({
-  snapshotBeforeAiEdit: (...a: unknown[]) => snapshotBeforeAiEditMock(...a),
+  snapshotVersionBeforeAiEdit: (...a: unknown[]) => snapshotBeforeAiEditMock(...a),
+  captureTurnFileBefore: (...a: unknown[]) => captureTurnFileBeforeMock(...a),
+}));
+
+const beginTurnMock = vi.fn().mockResolvedValue(undefined);
+const endTurnMock = vi.fn().mockResolvedValue(undefined);
+vi.mock('../session/turnChanges', () => ({
+  beginTurn: (...a: unknown[]) => beginTurnMock(...a),
+  endTurn: (...a: unknown[]) => endTurnMock(...a),
 }));
 
 // The Chrome-extension channel's run-settlement seal. Mocked so the "fired
@@ -772,6 +781,12 @@ describe('agentLoopRunner', () => {
     bindWorkspaceFromWriteMock.mockResolvedValue(undefined);
     snapshotBeforeAiEditMock.mockReset();
     snapshotBeforeAiEditMock.mockResolvedValue(undefined);
+    captureTurnFileBeforeMock.mockReset();
+    captureTurnFileBeforeMock.mockResolvedValue(undefined);
+    beginTurnMock.mockReset();
+    beginTurnMock.mockResolvedValue(undefined);
+    endTurnMock.mockReset();
+    endTurnMock.mockResolvedValue(undefined);
     getAuthorizedWritablePathsMock.mockReset();
     getAuthorizedWritablePathsMock.mockReturnValue([]);
     showSandboxBlockedToastMock.mockReset();
@@ -3672,6 +3687,46 @@ describe('agentLoopRunner', () => {
       await expect(handler(null)).rejects.toThrow();
       await expect(handler({ runId: 'run-1' })).rejects.toThrow();
       expect(snapshotBeforeAiEditMock).not.toHaveBeenCalled();
+      expect(captureTurnFileBeforeMock).not.toHaveBeenCalled();
+    });
+
+    it('captures the file for the turn under the loop id of the session, not the one in the request, before the version snapshot', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1', loopId: 'session-loop' }));
+
+      const handler = handlerFor(onSidecarRequest, 'snapshot.beforeAiEdit');
+      await handler({
+        runId: 'run-1',
+        path: '/w/plan.md',
+        opts: { loopId: '../../elsewhere', conversationId: 'conv-1' },
+      });
+
+      expect(captureTurnFileBeforeMock).toHaveBeenCalledExactlyOnceWith('/w/plan.md', 'session-loop');
+      expect(captureTurnFileBeforeMock.mock.invocationCallOrder[0])
+        .toBeLessThan(snapshotBeforeAiEditMock.mock.invocationCallOrder[0]);
+    });
+
+    it('takes no version snapshot for a capture-only request', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1', loopId: 'session-loop' }));
+
+      const handler = handlerFor(onSidecarRequest, 'snapshot.beforeAiEdit');
+      const result = await handler({ runId: 'run-1', path: '/w/old.md', opts: { captureOnly: true } });
+
+      expect(result).toBeNull();
+      expect(captureTurnFileBeforeMock).toHaveBeenCalledExactlyOnceWith('/w/old.md', 'session-loop');
+      expect(snapshotBeforeAiEditMock).not.toHaveBeenCalled();
+    });
+
+    it('captures nothing for an unknown run', async () => {
+      const { ensureHandlersRegistered } = await importFresh();
+      ensureHandlersRegistered();
+      const handler = handlerFor(onSidecarRequest, 'snapshot.beforeAiEdit');
+
+      await expect(handler({ runId: 'no-such-run', path: '/w/plan.md' })).rejects.toThrow();
+      expect(captureTurnFileBeforeMock).not.toHaveBeenCalled();
     });
   });
 
@@ -3729,6 +3784,148 @@ describe('agentLoopRunner', () => {
       expect(captureComputerUseTurnTargetMock).toHaveBeenCalledExactlyOnceWith('conv-1', runId);
       expect(captureComputerUseTurnTargetMock.mock.invocationCallOrder[0])
         .toBeLessThan(sidecarRequestMock.mock.invocationCallOrder[0]);
+    });
+
+    describe('the turn change record', () => {
+      beforeEach(() => {
+        getConversationMock.mockReturnValue({
+          id: 'conv-1', title: 't', messages: [], status: 'idle', workspacePath: '/Users/me/project',
+        });
+      });
+
+      it('begins the turn before an in-process run and ends it after, under the loop id of the run', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        getSidecarStatusMock.mockReturnValue('stopped');
+        runAgentLoopMock.mockImplementationOnce(async () => {
+          expect(beginTurnMock).toHaveBeenCalledTimes(1);
+          expect(endTurnMock).not.toHaveBeenCalled();
+          return { reason: 'completed' };
+        });
+
+        await runAgentLoopDispatched('conv-1', 'hello');
+
+        const loopId = (runAgentLoopMock.mock.calls[0][2] as { loopId: string }).loopId;
+        expect(beginTurnMock).toHaveBeenCalledExactlyOnceWith(
+          'conv-1', loopId, '/Users/me/project', { scopeId: undefined, isConversationPresent: expect.any(Function) },
+        );
+        expect(endTurnMock).toHaveBeenCalledExactlyOnceWith(loopId, { workspacePath: '/Users/me/project' });
+      });
+
+      it('begins the turn before sidecar dispatch and ends it after, under the run id', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        sidecarRequestMock.mockImplementation(async () => {
+          expect(beginTurnMock).toHaveBeenCalledTimes(1);
+          expect(endTurnMock).not.toHaveBeenCalled();
+          return { reason: 'completed' };
+        });
+
+        await runAgentLoopDispatched('conv-1', 'hello');
+
+        const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+        expect(beginTurnMock).toHaveBeenCalledExactlyOnceWith(
+          'conv-1', runId, '/Users/me/project', { scopeId: undefined, isConversationPresent: expect.any(Function) },
+        );
+        expect(endTurnMock).toHaveBeenCalledExactlyOnceWith(runId, { workspacePath: '/Users/me/project' });
+      });
+
+      it('begins the turn once the run is registered: the user row is added and the conversation is running', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+        const registeredAtBegin: boolean[] = [];
+        beginTurnMock.mockImplementationOnce(async () => {
+          registeredAtBegin.push(
+            chatStoreAddMessageMock.mock.calls.length === 1
+            && chatDeltaSetConversationStatusMock.mock.calls.some(([id, status]) => id === 'conv-1' && status === 'running'),
+          );
+        });
+
+        await runAgentLoopDispatched('conv-1', 'hello');
+
+        expect(registeredAtBegin).toEqual([true]);
+        expect(beginTurnMock.mock.invocationCallOrder[0]).toBeLessThan(sidecarRequestMock.mock.invocationCallOrder[0]);
+      });
+
+      it('lists the workspace inside the authorization scope of a background run', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        isInteractiveDesktopMock.mockReturnValue(false);
+        sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+        await runAgentLoopDispatched('conv-1', 'scheduled work', { authorizationScopeId: 'scope-9' });
+
+        expect(beginTurnMock).toHaveBeenCalledExactlyOnceWith(
+          'conv-1', expect.any(String), '/Users/me/project', { scopeId: 'scope-9', isConversationPresent: expect.any(Function) },
+        );
+        expect(endTurnMock).toHaveBeenCalledTimes(1);
+      });
+
+      it('ends the turn when the in-process run throws', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        getSidecarStatusMock.mockReturnValue('stopped');
+        runAgentLoopMock.mockRejectedValueOnce(new Error('exploded'));
+
+        await expect(runAgentLoopDispatched('conv-1', 'hello')).rejects.toThrow('exploded');
+
+        expect(endTurnMock).toHaveBeenCalledExactlyOnceWith(beginTurnMock.mock.calls[0][1], expect.anything());
+      });
+
+      it('ends the turn when the sidecar run fails', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        sidecarRequestMock.mockRejectedValue(new Error('Sidecar process closed'));
+
+        const result = await runAgentLoopDispatched('conv-1', 'hello');
+
+        expect(result.reason).toBe('error');
+        expect(endTurnMock).toHaveBeenCalledExactlyOnceWith(beginTurnMock.mock.calls[0][1], expect.anything());
+      });
+
+      it('runs, and still ends the turn, when beginning the record fails', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        getSidecarStatusMock.mockReturnValue('stopped');
+        beginTurnMock.mockRejectedValueOnce(new Error('list failed'));
+
+        await expect(runAgentLoopDispatched('conv-1', 'hello')).resolves.toEqual({ reason: 'completed' });
+
+        expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+        expect(endTurnMock).toHaveBeenCalledTimes(1);
+      });
+
+      it('returns the result of the run when settling the record fails', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        getSidecarStatusMock.mockReturnValue('stopped');
+        endTurnMock.mockRejectedValueOnce(new Error('disk full'));
+
+        await expect(runAgentLoopDispatched('conv-1', 'hello')).resolves.toEqual({ reason: 'completed' });
+      });
+
+      it('ends the turn with the workspace the conversation has by then', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        getSidecarStatusMock.mockReturnValue('stopped');
+        getConversationMock.mockReturnValue({ id: 'conv-1', title: 't', messages: [], status: 'idle', workspacePath: null });
+        runAgentLoopMock.mockImplementationOnce(async () => {
+          getConversationMock.mockReturnValue({
+            id: 'conv-1', title: 't', messages: [], status: 'idle', workspacePath: '/Users/me/Documents/Abu/task',
+          });
+          return { reason: 'completed' };
+        });
+
+        await runAgentLoopDispatched('conv-1', 'hello');
+
+        expect(beginTurnMock).toHaveBeenCalledExactlyOnceWith(
+          'conv-1', expect.any(String), null, { scopeId: undefined, isConversationPresent: expect.any(Function) },
+        );
+        expect(endTurnMock).toHaveBeenCalledExactlyOnceWith(expect.any(String), { workspacePath: '/Users/me/Documents/Abu/task' });
+      });
+
+      it('begins no turn for a message staged into a run that is already live', async () => {
+        const { runAgentLoopDispatched, registerRunSession } = await importFresh();
+        registerRunSession('run-live', makeSession({ conversationId: 'conv-1' }));
+
+        const result = await runAgentLoopDispatched('conv-1', 'one more thing');
+
+        expect(result).toEqual({ reason: 'enqueued' });
+        expect(beginTurnMock).not.toHaveBeenCalled();
+        expect(endTurnMock).not.toHaveBeenCalled();
+      });
     });
 
     it('still starts a named-app run when optional turn-target capture rejects', async () => {

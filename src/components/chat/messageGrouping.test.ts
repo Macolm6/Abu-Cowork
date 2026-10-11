@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Message } from '@/types';
-import { groupMessagesByLoop } from './messageGrouping';
+import { groupMessagesByLoop, lastGroupIndexByLoop } from './messageGrouping';
 
 function message(id: string, role: Message['role'], loopId?: string): Message {
   return { id, role, loopId, content: id, timestamp: 0 };
@@ -38,5 +38,33 @@ describe('groupMessagesByLoop', () => {
       message('legacy-user', 'user'),
       message('legacy-assistant', 'assistant'),
     ])).toHaveLength(2);
+  });
+});
+
+describe('lastGroupIndexByLoop', () => {
+  it('maps each loop to the index of its only group', () => {
+    const groups = groupMessagesByLoop([
+      message('user-1', 'user', 'loop-1'),
+      message('assistant-1', 'assistant', 'loop-1'),
+      message('user-2', 'user', 'loop-2'),
+      message('assistant-2', 'assistant', 'loop-2'),
+    ]);
+    expect([...lastGroupIndexByLoop(groups)]).toEqual([['loop-1', 0], ['loop-2', 1]]);
+  });
+
+  it('maps a loop that a compaction marker split in two to its last group', () => {
+    const groups = groupMessagesByLoop([
+      message('user-1', 'user', 'loop-1'),
+      message('assistant-1', 'assistant', 'loop-1'),
+      message('compaction-marker', 'assistant'),
+      message('assistant-2', 'assistant', 'loop-1'),
+    ]);
+    expect(groups).toHaveLength(3);
+    expect([...lastGroupIndexByLoop(groups)]).toEqual([['loop-1', 2]]);
+  });
+
+  it('leaves groups without a loop id out', () => {
+    const groups = groupMessagesByLoop([message('legacy-user', 'user'), message('legacy-assistant', 'assistant')]);
+    expect(lastGroupIndexByLoop(groups).size).toBe(0);
   });
 });

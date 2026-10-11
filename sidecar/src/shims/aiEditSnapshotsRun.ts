@@ -49,10 +49,23 @@ import { sendRequest } from '../rpcClient';
 import { getCurrentAgentRunContext } from '../agentRunContext';
 import { sidecarRuntimeErrorType, traceSidecarRuntimeEvent } from '../runtimeTrace';
 
-export async function snapshotBeforeAiEdit(
+export function snapshotBeforeAiEdit(
   path: string,
   opts: { loopId?: string; conversationId?: string; knownContent?: string },
 ): Promise<void> {
+  return requestBeforeAiEdit(path, opts);
+}
+
+/**
+ * `delete_file`'s call: the shell keeps the file for the turn's change record
+ * and takes no version-history snapshot. The shell uses the loop id it holds
+ * for this run, so `_loopId` does not travel.
+ */
+export function captureTurnFileBefore(path: string, _loopId: string | undefined): Promise<void> {
+  return requestBeforeAiEdit(path, { captureOnly: true });
+}
+
+async function requestBeforeAiEdit(path: string, opts: Record<string, unknown>): Promise<void> {
   const { runId } = getCurrentAgentRunContext();
   try {
     await sendRequest('snapshot.beforeAiEdit', { runId, path, opts });

@@ -32,6 +32,7 @@ function tabIcon(tab: WorkspaceTab) {
   if (tab.kind === 'browser') return AppIcons.webPage;
   if (tab.kind === 'subagent') return AppIcons.agent;
   if (tab.kind === 'team') return AppIcons.team;
+  if (tab.kind === 'changes') return AppIcons.fileEdit;
   return AppIcons.terminal;
 }
 
@@ -51,6 +52,7 @@ function tabTitle(tab: WorkspaceTab, t: ReturnType<typeof useI18n>['t']): string
   }
   if (tab.kind === 'subagent') return tab.title || t.workspace.agentTitle;
   if (tab.kind === 'team') return t.workspace.teamTitle;
+  if (tab.kind === 'changes') return tab.title;
   return t.workspace.terminalTitle;
 }
 

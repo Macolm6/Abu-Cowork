@@ -3166,6 +3166,44 @@ describe('chatStore', () => {
       expect(tc?.noticeCard).toBeUndefined();
     });
 
+    it('copies the file change from the result metadata onto the tool call', () => {
+      const convId = seedToolCall('edit_file');
+      const fileChange = {
+        path: '/w/plan.md',
+        kind: 'modify' as const,
+        added: 1,
+        deleted: 1,
+        hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b'] }],
+      };
+
+      useChatStore.getState().updateToolCall(
+        convId,
+        'msg-1',
+        'tc-1',
+        'Successfully edited /w/plan.md: replaced 1 line(s) with 1 line(s)',
+        undefined,
+        false,
+        undefined,
+        { fileChange },
+      );
+
+      const tc = getToolCall(convId);
+      expect(tc?.fileChange).toEqual(fileChange);
+      expect(tc?.isError).toBeUndefined();
+    });
+
+    it('copies the file change from a metadata checkpoint and keeps it through the result', () => {
+      const convId = seedToolCall('write_file');
+      const fileChange = { path: '/w/outline.md', kind: 'create' as const, added: 2, deleted: 0 };
+
+      useChatStore.getState().checkpointToolCallMetadata(convId, 'msg-1', 'tc-1', { fileChange });
+      expect(getToolCall(convId)?.fileChange).toEqual(fileChange);
+      expect(getToolCall(convId)?.isExecuting).toBe(true);
+
+      useChatStore.getState().updateToolCall(convId, 'msg-1', 'tc-1', 'Successfully wrote 9 characters to /w/outline.md');
+      expect(getToolCall(convId)?.fileChange).toEqual(fileChange);
+    });
+
     it('accepts trusted AppleScript recovery metadata only for run_command', () => {
       const convId = seedToolCall('run_command');
       const result = [
@@ -3846,6 +3884,28 @@ describe('sanitizeImportedMessage — same completion inference as disk load', (
     } as never);
 
     expect(sanitized.runErrorDetails).toBeUndefined();
+  });
+
+  it('keeps a well-formed file change of an imported tool call and drops a malformed one', () => {
+    const hunk = { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b'] };
+    const sanitized = sanitizeImportedMessage({
+      id: 'a-file-change',
+      role: 'assistant',
+      content: '',
+      timestamp: 1,
+      toolCalls: [
+        { id: 't1', name: 'edit_file', input: {}, fileChange: { path: '/w/a.md', kind: 'modify', added: 1, deleted: 1, hunks: [hunk] } },
+        { id: 't2', name: 'edit_file', input: {}, fileChange: { path: 7, kind: 'modify' } },
+        { id: 't3', name: 'edit_file', input: {}, fileChange: { path: '/w/c.md', kind: 'modify', hunks: [{ ...hunk, lines: 'x' }] } },
+      ],
+    } as never);
+
+    expect(sanitized.toolCalls?.map((tc) => tc.fileChange)).toEqual([
+      { path: '/w/a.md', kind: 'modify', added: 1, deleted: 1, hunks: [hunk] },
+      undefined,
+      undefined,
+    ]);
+    expect(sanitized.toolCalls?.[1]).not.toHaveProperty('fileChange');
   });
 
   it('sanitizes a legacy imported JSON runError', () => {
