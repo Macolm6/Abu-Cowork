@@ -63,6 +63,12 @@
 import * as fs from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
 import { RpcError } from './protocol';
+import {
+  parseWorkspaceListLimits,
+  walkWorkspaceFiles,
+  type WorkspaceFileList,
+  type WorkspaceWalkIo,
+} from '@/core/files/workspaceFileWalk';
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -148,6 +154,42 @@ export async function fsReadDir(params: unknown): Promise<FsDirEntry[]> {
       isFile: entry.isFile(),
       isSymlink: entry.isSymbolicLink(),
     }));
+  } catch (err) {
+    rethrowFsError(err, path);
+  }
+}
+
+const nodeWalkIo: WorkspaceWalkIo = {
+  readDir: async (path) => {
+    const entries = await fs.readdir(path, { withFileTypes: true });
+    return entries.map((entry: Dirent) => ({
+      name: entry.name,
+      isDirectory: entry.isDirectory(),
+      isFile: entry.isFile(),
+      isSymlink: entry.isSymbolicLink(),
+    }));
+  },
+  // lstat: the entry was a regular file when its directory was read; a link put in its place since is not followed.
+  stat: async (path) => {
+    const info = await fs.lstat(path);
+    return { size: info.size, mtimeMs: Number.isFinite(info.mtimeMs) ? info.mtimeMs : null };
+  },
+};
+
+/**
+ * `fs.listWorkspaceFiles` — `{ path, limits? }` → the regular files under
+ * `path` with size and modification time, or `{ exceeded: true }`. Read-only.
+ * Like `fs.readDir` it trusts its caller for which folder may be read; the
+ * renderer checks the folder before it asks (`core/files/workspaceFiles.ts`).
+ */
+export async function fsListWorkspaceFiles(params: unknown): Promise<WorkspaceFileList> {
+  const path = requirePath(params, 'fs.listWorkspaceFiles');
+  const limits = parseWorkspaceListLimits((params as Record<string, unknown>).limits);
+  if (!limits) {
+    throw new RpcError(-32602, 'Invalid params: fs.listWorkspaceFiles "limits" must be positive integers within the allowed maximum');
+  }
+  try {
+    return await walkWorkspaceFiles(path, limits, nodeWalkIo);
   } catch (err) {
     rethrowFsError(err, path);
   }

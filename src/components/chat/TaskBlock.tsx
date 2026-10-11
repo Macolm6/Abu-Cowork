@@ -14,6 +14,10 @@ import type { ExecutionStep, DetailBlock, StepType as ExecStepType, BatchTaskRef
 import { generateCompletionMessage } from '@/utils/workflowExtractor';
 import { getToolLabel } from '@/utils/toolLabels';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
+import { usePreviewStore } from '@/stores/previewStore';
+import { getBaseName } from '@/utils/pathUtils';
+import type { FileChange } from '@/types/fileChange';
+import { DiffLines, type DiffFold } from '@/components/diff/DiffLines';
 import DetailBlockView from './DetailBlockView';
 
 type StepGlyph = ComponentProps<typeof Icon>['icon'];
@@ -21,9 +25,14 @@ type StepGlyph = ComponentProps<typeof Icon>['icon'];
 // Small toggle chip that opens a step's details (thinking text, input, output).
 const DETAIL_CHIP = 'inline-flex h-5 items-center gap-1 rounded-control bg-fill px-2 text-caption text-label-secondary hover:bg-fill-hover';
 
+// A step's diff shows its first five and last four rows until the reader asks for all.
+const STEP_DIFF_FOLD: DiffFold = { head: 5, tail: 4 };
+
 // Unified step type for rendering
 export type UnifiedStep = {
   id: string;
+  /** Id of the tool call behind the step; joins it to that call's file change. */
+  toolCallId?: string;
   type: StepType | ExecStepType;
   label: string;
   detail?: string;
@@ -206,6 +215,8 @@ function resolveStepLabel(
 function convertWorkflowStep(step: WorkflowStep, locale: string): UnifiedStep {
   return {
     id: step.id,
+    // A legacy step built from a tool call carries that call's id as its own.
+    toolCallId: step.toolName ? step.id : undefined,
     type: step.type,
     label: resolveStepLabel(step.toolName, step.toolInput, step.label, locale),
     detail: step.detail,
@@ -222,6 +233,7 @@ function convertWorkflowStep(step: WorkflowStep, locale: string): UnifiedStep {
 export function convertExecutionStep(step: ExecutionStep, locale: string): UnifiedStep {
   return {
     id: step.id,
+    toolCallId: step.toolCallId,
     type: step.type,
     label: resolveStepLabel(step.toolName, step.toolInput, step.label, locale),
     detail: step.detail,
@@ -251,6 +263,8 @@ interface TaskBlockProps {
   isActive: boolean;
   isStopped?: boolean;
   onRetry?: () => void;
+  /** File changes of this turn's own tool calls, by tool call id. */
+  fileChanges?: ReadonlyMap<string, FileChange>;
 }
 
 /**
@@ -262,7 +276,7 @@ const PREVIEW_LIMIT = 3;
 
 type DisplayMode = 'collapsed' | 'preview' | 'expanded';
 
-export default function TaskBlock({ steps, executionSteps, isActive, isStopped = false, onRetry }: TaskBlockProps) {
+export default function TaskBlock({ steps, executionSteps, isActive, isStopped = false, onRetry, fileChanges }: TaskBlockProps) {
   const { t, locale } = useI18n();
 
   // Convert to unified steps
@@ -397,6 +411,7 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
                 hasLaterToolStep={hasLaterToolStep}
                 locale={locale}
                 t={t}
+                fileChange={step.toolCallId ? fileChanges?.get(step.toolCallId) : undefined}
               />
             );
           })}
@@ -493,9 +508,11 @@ export interface TaskStepItemProps {
   hasLaterToolStep: boolean;
   locale: string;
   t: TranslationDict;
+  /** What the step's write_file, edit_file or delete_file call did to its file. */
+  fileChange?: FileChange;
 }
 
-export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t }: TaskStepItemProps) {
+export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t, fileChange }: TaskStepItemProps) {
   const stepGlyph = getStepIcon(step);
   const typeLabel = getTypeLabel(step, t);
   const isRunning = step.status === 'running';
@@ -506,6 +523,7 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t 
   const isWaitingForAnswer = isRunning && step.toolName === TOOL_NAMES.ASK_USER_QUESTION;
 
   const taskExecutionStore = useTaskExecutionStore();
+  const [diffExpanded, setDiffExpanded] = useState(false);
 
   // Generate step label - for thinking steps, show duration; for waiting ask_user_question, show waiting text
   const stepLabel = useMemo(() => {
@@ -733,7 +751,15 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t 
                 : 'text-label-tertiary'
           )}
         >
-          {stepLabel}
+          {fileChange ? <StepFileLabel label={stepLabel} fileChange={fileChange} t={t} /> : stepLabel}
+          {fileChange && fileChange.added !== undefined && fileChange.deleted !== undefined && (
+            <StepLineCounts
+              added={fileChange.added}
+              deleted={fileChange.deleted}
+              expanded={fileChange.hunks?.length ? diffExpanded : undefined}
+              onToggle={() => setDiffExpanded((open) => !open)}
+            />
+          )}
           {isCancelled && (
             <span role="status" aria-label={t.task.cancelled} className="ml-2 inline-flex align-middle">
               <Tag>{t.task.cancelled}</Tag>
@@ -747,6 +773,10 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t 
           )}
         </div>
 
+        {fileChange?.hunks && diffExpanded && (
+          <DiffLines hunks={fileChange.hunks} fold={STEP_DIFF_FOLD} cut={fileChange.cut} className="my-2" />
+        )}
+
         {/* Thinking content — only for thinking steps; inline while running, toggle when done */}
         {renderThinkingDetail()}
 
@@ -758,17 +788,6 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t 
         {isCompleted && completionMsg && (
           <div className="mt-1 text-ui-sm text-label-tertiary">
             {completionMsg}
-          </div>
-        )}
-
-        {/* Step detail (e.g., filename) - only show if no detail blocks or legacy details.
-            Skipped for thinking steps — their detail is the full reasoning text and is
-            already rendered above by renderThinkingDetail (inline / collapsible). */}
-        {step.detail && !isThinking && !completionMsg && !typeLabel && !step.detailBlocks?.length && (
-          <div className="mt-1">
-            <span className="inline-flex h-5 items-center rounded-control bg-fill px-2 font-code text-ui-sm text-label-tertiary">
-              {getFileName(step.detail)}
-            </span>
           </div>
         )}
 
@@ -886,7 +905,56 @@ function CollapsibleDetail({
   );
 }
 
-function getFileName(path: string): string {
-  const segments = path.split(/[/\\]/);
-  return segments[segments.length - 1] || path;
+/**
+ * Label of a step that changed a file. The file name opens the file in the
+ * side preview; a deleted file has nothing to open, so its name is plain text.
+ */
+function StepFileLabel({ label, fileChange, t }: { label: string; fileChange: FileChange; t: TranslationDict }) {
+  const fileName = getBaseName(fileChange.path);
+  const leading = label.endsWith(fileName) ? label.slice(0, label.length - fileName.length) : `${label} `;
+  return (
+    <>
+      {leading}
+      {fileChange.kind === 'delete' ? (
+        <span className="break-all">{fileName}</span>
+      ) : (
+        <Pressable
+          onClick={() => usePreviewStore.getState().openPreview(fileChange.path)}
+          aria-label={format(t.chat.openFileInPreview, { name: fileName })}
+          className="inline max-w-full break-all rounded-control text-left text-link underline-offset-2 hover:underline"
+        >
+          {fileName}
+        </Pressable>
+      )}
+    </>
+  );
+}
+
+/** "+N −M" of a step; a toggle for the step's diff when `expanded` is given. */
+function StepLineCounts({ added, deleted, expanded, onToggle }: {
+  added: number;
+  deleted: number;
+  expanded?: boolean;
+  onToggle: () => void;
+}) {
+  const counts = (
+    <>
+      <span className="text-success">+{added}</span>
+      <span className="text-danger">−{deleted}</span>
+    </>
+  );
+  if (expanded === undefined) {
+    return <span className="ml-2 inline-flex items-center gap-1 align-middle font-code text-ui-sm">{counts}</span>;
+  }
+  return (
+    <Pressable
+      onClick={onToggle}
+      aria-expanded={expanded}
+      aria-label={`+${added} −${deleted}`}
+      className="ml-2 inline-flex items-center gap-1 rounded-control align-middle font-code text-ui-sm text-label-tertiary"
+    >
+      <Icon icon={expanded ? AppIcons.expand : AppIcons.disclose} size="sm" />
+      {counts}
+    </Pressable>
+  );
 }
