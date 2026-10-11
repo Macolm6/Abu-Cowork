@@ -1,6 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryHostFs, type MemoryHostFs } from './__fixtures__/memoryHostFs';
-import type { WorkspaceFileList } from '@/core/files/workspaceFileWalk';
+import type { ConversationWorkspaceFiles } from '@/core/files/workspaceFiles';
 
 const host = vi.hoisted(() => ({
   fs: null as unknown as import('./__fixtures__/memoryHostFs').MemoryHostFs,
@@ -62,7 +62,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   fs = createMemoryHostFs();
   host.fs = fs;
-  host.listWorkspace = vi.fn(async (_conversationId: string, root: string): Promise<WorkspaceFileList> => fs.listWorkspace(root));
+  host.listWorkspace = vi.fn(async (_conversationId: string, root: string): Promise<ConversationWorkspaceFiles> => fs.listWorkspace(root));
   await restart();
 });
 
@@ -76,11 +76,11 @@ describe('turnChanges', () => {
       fs.write(`${WS}/plan.md`, 'second\n');
       await mod.captureBefore('loop-1', `${WS}/plan.md`);
 
-      const manifest = fs.readJson<{ loopId: string; workspacePath: string; entries: Array<{ path: string; hash: string; state: string }> }>(
+      const manifest = fs.readJson<{ loopId: string; workspaceRoots: string[]; entries: Array<{ path: string; hash: string; state: string }> }>(
         `${CHANGES}/loop-1/before/manifest.json`,
       );
       expect(manifest.loopId).toBe('loop-1');
-      expect(manifest.workspacePath).toBe(WS);
+      expect(manifest.workspaceRoots).toEqual([WS]);
       expect(manifest.entries).toEqual([{ path: `${WS}/plan.md`, hash: expect.stringMatching(/^[0-9a-f]{16}$/), state: 'file' }]);
       expect(fs.read(`${CHANGES}/loop-1/before/${manifest.entries[0].hash}`)).toBe('first\n');
     });
@@ -341,12 +341,12 @@ describe('turnChanges', () => {
 
     it('reports a file as modified when only its size or only its modification time changed', async () => {
       host.listWorkspace
-        .mockResolvedValueOnce({ exceeded: false, files: [
+        .mockResolvedValueOnce({ root: WS, exceeded: false, files: [
           { path: 'size.md', size: 1, mtimeMs: 10 },
           { path: 'time.md', size: 1, mtimeMs: 10 },
           { path: 'same.md', size: 1, mtimeMs: 10 },
         ] })
-        .mockResolvedValueOnce({ exceeded: false, files: [
+        .mockResolvedValueOnce({ root: WS, exceeded: false, files: [
           { path: 'size.md', size: 2, mtimeMs: 10 },
           { path: 'time.md', size: 1, mtimeMs: 11 },
           { path: 'same.md', size: 1, mtimeMs: 10 },
@@ -386,7 +386,7 @@ describe('turnChanges', () => {
       fs.write(`${WS}/plan.md`, 'one\n');
       let call = 0;
       host.listWorkspace.mockImplementation(async (_conversationId: string, root: string) => (
-        call++ === exceededCall ? { exceeded: true } : fs.listWorkspace(root)
+        call++ === exceededCall ? { root, exceeded: true } : fs.listWorkspace(root)
       ));
       await runTurn('loop-1', async (capture) => {
         await capture(`${WS}/plan.md`);
@@ -437,6 +437,38 @@ describe('turnChanges', () => {
 
       const saved = fs.readJson<{ files: Array<{ display: string }> }>(`${CHANGES}/loop-1.json`);
       expect(saved.files.map((file) => file.display)).toEqual(['/opt/tool/config.ini', 'a.md', 'src/b.ts', '~/notes/todo.md']);
+    });
+
+    it('reads a path under the resolved spelling of the workspace as inside it, and lists the file once', async () => {
+      const lexical = '/var/work/project';
+      const resolved = '/private/var/work/project';
+      fs.write(`${resolved}/plan.md`, 'one\n');
+      host.listWorkspace.mockImplementation(async () => ({ ...fs.listWorkspace(resolved), root: resolved }));
+
+      await mod.beginTurn('conv-1', 'loop-1', lexical);
+      await mod.captureBefore('loop-1', `${resolved}/plan.md`);
+      fs.write(`${resolved}/plan.md`, 'two\n');
+      fs.write(`${resolved}/by-command.md`, 'x\n');
+      await mod.endTurn('loop-1');
+
+      expect(host.listWorkspace.mock.calls[0].slice(0, 2)).toEqual(['conv-1', lexical]);
+      const saved = fs.readJson<{ files: Array<{ path: string; display: string; added?: number }> }>(`${CHANGES}/loop-1.json`);
+      expect(saved.files).toMatchObject([
+        { path: `${resolved}/by-command.md`, display: 'by-command.md' },
+        { path: `${resolved}/plan.md`, display: 'plan.md', added: 1 },
+      ]);
+      expect(saved.files).toHaveLength(2);
+    });
+
+    it('shows paths relative to the workspace the conversation has when the turn ends, if it began without one', async () => {
+      await mod.beginTurn('conv-1', 'loop-1', null);
+      await mod.captureBefore('loop-1', `${WS}/docs/outline.md`);
+      fs.write(`${WS}/docs/outline.md`, 'x\n');
+      await mod.endTurn('loop-1', { workspacePath: WS });
+
+      expect(host.listWorkspace).not.toHaveBeenCalled();
+      const saved = fs.readJson<{ files: Array<{ display: string }> }>(`${CHANGES}/loop-1.json`);
+      expect(saved.files.map((file) => file.display)).toEqual(['docs/outline.md']);
     });
 
     it('does not read a sibling folder with the workspace name as a prefix as inside the workspace', async () => {
@@ -592,8 +624,8 @@ describe('turnChanges', () => {
       let listRequested: () => void = () => {};
       const requested = new Promise<void>((resolve) => { listRequested = resolve; });
       await mod.beginTurn('conv-1', 'loop-1', WS);
-      host.listWorkspace.mockImplementationOnce(() => new Promise<WorkspaceFileList>((resolve) => {
-        release = () => resolve({ exceeded: false, files: [] });
+      host.listWorkspace.mockImplementationOnce(() => new Promise<ConversationWorkspaceFiles>((resolve) => {
+        release = () => resolve({ root: WS, exceeded: false, files: [] });
         listRequested();
       }));
       const ending = mod.endTurn('loop-1');
@@ -665,7 +697,7 @@ describe('turnChanges', () => {
     it('removes a left-over directory without a manifest, and one whose result is already saved', async () => {
       fs.write(`${CHANGES}/loop-1/before/abcdef0123456789`, 'orphan');
       fs.write(`${CHANGES}/loop-2.json`, JSON.stringify({ loopId: 'loop-2', files: [], total: 0, added: 0, deleted: 0 }));
-      fs.write(`${CHANGES}/loop-2/before/manifest.json`, JSON.stringify({ version: 1, loopId: 'loop-2', workspacePath: WS, entries: [] }));
+      fs.write(`${CHANGES}/loop-2/before/manifest.json`, JSON.stringify({ version: 1, loopId: 'loop-2', workspaceRoots: [WS], entries: [] }));
       const savedBefore = fs.read(`${CHANGES}/loop-2.json`);
 
       await mod.readTurnIndex('conv-1');
@@ -684,7 +716,7 @@ describe('turnChanges', () => {
         deleted: 0,
       };
       fs.write(`${CHANGES}/loop-2.json`, JSON.stringify(saved));
-      fs.write(`${CHANGES}/loop-2/before/manifest.json`, JSON.stringify({ version: 1, loopId: 'loop-2', workspacePath: WS, entries: [] }));
+      fs.write(`${CHANGES}/loop-2/before/manifest.json`, JSON.stringify({ version: 1, loopId: 'loop-2', workspaceRoots: [WS], entries: [] }));
 
       await expect(mod.readTurnIndex('conv-1')).resolves.toEqual({
         'loop-2': { total: 1, added: 3, deleted: 0, firstFile: 'a.md' },

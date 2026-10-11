@@ -143,7 +143,8 @@ import {
 } from './userInputQueue';
 import { registerSidecarRunPredicate } from './sidecarRunPredicate';
 import { bindWorkspaceFromWrite } from './defaultWorkspace';
-import { snapshotBeforeAiEdit } from '../../utils/aiEditSnapshots';
+import { captureTurnFileBefore, snapshotVersionBeforeAiEdit } from '../../utils/aiEditSnapshots';
+import { beginTurn as beginTurnChanges, endTurn as endTurnChanges } from '../session/turnChanges';
 import { getAuthorizedWritablePaths } from '../tools/pathSafety';
 import { deriveRunInteractionMode, type RunInitiator } from './runInteractionMode';
 import {
@@ -1980,10 +1981,13 @@ function handleWorkspaceBindFromWrite(rawParams: unknown): void {
  * to settle first, matching the real function's own "capture the 'before'
  * state before the write lands" contract.
  *
- * Calls the REAL `snapshotBeforeAiEdit` (`utils/aiEditSnapshots.ts`,
- * unmoved) — the exact same function a shell-executed write/edit would call
- * directly — so a locally-executed write/edit leaves the identical
- * revertable "before" state in `canvasVersions` version history.
+ * Runs the two steps a shell-executed write/edit runs through
+ * `snapshotBeforeAiEdit` (`utils/aiEditSnapshots.ts`): the turn capture
+ * (`captureTurnFileBefore`, under this session's loop id) and the version
+ * snapshot (`snapshotVersionBeforeAiEdit`), so a locally-executed write/edit
+ * leaves the identical revertable "before" state in `canvasVersions` version
+ * history. A request with `opts.captureOnly` (`delete_file`) runs the capture
+ * alone.
  *
  * Session lookup mirrors `handleApprovalCheck`'s discipline (unknown runId
  * or a since-deleted conversation → throw, refusing to answer) — but unlike
@@ -2009,11 +2013,18 @@ async function handleSnapshotBeforeAiEdit(rawParams: unknown): Promise<null> {
   }
 
   const rawOpts = (params.opts && typeof params.opts === 'object' ? params.opts : {}) as Record<string, unknown>;
-  await session.resourceSettlement!.run(() => snapshotBeforeAiEdit(path, {
-    loopId: typeof rawOpts.loopId === 'string' ? rawOpts.loopId : undefined,
-    conversationId: typeof rawOpts.conversationId === 'string' ? rawOpts.conversationId : undefined,
-    knownContent: typeof rawOpts.knownContent === 'string' ? rawOpts.knownContent : undefined,
-  }));
+  await session.resourceSettlement!.run(async () => {
+    // The turn's change record names a directory after the loop id, so the
+    // capture takes the id this renderer registered for the run, never the
+    // one in the request.
+    await captureTurnFileBefore(path, session.loopId);
+    if (rawOpts.captureOnly === true) return;
+    await snapshotVersionBeforeAiEdit(path, {
+      loopId: typeof rawOpts.loopId === 'string' ? rawOpts.loopId : undefined,
+      conversationId: typeof rawOpts.conversationId === 'string' ? rawOpts.conversationId : undefined,
+      knownContent: typeof rawOpts.knownContent === 'string' ? rawOpts.knownContent : undefined,
+    });
+  });
   return null;
 }
 
@@ -3280,6 +3291,19 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     browserDenialStreaksByTask.delete(teamTask.retiredTaskId);
   }
   useTeamConfirmationStore.getState().beginRetry(conversationId, ownedLoopId, options.teamConfirmationRetryId);
+  // The record of what this turn changes on disk is a side write, handled like
+  // the output snapshots in toolExecutor.ts: a failure is logged and never
+  // decides whether or how the turn runs. Awaited, so the workspace is listed
+  // before the run can write to it.
+  await beginTurnChanges(conversationId, ownedLoopId, entryConversation?.workspacePath ?? null, {
+    scopeId: options.authorizationScopeId,
+  }).catch((error: unknown) => {
+    logger.warn('turn changes: begin failed', {
+      conversationId,
+      runId: ownedLoopId,
+      errorType: runtimeErrorType(error),
+    });
+  });
   try {
   if (inProcessEnvironment) {
     // Environment choice (web preview / unit tests): there is no desktop
@@ -4096,6 +4120,18 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     // A team task's bounds outlive this run and are retired when the next
     // task starts; only a run outside a task owns its own entry.
     if (!teamTask) clearRunBounds(ownedLoopId);
+    // Every way a dispatched run ends — finished, failed, round limit, Stop,
+    // in this renderer or in the sidecar — leaves through here. Not awaited:
+    // the conversation's next turn waits for this settle inside beginTurn.
+    void endTurnChanges(ownedLoopId, {
+      workspacePath: getConversationReader().getConversation(conversationId)?.workspacePath ?? null,
+    }).catch((error: unknown) => {
+      logger.warn('turn changes: settle failed', {
+        conversationId,
+        runId: ownedLoopId,
+        errorType: runtimeErrorType(error),
+      });
+    });
   }
 }
 

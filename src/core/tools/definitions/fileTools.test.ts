@@ -9,7 +9,9 @@ import { initPlatform } from '../../../utils/platform';
 import { TOOL_NAMES } from '../toolNames';
 
 const snapshotBeforeAiEditMock = vi.fn().mockResolvedValue(undefined);
+const captureTurnFileBeforeMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('@/utils/aiEditSnapshots', () => ({
+  captureTurnFileBefore: (...args: unknown[]) => captureTurnFileBeforeMock(...args),
   snapshotBeforeAiEdit: (...args: unknown[]) => snapshotBeforeAiEditMock(...args),
 }));
 
@@ -398,6 +400,25 @@ describe('deleteFileTool \u2014 move to trash (safe delete)', () => {
     expect(cmd).toBe('move_to_trash');
     // Locale-robust: the failure message always interpolates {error}.
     expect(result).toContain('trash boom');
+  });
+
+  it('captures the file for the turn, with the loop of the tool context, before moving it to the trash', async () => {
+    captureTurnFileBeforeMock.mockClear();
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+
+    await deleteFileTool.execute({ path: '/Users/x/old.md' }, { loopId: 'loop-7' } as never);
+
+    expect(captureTurnFileBeforeMock).toHaveBeenCalledWith('/Users/x/old.md', 'loop-7');
+    expect(captureTurnFileBeforeMock.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(invoke).mock.invocationCallOrder[0],
+    );
+  });
+
+  it('captures nothing for a target it refuses to delete', async () => {
+    captureTurnFileBeforeMock.mockClear();
+    await deleteFileTool.execute({ path: '/' }, { loopId: 'loop-7' } as never);
+    expect(captureTurnFileBeforeMock).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
   });
 });
 

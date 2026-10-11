@@ -20,6 +20,7 @@ import { executeLocalTool } from './localTools';
 const snapshotBeforeAiEditMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('@/utils/aiEditSnapshots', () => ({
   snapshotBeforeAiEdit: (...args: unknown[]) => snapshotBeforeAiEditMock(...args),
+  captureTurnFileBefore: () => Promise.resolve(),
 }));
 
 const PATH = '/Users/testuser/Projects/app/plan.md';

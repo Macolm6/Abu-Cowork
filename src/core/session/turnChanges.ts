@@ -93,17 +93,26 @@ interface ManifestEntry {
 interface BeforeManifest {
   version: typeof FORMAT_VERSION;
   loopId: string;
-  workspacePath: string | null;
+  workspaceRoots: string[];
   entries: ManifestEntry[];
 }
 
-interface OpenTurn {
+interface TurnScope {
   conversationId: string;
   loopId: string;
+  /** The conversation's workspace as it spells it; the list is requested for this folder. */
   workspacePath: string | null;
+  /**
+   * Spellings of the workspace a changed path may start with: the
+   * conversation's own and, last, the one with links resolved.
+   */
+  workspaceRoots: string[];
   scopeId: string | undefined;
   /** The workspace list at the start; null when this turn compares no list. */
   baseline: WorkspaceFileEntry[] | null;
+}
+
+interface OpenTurn extends TurnScope {
   /** Normalized path → its entry; null for a path that is claimed or holds no regular file. */
   captured: Map<string, ManifestEntry | null>;
   manifestWrites: Promise<void>;
@@ -212,7 +221,8 @@ function parseManifest(text: string): BeforeManifest {
     !isRecord(value)
     || value.version !== FORMAT_VERSION
     || typeof value.loopId !== 'string'
-    || !(value.workspacePath === null || typeof value.workspacePath === 'string')
+    || !Array.isArray(value.workspaceRoots)
+    || !value.workspaceRoots.every((root: unknown) => typeof root === 'string' && isAbsoluteFilePath(root))
     || !Array.isArray(value.entries)
   ) {
     throw new Error('Turn changes manifest is not in the saved format');
@@ -230,7 +240,7 @@ function parseManifest(text: string): BeforeManifest {
     }
     return { path: entry.path, hash: entry.hash, state: entry.state };
   });
-  return { version: FORMAT_VERSION, loopId: value.loopId, workspacePath: value.workspacePath, entries };
+  return { version: FORMAT_VERSION, loopId: value.loopId, workspaceRoots: value.workspaceRoots as string[], entries };
 }
 
 function parseTurnIndex(text: string): TurnIndex {
@@ -307,8 +317,17 @@ function isInside(root: string, path: string): boolean {
   return path.startsWith(`${root}/`);
 }
 
-function displayPathOf(absolute: string, workspacePath: string | null, home: string): string {
-  if (workspacePath && isInside(workspacePath, absolute)) return absolute.slice(workspacePath.length + 1);
+/** `absolute` relative to the workspace, or null when it is outside every spelling of it. */
+function workspaceRelativePath(absolute: string, workspaceRoots: readonly string[]): string | null {
+  for (const root of workspaceRoots) {
+    if (isInside(root, absolute)) return absolute.slice(root.length + 1);
+  }
+  return null;
+}
+
+function displayPathOf(absolute: string, workspaceRoots: readonly string[], home: string): string {
+  const relative = workspaceRelativePath(absolute, workspaceRoots);
+  if (relative !== null) return relative;
   if (home && isInside(home, absolute)) return `~/${absolute.slice(home.length + 1)}`;
   return absolute;
 }
@@ -389,18 +408,21 @@ function compareSides(
   return { path, display, status, added: diff.added, deleted: diff.deleted, hunks: diff.hunks };
 }
 
+/**
+ * Files whose presence, size or modification time differs between two lists
+ * of the workspace under `root`. `alreadyCompared` holds the workspace-relative
+ * paths that were compared by content and are left out here.
+ */
 function compareWorkspaceLists(
-  workspacePath: string,
-  home: string,
+  root: string,
   before: WorkspaceFileEntry[],
   after: WorkspaceFileEntry[],
   alreadyCompared: ReadonlySet<string>,
 ): TurnChangedFile[] {
   const changed: TurnChangedFile[] = [];
   const add = (relative: string, status: TurnChangedFile['status']): void => {
-    const path = `${workspacePath}/${relative}`;
-    if (alreadyCompared.has(path)) return;
-    changed.push({ path, display: displayPathOf(path, workspacePath, home), status });
+    if (alreadyCompared.has(relative)) return;
+    changed.push({ path: `${root}/${relative}`, display: relative, status });
   };
   const beforeByPath = new Map(before.map((entry) => [entry.path, entry]));
   for (const entry of after) {
@@ -421,14 +443,14 @@ function emitSaved(conversationId: string, loopId: string): void {
  * Compares the captured paths (and, with a baseline, the workspace list) with
  * the disk, saves the result and removes the turn's before copies.
  */
-async function settleTurn(turn: Omit<OpenTurn, 'captured' | 'manifestWrites'>, entries: ManifestEntry[]): Promise<void> {
+async function settleTurn(turn: TurnScope, entries: ManifestEntry[]): Promise<void> {
   const dir = await changesDir(turn.conversationId);
   const home = await homeDirectory();
   const budget: HunkBudget = { lines: 0, bytes: 0, spent: false };
   const files: TurnChangedFile[] = [];
 
   const captured = entries
-    .map((entry) => ({ entry, display: displayPathOf(entry.path, turn.workspacePath, home) }))
+    .map((entry) => ({ entry, display: displayPathOf(entry.path, turn.workspaceRoots, home) }))
     .sort(compareDisplay);
   for (let i = 0; i < captured.length; i++) {
     if (i > 0) await yieldToMainThread();
@@ -442,8 +464,12 @@ async function settleTurn(turn: Omit<OpenTurn, 'captured' | 'manifestWrites'>, e
   if (turn.workspacePath && turn.baseline) {
     const current = await listConversationWorkspaceFiles(turn.conversationId, turn.workspacePath, turn.scopeId);
     if (!current.exceeded) {
-      const compared = new Set(entries.map((entry) => entry.path));
-      files.push(...compareWorkspaceLists(turn.workspacePath, home, turn.baseline, current.files, compared));
+      const compared = new Set<string>();
+      for (const entry of entries) {
+        const relative = workspaceRelativePath(entry.path, turn.workspaceRoots);
+        if (relative !== null) compared.add(relative);
+      }
+      files.push(...compareWorkspaceLists(current.root, turn.baseline, current.files, compared));
     }
   }
 
@@ -476,7 +502,7 @@ function writeManifest(turn: OpenTurn): Promise<void> {
     const manifest: BeforeManifest = {
       version: FORMAT_VERSION,
       loopId: turn.loopId,
-      workspacePath: turn.workspacePath,
+      workspaceRoots: turn.workspaceRoots,
       entries: [...turn.captured.values()].filter((entry): entry is ManifestEntry => entry !== null),
     };
     await atomicWrite(joinConversationPath(beforeDirPath(dir, turn.loopId), MANIFEST_FILENAME), JSON.stringify(manifest));
@@ -501,18 +527,21 @@ export async function beginTurn(
   assertLoopId(loopId);
   await (conversationWork.get(conversationId) ?? Promise.resolve());
   if (openTurns.has(loopId)) return;
+  const folder = workspacePath ? normalizeFilePath(workspacePath) : null;
   const turn: OpenTurn = {
     conversationId,
     loopId,
-    workspacePath: workspacePath ? normalizeFilePath(workspacePath) : null,
+    workspacePath: folder,
+    workspaceRoots: folder ? [folder] : [],
     scopeId: options?.scopeId,
     baseline: null,
     captured: new Map(),
     manifestWrites: Promise.resolve(),
   };
   openTurns.set(loopId, turn);
-  if (!workspacePath) return;
-  const list = await listConversationWorkspaceFiles(conversationId, workspacePath, turn.scopeId);
+  if (!folder) return;
+  const list = await listConversationWorkspaceFiles(conversationId, folder, turn.scopeId);
+  if (list.root !== folder) turn.workspaceRoots = [folder, list.root];
   if (!list.exceeded) turn.baseline = list.files;
 }
 
@@ -558,11 +587,16 @@ async function readCurrentBeforeWrite(path: string): Promise<Side | null> {
 /**
  * Closes a turn and settles it behind the conversation's earlier settle work.
  * Resolves once the result is saved. A loop that is not open is ignored.
+ * `options.workspacePath` is the conversation's workspace now; a turn that
+ * began without one shows its paths relative to it.
  */
-export function endTurn(loopId: string): Promise<void> {
+export function endTurn(loopId: string, options?: { workspacePath?: string | null }): Promise<void> {
   const turn = openTurns.get(loopId);
   if (!turn) return Promise.resolve();
   openTurns.delete(loopId);
+  if (turn.workspaceRoots.length === 0 && options?.workspacePath) {
+    turn.workspaceRoots = [normalizeFilePath(options.workspacePath)];
+  }
   return enqueue(turn.conversationId, async () => {
     await turn.manifestWrites;
     const entries = [...turn.captured.values()].filter((entry): entry is ManifestEntry => entry !== null);
@@ -596,7 +630,7 @@ async function recoverInterruptedTurns(conversationId: string): Promise<void> {
     }
     const manifest = parseManifest(await readTextFile(manifestPath));
     await settleTurn(
-      { conversationId, loopId, workspacePath: manifest.workspacePath, scopeId: undefined, baseline: null },
+      { conversationId, loopId, workspacePath: null, workspaceRoots: manifest.workspaceRoots, scopeId: undefined, baseline: null },
       manifest.entries,
     );
   }

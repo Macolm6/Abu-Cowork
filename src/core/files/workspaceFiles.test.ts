@@ -29,8 +29,18 @@ describe('listConversationWorkspaceFiles', () => {
 
     const result = await listConversationWorkspaceFiles('conv-1', '/Users/me/project');
 
-    expect(result).toEqual({ exceeded: false, files: [{ path: 'a.md', size: 1, mtimeMs: 5 }] });
+    expect(result).toEqual({ exceeded: false, files: [{ path: 'a.md', size: 1, mtimeMs: 5 }], root: '/Users/me/project' });
     expect(mocks.listWorkspaceFiles).toHaveBeenCalledWith('/Users/me/project', { maxEntries: 20000, maxDepth: 12 });
+  });
+
+  it('returns the folder as the read-path check resolved it', async () => {
+    mocks.getConversation.mockReturnValue({ id: 'conv-1', workspacePath: '/var/work/project' });
+    mocks.checkReadPath.mockResolvedValue({ allowed: true, resolvedPath: '/private/var/work/project' });
+    mocks.listWorkspaceFiles.mockResolvedValue({ exceeded: true });
+
+    await expect(listConversationWorkspaceFiles('conv-1', '/var/work/project'))
+      .resolves.toEqual({ exceeded: true, root: '/private/var/work/project' });
+    expect(mocks.listWorkspaceFiles).toHaveBeenCalledWith('/var/work/project', expect.anything());
   });
 
   it('treats separators and a trailing slash as the same folder', async () => {

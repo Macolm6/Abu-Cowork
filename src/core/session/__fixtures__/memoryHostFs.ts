@@ -1,4 +1,4 @@
-import type { WorkspaceFileList } from '@/core/files/workspaceFileWalk';
+import type { ConversationWorkspaceFiles } from '@/core/files/workspaceFiles';
 
 /**
  * One in-memory disk behind the three file interfaces turnChanges uses:
@@ -17,8 +17,8 @@ export interface MemoryHostFs {
   makeDir(path: string): void;
   /** Paths under `prefix`, sorted. */
   list(prefix: string): string[];
-  /** The list `fs.listWorkspaceFiles` would give for `root`. */
-  listWorkspace(root: string): WorkspaceFileList;
+  /** The list `listConversationWorkspaceFiles` would give for `root`. */
+  listWorkspace(root: string): ConversationWorkspaceFiles;
   /** Makes the next read of `path` through either interface reject once. */
   failNextRead(path: string): void;
   pluginFs: {
@@ -92,6 +92,7 @@ export function createMemoryHostFs(): MemoryHostFs {
     listWorkspace: (root) => {
       const prefix = `${root}/`;
       return {
+        root,
         exceeded: false,
         files: [...files.keys()]
           .filter((key) => key.startsWith(prefix))

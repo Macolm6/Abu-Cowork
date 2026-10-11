@@ -21,7 +21,7 @@ import { invokeTaskCommand, isTaskCommandAbortedError } from '../helpers/scopedC
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
 import { bindWorkspaceFromWrite } from '../../agent/defaultWorkspace';
-import { snapshotBeforeAiEdit } from '@/utils/aiEditSnapshots';
+import { captureTurnFileBefore, snapshotBeforeAiEdit } from '@/utils/aiEditSnapshots';
 import { formatFileSize } from '@/utils/formatFileSize';
 import { fuzzyFindAndReplace } from '../../skill/fuzzyPatch';
 import { computeFileChange, MAX_COMPARABLE_TEXT_BYTES, type FileChange } from '@/core/files/fileChange';
@@ -493,6 +493,7 @@ export const deleteFileTool: ToolDefinition = {
       return format(getI18n().toolResult.file.deleteRefusedCatastrophic, { path });
     }
     const before = context?.reportMetadata ? await readTextBefore(path) : null;
+    await captureTurnFileBefore(path, context?.loopId);
     try {
       await invoke('move_to_trash', { path });
       const fileChange = fileChangeAfterWrite(path, before, null);
