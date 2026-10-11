@@ -15,7 +15,8 @@ const {
 const POSIX = process.platform !== 'win32';
 
 function workspace(t) {
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'abu-open-policy-')));
+  // The native form: it expands a Windows short name (`RUNNER~1`) the way the opener's own realpath does.
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'abu-open-policy-')));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   return dir;
 }
