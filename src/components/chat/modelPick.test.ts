@@ -9,7 +9,7 @@ describe('applyModelPick', () => {
   it('inside a conversation: pins only that conversation and bumps recents, leaves the global default alone', () => {
     const d = deps();
     applyModelPick({ activeConversationId: 'c1', providerId: 'p', modelId: 'm' }, d);
-    expect(d.setConversationModel).toHaveBeenCalledWith('c1', { providerId: 'p', modelId: 'm' });
+    expect(d.setConversationModel).toHaveBeenCalledWith('c1', { providerId: 'p', modelId: 'm' }, { durable: true });
     expect(d.touchRecentModel).toHaveBeenCalledWith('p', 'm');
     expect(d.selectModel).not.toHaveBeenCalled();
   });
