@@ -127,7 +127,22 @@ p, .h3 { text-wrap: balance; }
 .nav-links a { position: relative; }
 .nav-links a::after { content: ""; position: absolute; left: 0; right: 0; bottom: -4px; height: 1px; background: currentColor; transform: scaleX(0); transform-origin: left; transition: transform 300ms var(--ease); }
 .nav-links a:hover::after, .nav-links a[aria-current="page"]::after { transform: scaleX(1); }
-.nav-cta { display: flex; gap: 8px; }
+/* A small badge above the end of an entry that is new on the site. The entry keeps room for it, so the badge stays inside the entry's box. */
+.nav-links a[data-new] { padding-right: 28px; margin-right: -8px; }
+.nav-links a[data-new]::after { right: 28px; }
+.nav-links a[data-new]::before { content: "NEW"; position: absolute; right: 0; top: -9px; padding: 2px 5px; border-radius: 999px; background: var(--brand); color: var(--brand-ink); font-family: var(--mono); font-size: 9px; font-weight: 600; letter-spacing: 0.04em; line-height: 1; }
+.nav-cta { display: flex; gap: 8px; align-items: center; }
+/* The link to the same page in the other language. */
+.nav-lang { padding: 0 10px; font-size: 14px; opacity: 0.72; white-space: nowrap; transition: opacity 200ms; }
+.nav-lang:hover { opacity: 1; }
+/* Eight entries, the language link and two buttons need about 1120px in English: the bar tightens first, then gives up the entries. */
+@media (max-width: 1160px) {
+  .nav-links { gap: 16px; font-size: 14px; }
+  .nav-cta .btn-line { display: none; }
+}
+@media (max-width: 1000px) {
+  .nav-links { display: none; }
+}
 .nav.on-night { color: var(--night-ink); }
 .nav.on-night .btn-fill { background: #fff; color: #1d1d1f; }
 .nav.on-night .btn-line { box-shadow: inset 0 0 0 1px #fff; }

@@ -173,8 +173,8 @@ test('release notes live on the documentation page, the home page keeps version 
 
 test('navigation stays in place and lists the same eight entries on every page', () => {
   const labels = {
-    zh: ['预览', '能力', '场景', '架构', '社区', '文档', '开放平台', '企业版'],
-    en: ['Preview', 'Features', 'Use cases', 'Architecture', 'Community', 'Docs', 'Open Platform', 'Enterprise'],
+    zh: ['预览', '能力', '场景', '架构', '企业版', '开放平台', '文档', '社区'],
+    en: ['Preview', 'Features', 'Use cases', 'Architecture', 'Enterprise', 'Open Platform', 'Docs', 'Community'],
   };
   assert.ok(read('site.css').includes('.nav { position: fixed; inset: 0 0 auto 0;'));
   assert.ok(!read('site.css').includes('is-hidden') && !read('site.js').includes('is-hidden'), 'the bar is never hidden while scrolling');
@@ -182,8 +182,8 @@ test('navigation stays in place and lists the same eight entries on every page',
     assert.deepEqual(navLabels(read(pair.zh)), labels.zh, pair.zh);
     assert.deepEqual(navLabels(read(pair.en)), labels.en, pair.en);
   }
-  assert.deepEqual(navTargets(homeZh), ['#preview', '#abilities', '#scenes', '#tech', '#community', 'docs.zh-CN.html', 'platform.zh-CN.html', 'enterprise.zh-CN.html']);
-  assert.deepEqual(navTargets(homeEn), ['#preview', '#abilities', '#scenes', '#tech', '#community', 'docs.html', 'platform.html', 'enterprise.html']);
+  assert.deepEqual(navTargets(homeZh), ['#preview', '#abilities', '#scenes', '#tech', 'enterprise.zh-CN.html', 'platform.zh-CN.html', 'docs.zh-CN.html', '#community']);
+  assert.deepEqual(navTargets(homeEn), ['#preview', '#abilities', '#scenes', '#tech', 'enterprise.html', 'platform.html', 'docs.html', '#community']);
   for (const id of ['preview', 'how', 'abilities', 'scenes', 'voices', 'safe', 'tech', 'community', 'start']) {
     assert.ok(homeZh.includes(` id="${id}"`) && homeEn.includes(` id="${id}"`), `home pages are missing #${id}`);
   }
@@ -221,6 +221,9 @@ test('language entry points redirect, documentation pages keep their language', 
     assert.ok(!read(file).includes('location.replace'), `${file} is an explicit-language address`);
   }
   for (const pair of pairs) {
+    // The navigation bar of every page links to the same page in the other language.
+    assert.ok(read(pair.zh).includes(`<a class="nav-lang" href="${pair.en}" lang="en" onclick="try{localStorage.setItem('abu-lang','en')}catch(e){}">EN</a>`), pair.zh);
+    assert.ok(read(pair.en).includes(`<a class="nav-lang" href="${pair.zh}" lang="zh-CN" onclick="try{localStorage.setItem('abu-lang','zh')}catch(e){}">中文</a>`), pair.en);
     assert.ok(read(pair.zh).includes(`<a href="${pair.en}" lang="en" onclick="try{localStorage.setItem('abu-lang','en')}catch(e){}">English</a>`), pair.zh);
     assert.ok(read(pair.en).includes(`<a href="${pair.zh}" lang="zh-CN" onclick="try{localStorage.setItem('abu-lang','zh')}catch(e){}">中文</a>`), pair.en);
   }
