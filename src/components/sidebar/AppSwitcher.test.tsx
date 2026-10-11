@@ -19,6 +19,11 @@ vi.mock('@/core/enterprise/appPolicy', () => ({ useEnterpriseAppPolicy: () => po
 // Removing reaches the disk through `removeApp`; its own tests cover that.
 const removeApp = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 vi.mock('@/core/app/appSync', () => ({ removeApp }));
+// 创建应用 makes a folder and a conversation through `createAppDraft`; its own tests cover that.
+const createAppDraft = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+vi.mock('@/core/app/appDraft', () => ({ createAppDraft }));
+const focusComposerAfterPageChange = vi.hoisted(() => vi.fn());
+vi.mock('@/components/chat/composerFocus', () => ({ focusComposerAfterPageChange }));
 
 const app = (appId: string, name: string, origin: AppDefinition['origin']): AppDefinition => ({
   appId, name, config: DEFAULT_APP_CONFIG, version: '1.0.0', origin, plugins: [],
@@ -42,6 +47,8 @@ beforeEach(() => {
   initLanguage('zh-CN');
   policy.value = { defaultAppId: null, allowExit: true };
   removeApp.mockClear();
+  createAppDraft.mockClear();
+  focusComposerAfterPageChange.mockClear();
   useAppStore.setState({ addedApps: [recruiting, weekly], managedApps: { enterprise: [shop, hr] }, recentAppIds: [], selectedAppId: shop.appId, appMarketOpen: false });
 });
 afterEach(() => {
@@ -118,6 +125,28 @@ describe('AppSwitcher', () => {
       await vi.runOnlyPendingTimersAsync();
       expect(screen.queryByRole('menu')).toBeNull();
       expect(useAppStore.getState().appMarketOpen).toBe(true);
+    });
+
+    /** Opens the menu and chooses 创建应用. */
+    async function chooseCreate(user: ReturnType<typeof userEvent.setup>) {
+      await user.click(screen.getByTestId('app-switcher-trigger'));
+      await user.click(screen.getByTestId('app-switcher-create'));
+      await vi.runOnlyPendingTimersAsync();
+      await flush();
+    }
+
+    it('创建应用 starts the creation conversation in the general shell and hands the focus to the message field', async () => {
+      const user = setUp();
+      await chooseCreate(user);
+      expect(createAppDraft).toHaveBeenCalledExactlyOnceWith({ leaveApp: true });
+      expect(focusComposerAfterPageChange).toHaveBeenCalledTimes(1);
+    });
+
+    it('创建应用 keeps an employee in the app the organization holds them in', async () => {
+      policy.value = { defaultAppId: shop.appId, allowExit: false };
+      const user = setUp();
+      await chooseCreate(user);
+      expect(createAppDraft).toHaveBeenCalledExactlyOnceWith({ leaveApp: false });
     });
 
     it('lists under 移除 the apps the user added and no organization app', async () => {
