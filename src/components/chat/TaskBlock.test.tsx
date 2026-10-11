@@ -2,11 +2,14 @@
 /// <reference types="@testing-library/jest-dom" />
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import TaskBlock, { convertExecutionStep, generateSummary, type UnifiedStep } from './TaskBlock';
 import { ThinkingStatusLine } from './ThinkingStatusLine';
 import { getI18n, getLocale, format } from '@/i18n';
+import { snapshotExecutionSteps, snapshotToExecutionSteps } from '@/core/agent/executionSnapshot';
+import { usePreviewStore } from '@/stores/previewStore';
 import type { ExecutionStep } from '@/types/execution';
+import type { FileChange } from '@/types/fileChange';
 
 function thinkingStep(duration?: number): UnifiedStep {
   return { id: 't1', type: 'thinking', label: '思考中...', status: 'completed', duration } as UnifiedStep;
@@ -296,6 +299,233 @@ describe('TaskBlock — one spinner per block', () => {
     expect(stepRow('Step failed').querySelector('svg.lucide-circle-x')).not.toBeNull();
     expect(stepRow('Step failed').querySelector('svg.text-danger')).not.toBeNull();
     expect(document.querySelector('[data-ds-spinner]')).toBeNull();
+  });
+});
+
+describe('TaskBlock — file change of a step', () => {
+  const t = getI18n();
+  const originalOpenPreview = usePreviewStore.getState().openPreview;
+  const openPreview = vi.fn();
+
+  beforeEach(() => {
+    openPreview.mockReset();
+    usePreviewStore.setState({ openPreview });
+  });
+
+  afterEach(() => {
+    cleanup();
+    usePreviewStore.setState({ openPreview: originalOpenPreview });
+  });
+
+  const editChange: FileChange = {
+    path: '/w/plan.md',
+    kind: 'modify',
+    added: 3,
+    deleted: 3,
+    hunks: [{
+      oldStart: 2,
+      oldLines: 9,
+      newStart: 2,
+      newLines: 9,
+      lines: [
+        ' line 2', ' line 3', ' line 4',
+        '-line 5', '-line 6', '-line 7',
+        '+five', '+six', '+seven',
+        ' line 8', ' line 9', ' line 10',
+      ],
+    }],
+  };
+
+  function fileStep(overrides: Partial<ExecutionStep> = {}): ExecutionStep {
+    return {
+      id: 'step-edit',
+      executionId: 'exec-1',
+      toolCallId: 'tc-edit',
+      type: 'file-write',
+      label: 'Edit plan.md',
+      status: 'completed',
+      toolName: 'edit_file',
+      toolInput: { path: '/w/plan.md', old_content: 'a', new_content: 'b' },
+      toolResult: 'Successfully edited /w/plan.md: replaced 3 line(s) with 3 line(s)',
+      source: 'agent',
+      detailBlocks: [],
+      ...overrides,
+    };
+  }
+
+  function renderOpen(steps: ExecutionStep[], fileChanges?: Map<string, FileChange>) {
+    const view = render(<TaskBlock executionSteps={steps} isActive={false} fileChanges={fileChanges} />);
+    fireEvent.click(screen.getAllByRole('button')[0]);
+    return view;
+  }
+
+  const diffRows = (container: HTMLElement) => container.querySelectorAll('[data-diff-row]');
+  const fileButton = (name: string) =>
+    screen.queryByRole('button', { name: format(t.chat.openFileInPreview, { name }) });
+  const countsToggle = (added: number, deleted: number) =>
+    screen.queryByRole('button', { name: `+${added} −${deleted}` });
+
+  it('shows the added and deleted line counts on the step row', () => {
+    renderOpen([fileStep()], new Map([['tc-edit', editChange]]));
+
+    expect(screen.getByText('+3')).toHaveClass('text-success');
+    expect(screen.getByText('−3')).toHaveClass('text-danger');
+  });
+
+  it('opens the file in the side preview when its name is pressed', () => {
+    renderOpen([fileStep()], new Map([['tc-edit', editChange]]));
+
+    const name = fileButton('plan.md')!;
+    expect(name).toHaveTextContent(/^plan\.md$/);
+    expect(name.parentElement).toHaveTextContent(/^Edit plan\.md/);
+    fireEvent.click(name);
+
+    expect(openPreview).toHaveBeenCalledTimes(1);
+    expect(openPreview).toHaveBeenCalledWith('/w/plan.md');
+  });
+
+  it('shows the diff folded to five and four rows once the counts are pressed, then all of it', () => {
+    const { container } = renderOpen([fileStep()], new Map([['tc-edit', editChange]]));
+    const toggle = countsToggle(3, 3)!;
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(diffRows(container)).toHaveLength(0);
+
+    fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(diffRows(container)).toHaveLength(9);
+    expect(container.querySelectorAll('[data-diff-row="deleted"]')).toHaveLength(2);
+    expect(container.querySelectorAll('[data-diff-row="added"]')).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole('button', { name: format(t.chat.showAllDiffLines, { count: 12 }) }));
+
+    expect(diffRows(container)).toHaveLength(12);
+    expect(container.querySelectorAll('[data-diff-row="deleted"]')).toHaveLength(3);
+    expect(container.querySelectorAll('[data-diff-row="added"]')).toHaveLength(3);
+    expect(container.querySelectorAll('[data-diff-row="context"]')).toHaveLength(6);
+
+    fireEvent.click(toggle);
+    expect(diffRows(container)).toHaveLength(0);
+  });
+
+  it('closes a cut diff with the note once all saved rows are shown', () => {
+    renderOpen([fileStep()], new Map([['tc-edit', { ...editChange, cut: true }]]));
+    fireEvent.click(countsToggle(3, 3)!);
+    expect(screen.queryByText(t.chat.diffCut)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: format(t.chat.showAllDiffLines, { count: 12 }) }));
+
+    expect(screen.getByText(t.chat.diffCut)).toBeInTheDocument();
+  });
+
+  it('shows a new file as added lines', () => {
+    const created: FileChange = {
+      path: '/w/outline.md',
+      kind: 'create',
+      added: 2,
+      deleted: 0,
+      hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 2, lines: ['+# Title', '+Body'] }],
+    };
+    const { container } = renderOpen(
+      [fileStep({ toolCallId: 'tc-write', toolName: 'write_file', label: 'Write outline.md', toolInput: { path: '/w/outline.md', content: '# Title\nBody\n' } })],
+      new Map([['tc-write', created]]),
+    );
+
+    expect(fileButton('outline.md')).not.toBeNull();
+    fireEvent.click(countsToggle(2, 0)!);
+
+    expect(container.querySelectorAll('[data-diff-row="added"]')).toHaveLength(2);
+    expect(container.querySelectorAll('[data-diff-row="deleted"]')).toHaveLength(0);
+    expect(screen.getByText('# Title')).toBeInTheDocument();
+  });
+
+  it('shows counts without a diff toggle when the change holds no hunks', () => {
+    renderOpen([fileStep()], new Map([['tc-edit', { path: '/w/plan.md', kind: 'modify', added: 3, deleted: 3, cut: true }]]));
+
+    expect(screen.getByText('+3')).toBeInTheDocument();
+    expect(screen.getByText('−3')).toBeInTheDocument();
+    expect(countsToggle(3, 3)).toBeNull();
+  });
+
+  it('shows only the file name for a change that has no line counts', () => {
+    renderOpen([fileStep()], new Map([['tc-edit', { path: '/w/plan.md', kind: 'modify' }]]));
+
+    expect(fileButton('plan.md')).not.toBeNull();
+    expect(screen.queryByText(/^\+\d+$/)).toBeNull();
+    expect(screen.queryByText(/^−\d+$/)).toBeNull();
+  });
+
+  it('names a deleted file without making it a preview button', () => {
+    renderOpen(
+      [fileStep({ toolCallId: 'tc-delete', type: 'tool', toolName: 'delete_file', label: 'Call delete_file', toolInput: { path: '/w/draft.md' } })],
+      new Map([['tc-delete', { path: '/w/draft.md', kind: 'delete', added: 0, deleted: 4 }]]),
+    );
+
+    expect(screen.getByText('draft.md')).toBeInTheDocument();
+    expect(fileButton('draft.md')).toBeNull();
+    expect(screen.getByText('+0')).toBeInTheDocument();
+    expect(screen.getByText('−4')).toBeInTheDocument();
+  });
+
+  it('reads the change for a step restored from a saved snapshot', () => {
+    const restored = snapshotToExecutionSteps(snapshotExecutionSteps([fileStep()]));
+    expect(restored[0].toolInput).toEqual({});
+
+    const { container } = renderOpen(restored, new Map([['tc-edit', editChange]]));
+
+    expect(fileButton('plan.md')).not.toBeNull();
+    fireEvent.click(countsToggle(3, 3)!);
+    expect(diffRows(container)).toHaveLength(9);
+  });
+
+  it('reads the change for a legacy step by its tool call id', () => {
+    render(
+      <TaskBlock
+        steps={[{
+          id: 'tc-edit',
+          type: 'file-write',
+          label: 'Edit plan.md',
+          status: 'completed',
+          timestamp: 1,
+          toolName: 'edit_file',
+          toolInput: { path: '/w/plan.md' },
+        }]}
+        isActive={false}
+        fileChanges={new Map([['tc-edit', editChange]])}
+      />,
+    );
+    fireEvent.click(screen.getAllByRole('button')[0]);
+
+    expect(countsToggle(3, 3)).not.toBeNull();
+    expect(fileButton('plan.md')).not.toBeNull();
+  });
+
+  it('shows a step without a file change as plain text', () => {
+    renderOpen([fileStep()]);
+
+    expect(screen.getByText('Edit plan.md')).toBeInTheDocument();
+    expect(fileButton('plan.md')).toBeNull();
+    expect(screen.queryByText(/^\+\d+$/)).toBeNull();
+  });
+
+  it('shows no counts and no file button on the steps of a subagent', () => {
+    const child = fileStep({ id: 'child-edit', toolCallId: 'tc-child', label: 'Edit plan.md' });
+    const delegate = fileStep({
+      id: 'step-delegate',
+      toolCallId: 'tc-delegate',
+      type: 'delegate',
+      toolName: 'delegate_to_agent',
+      label: 'Delegate',
+      toolInput: { task: 'edit the plan' },
+      toolResult: undefined,
+      childSteps: [child],
+    });
+
+    renderOpen([delegate], new Map([['tc-child', editChange], ['tc-edit', editChange]]));
+
+    expect(screen.getByText('Edit plan.md')).toBeInTheDocument();
+    expect(fileButton('plan.md')).toBeNull();
+    expect(screen.queryByText('+3')).toBeNull();
   });
 });
 

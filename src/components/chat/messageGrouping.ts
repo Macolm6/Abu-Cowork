@@ -28,3 +28,17 @@ export function groupMessagesByLoop(messages: Message[]): Message[][] {
   if (currentGroup.length > 0) groups.push(currentGroup);
   return groups;
 }
+
+/**
+ * The index of the last group of each loop. A loop spans two groups when a
+ * message without a loopId (the compaction marker) falls inside it; what is
+ * shown once per turn belongs to the last of them.
+ */
+export function lastGroupIndexByLoop(groups: readonly Message[][]): Map<string, number> {
+  const last = new Map<string, number>();
+  groups.forEach((group, index) => {
+    const loopId = group[0]?.loopId;
+    if (loopId) last.set(loopId, index);
+  });
+  return last;
+}
