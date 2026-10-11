@@ -36,6 +36,8 @@
  *   - `fs.readTextFile` / `fs.readFile` / `fs.writeTextFile` / `fs.readDir` /
  *     `fs.exists` / `fs.stat` → P1-2a fs bridge for the agent's file tools;
  *     see fsHost.ts for implementation and the plugin-fs semantic mapping.
+ *   - `fs.listWorkspaceFiles` → the regular files under a workspace folder
+ *     with size and modification time (read-only); see fsHost.ts.
  *   - `subagent.run` → runs one subagent mini-loop to completion; see
  *     subagentHost.ts. The response settles only once the whole run
  *     finishes (or errors) — no progress notifications this phase (mirrors
@@ -125,7 +127,7 @@
 
 import { createStdinLineSplitter } from './stdinLineSplitter';
 import { createLlmHost } from './llmHost';
-import { fsReadTextFile, fsReadFile, fsWriteTextFile, fsReadDir, fsExists, fsStat } from './fsHost';
+import { fsReadTextFile, fsReadFile, fsWriteTextFile, fsReadDir, fsExists, fsStat, fsListWorkspaceFiles } from './fsHost';
 import { handleSubagentRun, handleSubagentAbort, shutdownAllSubagentRuns, isSubagentDispatchActive } from './subagentHost';
 import {
   handleAgentRun,
@@ -209,6 +211,7 @@ const fsHandlers: Record<string, (params: unknown) => Promise<unknown>> = {
   'fs.readFile': fsReadFile,
   'fs.writeTextFile': fsWriteTextFile,
   'fs.readDir': fsReadDir,
+  'fs.listWorkspaceFiles': fsListWorkspaceFiles,
   'fs.exists': fsExists,
   'fs.stat': fsStat,
 };

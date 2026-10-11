@@ -36,8 +36,10 @@ import { invoke } from '@tauri-apps/api/core';
 import { hasLocalTool, isLocalToolReadOnly, executeLocalTool } from './index';
 
 const snapshotBeforeAiEditMock = vi.fn().mockResolvedValue(undefined);
+const captureTurnFileBeforeMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('@/utils/aiEditSnapshots', () => ({
   snapshotBeforeAiEdit: (...args: unknown[]) => snapshotBeforeAiEditMock(...args),
+  captureTurnFileBefore: (...args: unknown[]) => captureTurnFileBeforeMock(...args),
 }));
 
 afterEach(() => {
@@ -514,6 +516,7 @@ describe('executeLocalTool — delete_file (P1-3d-5 slice 3)', () => {
     const result = await executeLocalTool('delete_file', { path: '/tmp/x/f.txt' }, undefined, undefined);
     expect(typeof result).toBe('string');
     expect(invoke).toHaveBeenCalledWith('move_to_trash', { path: '/tmp/x/f.txt' });
+    expect(captureTurnFileBeforeMock).toHaveBeenCalledWith('/tmp/x/f.txt', undefined);
   });
 
   it('🔴 refuses a catastrophic target (filesystem root) via local dispatch and NEVER calls move_to_trash', async () => {

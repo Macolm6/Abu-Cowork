@@ -330,6 +330,20 @@ export interface TranslationDict {
     collapseFiles: string;
     /** Accessible name of a file name or path in a reply that opens the side preview; `{name}` is the file name. */
     openFileInPreview: string;
+    /** Button in the middle of a folded diff; `{count}` is the number of diff lines. */
+    showAllDiffLines: string;
+    /** Closing line of a diff whose saved lines stop before the end of the change. */
+    diffCut: string;
+    /** Title of the card under a reply that lists the files the turn changed; `{count}` is the number of files. */
+    changedFilesTitle: string;
+    /** Title of that card when the turn changed one file; `{name}` is the file name. */
+    changedFileSingleTitle: string;
+    /** Status of a changed file that has no line counts. */
+    changeCreated: string;
+    changeModified: string;
+    changeDeleted: string;
+    /** Last line of the card when the turn changed more files than it lists; `{count}` is the number left out. */
+    moreChangedFiles: string;
     userMessageShowMore: string;
     userMessageCollapse: string;
     runPending: string;
@@ -2261,6 +2275,11 @@ export interface TranslationDict {
     removeCreatedTitle: string;
     removeCreatedMessage: string;
     removeFailed: string;
+    /** What the user can do after `removeFailed`. */
+    removeFailedHint: string;
+    createFailed: string;
+    /** What the user can do after `createFailed`. */
+    createFailedHint: string;
     createConversation: string;
     createPrompt: string;
   };
@@ -2275,7 +2294,11 @@ export interface TranslationDict {
     adding: string;
     added: string;
     failed: string;
+    /** What the user can do after `failed`. */
+    failedHint: string;
     previewFailed: string;
+    /** What the user can do after `previewFailed`. */
+    previewFailedHint: string;
   };
   appMarket: {
     title: string;
@@ -2305,6 +2328,16 @@ export interface TranslationDict {
     confirm: string;
     adding: string;
     addFailed: string;
+    updateFailed: string;
+    previewFailed: string;
+    /** A scene's plugin could not be installed again. */
+    repairFailed: string;
+    /** What the user can do after a failed add, update or repair. */
+    failedHint: string;
+    /** What the user can do after `previewFailed`. */
+    previewFailedHint: string;
+    /** A market whose list of apps could not be read; `{name}` is the market. */
+    marketUnreadable: string;
     remoteNeedsSha: string;
     nameMismatch: string;
     entryMismatch: string;
@@ -2330,6 +2363,8 @@ export interface TranslationDict {
     sceneRunUnavailable: string;
     scenePreparing: string;
     scenePrepareFailed: string;
+    /** An app's web page that did not load. */
+    pageLoadFailed: string;
     removedNotice: string;
     removedCreatedNotice: string;
     removedAction: string;
@@ -2423,11 +2458,18 @@ export interface TranslationDict {
     pluginsMarketplaceDirHint: string;
     pluginsBrowseDir: string;
     pluginsMarketplaceReadFailed: string;
+    /** What to check when an address could not be fetched for a reason the host did not classify. */
+    pluginsMarketplaceAddressFailed: string;
+    /** What to check when a folder could not be read as a market. */
+    pluginsMarketplaceFolderFailed: string;
+    pluginsBrowseFailed: string;
     pluginsNoMarketplaces: string;
     pluginsNoMarketplacesHint: string;
     pluginsRemoveMarketplace: string;
     pluginsRemoveMarketplaceTitle: string;
     pluginsRemoveMarketplaceMessage: string;
+    /** A market whose fetched copy could not be deleted, so it is still listed; `{name}` is the market. */
+    pluginsRemoveMarketplaceFailed: string;
     pluginsNoMatches: string;
     pluginsEntryCount: string;
     pluginsInstall: string;
@@ -2951,6 +2993,19 @@ export interface TranslationDict {
     workspace: string;
     files: string;
     preview: string;
+    /** Title of the tab that compares the one file a turn changed; `{name}` is the file name. */
+    changesTabSingle: string;
+    /** Title of that tab for several files; `{name}` is the first file name, `{count}` the number of files. */
+    changesTabMany: string;
+    /** The two layouts of a comparison in the changes tab: before above after, and before beside after. */
+    diffUnified: string;
+    diffSplit: string;
+    /** Button of the changes tab that opens the file in view in the side preview. */
+    openFile: string;
+    /** Shown in the changes tab for a file that has no line comparison. */
+    noDiffToShow: string;
+    /** Shown in the changes tab when the saved changes of the turn cannot be read. */
+    changesUnreadable: string;
     noWorkspaceSelected: string;
     selectWorkspace: string;
     noFilesModified: string;
