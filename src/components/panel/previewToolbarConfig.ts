@@ -16,15 +16,22 @@ const VIEW_TOGGLE = new Set<RendererType>(['html', 'markdown']);
 const EDITABLE = new Set<RendererType>(['code', 'text', 'html', 'markdown']);
 
 /**
- * 声明式：每种渲染类型显示哪些工具栏按钮。加新格式只改这里。
- * A file the system would run gets no open-in-app button: the actions menu shows it in the file manager.
+ * Whether the preview offers to open the file in its default application. A file the system
+ * would run is only shown in the file manager, previewed or not. An image held as a data URL
+ * has no name to read.
  */
+export function offersOpenInApp(type: RendererType, filePath: string): boolean {
+  if (filePath.startsWith('data:')) return type !== 'unsupported';
+  return !isRunByDefault(filePath);
+}
+
+/** 声明式：每种渲染类型显示哪些工具栏按钮。加新格式只改这里。 */
 export function getToolbarButtons(type: RendererType, filePath: string): PreviewToolbarButtons {
   const supported = type !== 'unsupported';
   return {
     viewToggle: VIEW_TOGGLE.has(type),
     fullscreen: supported,
-    openInApp: supported && !isRunByDefault(filePath),
+    openInApp: offersOpenInApp(type, filePath),
     versionHistory: EDITABLE.has(type),
   };
 }
