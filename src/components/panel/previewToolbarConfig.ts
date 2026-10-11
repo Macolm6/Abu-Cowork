@@ -16,11 +16,13 @@ const VIEW_TOGGLE = new Set<RendererType>(['html', 'markdown']);
 const EDITABLE = new Set<RendererType>(['code', 'text', 'html', 'markdown']);
 
 /**
- * Whether the preview offers to open the file in its default application. A file with no
- * preview that the system would run is only shown in the file manager.
+ * Whether the preview offers to open the file in its default application. A file the system
+ * would run is only shown in the file manager, previewed or not. An image held as a data URL
+ * has no name to read.
  */
 export function offersOpenInApp(type: RendererType, filePath: string): boolean {
-  return type !== 'unsupported' || !isRunByDefault(filePath);
+  if (filePath.startsWith('data:')) return type !== 'unsupported';
+  return !isRunByDefault(filePath);
 }
 
 /** 声明式：每种渲染类型显示哪些工具栏按钮。加新格式只改这里。 */

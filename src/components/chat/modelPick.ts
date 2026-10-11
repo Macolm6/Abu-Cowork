@@ -3,7 +3,7 @@ type ModelRef = { providerId: string; modelId: string };
 export interface ModelPickDeps {
   selectModel(providerId: string, modelId: string): void;
   touchRecentModel(providerId: string, modelId: string): void;
-  setConversationModel(convId: string, model: ModelRef): void;
+  setConversationModel(convId: string, model: ModelRef, options: { durable: true }): void;
 }
 
 /**
@@ -17,7 +17,8 @@ export function applyModelPick(
 ): void {
   const { activeConversationId, providerId, modelId } = pick;
   if (activeConversationId) {
-    deps.setConversationModel(activeConversationId, { providerId, modelId });
+    // The user's own choice: on disk before the write reports done, so a quit right after keeps it.
+    deps.setConversationModel(activeConversationId, { providerId, modelId }, { durable: true });
     deps.touchRecentModel(providerId, modelId);
     return;
   }
