@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { TooltipProvider } from '@/components/ui/tooltip';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import { initLanguage } from '@/i18n';
 import {
   BATCH_PROGRESS_GLOBAL_RICH_CONTENT_BYTES,
@@ -18,7 +18,9 @@ import type { BatchIdentity } from '@/types';
 import WorkspacePanel from './WorkspacePanel';
 
 vi.mock('../PreviewPanel', () => ({
-  default: ({ filePath }: { filePath: string }) => <div>Preview {filePath}</div>,
+  default: ({ filePath, line, lineRequest }: { filePath: string; line?: number; lineRequest?: number }) => (
+    <div data-line={line} data-line-request={lineRequest}>Preview {filePath}</div>
+  ),
 }));
 vi.mock('./TerminalTab', () => ({
   default: ({ tabId }: { tabId: string }) => <div>Terminal {tabId}</div>,
@@ -68,9 +70,9 @@ function resetStores() {
 
 function renderPanel() {
   return render(
-    <TooltipProvider>
+    <DesignSystemProvider>
       <WorkspacePanel />
-    </TooltipProvider>,
+    </DesignSystemProvider>,
   );
 }
 
@@ -102,6 +104,24 @@ describe('WorkspacePanel', () => {
     expect(screen.getByText('Preview /tmp/a.md')).toBeInTheDocument();
   });
 
+  it('hands a preview tab its requested line and the count of the requests', () => {
+    usePreviewStore.setState({
+      tabs: [
+        { id: 'with-line', kind: 'preview', filePath: '/tmp/a.ts', line: 24, lineRequest: 2 },
+        { id: 'without-line', kind: 'preview', filePath: '/tmp/b.ts' },
+      ],
+      activeTabId: 'with-line',
+      previewFilePath: '/tmp/a.ts',
+    });
+
+    renderPanel();
+
+    expect(screen.getByText('Preview /tmp/a.ts')).toHaveAttribute('data-line', '24');
+    expect(screen.getByText('Preview /tmp/a.ts')).toHaveAttribute('data-line-request', '2');
+    expect(screen.getByText('Preview /tmp/b.ts')).not.toHaveAttribute('data-line');
+    expect(screen.getByText('Preview /tmp/b.ts')).not.toHaveAttribute('data-line-request');
+  });
+
   it('renders a subagent workspace panel from explicit identity and task index', () => {
     const store = useBatchProgressStore.getState();
     store.initBatch(identity, ['Worker']);
@@ -123,5 +143,22 @@ describe('WorkspacePanel', () => {
       workspaceTabButtonId(subagentTab.id),
     );
     expect(screen.getByText('Running')).toBeInTheDocument();
+  });
+
+  it('offers the three things the panel can open when every tab is closed', () => {
+    renderPanel();
+
+    expect(screen.getByText('Start from here')).toBeInTheDocument();
+    expect(screen.queryByRole('tabpanel')).toBeNull();
+    const launchers = ['Task Summary', 'Browser', 'Terminal'].map((name) => (
+      screen.getByRole('button', { name: new RegExp(`^${name}`) })
+    ));
+    expect(launchers).toHaveLength(3);
+
+    fireEvent.click(launchers[2]);
+
+    expect(usePreviewStore.getState().tabs.map((tab) => tab.kind)).toEqual(['terminal']);
+    expect(screen.queryByText('Start from here')).toBeNull();
+    expect(screen.getByText(/^Terminal /)).toBeInTheDocument();
   });
 });

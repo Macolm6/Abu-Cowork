@@ -13,8 +13,12 @@ function makeCtx(overrides: Partial<PrefetchContext> = {}): PrefetchContext {
 
 describe('toolPrefetch', () => {
   describe('CORE_TOOL_NAMES', () => {
-    it('should contain 17 core tools', () => {
-      expect(CORE_TOOL_NAMES.size).toBe(17);
+    it('should contain 18 core tools', () => {
+      expect(CORE_TOOL_NAMES.size).toBe(18);
+    });
+
+    it('offers present_files on every turn, since it is called when a turn ends', () => {
+      expect(CORE_TOOL_NAMES.has('present_files')).toBe(true);
     });
 
     it('offers report_plan on every turn, so a plan can still be moved on late in a long task', () => {
@@ -143,6 +147,14 @@ describe('toolPrefetch', () => {
         activeSkills: [{ name: 'test', description: 'test', content: '' } as import('../../types').Skill],
       }));
       expect(result).toContain('read_skill_file');
+    });
+
+    it('should load app_prepare while the app builder skill is active', () => {
+      const builder = prefetchTools(makeCtx({
+        activeSkills: [{ name: 'abu-app-builder', description: '', content: '' } as import('../../types').Skill],
+      }));
+      expect(builder).toContain('app_prepare');
+      expect(prefetchTools(makeCtx({ userInput: '创建一个应用' }))).not.toContain('app_prepare');
     });
 
     it('should load only the runtime owned by the active browser skill', () => {

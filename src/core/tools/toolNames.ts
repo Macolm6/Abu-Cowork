@@ -4,6 +4,7 @@
  */
 export const TOOL_NAMES = {
   PLUGIN_PREPARE: 'plugin_prepare',
+  APP_PREPARE: 'app_prepare',
   // Core file/system tools
   GET_SYSTEM_INFO: 'get_system_info',
   READ_FILE: 'read_file',
@@ -66,6 +67,9 @@ export const TOOL_NAMES = {
 
   // IM outbound (only usable inside an IM channel session)
   SEND_FILE: 'send_file',
+
+  // Turn deliverables shown as file cards under the reply
+  PRESENT_FILES: 'present_files',
 
   // Computer use
   COMPUTER: 'computer',

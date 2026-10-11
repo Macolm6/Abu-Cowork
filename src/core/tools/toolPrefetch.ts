@@ -90,6 +90,10 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   // the model keeps being told "step N is in progress" with no tool to move it
   // on, and works on step N again.
   TOOL_NAMES.REPORT_PLAN,
+  // present_files is the only way a turn's files become cards under the reply,
+  // and it is called at the end of a turn, long after any keyword of the
+  // user's message could have loaded it.
+  TOOL_NAMES.PRESENT_FILES,
 ]);
 
 /** Keyword → tool mapping for demand-based loading */
@@ -244,6 +248,10 @@ export function prefetchTools(ctx: PrefetchContext): string[] {
   }
   if (ctx.activeSkills.some((skill) => skill.name === 'Abu-Chrome-Bridge')) {
     additionalTools.push(TOOL_NAMES.MANAGE_MCP_SERVER, ...CHROME_BRIDGE_TOOLS);
+  }
+  // The app builder's first step is asking app_prepare what the user already has.
+  if (ctx.activeSkills.some((skill) => skill.name === 'abu-app-builder')) {
+    additionalTools.push(TOOL_NAMES.APP_PREPARE);
   }
 
   // Goal mode: once a conversation has a goal the model must always be able

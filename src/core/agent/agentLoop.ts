@@ -75,6 +75,7 @@ import {
 } from '../subagent/delegatedUserTurnMaterializer';
 import { createSubagentController } from './subagentAbort';
 import { ActiveToolResultAdmission } from './activeToolResultContent';
+import { replyEntryForTurnOwnerToolCall } from './turnOwnerToolCalls';
 import {
   allToolsUnparseable,
   MAX_NO_PROGRESS_TURNS,
@@ -357,6 +358,19 @@ export function skillBlockedTools(
       .filter((pattern) => CHANNEL_GOVERNED_TOOLS.includes(pattern))),
   ];
   return [...new Set(patterns)];
+}
+
+/**
+ * The skills whose tools load this turn. A skill reached by `/name` is the
+ * route and is not in activeSkills yet, so the tools it needs
+ * (read_skill_file, its own tools) would otherwise wait for the next turn.
+ */
+export function prefetchSkills(
+  routedSkill: import('../../types').Skill | undefined,
+  activeSkills: import('../../types').Skill[],
+): import('../../types').Skill[] {
+  if (!routedSkill || activeSkills.some((skill) => skill.name === routedSkill.name)) return activeSkills;
+  return [routedSkill, ...activeSkills];
 }
 
 export function resolveTools(
@@ -1350,7 +1364,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     // Build onProgress to visualize subagent tools
     const childIdMap = new Map<string, string>();
     const childInputById = new Map<string, Record<string, unknown>>();
-    // Image-bearing subagent tool calls, collected for post-hoc persistence:
+    // Subagent tool calls the reply keeps — the image-bearing ones and the
+    // ones its file cards and file names read (turnOwnerToolCalls.ts) —
+    // collected for post-hoc persistence:
     // on THIS route the assistant message is only created AFTER the delegate
     // completes, so completeChildStep's own appendMessageToolCall (which
     // targets the loop's last assistant message) silently no-ops during the
@@ -1400,6 +1416,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 // pairing; only the budgeted rich payload is releasable.
                 delete pendingCall.resultContent;
               });
+            } else {
+              // The expert is the one answering the user on this route: the
+              // reply's file cards and file names read these calls back.
+              const replyEntry = replyEntryForTurnOwnerToolCall({
+                id: event.id, toolName: event.toolName, input: childInput, result: event.result, error: event.error,
+              });
+              if (replyEntry) pendingSubagentToolCalls.push(replyEntry);
             }
           }
         }
@@ -1459,6 +1482,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         parentUserMessageId: delegatedUserTurn.origin.messageId,
         parentConversationId: conversationId,
         persistParentToolImages: true,
+        // The expert runs the whole turn and its result is the reply.
+        ownsUserTurn: true,
         settingsReader: entrySettingsReader,
       }, {
         // The `@agent` route reaches runSubagent WITHOUT passing through
@@ -1885,7 +1910,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const prefetchCtx = {
         userInput: userMessage,
         computerUseEnabled: freshSettings.computerUseEnabled ?? false,
-        activeSkills: activeSkillObjects,
+        activeSkills: prefetchSkills(route.type === "skill" ? route.skill : undefined, activeSkillObjects),
         turnCount,
         hasGoal: conv?.goal !== undefined,
       };
