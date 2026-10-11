@@ -439,16 +439,11 @@ function emitSaved(conversationId: string, loopId: string): void {
   for (const listener of [...listeners]) listener(conversationId, loopId);
 }
 
-/**
- * Compares the captured paths (and, with a baseline, the workspace list) with
- * the disk, saves the result and removes the turn's before copies.
- */
-async function settleTurn(turn: TurnScope, entries: ManifestEntry[]): Promise<void> {
-  const dir = await changesDir(turn.conversationId);
+/** The captured paths that end the turn with other content than they began with, sorted by display path. */
+async function compareCapturedFiles(dir: string, turn: TurnScope, entries: ManifestEntry[]): Promise<TurnChangedFile[]> {
   const home = await homeDirectory();
   const budget: HunkBudget = { lines: 0, bytes: 0, spent: false };
   const files: TurnChangedFile[] = [];
-
   const captured = entries
     .map((entry) => ({ entry, display: displayPathOf(entry.path, turn.workspaceRoots, home) }))
     .sort(compareDisplay);
@@ -460,35 +455,58 @@ async function settleTurn(turn: TurnScope, entries: ManifestEntry[]): Promise<vo
     const file = compareSides(entry.path, display, before, after, budget);
     if (file) files.push(file);
   }
+  return files;
+}
 
-  if (turn.workspacePath && turn.baseline) {
-    const current = await listConversationWorkspaceFiles(turn.conversationId, turn.workspacePath, turn.scopeId);
-    if (!current.exceeded) {
-      const compared = new Set<string>();
-      for (const entry of entries) {
-        const relative = workspaceRelativePath(entry.path, turn.workspaceRoots);
-        if (relative !== null) compared.add(relative);
-      }
-      files.push(...compareWorkspaceLists(current.root, turn.baseline, current.files, compared));
-    }
+/**
+ * The files the workspace list shows as changed since the turn began, without
+ * the captured paths. Empty for a turn without a baseline and for a list over
+ * the limit. Rejects when the list request fails.
+ */
+async function compareWorkspaceWithBaseline(turn: TurnScope, entries: ManifestEntry[]): Promise<TurnChangedFile[]> {
+  if (!turn.workspacePath || !turn.baseline) return [];
+  const current = await listConversationWorkspaceFiles(turn.conversationId, turn.workspacePath, turn.scopeId);
+  if (current.exceeded) return [];
+  const compared = new Set<string>();
+  for (const entry of entries) {
+    const relative = workspaceRelativePath(entry.path, turn.workspaceRoots);
+    if (relative !== null) compared.add(relative);
   }
+  return compareWorkspaceLists(current.root, turn.baseline, current.files, compared);
+}
 
-  if (files.length > 0) {
-    files.sort(compareDisplay);
-    const kept = files.slice(0, MAX_TURN_FILES);
-    const saved: TurnChanges = {
-      loopId: turn.loopId,
-      files: kept,
-      ...(files.length > kept.length ? { moreFiles: files.length - kept.length } : {}),
-      total: files.length,
-      added: files.reduce((sum, file) => sum + (file.added ?? 0), 0),
-      deleted: files.reduce((sum, file) => sum + (file.deleted ?? 0), 0),
-    };
-    await atomicWrite(turnFilePath(dir, turn.loopId), JSON.stringify(saved));
-    await saveIndexEntry(dir, turn.loopId, indexEntryOf(saved));
-  }
+async function saveTurn(dir: string, loopId: string, changed: TurnChangedFile[]): Promise<void> {
+  const files = [...changed].sort(compareDisplay);
+  const kept = files.slice(0, MAX_TURN_FILES);
+  const saved: TurnChanges = {
+    loopId,
+    files: kept,
+    ...(files.length > kept.length ? { moreFiles: files.length - kept.length } : {}),
+    total: files.length,
+    added: files.reduce((sum, file) => sum + (file.added ?? 0), 0),
+    deleted: files.reduce((sum, file) => sum + (file.deleted ?? 0), 0),
+  };
+  await atomicWrite(turnFilePath(dir, loopId), JSON.stringify(saved));
+  await saveIndexEntry(dir, loopId, indexEntryOf(saved));
+}
+
+/**
+ * Settles a turn in two steps. First the captured paths are compared with the
+ * disk, the result is saved and the turn's before copies are removed. Then,
+ * with a baseline, the workspace is listed and the files only the list shows
+ * are saved together with the first ones. When the list request fails this
+ * rejects, and the result of the first step stays saved.
+ */
+async function settleTurn(turn: TurnScope, entries: ManifestEntry[]): Promise<void> {
+  const dir = await changesDir(turn.conversationId);
+  const captured = await compareCapturedFiles(dir, turn, entries);
+  if (captured.length > 0) await saveTurn(dir, turn.loopId, captured);
   await removeTurnDir(dir, turn.loopId);
-  emitSaved(turn.conversationId, turn.loopId);
+  if (captured.length > 0) emitSaved(turn.conversationId, turn.loopId);
+
+  const listed = await compareWorkspaceWithBaseline(turn, entries);
+  if (listed.length > 0) await saveTurn(dir, turn.loopId, [...captured, ...listed]);
+  if (listed.length > 0 || captured.length === 0) emitSaved(turn.conversationId, turn.loopId);
 }
 
 async function removeTurnDir(dir: string, loopId: string): Promise<void> {
@@ -667,7 +685,10 @@ export async function readTurnChanges(conversationId: string, loopId: string): P
   return parseTurnChanges(await readTextFile(path));
 }
 
-/** Called after a turn has settled, whether or not it changed a file. */
+/**
+ * Called each time a turn's result is saved, which a turn with files from both
+ * of its settle steps does twice, and once for a turn that changed no file.
+ */
 export function onTurnChangesSaved(listener: TurnChangesListener): () => void {
   listeners.add(listener);
   return () => {

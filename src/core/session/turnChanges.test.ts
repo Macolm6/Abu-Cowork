@@ -424,6 +424,54 @@ describe('turnChanges', () => {
       const saved = fs.readJson<{ files: Array<{ display: string }> }>(`${CHANGES}/loop-1.json`);
       expect(saved.files.map((file) => file.display)).toEqual(['plan.md']);
     });
+
+    it('keeps the changes the file tools made when the list request at the end fails', async () => {
+      fs.write(`${WS}/plan.md`, 'one\n');
+      await mod.beginTurn('conv-1', 'loop-1', WS);
+      await mod.captureBefore('loop-1', `${WS}/plan.md`);
+      fs.write(`${WS}/plan.md`, 'two\n');
+      fs.write(`${WS}/by-command.md`, 'x\n');
+      const told: string[] = [];
+      mod.onTurnChangesSaved((_conversationId, loopId) => told.push(loopId));
+      host.listWorkspace.mockRejectedValueOnce(new Error('ENOENT: no such file or directory, lstat'));
+
+      await expect(mod.endTurn('loop-1')).rejects.toThrow('ENOENT');
+
+      const saved = fs.readJson<{ files: unknown[]; total: number }>(`${CHANGES}/loop-1.json`);
+      expect(saved.files).toMatchObject([{ display: 'plan.md', status: 'modified', added: 1, deleted: 1 }]);
+      expect(saved.total).toBe(1);
+      expect(fs.readJson(`${CHANGES}/index.json`)).toEqual({
+        version: 1,
+        turns: { 'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md' } },
+      });
+      expect(fs.has(`${CHANGES}/loop-1`)).toBe(false);
+      expect(told).toEqual(['loop-1']);
+
+      const afterRestart = await restart();
+      await expect(afterRestart.readTurnIndex('conv-1')).resolves.toEqual({
+        'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md' },
+      });
+      expect(fs.readJson(`${CHANGES}/loop-1.json`)).toEqual(saved);
+    });
+
+    it('saves the files the list adds together with the ones the file tools changed', async () => {
+      fs.write(`${WS}/plan.md`, 'one\n');
+      const told: string[] = [];
+      mod.onTurnChangesSaved((_conversationId, loopId) => told.push(loopId));
+      await runTurn('loop-1', async (capture) => {
+        await capture(`${WS}/plan.md`);
+        fs.write(`${WS}/plan.md`, 'two\n');
+        fs.write(`${WS}/by-command.md`, 'x\n');
+      });
+
+      const saved = fs.readJson<{ files: Array<{ display: string }>; total: number }>(`${CHANGES}/loop-1.json`);
+      expect(saved.files.map((file) => file.display)).toEqual(['by-command.md', 'plan.md']);
+      expect(saved.total).toBe(2);
+      await expect(mod.readTurnIndex('conv-1')).resolves.toEqual({
+        'loop-1': { total: 2, added: 1, deleted: 1, firstFile: 'by-command.md' },
+      });
+      expect(told).toEqual(['loop-1', 'loop-1']);
+    });
   });
 
   describe('display and order', () => {
