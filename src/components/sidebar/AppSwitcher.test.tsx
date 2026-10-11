@@ -1,12 +1,13 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { initLanguage } from '@/i18n';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { TOAST_SETTLE_MS } from '@/components/ds/styles';
 import { useAppStore } from '@/stores/appStore';
+import { useToastStore } from '@/stores/toastStore';
 import { DEFAULT_APP_CONFIG } from '@/data/defaultAppConfig';
 import type { AppDefinition } from '@/types/app';
 import AppSwitcher from './AppSwitcher';
@@ -147,6 +148,45 @@ describe('AppSwitcher', () => {
       const user = setUp();
       await chooseCreate(user);
       expect(createAppDraft).toHaveBeenCalledExactlyOnceWith({ leaveApp: false });
+    });
+
+    describe('an operation that fails', () => {
+      const HOST_REASON = 'EACCES: permission denied, mkdir /Users/testuser/Abu Apps/0f3a';
+      let warn: MockInstance<typeof console.warn>;
+      // The notices as they are handed to the list: the list's own clock takes a notice off again.
+      const addToast = vi.fn();
+      beforeEach(() => {
+        warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        addToast.mockClear();
+        useToastStore.setState({ addToast });
+      });
+      afterEach(() => {
+        warn.mockRestore();
+        useToastStore.setState({ addToast: useToastStore.getInitialState().addToast });
+      });
+      const notice = () => addToast.mock.calls.map(([toast]) => toast);
+
+      it('创建应用: a notice says what did not happen and what to do; the host\'s reason goes to the console only', async () => {
+        createAppDraft.mockRejectedValueOnce(new Error(HOST_REASON));
+        const user = setUp();
+        await chooseCreate(user);
+        await vi.waitFor(() => expect(notice()).toHaveLength(1));
+        expect(notice()[0]).toMatchObject({ type: 'error', title: '没能开始创建应用', message: '请再试一次' });
+        expect(JSON.stringify(notice())).not.toContain('EACCES');
+        expect(warn).toHaveBeenCalledExactlyOnceWith('[app] create app failed:', HOST_REASON);
+        expect(focusComposerAfterPageChange).not.toHaveBeenCalled();
+      });
+
+      it('移除: a notice says what did not happen and what to do; the host\'s reason goes to the console only', async () => {
+        removeApp.mockRejectedValueOnce(new Error('EBUSY: resource busy or locked, rmdir /Users/testuser/.abu/apps/recruiting'));
+        const user = setUp();
+        await chooseRemove(user, recruiting);
+        await flush();
+        expect(notice()).toHaveLength(1);
+        expect(notice()[0]).toMatchObject({ type: 'error', title: '没能移除这个应用', message: '请再试一次' });
+        expect(JSON.stringify(notice())).not.toContain('EBUSY');
+        expect(warn).toHaveBeenCalledExactlyOnceWith('[app] remove app failed:', 'EBUSY: resource busy or locked, rmdir /Users/testuser/.abu/apps/recruiting');
+      });
     });
 
     it('lists under 移除 the apps the user added and no organization app', async () => {

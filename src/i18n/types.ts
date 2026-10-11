@@ -2255,6 +2255,11 @@ export interface TranslationDict {
     removeCreatedTitle: string;
     removeCreatedMessage: string;
     removeFailed: string;
+    /** What the user can do after `removeFailed`. */
+    removeFailedHint: string;
+    createFailed: string;
+    /** What the user can do after `createFailed`. */
+    createFailedHint: string;
     createConversation: string;
     createPrompt: string;
   };
@@ -2269,7 +2274,11 @@ export interface TranslationDict {
     adding: string;
     added: string;
     failed: string;
+    /** What the user can do after `failed`. */
+    failedHint: string;
     previewFailed: string;
+    /** What the user can do after `previewFailed`. */
+    previewFailedHint: string;
   };
   appMarket: {
     title: string;
@@ -2299,6 +2308,16 @@ export interface TranslationDict {
     confirm: string;
     adding: string;
     addFailed: string;
+    updateFailed: string;
+    previewFailed: string;
+    /** A scene's plugin could not be installed again. */
+    repairFailed: string;
+    /** What the user can do after a failed add, update or repair. */
+    failedHint: string;
+    /** What the user can do after `previewFailed`. */
+    previewFailedHint: string;
+    /** A market whose list of apps could not be read; `{name}` is the market. */
+    marketUnreadable: string;
     remoteNeedsSha: string;
     nameMismatch: string;
     entryMismatch: string;
@@ -2324,6 +2343,8 @@ export interface TranslationDict {
     sceneRunUnavailable: string;
     scenePreparing: string;
     scenePrepareFailed: string;
+    /** An app's web page that did not load. */
+    pageLoadFailed: string;
     removedNotice: string;
     removedCreatedNotice: string;
     removedAction: string;
@@ -2417,11 +2438,18 @@ export interface TranslationDict {
     pluginsMarketplaceDirHint: string;
     pluginsBrowseDir: string;
     pluginsMarketplaceReadFailed: string;
+    /** What to check when an address could not be fetched for a reason the host did not classify. */
+    pluginsMarketplaceAddressFailed: string;
+    /** What to check when a folder could not be read as a market. */
+    pluginsMarketplaceFolderFailed: string;
+    pluginsBrowseFailed: string;
     pluginsNoMarketplaces: string;
     pluginsNoMarketplacesHint: string;
     pluginsRemoveMarketplace: string;
     pluginsRemoveMarketplaceTitle: string;
     pluginsRemoveMarketplaceMessage: string;
+    /** A market whose fetched copy could not be deleted, so it is still listed; `{name}` is the market. */
+    pluginsRemoveMarketplaceFailed: string;
     pluginsNoMatches: string;
     pluginsEntryCount: string;
     pluginsInstall: string;

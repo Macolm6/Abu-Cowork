@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils';
 import { GENERAL_APP_ID, type AppDefinition } from '@/types/app';
 import { useAppStore, useAvailableApps, useSelectedApp } from '@/stores/appStore';
 import { createAppDraft } from '@/core/app/appDraft';
+import { reportAppFailure } from '@/core/app/appFailure';
 import { useToastStore } from '@/stores/toastStore';
 import { useEnterpriseAppPolicy } from '@/core/enterprise/appPolicy';
 import { removeApp } from '@/core/app/appSync';
@@ -72,7 +73,10 @@ export default function AppSwitcher({ className }: { className?: string }) {
   const createApp = () => {
     void createAppDraft({ leaveApp: allowExit })
       .then(() => focusComposerAfterPageChange())
-      .catch((error) => addToast({ type: 'error', title: t.appSwitcher.create, message: String(error) }));
+      .catch((error) => {
+        reportAppFailure('create app', error);
+        addToast({ type: 'error', title: t.appSwitcher.createFailed, message: t.appSwitcher.createFailedHint });
+      });
   };
   // The app as the store holds it now: what a removal acts on.
   const addedNow = (appId: string) => useAppStore.getState().addedApps.find((app) => app.appId === appId);
@@ -94,7 +98,8 @@ export default function AppSwitcher({ className }: { className?: string }) {
       }
       await removeApp(appId);
     } catch (error) {
-      addToast({ type: 'error', title: t.appSwitcher.removeFailed, message: String(error) });
+      reportAppFailure('remove app', error);
+      addToast({ type: 'error', title: t.appSwitcher.removeFailed, message: t.appSwitcher.removeFailedHint });
     } finally {
       removing.current.delete(appId);
     }

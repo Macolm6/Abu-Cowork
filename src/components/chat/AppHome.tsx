@@ -18,6 +18,7 @@ import { prepareExpertEntry } from '@/core/team/expertEntry';
 import { expertIdentity, teamIdentity } from '@/core/team/expertContact';
 import { appHomeTitle } from '@/core/app/appRegistry';
 import { buildAppBinding, effectiveRun, pickMode, resolveText } from '@/core/app/appBinding';
+import { reportAppFailure } from '@/core/app/appFailure';
 import { liveRefCatalog, refCatalogFrom, resolveRun, runTargets, targetDisplayName, type ResolvedRun } from '@/core/app/appRefs';
 import { describeSceneRun } from '@/components/app/runLabel';
 import AppLogo from '@/components/app/AppLogo';
@@ -139,7 +140,7 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
   const setExpandedScene = useAppStore((s) => s.setExpandedScene);
   const resolvedRun = useResolvedRuns(app);
   // A scene whose organization expert is being set up, or could not be.
-  const [preparation, setPreparation] = useState<Record<string, { state: 'busy' | 'failed'; name: string; reason?: string }>>({});
+  const [preparation, setPreparation] = useState<Record<string, { state: 'busy' | 'failed'; name: string }>>({});
   // The scenes whose template is being handed over: one start per scene at a time.
   const startingRef = useRef(new Set<string>());
 
@@ -180,7 +181,8 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
       try {
         for (const roleId of unprepared.roleIds) await agentRegistry.prepareManagedAgent(roleId);
       } catch (error) {
-        setPreparation((current) => ({ ...current, [scene.id]: { state: 'failed', name, reason: error instanceof Error ? error.message : String(error) } }));
+        reportAppFailure('prepare scene', error);
+        setPreparation((current) => ({ ...current, [scene.id]: { state: 'failed', name } }));
         return;
       }
       setPreparation((current) => {
@@ -222,6 +224,10 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
   };
 
   if (!visible) return null;
+  // The expanded scene: whether its owner is gone, and whether its organization expert is being set up.
+  const expandedUnavailable = expandedScene ? describeRun(expandedScene).unavailable : false;
+  const preparing = expandedScene ? preparation[expandedScene.id] : undefined;
+  const working = preparing?.state === 'busy';
   return (
     <div className="mt-4 w-full">
       {app.config.home.modes.items.length > 1 && (
@@ -264,39 +270,33 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
           );
         })}
       </div>
-      {expandedScene && (() => {
-        const unavailable = describeRun(expandedScene).unavailable;
-        const preparing = preparation[expandedScene.id];
-        const working = preparing?.state === 'busy';
-        return (
-          <div className="mt-4" data-testid="app-home-templates">
-            <p className="mb-2 text-center text-caption text-label-tertiary">{t.appHome.templates}</p>
-            {preparing && (
-              <p data-testid="app-home-preparing" data-state={preparing.state} role="status" className={cn('mb-2 flex items-center justify-center gap-2 text-caption', preparing.state === 'failed' ? 'text-danger' : 'text-label-tertiary')}>
-                {working && <span data-ds-spinner className="inline-flex animate-spin"><Icon icon={AppIcons.loading} size="sm" /></span>}
-                {format(working ? t.appHome.scenePreparing : t.appHome.scenePrepareFailed, { name: preparing.name })}
-                {preparing.reason && <span className="text-label-tertiary">{preparing.reason}</span>}
-              </p>
-            )}
-            <div className={PROMPT_GRID_CLASS}>
-              {expandedScene.templates.map((template) => (
-                // A template whose scene is being set up keeps the focus it was pressed with.
-                <Pressable
-                  key={template.id}
-                  data-testid={`app-home-template-${template.id}`}
-                  className={cn(PROMPT_ITEM_CLASS, 'not-aria-disabled:hover:bg-fill-hover', BUSY)}
-                  title={resolveText(template.prompt)}
-                  disabled={unavailable}
-                  aria-disabled={working || undefined}
-                  onClick={() => start(expandedScene, resolveText(template.prompt))}
-                >
-                  {resolveText(template.title)}
-                </Pressable>
-              ))}
-            </div>
+      {expandedScene && (
+        <div className="mt-4" data-testid="app-home-templates">
+          <p className="mb-2 text-center text-caption text-label-tertiary">{t.appHome.templates}</p>
+          {preparing && (
+            <p data-testid="app-home-preparing" data-state={preparing.state} role="status" className={cn('mb-2 flex items-center justify-center gap-2 text-caption', preparing.state === 'failed' ? 'text-danger' : 'text-label-tertiary')}>
+              {working && <span data-ds-spinner className="inline-flex animate-spin"><Icon icon={AppIcons.loading} size="sm" /></span>}
+              {format(working ? t.appHome.scenePreparing : t.appHome.scenePrepareFailed, { name: preparing.name })}
+            </p>
+          )}
+          <div className={PROMPT_GRID_CLASS}>
+            {expandedScene.templates.map((template) => (
+              // A template whose scene is being set up keeps the focus it was pressed with.
+              <Pressable
+                key={template.id}
+                data-testid={`app-home-template-${template.id}`}
+                className={cn(PROMPT_ITEM_CLASS, 'not-aria-disabled:hover:bg-fill-hover', BUSY)}
+                title={resolveText(template.prompt)}
+                disabled={expandedUnavailable}
+                aria-disabled={working || undefined}
+                onClick={() => start(expandedScene, resolveText(template.prompt))}
+              >
+                {resolveText(template.title)}
+              </Pressable>
+            ))}
           </div>
-        );
-      })()}
+        </div>
+      )}
     </div>
   );
 }
