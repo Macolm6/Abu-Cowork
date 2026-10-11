@@ -3983,6 +3983,7 @@ describe('agentLoopRunner', () => {
         onMessageTaken: expect.any(Function),
         runtimeEvent: expect.any(Function),
         skillCommandApprovalFactory: expect.any(Function),
+        onAbortControllerReady: expect.any(Function),
       });
       expect(sidecarRequestMock).not.toHaveBeenCalled();
       expect(result).toEqual({ reason: 'completed' });

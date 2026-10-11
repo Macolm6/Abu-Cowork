@@ -282,16 +282,23 @@ async function downloadAndInstall(a, event) {
  * app keeps running; keeping the flag makes the Restart button retryable
  * rather than silently booting the old version on the second click.
  */
-function quitAndInstallIfPending() {
+function quitAndInstallIfPending(onFailure) {
   if (!pendingInstall || !updater) return false;
   // Lazy require: tauriHost requires this module at top level, so requiring
   // it back at load time WOULD be a genuine cycle; at call time it's settled.
-  const { markQuitting } = require('./tauriHost.cjs');
+  const { markQuitting, cancelAppExitPreparation } = require('./tauriHost.cjs');
+  const restoreApplication = () => {
+    if (onFailure) onFailure();
+    else cancelAppExitPreparation();
+  };
+  updater.once('error', restoreApplication);
   try {
     markQuitting();
     updater.quitAndInstall();
     return true;
   } catch (err) {
+    updater.removeListener('error', restoreApplication);
+    cancelAppExitPreparation();
     pendingInstall = false;
     console.warn(
       `[updaterHost] quitAndInstall failed — falling back to plain relaunch: ${err instanceof Error ? err.message : String(err)}`
