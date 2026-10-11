@@ -826,7 +826,7 @@ describe('file change reporting', () => {
 
   function setDiskDefaults() {
     vi.mocked(exists).mockReset().mockResolvedValue(false);
-    vi.mocked(stat).mockReset().mockResolvedValue({ size: 0 } as never);
+    vi.mocked(stat).mockReset().mockResolvedValue({ isFile: true, size: 0 } as never);
     vi.mocked(readTextFile).mockReset().mockResolvedValue('');
     vi.mocked(writeTextFile).mockReset().mockResolvedValue(undefined);
     vi.mocked(invoke).mockReset();
@@ -862,7 +862,7 @@ describe('file change reporting', () => {
 
     it('reads the existing text before writing and reports the difference', async () => {
       vi.mocked(exists).mockResolvedValue(true);
-      vi.mocked(stat).mockResolvedValue({ size: 8 } as never);
+      vi.mocked(stat).mockResolvedValue({ isFile: true, size: 8 } as never);
       vi.mocked(readTextFile).mockResolvedValue('one\ntwo\n');
 
       await writeFileTool.execute({ path: '/w/a.txt', content: 'one\n2\n' }, { reportMetadata });
@@ -892,7 +892,7 @@ describe('file change reporting', () => {
 
     it('reports path and kind only when the existing file is over the size limit', async () => {
       vi.mocked(exists).mockResolvedValue(true);
-      vi.mocked(stat).mockResolvedValue({ size: 2 * 1024 * 1024 + 1 } as never);
+      vi.mocked(stat).mockResolvedValue({ isFile: true, size: 2 * 1024 * 1024 + 1 } as never);
 
       const result = await writeFileTool.execute({ path: '/w/big.log', content: 'x' }, { reportMetadata });
 
@@ -901,24 +901,36 @@ describe('file change reporting', () => {
       expect(reportMetadata).toHaveBeenCalledWith({ fileChange: { path: '/w/big.log', kind: 'modify' } });
     });
 
-    it('still writes, and reports path and kind only, when the existing text cannot be read', async () => {
+    it('fails the write when the existing text cannot be read', async () => {
       vi.mocked(exists).mockResolvedValue(true);
       vi.mocked(readTextFile).mockRejectedValue(new Error('EACCES: permission denied'));
 
       const result = await writeFileTool.execute({ path: '/w/a.txt', content: 'x' }, { reportMetadata });
 
-      expect(result).toBe('Successfully wrote 1 characters to /w/a.txt');
-      expect(writeTextFile).toHaveBeenCalledWith('/w/a.txt', 'x');
-      expect(reportMetadata).toHaveBeenCalledWith({ fileChange: { path: '/w/a.txt', kind: 'modify' } });
+      expect(result).toContain('Error writing file');
+      expect(result).toContain('EACCES');
+      expect(writeTextFile).not.toHaveBeenCalled();
+      expect(reportMetadata).not.toHaveBeenCalled();
     });
 
-    it('still writes, and reports nothing, when it cannot tell whether the file exists', async () => {
+    it('fails the write when it cannot tell whether the file exists', async () => {
       vi.mocked(exists).mockRejectedValue(new Error('transport closed'));
 
       const result = await writeFileTool.execute({ path: '/w/a.txt', content: 'x' }, { reportMetadata });
 
-      expect(result).toBe('Successfully wrote 1 characters to /w/a.txt');
+      expect(result).toContain('Error writing file');
+      expect(writeTextFile).not.toHaveBeenCalled();
       expect(reportMetadata).not.toHaveBeenCalled();
+    });
+
+    it('reports path and kind only for an existing path that is no regular file', async () => {
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(stat).mockResolvedValue({ isFile: false, size: 0 } as never);
+
+      await writeFileTool.execute({ path: '/w/a.txt', content: 'x' }, { reportMetadata });
+
+      expect(readTextFile).not.toHaveBeenCalled();
+      expect(reportMetadata).toHaveBeenCalledWith({ fileChange: { path: '/w/a.txt', kind: 'modify' } });
     });
 
     it('reports nothing when the write fails', async () => {
@@ -1013,7 +1025,7 @@ describe('file change reporting', () => {
 
     it('reads the text before moving the file to Trash and reports it as deleted lines', async () => {
       vi.mocked(exists).mockResolvedValue(true);
-      vi.mocked(stat).mockResolvedValue({ size: 8 } as never);
+      vi.mocked(stat).mockResolvedValue({ isFile: true, size: 8 } as never);
       vi.mocked(readTextFile).mockResolvedValue('one\ntwo\n');
       vi.mocked(invoke).mockResolvedValue(undefined);
 
@@ -1033,9 +1045,9 @@ describe('file change reporting', () => {
       });
     });
 
-    it('reports path and kind only for a target whose text cannot be read', async () => {
+    it('reports path and kind only for a target that is a folder', async () => {
       vi.mocked(exists).mockResolvedValue(true);
-      vi.mocked(readTextFile).mockRejectedValue(new Error('EISDIR: illegal operation on a directory'));
+      vi.mocked(stat).mockResolvedValue({ isFile: false, size: 0 } as never);
       vi.mocked(invoke).mockResolvedValue(undefined);
 
       const result = await deleteFileTool.execute({ path: target }, { reportMetadata });

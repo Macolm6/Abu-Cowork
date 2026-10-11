@@ -30,28 +30,15 @@ import { computeFileChange, MAX_COMPARABLE_TEXT_BYTES, type FileChange } from '@
 type TextBefore =
   | { state: 'absent' }
   | { state: 'text'; text: string }
-  /** The path exists; its text is over the comparable size or could not be read. */
+  /** The path exists; it is no regular file or its text is over the comparable size. */
   | { state: 'unread' };
 
-/**
- * Reads the text a write is about to replace. A failure here never stops the
- * write: null means the path's existence could not be determined.
- */
-async function readTextBefore(path: string): Promise<TextBefore | null> {
-  let present: boolean;
-  try {
-    present = await exists(path);
-  } catch {
-    return null;
-  }
-  if (!present) return { state: 'absent' };
-  try {
-    const info = await stat(path);
-    if (info.size > MAX_COMPARABLE_TEXT_BYTES) return { state: 'unread' };
-    return { state: 'text', text: await readTextFile(path) };
-  } catch {
-    return { state: 'unread' };
-  }
+/** Reads the text a write is about to replace. */
+async function readTextBefore(path: string): Promise<TextBefore> {
+  if (!(await exists(path))) return { state: 'absent' };
+  const info = await stat(path);
+  if (!info.isFile || info.size > MAX_COMPARABLE_TEXT_BYTES) return { state: 'unread' };
+  return { state: 'text', text: await readTextFile(path) };
 }
 
 function fileChangeAfterWrite(path: string, before: TextBefore | null, after: string | null): FileChange | null {

@@ -110,6 +110,8 @@ interface TurnScope {
   scopeId: string | undefined;
   /** The workspace list at the start; null when this turn compares no list. */
   baseline: WorkspaceFileEntry[] | null;
+  /** Whether the conversation is still there. Nothing is written for one that is gone. */
+  isConversationPresent: () => boolean;
 }
 
 interface OpenTurn extends TurnScope {
@@ -126,6 +128,8 @@ type Side =
 type TurnChangesListener = (conversationId: string, loopId: string) => void;
 
 const openTurns = new Map<string, OpenTurn>();
+/** Every loop this run of the app opened. Recovery leaves their directories to `endTurn`. */
+const turnsOfThisRun = new Set<string>();
 /** Tail of the settle work queued per conversation. It never rejects: it orders work, it does not report it. */
 const conversationWork = new Map<string, Promise<void>>();
 const recoveries = new Map<string, Promise<void>>();
@@ -285,12 +289,22 @@ function parseTurnChanges(text: string): TurnChanges {
       || !(file.status === 'created' || file.status === 'modified' || file.status === 'deleted')
       || !(file.added === undefined || isCount(file.added))
       || !(file.deleted === undefined || isCount(file.deleted))
-      || !(file.hunks === undefined || Array.isArray(file.hunks))
+      || !(file.hunks === undefined || (Array.isArray(file.hunks) && file.hunks.every(isSavedHunk)))
     ) {
       throw new Error('Turn changes file entry is not in the saved format');
     }
   }
   return value as unknown as TurnChanges;
+}
+
+function isSavedHunk(value: unknown): value is FileChangeHunk {
+  return isRecord(value)
+    && isCount(value.oldStart)
+    && isCount(value.oldLines)
+    && isCount(value.newStart)
+    && isCount(value.newLines)
+    && Array.isArray(value.lines)
+    && value.lines.every((line: unknown) => typeof line === 'string' && /^[ +-]/.test(line));
 }
 
 async function loadIndex(dir: string): Promise<TurnIndex> {
@@ -366,7 +380,6 @@ function decodeText(side: Side): string | null {
 interface HunkBudget {
   lines: number;
   bytes: number;
-  spent: boolean;
 }
 
 function hunkLineCount(hunks: FileChangeHunk[]): number {
@@ -375,8 +388,8 @@ function hunkLineCount(hunks: FileChangeHunk[]): number {
 
 /**
  * The entry of one captured path, or null when its content ends the turn as it
- * began. Once the turn's hunk budget is spent, this file and every later one
- * are listed without line counts.
+ * began. A file whose hunks do not fit in what is left of the turn's hunk
+ * budget keeps its line counts and is saved without hunks.
  */
 function compareSides(
   path: string,
@@ -389,7 +402,6 @@ function compareSides(
   if (before.state === 'file' && after.state === 'file' && sameBytes(before.bytes, after.bytes)) return null;
   const status: TurnChangedFile['status'] = before.state === 'absent' ? 'created' : after.state === 'absent' ? 'deleted' : 'modified';
   const uncounted: TurnChangedFile = { path, display, status };
-  if (budget.spent) return uncounted;
 
   const beforeText = decodeText(before);
   const afterText = decodeText(after);
@@ -400,8 +412,7 @@ function compareSides(
   const lines = hunkLineCount(diff.hunks);
   const bytes = utf8Length(JSON.stringify(diff.hunks));
   if (budget.lines + lines > MAX_TURN_HUNK_LINES || budget.bytes + bytes > MAX_TURN_HUNK_BYTES) {
-    budget.spent = true;
-    return uncounted;
+    return { path, display, status, added: diff.added, deleted: diff.deleted };
   }
   budget.lines += lines;
   budget.bytes += bytes;
@@ -442,7 +453,7 @@ function emitSaved(conversationId: string, loopId: string): void {
 /** The captured paths that end the turn with other content than they began with, sorted by display path. */
 async function compareCapturedFiles(dir: string, turn: TurnScope, entries: ManifestEntry[]): Promise<TurnChangedFile[]> {
   const home = await homeDirectory();
-  const budget: HunkBudget = { lines: 0, bytes: 0, spent: false };
+  const budget: HunkBudget = { lines: 0, bytes: 0 };
   const files: TurnChangedFile[] = [];
   const captured = entries
     .map((entry) => ({ entry, display: displayPathOf(entry.path, turn.workspaceRoots, home) }))
@@ -495,16 +506,20 @@ async function saveTurn(dir: string, loopId: string, changed: TurnChangedFile[])
  * disk, the result is saved and the turn's before copies are removed. Then,
  * with a baseline, the workspace is listed and the files only the list shows
  * are saved together with the first ones. When the list request fails this
- * rejects, and the result of the first step stays saved.
+ * rejects, and the result of the first step stays saved. A turn whose
+ * conversation is gone writes nothing.
  */
 async function settleTurn(turn: TurnScope, entries: ManifestEntry[]): Promise<void> {
+  if (!turn.isConversationPresent()) return;
   const dir = await changesDir(turn.conversationId);
   const captured = await compareCapturedFiles(dir, turn, entries);
+  if (!turn.isConversationPresent()) return;
   if (captured.length > 0) await saveTurn(dir, turn.loopId, captured);
   await removeTurnDir(dir, turn.loopId);
   if (captured.length > 0) emitSaved(turn.conversationId, turn.loopId);
 
   const listed = await compareWorkspaceWithBaseline(turn, entries);
+  if (!turn.isConversationPresent()) return;
   if (listed.length > 0) await saveTurn(dir, turn.loopId, [...captured, ...listed]);
   if (listed.length > 0 || captured.length === 0) emitSaved(turn.conversationId, turn.loopId);
 }
@@ -534,12 +549,14 @@ function writeManifest(turn: OpenTurn): Promise<void> {
  * lists the workspace. A conversation without a workspace, and a workspace over
  * the list limit, get no list comparison. When the list request fails this
  * rejects; the turn stays open without a baseline, so captures still work.
+ * `options.isConversationPresent` answers whether the conversation still
+ * exists; once it says no, the turn writes nothing more.
  */
 export async function beginTurn(
   conversationId: string,
   loopId: string,
   workspacePath: string | null | undefined,
-  options?: { scopeId?: string },
+  options?: { scopeId?: string; isConversationPresent?: () => boolean },
 ): Promise<void> {
   assertConversationId(conversationId);
   assertLoopId(loopId);
@@ -553,10 +570,12 @@ export async function beginTurn(
     workspaceRoots: folder ? [folder] : [],
     scopeId: options?.scopeId,
     baseline: null,
+    isConversationPresent: options?.isConversationPresent ?? (() => true),
     captured: new Map(),
     manifestWrites: Promise.resolve(),
   };
   openTurns.set(loopId, turn);
+  turnsOfThisRun.add(loopId);
   if (!folder) return;
   const list = await listConversationWorkspaceFiles(conversationId, folder, turn.scopeId);
   if (list.root !== folder) turn.workspaceRoots = [folder, list.root];
@@ -570,7 +589,7 @@ export async function beginTurn(
  */
 export async function captureBefore(loopId: string, absolutePath: string): Promise<void> {
   const turn = openTurns.get(loopId);
-  if (!turn) return;
+  if (!turn || !turn.isConversationPresent()) return;
   const path = normalizeFilePath(absolutePath);
   if (!isAbsoluteFilePath(path) || turn.captured.has(path)) return;
   turn.captured.set(path, null);
@@ -631,7 +650,7 @@ async function recoverInterruptedTurns(conversationId: string): Promise<void> {
   const dir = await changesDir(conversationId);
   if (!(await exists(dir))) return;
   for (const entry of await readDir(dir)) {
-    if (!entry.isDirectory || loopIdRejection(entry.name) !== null || openTurns.has(entry.name)) continue;
+    if (!entry.isDirectory || loopIdRejection(entry.name) !== null || turnsOfThisRun.has(entry.name)) continue;
     const loopId = entry.name;
     const savedPath = turnFilePath(dir, loopId);
     if (await exists(savedPath)) {
@@ -648,7 +667,15 @@ async function recoverInterruptedTurns(conversationId: string): Promise<void> {
     }
     const manifest = parseManifest(await readTextFile(manifestPath));
     await settleTurn(
-      { conversationId, loopId, workspacePath: null, workspaceRoots: manifest.workspaceRoots, scopeId: undefined, baseline: null },
+      {
+        conversationId,
+        loopId,
+        workspacePath: null,
+        workspaceRoots: manifest.workspaceRoots,
+        scopeId: undefined,
+        baseline: null,
+        isConversationPresent: () => true,
+      },
       manifest.entries,
     );
   }
@@ -682,7 +709,9 @@ export async function readTurnChanges(conversationId: string, loopId: string): P
   assertLoopId(loopId);
   const path = turnFilePath(await changesDir(conversationId), loopId);
   if (!(await exists(path))) return null;
-  return parseTurnChanges(await readTextFile(path));
+  const saved = parseTurnChanges(await readTextFile(path));
+  if (saved.loopId !== loopId) throw new Error('Turn changes file belongs to another turn');
+  return saved;
 }
 
 /**

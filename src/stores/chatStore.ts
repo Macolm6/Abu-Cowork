@@ -63,6 +63,7 @@ import { clearBrowserReclaim, disposeOwnedBrowserViews } from '../core/browser/b
 import { appendBoundedSubagentToolCall } from '../core/session/durableToolResultContent';
 import { normalizeUpstreamErrorDetails } from '../core/llm/adapter';
 import { redactFailureText } from '../core/diagnostic/scrub';
+import { parseFileChange } from '../core/files/fileChangeBudget';
 import {
   ACTIVE_RUN_STATES,
   RUN_FAILURE_STATES,
@@ -157,9 +158,11 @@ export function sanitizeImportedMessage(msg: Message, answeredLoopIds?: Readonly
       const {
         sandboxRecovery: _sandboxRecovery,
         sandboxRecoveryAction: _sandboxRecoveryAction,
+        fileChange: untrustedFileChange,
         ...safeToolCall
       } = tc;
-      return { ...safeToolCall, isExecuting: false };
+      const fileChange = parseFileChange(untrustedFileChange);
+      return { ...safeToolCall, ...(fileChange ? { fileChange } : {}), isExecuting: false };
     }),
   }, { recoveredText: getI18n().chat.runRecoveredAfterRestart, answeredLoopIds }));
 }

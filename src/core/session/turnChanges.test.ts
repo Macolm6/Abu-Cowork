@@ -550,21 +550,37 @@ describe('turnChanges', () => {
       });
     });
 
-    it('stops saving hunks once a turn holds 20000 hunk lines; later files carry no line counts', async () => {
+    it('saves a file without hunks, with its line counts, when its hunks do not fit in what is left of 20000 lines', async () => {
+      const sizes: Record<string, number> = { 'a.md': 12000, 'b.md': 9000, 'c.md': 3 };
       await runTurn('loop-1', async (capture) => {
-        for (const file of ['a.md', 'b.md', 'c.md']) {
+        for (const [file, count] of Object.entries(sizes)) {
           await capture(`${WS}/${file}`);
-          fs.write(`${WS}/${file}`, lines(file === 'a.md' ? 12000 : 9000));
+          fs.write(`${WS}/${file}`, lines(count));
         }
       });
 
       const saved = fs.readJson<{ files: Array<{ display: string; added?: number; hunks?: unknown[] }>; added: number }>(`${CHANGES}/loop-1.json`);
       expect(saved.files.map((file) => [file.display, file.added, Boolean(file.hunks)])).toEqual([
         ['a.md', 12000, true],
-        ['b.md', undefined, false],
-        ['c.md', undefined, false],
+        ['b.md', 9000, false],
+        ['c.md', 3, true],
       ]);
-      expect(saved.added).toBe(12000);
+      expect(saved.added).toBe(21003);
+    });
+
+    it('keeps the hunks of the files after one whose own hunks are over 20000 lines', async () => {
+      await runTurn('loop-1', async (capture) => {
+        await capture(`${WS}/a-huge.csv`);
+        fs.write(`${WS}/a-huge.csv`, lines(20001));
+        await capture(`${WS}/b.md`);
+        fs.write(`${WS}/b.md`, lines(3));
+      });
+
+      const saved = fs.readJson<{ files: Array<{ display: string; added?: number; hunks?: unknown[] }> }>(`${CHANGES}/loop-1.json`);
+      expect(saved.files.map((file) => [file.display, file.added, Boolean(file.hunks)])).toEqual([
+        ['a-huge.csv', 20001, false],
+        ['b.md', 3, true],
+      ]);
     });
 
     it('stops saving hunks once a turn holds 5 MB of them', async () => {
@@ -631,6 +647,50 @@ describe('turnChanges', () => {
       fs.write(`${CHANGES}/index.json`, '[]');
       await expect(mod.readTurnChanges('conv-1', 'loop-1')).rejects.toThrow();
       await expect(mod.readTurnIndex('conv-1')).rejects.toThrow();
+    });
+
+    it.each([
+      ['a hunk that is no object', ['x']],
+      ['a hunk without line numbers', [{ lines: ['+a'] }]],
+      ['hunk lines that are no array', [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 1, lines: '+a' }]],
+      ['a hunk line that is no text', [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 1, lines: [1] }]],
+      ['a hunk line without a marker', [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 1, lines: ['a'] }]],
+    ])('rejects a saved file with %s', async (_label, hunks) => {
+      const file = { path: `${WS}/a.md`, display: 'a.md', status: 'modified', added: 1, deleted: 0, hunks };
+      fs.write(`${CHANGES}/loop-1.json`, JSON.stringify({ loopId: 'loop-1', files: [file], total: 1, added: 1, deleted: 0 }));
+      await expect(mod.readTurnChanges('conv-1', 'loop-1')).rejects.toThrow('not in the saved format');
+    });
+
+    it('rejects a saved file that names another turn', async () => {
+      fs.write(`${CHANGES}/loop-1.json`, JSON.stringify({ loopId: 'loop-2', files: [], total: 0, added: 0, deleted: 0 }));
+      await expect(mod.readTurnChanges('conv-1', 'loop-1')).rejects.toThrow('another turn');
+    });
+  });
+
+  describe('a conversation deleted while its turn runs', () => {
+    it('writes nothing at the end of the turn', async () => {
+      let present = true;
+      await mod.beginTurn('conv-1', 'loop-1', null, { isConversationPresent: () => present });
+      await mod.captureBefore('loop-1', `${WS}/new.md`);
+      fs.write(`${WS}/new.md`, 'n\n');
+      fs.delete(`${HOME}/.abu/conversations/conv-1`);
+      present = false;
+      const told: string[] = [];
+      mod.onTurnChangesSaved((_conversationId, loopId) => told.push(loopId));
+
+      await mod.endTurn('loop-1');
+
+      expect(fs.has(`${HOME}/.abu/conversations/conv-1`)).toBe(false);
+      expect(told).toEqual([]);
+    });
+
+    it('keeps no copy of a file written after the conversation is gone', async () => {
+      fs.write(`${WS}/plan.md`, 'one\n');
+      await mod.beginTurn('conv-1', 'loop-1', null, { isConversationPresent: () => false });
+
+      await mod.captureBefore('loop-1', `${WS}/plan.md`);
+
+      expect(fs.has(`${HOME}/.abu/conversations/conv-1`)).toBe(false);
     });
   });
 
@@ -740,6 +800,21 @@ describe('turnChanges', () => {
 
       await expect(mod.readTurnIndex('conv-1')).resolves.toEqual({});
       expect(fs.has(`${CHANGES}/loop-1/before/manifest.json`)).toBe(true);
+    });
+
+    it('leaves a turn of this run to its own end when the index is first read just before it ends', async () => {
+      fs.write(`${WS}/plan.md`, 'one\n');
+      await mod.beginTurn('conv-1', 'loop-1', WS);
+      await mod.captureBefore('loop-1', `${WS}/plan.md`);
+      fs.write(`${WS}/plan.md`, 'two\n');
+      fs.write(`${WS}/by-command.md`, 'x\n');
+
+      const index = mod.readTurnIndex('conv-1');
+      await mod.endTurn('loop-1');
+      await index;
+
+      const saved = fs.readJson<{ files: Array<{ display: string }> }>(`${CHANGES}/loop-1.json`);
+      expect(saved.files.map((file) => file.display)).toEqual(['by-command.md', 'plan.md']);
     });
 
     it('removes a left-over directory without a manifest, and one whose result is already saved', async () => {

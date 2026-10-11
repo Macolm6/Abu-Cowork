@@ -3886,6 +3886,28 @@ describe('sanitizeImportedMessage — same completion inference as disk load', (
     expect(sanitized.runErrorDetails).toBeUndefined();
   });
 
+  it('keeps a well-formed file change of an imported tool call and drops a malformed one', () => {
+    const hunk = { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b'] };
+    const sanitized = sanitizeImportedMessage({
+      id: 'a-file-change',
+      role: 'assistant',
+      content: '',
+      timestamp: 1,
+      toolCalls: [
+        { id: 't1', name: 'edit_file', input: {}, fileChange: { path: '/w/a.md', kind: 'modify', added: 1, deleted: 1, hunks: [hunk] } },
+        { id: 't2', name: 'edit_file', input: {}, fileChange: { path: 7, kind: 'modify' } },
+        { id: 't3', name: 'edit_file', input: {}, fileChange: { path: '/w/c.md', kind: 'modify', hunks: [{ ...hunk, lines: 'x' }] } },
+      ],
+    } as never);
+
+    expect(sanitized.toolCalls?.map((tc) => tc.fileChange)).toEqual([
+      { path: '/w/a.md', kind: 'modify', added: 1, deleted: 1, hunks: [hunk] },
+      undefined,
+      undefined,
+    ]);
+    expect(sanitized.toolCalls?.[1]).not.toHaveProperty('fileChange');
+  });
+
   it('sanitizes a legacy imported JSON runError', () => {
     const sanitized = sanitizeImportedMessage({
       id: 'u-unsafe-import-error',

@@ -3805,7 +3805,9 @@ describe('agentLoopRunner', () => {
         await runAgentLoopDispatched('conv-1', 'hello');
 
         const loopId = (runAgentLoopMock.mock.calls[0][2] as { loopId: string }).loopId;
-        expect(beginTurnMock).toHaveBeenCalledExactlyOnceWith('conv-1', loopId, '/Users/me/project', { scopeId: undefined });
+        expect(beginTurnMock).toHaveBeenCalledExactlyOnceWith(
+          'conv-1', loopId, '/Users/me/project', { scopeId: undefined, isConversationPresent: expect.any(Function) },
+        );
         expect(endTurnMock).toHaveBeenCalledExactlyOnceWith(loopId, { workspacePath: '/Users/me/project' });
       });
 
@@ -3820,7 +3822,9 @@ describe('agentLoopRunner', () => {
         await runAgentLoopDispatched('conv-1', 'hello');
 
         const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
-        expect(beginTurnMock).toHaveBeenCalledExactlyOnceWith('conv-1', runId, '/Users/me/project', { scopeId: undefined });
+        expect(beginTurnMock).toHaveBeenCalledExactlyOnceWith(
+          'conv-1', runId, '/Users/me/project', { scopeId: undefined, isConversationPresent: expect.any(Function) },
+        );
         expect(endTurnMock).toHaveBeenCalledExactlyOnceWith(runId, { workspacePath: '/Users/me/project' });
       });
 
@@ -3849,7 +3853,7 @@ describe('agentLoopRunner', () => {
         await runAgentLoopDispatched('conv-1', 'scheduled work', { authorizationScopeId: 'scope-9' });
 
         expect(beginTurnMock).toHaveBeenCalledExactlyOnceWith(
-          'conv-1', expect.any(String), '/Users/me/project', { scopeId: 'scope-9' },
+          'conv-1', expect.any(String), '/Users/me/project', { scopeId: 'scope-9', isConversationPresent: expect.any(Function) },
         );
         expect(endTurnMock).toHaveBeenCalledTimes(1);
       });
@@ -3906,7 +3910,9 @@ describe('agentLoopRunner', () => {
 
         await runAgentLoopDispatched('conv-1', 'hello');
 
-        expect(beginTurnMock).toHaveBeenCalledExactlyOnceWith('conv-1', expect.any(String), null, { scopeId: undefined });
+        expect(beginTurnMock).toHaveBeenCalledExactlyOnceWith(
+          'conv-1', expect.any(String), null, { scopeId: undefined, isConversationPresent: expect.any(Function) },
+        );
         expect(endTurnMock).toHaveBeenCalledExactlyOnceWith(expect.any(String), { workspacePath: '/Users/me/Documents/Abu/task' });
       });
 

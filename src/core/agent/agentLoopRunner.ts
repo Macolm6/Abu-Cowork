@@ -3301,7 +3301,10 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     conversationId,
     ownedLoopId,
     entryConversation?.workspacePath ?? null,
-    { scopeId: turnChangesScopeId },
+    {
+      scopeId: turnChangesScopeId,
+      isConversationPresent: () => Boolean(useChatStore.getState().conversations[conversationId]),
+    },
   ).catch((error: unknown) => {
     logger.warn('turn changes: begin failed', {
       conversationId,
