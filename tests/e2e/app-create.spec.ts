@@ -158,7 +158,8 @@ test('创建应用 chosen on the extensions page lands in the creation conversat
   await expect(extensionsTabs).toHaveCount(0);
   await expect(page.getByRole('button', { name: '/abu-app-builder', exact: true })).toBeVisible();
   await expect.poll(() => composer.evaluate((element) => element instanceof HTMLTextAreaElement ? element.value : element.textContent ?? '')).toMatch(/我想创建一个应用|I want to create an app/);
-  await expect(page.getByRole('main').getByText(/^(创建应用|Create app)$/).first()).toBeVisible();
+  // The conversation in view is the creation conversation: its title heads the chat page.
+  await expect(page.getByRole('button', { name: /^(创建应用|Create app)\s/ })).toBeVisible();
   await expect(composer).toBeFocused();
   const appsRoot = path.join(dataRoot.appDataDir, 'Home', 'Abu Apps');
   await expect.poll(() => (fs.existsSync(appsRoot) ? fs.readdirSync(appsRoot).length : 0)).toBe(1);
