@@ -64,7 +64,7 @@ function ScenePreview({ app }: { app: AppDefinition }) {
           return (
             <li key={`${mode.modeId}/${scene.id}`} className={cn(ITEM, 'flex items-baseline justify-between gap-3')}>
               <span className="truncate text-ui text-label-secondary">{resolveText(mode.title)} · {resolveText(scene.title)}</span>
-              <span className="shrink-0 text-ui-sm text-label-tertiary">{label}</span>
+              <span className="shrink-0 text-ui-sm text-label-secondary">{label}</span>
             </li>
           );
         }))}

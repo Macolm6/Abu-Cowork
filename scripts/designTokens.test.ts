@@ -474,3 +474,35 @@ describe.each(APPEARANCES)('design tokens — contrast (%s)', (name) => {
     expect(wcagContrast(color(values, 'label'), stack(values, 'raised', 'fill-selected'))).toBeGreaterThanOrEqual(4.5);
   });
 });
+
+// Text on a resting fill is `text-label` or `text-label-secondary`, the two the contrast cases
+// above hold at 4.5:1 over a card and over a floating layer. Tertiary text on a fill over a
+// floating layer is under 4.5:1 in the dark appearance. What this reads: one class string that
+// names both the fill and the tertiary text. What it cannot see: tertiary text on a child of the
+// element that paints the fill, and a class joined from two strings.
+function tertiaryOnFill(root: string = SRC_DIR): string[] {
+  const found: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!/\.tsx?$/.test(entry.name) || /\.test\.tsx?$/.test(entry.name)) continue;
+      const file = path.relative(root, full).split(path.sep).join('/');
+      for (const match of readFileSync(full, 'utf8').matchAll(/(['"`])((?:(?!\1)[^\n\\])*)\1/g)) {
+        const classes = match[2].split(/\s+/);
+        if (classes.includes('bg-fill') && classes.includes('text-label-tertiary')) found.push(file);
+      }
+    }
+  };
+  walk(root);
+  return found;
+}
+
+describe('design tokens — text on a fill', () => {
+  it('finds no class string in src/ that puts tertiary text on a resting fill', () => {
+    expect(tertiaryOnFill()).toEqual([]);
+  });
+});

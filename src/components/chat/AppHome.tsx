@@ -152,7 +152,7 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
       : owner?.status === 'ok' && owner.kind === 'team' ? <TeamAvatar avatar={owner.team.avatar} size="xs" round />
         : owner?.status === 'ok' && owner.kind === 'expert' ? <AgentAvatar agent={owner.agent} size="sm" />
           : owner ? <TeamAvatar size="xs" round />
-            : <span className="inline-flex h-4 w-4 items-center justify-center rounded-control bg-fill text-caption text-label-tertiary">/</span>;
+            : <span className="inline-flex h-4 w-4 items-center justify-center rounded-control bg-fill text-caption text-label-secondary">/</span>;
     return { label, avatar, unavailable };
   };
 
