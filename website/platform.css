@@ -29,6 +29,7 @@
 .stack-card .copy code { font-family: var(--mono); font-size: 0.9em; }
 /* The step pictures are client windows cut at their own edge; the radius follows the window's 18px corner. */
 .stack-card .art img.win-confirm { border-radius: 2.7% / 3.25%; }
+:lang(en) .stack-card .art img.win-confirm { border-radius: 2.7% / 3.16%; }
 .stack-card .art img.win-market { border-radius: 2.35% / 3.05%; }
 
 .connect { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }

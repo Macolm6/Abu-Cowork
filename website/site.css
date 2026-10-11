@@ -135,12 +135,12 @@ p, .h3 { text-wrap: balance; }
 /* The link to the same page in the other language. */
 .nav-lang { padding: 0 10px; font-size: 14px; opacity: 0.72; white-space: nowrap; transition: opacity 200ms; }
 .nav-lang:hover { opacity: 1; }
-/* Eight entries, the language link and two buttons need about 1120px in English: the bar tightens first, then gives up the entries. */
-@media (max-width: 1160px) {
+/* Eight entries, the language link and two buttons need about 1220px on the English enterprise page: the bar tightens first, then gives up the entries. */
+@media (max-width: 1240px) {
   .nav-links { gap: 16px; font-size: 14px; }
   .nav-cta .btn-line { display: none; }
 }
-@media (max-width: 1000px) {
+@media (max-width: 1040px) {
   .nav-links { display: none; }
 }
 .nav.on-night { color: var(--night-ink); }

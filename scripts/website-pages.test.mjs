@@ -58,13 +58,13 @@ test('hero second line names the claim and the six models', () => {
 });
 
 test('hero shows one whole client window under the copy', () => {
-  for (const source of [homeZh, homeEn]) {
+  for (const [source, shots] of [[homeZh, 'assets/shots/'], [homeEn, 'assets/shots/en/']]) {
     const hero = source.slice(source.indexOf('<div class="hero" id="hero">'), source.indexOf('<div class="manifesto"'));
     assert.ok(hero.indexOf('class="hero-actions') < hero.indexOf('<div class="hero-window" id="heroWindow">'), 'the window comes after the buttons');
     assert.equal(count(hero, '<img '), 1, 'the hero holds one picture');
     assert.ok(hero.includes('<div class="lights" aria-hidden="true">'), 'the window has its frame');
-    assert.ok(hero.includes('<source media="(prefers-color-scheme: dark)" srcset="assets/shots/hero-window-dark-1440.webp 1440w, assets/shots/hero-window-dark.webp 2880w"'));
-    assert.ok(hero.includes('<img src="assets/shots/hero-window-light.webp"'));
+    assert.ok(hero.includes(`<source media="(prefers-color-scheme: dark)" srcset="${shots}hero-window-dark-1440.webp 1440w, ${shots}hero-window-dark.webp 2880w"`));
+    assert.ok(hero.includes(`<img src="${shots}hero-window-light.webp"`));
     assert.ok(!source.includes('class="frag"') && !source.includes('hero-pin'), 'no scattered component pictures');
   }
   assert.ok(homeScript.includes('const WINDOW_START_SCALE = 0.94;'), 'the window grows from 0.94 to full size while the page scrolls');
@@ -76,7 +76,7 @@ test('the four steps each show a 3:2 region of a client window', () => {
     const steps = source.split('<article class="stack-card">').slice(1).map((part) => part.slice(0, part.indexOf('</article>')));
     assert.equal(steps.length, 4);
     assert.deepEqual(
-      steps.map((step) => step.match(/<img src="assets\/shots\/([^"]+)" width="(\d+)" height="(\d+)"/).slice(1, 4).join(' ')),
+      steps.map((step) => step.match(/<img src="assets\/shots\/(?:en\/)?([^"]+)" width="(\d+)" height="(\d+)"/).slice(1, 4).join(' ')),
       ['step-1-ask.webp 800 500', 'step-2-plan.webp 840 525', 'step-3-question.webp 904 610', 'step-4-file.webp 1440 900'],
     );
   }
@@ -200,7 +200,11 @@ test('Chinese and English pages share one structure', () => {
     const zhClasses = attributeValues(zh, 'class').filter((value) => value !== 'punct');
     assert.deepEqual(enClasses, zhClasses, `${pair.en} and ${pair.zh} differ in structure`);
     assert.deepEqual(attributeValues(en, 'id'), attributeValues(zh, 'id'), `${pair.en} and ${pair.zh} differ in ids`);
-    assert.deepEqual(attributeValues(en, 'src'), attributeValues(zh, 'src'), `${pair.en} and ${pair.zh} differ in pictures or scripts`);
+    // English pages take the same pictures from assets/shots/en, where the client is in English.
+    const enSources = attributeValues(en, 'src').map((src) => src.replace('assets/shots/en/', 'assets/shots/'));
+    assert.deepEqual(enSources, attributeValues(zh, 'src'), `${pair.en} and ${pair.zh} differ in pictures or scripts`);
+    assert.ok(!zh.includes('assets/shots/en/'), `${pair.zh} must use the Chinese screenshots`);
+    assert.ok(!/assets\/shots\/(?!en\/)/.test(en), `${pair.en} must use the English screenshots`);
   }
 });
 
@@ -325,10 +329,19 @@ test('screenshots are WebP, every one is used, and the preview tabs resolve', ()
   for (const name of [...tabShots, ...darkShots]) {
     assert.ok(shots.includes(`${name}.webp`) && shots.includes(`${name}-1440.webp`), `missing screenshot ${name}`);
   }
-  for (const shot of shots) {
-    assert.ok(shot.endsWith('.webp'), `${shot} is not WebP`);
-    const name = shot.replace(/(?:-1440)?\.webp$/, '');
-    assert.ok(sources.includes(`assets/shots/${shot}`) || tabShots.includes(name) || darkShots.includes(name), `assets/shots/${shot} is not used by any page`);
+  // assets/shots holds the Chinese pictures and one folder, en, with the same pictures of the English client.
+  const zhShots = shots.filter((shot) => shot !== 'en');
+  const enShots = fs.readdirSync(path.join(shotsDir, 'en'));
+  assert.ok(homeScript.includes("const base = zh ? 'assets/shots/' : 'assets/shots/en/';"), 'the preview tabs follow the page language');
+  for (const [folder, list] of [['', zhShots], ['en/', enShots]]) {
+    for (const name of [...tabShots, ...darkShots]) {
+      assert.ok(list.includes(`${name}.webp`) && list.includes(`${name}-1440.webp`), `missing screenshot ${folder}${name}`);
+    }
+    for (const shot of list) {
+      assert.ok(shot.endsWith('.webp'), `${folder}${shot} is not WebP`);
+      const name = shot.replace(/(?:-1440)?\.webp$/, '');
+      assert.ok(sources.includes(`assets/shots/${folder}${shot}`) || tabShots.includes(name) || darkShots.includes(name), `assets/shots/${folder}${shot} is not used by any page`);
+    }
   }
 });
 
@@ -361,7 +374,7 @@ test('pages follow the system appearance', () => {
     assert.ok(css.includes(value), `site.css is missing the dark value ${value}`);
   }
   for (const file of ['index.zh-CN.html', 'index.html', 'enterprise.zh-CN.html', 'enterprise.html']) {
-    assert.match(read(file), /<source media="\(prefers-color-scheme: dark\)" srcset="assets\/shots\/[a-z-]+-dark-1440\.webp 1440w/, `${file} has no dark screenshot`);
+    assert.match(read(file), /<source media="\(prefers-color-scheme: dark\)" srcset="assets\/shots\/(?:en\/)?[a-z-]+-dark-1440\.webp 1440w/, `${file} has no dark screenshot`);
   }
   for (const file of pages) {
     assert.ok(read(file).includes('<meta name="theme-color" content="#1c1c1e" media="(prefers-color-scheme: dark)">'), file);

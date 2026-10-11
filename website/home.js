@@ -80,20 +80,16 @@
 
   // ── Model name in the hero's second line ──
   // Every 1.8 s the list moves up one name. A copy of the first name sits at the end; after reaching it the list jumps back to the start, so the roll looks continuous.
-  const rotor = document.getElementById('rotor');
+  // The slot is as wide as the longest name (the list is a one-column grid), so the words before it stay where they are.
   const rotorList = document.getElementById('rotorList');
   if (!reduced) {
     const names = [...rotorList.children];
     rotorList.appendChild(names[0].cloneNode(true));
-    const fit = (i) => { rotor.style.width = `${names[i % names.length].getBoundingClientRect().width}px`; };
-    rotor.style.transition = 'width 600ms cubic-bezier(0.2, 0.8, 0.2, 1)';
-    document.fonts.ready.then(() => fit(0));
     let index = 0;
     setInterval(() => {
       index += 1;
       rotorList.style.transition = '';
       rotorList.style.transform = `translateY(${-index * 1.4}em)`;
-      fit(index);
       if (index === names.length) {
         setTimeout(() => {
           index = 0;
@@ -136,8 +132,10 @@
         img.height = 900;
         img.alt = TEXT.shotAlt(tab.textContent);
         img.sizes = '(max-width: 900px) calc(100vw - 48px), 1240px';
-        img.srcset = `assets/shots/${file}-1440.webp 1440w, assets/shots/${file}.webp 2880w`;
-        img.src = `assets/shots/${file}.webp`;
+        // English pages show the client in English, from assets/shots/en.
+        const base = zh ? 'assets/shots/' : 'assets/shots/en/';
+        img.srcset = `${base}${file}-1440.webp 1440w, ${base}${file}.webp 2880w`;
+        img.src = `${base}${file}.webp`;
         // A screenshot that fails to load leaves the previous one in the window and is requested again on the next click.
         img.addEventListener('error', () => img.remove(), { once: true });
         gallery.appendChild(img);
