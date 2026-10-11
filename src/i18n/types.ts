@@ -2969,6 +2969,15 @@ export interface TranslationDict {
     changesTabSingle: string;
     /** Title of that tab for several files; `{name}` is the first file name, `{count}` the number of files. */
     changesTabMany: string;
+    /** The two layouts of a comparison in the changes tab: before above after, and before beside after. */
+    diffUnified: string;
+    diffSplit: string;
+    /** Button of the changes tab that opens the file in view in the side preview. */
+    openFile: string;
+    /** Shown in the changes tab for a file that has no line comparison. */
+    noDiffToShow: string;
+    /** Shown in the changes tab when the saved changes of the turn cannot be read. */
+    changesUnreadable: string;
     noWorkspaceSelected: string;
     selectWorkspace: string;
     noFilesModified: string;

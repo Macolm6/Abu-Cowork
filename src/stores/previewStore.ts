@@ -227,7 +227,9 @@ interface PreviewState {
   // (~11 across the app) are unchanged from the pre-tabs single-preview API.
   // `options.line` asks the source view to show that line; the tab keeps the
   // line of the latest request, so a request without one clears it.
-  openPreview: (filePath: string, options?: { line?: number }) => void;
+  // `options.focusTab` asks the strip to focus the tab's button: for a caller
+  // whose own control leaves the page when the preview tab takes its place.
+  openPreview: (filePath: string, options?: { line?: number; focusTab?: boolean }) => void;
   // Open (or activate an existing) browser tab for `url` (default ''). Main
   // may supply an id when adopting an agent-created Electron browser view, plus
   // the conversation that view belongs to (omitted for the legacy shared pool).
@@ -414,6 +416,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
   openPreview: (filePath, options) => {
     const { tabs } = get();
     const line = options?.line;
+    const focus = (id: string) => (options?.focusTab ? { focusTabId: id } : {});
     const existing = visibleNow().find((t) => t.kind === 'preview' && t.filePath === filePath);
     if (existing) {
       let nextTabs = tabs;
@@ -424,7 +427,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
         const cleared: WorkspaceTab = { ...existing, line: undefined };
         nextTabs = tabs.map((t) => (t.id === existing.id ? cleared : t));
       }
-      commitTabs(nextTabs, existing.id);
+      commitTabs(nextTabs, existing.id, focus(existing.id));
       expandRightPanel();
       return;
     }
@@ -433,7 +436,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
       ...tabs,
       { id, kind: 'preview', filePath, ...(line !== undefined ? { line, lineRequest: 1 } : {}), ...ownerScope() },
     ];
-    commitTabs(nextTabs, id);
+    commitTabs(nextTabs, id, focus(id));
     expandRightPanel();
   },
 

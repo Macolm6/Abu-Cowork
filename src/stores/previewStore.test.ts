@@ -1130,6 +1130,26 @@ describe('delayed popup ownership', () => {
     store().openBrowser('https://late.example', '__abu-browser-automation__late', undefined, source);
     expect(store().tabs).toEqual([]);
   });
+  describe('openPreview with focusTab', () => {
+    it('asks for the focus on the tab it opens, and on the tab it returns to', () => {
+      usePreviewStore.getState().openPreview('/a/b.md', { focusTab: true });
+      const first = usePreviewStore.getState();
+      expect(first.focusTabId).toBe(first.tabs[0].id);
+
+      usePreviewStore.getState().consumeFocusTabRequest(first.tabs[0].id);
+      usePreviewStore.getState().openTerminal();
+      usePreviewStore.getState().openPreview('/a/b.md', { focusTab: true });
+      const second = usePreviewStore.getState();
+      expect(second.activeTabId).toBe(first.tabs[0].id);
+      expect(second.focusTabId).toBe(first.tabs[0].id);
+    });
+
+    it('asks for no focus without the option', () => {
+      usePreviewStore.getState().openPreview('/a/b.md');
+      expect(usePreviewStore.getState().focusTabId).toBeNull();
+    });
+  });
+
   describe('openTurnChanges', () => {
     const store = () => usePreviewStore.getState();
     const target = { conversationId: 'conv-a', loopId: 'loop-1', fileIndex: 0, title: 'Changes: plan.md' };
