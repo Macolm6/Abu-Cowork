@@ -369,6 +369,19 @@ describe('TabStrip pointer interactions', () => {
     expect(screen.queryByText(/base64/)).not.toBeInTheDocument();
   });
 
+  it('titles a changes tab with the title it was opened with, not as a terminal', () => {
+    usePreviewStore.setState({
+      tabs: [{ id: 'changes:conv:loop', kind: 'changes', conversationId: 'conv', loopId: 'loop', fileIndex: 0, title: 'Changes: plan.md (3 files)' }],
+      activeTabId: 'changes:conv:loop',
+      previewFilePath: null,
+    });
+
+    renderTabs();
+
+    expect(screen.getByRole('tab', { name: /Changes: plan\.md \(3 files\)/ })).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: /Terminal/ })).toBeNull();
+  });
+
   it('marks the selected tab with the selected fill', () => {
     renderTabs();
 

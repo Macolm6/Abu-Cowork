@@ -9,6 +9,9 @@ import type {
   BrowserAllowConsent,
   BrowserDenialKind,
 } from '@/core/agent/browserDenialTracker';
+import type { FileChange } from './fileChange';
+
+export type { FileChange, FileChangeHunk } from './fileChange';
 
 // --- Messages & Conversations ---
 
@@ -147,6 +150,8 @@ export interface ToolExecutionMetadata {
     | 'computer-outcome-unknown-new-turn';
   subagentStopReason?: SubagentStopReason;
   batchTerminalSummary?: BatchTerminalSummary;
+  /** write_file, edit_file, delete_file: what the call did to its file. */
+  fileChange?: FileChange;
 }
 
 /** Payload for a "save this as a skill?" proposal card. */
@@ -314,6 +319,8 @@ export interface ToolCall {
   subagentStopReason?: SubagentStopReason;
   /** Minimal persisted terminal summary for run_agent_batch. */
   batchTerminalSummary?: BatchTerminalSummary;
+  /** Line counts and hunks of a write_file, edit_file or delete_file call. */
+  fileChange?: FileChange;
   /**
    * MCP Apps interface for this step (extension `io.modelcontextprotocol/ui`).
    *
