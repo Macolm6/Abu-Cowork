@@ -118,6 +118,56 @@ describe('buildShareBundle', () => {
     expect(JSON.stringify(bundle)).toContain('[REDACTED:anthropic-key]');
   });
 
+  it('redacts the path and the hunk text of a tool call file change', async () => {
+    const conv = makeConv([
+      {
+        id: 'm1',
+        role: 'assistant',
+        content: 'edited',
+        timestamp: 1,
+        toolCalls: [{
+          id: 't1',
+          name: 'edit_file',
+          input: { path: '/Users/alice/projects/secret/config.ts' },
+          result: 'Successfully edited',
+          fileChange: {
+            path: '/Users/alice/projects/secret/config.ts',
+            kind: 'modify',
+            added: 1,
+            deleted: 1,
+            hunks: [{
+              oldStart: 1,
+              oldLines: 2,
+              newStart: 1,
+              newLines: 2,
+              lines: [
+                ' import x from "/Users/alice/lib/x";',
+                '-const key = "old";',
+                '+const key = "sk-ant-abcdefghijklmnopqrstuvwxyz123456";',
+              ],
+            }],
+          },
+        }],
+      },
+    ]);
+
+    const bundle = await buildShareBundle(conv);
+    const fileChange = bundle.messages[0].toolCalls?.[0].fileChange;
+
+    expect(fileChange?.path).toBe(bundle.messages[0].toolCalls?.[0].input.path);
+    expect(fileChange?.path).not.toContain('alice');
+    expect(fileChange?.added).toBe(1);
+    expect(fileChange?.deleted).toBe(1);
+    const lines = fileChange?.hunks?.[0].lines ?? [];
+    expect(lines).toHaveLength(3);
+    expect(lines[0].startsWith(' ')).toBe(true);
+    expect(lines[1]).toBe('-const key = "old";');
+    expect(lines[2]).toBe('+const key = "[REDACTED:anthropic-key]";');
+    expect(JSON.stringify(fileChange)).not.toContain('alice');
+    expect(JSON.stringify(fileChange)).not.toContain('sk-ant-abc');
+    expect(conv.messages[0].toolCalls?.[0].fileChange?.path).toBe('/Users/alice/projects/secret/config.ts');
+  });
+
   it('allowlists and redacts provider error details before sharing', async () => {
     const secret = 'sk-ant-abcdefghijklmnopqrstuvwxyz123456';
     const conv = makeConv([

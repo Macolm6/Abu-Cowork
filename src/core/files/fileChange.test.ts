@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest';
 import {
   computeFileChange,
   diffTexts,
+  fileChangeWithoutHunks,
   MAX_COMPARABLE_TEXT_BYTES,
   MAX_DIFF_EDIT_LENGTH,
   MAX_FILE_CHANGE_BYTES,
+  MAX_FILE_CHANGE_PATH_CHARS,
   MAX_SAVED_DIFF_LINES,
   MAX_SAVED_LINE_CHARS,
+  parseFileChange,
 } from './fileChange';
 
 function numberedLines(count: number, prefix = 'line'): string {
@@ -252,6 +255,85 @@ describe('diffTexts', () => {
     expect(diffTexts('x'.repeat(MAX_COMPARABLE_TEXT_BYTES + 1), 'b')).toBeNull();
     const count = MAX_DIFF_EDIT_LENGTH + 10;
     expect(diffTexts(numberedLines(count, 'old'), numberedLines(count, 'new'))).toBeNull();
+  });
+});
+
+describe('parseFileChange', () => {
+  const valid = {
+    path: '/work/plan.md',
+    kind: 'modify',
+    added: 1,
+    deleted: 1,
+    hunks: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, lines: [' a', '-b', '+B'] }],
+  };
+
+  it('returns a copy holding only the known fields', () => {
+    const parsed = parseFileChange({ ...valid, cut: true, extra: 'dropped', hunks: [{ ...valid.hunks[0], note: 'x' }] });
+    expect(parsed).toEqual({ ...valid, cut: true });
+  });
+
+  it('accepts a change that carries only path and kind', () => {
+    expect(parseFileChange({ path: '/work/big.log', kind: 'delete' })).toEqual({ path: '/work/big.log', kind: 'delete' });
+  });
+
+  it('accepts what computeFileChange produces at the budget', () => {
+    const after = Array.from({ length: MAX_SAVED_DIFF_LINES + 5 }, () => '文'.repeat(MAX_SAVED_LINE_CHARS)).join('\n');
+    const change = computeFileChange({ path: '/work/wide.txt', before: null, after });
+    expect(parseFileChange(change)).toEqual(change);
+  });
+
+  it.each([
+    ['a non-object', 'text'],
+    ['an array', []],
+    ['a missing path', { kind: 'modify' }],
+    ['an empty path', { ...valid, path: '' }],
+    ['an over-long path', { ...valid, path: `/${'p'.repeat(MAX_FILE_CHANGE_PATH_CHARS)}` }],
+    ['an unknown kind', { ...valid, kind: 'rename' }],
+    ['a negative count', { ...valid, added: -1 }],
+    ['a fractional count', { ...valid, deleted: 1.5 }],
+    ['a textual count', { ...valid, added: '1' }],
+    ['hunks that are not a list', { ...valid, hunks: {} }],
+    ['a hunk without numbers', { ...valid, hunks: [{ ...valid.hunks[0], oldStart: '1' }] }],
+    ['a hunk line that is not text', { ...valid, hunks: [{ ...valid.hunks[0], lines: [1] }] }],
+    ['a hunk line without a marker', { ...valid, hunks: [{ ...valid.hunks[0], lines: ['?x'] }] }],
+    ['a hunk line over the character budget', {
+      ...valid,
+      hunks: [{ ...valid.hunks[0], lines: [`+${'x'.repeat(MAX_SAVED_LINE_CHARS + 1)}`] }],
+    }],
+    ['more hunk lines than the budget', {
+      ...valid,
+      hunks: [{ ...valid.hunks[0], lines: Array.from({ length: MAX_SAVED_DIFF_LINES + 1 }, () => '+x') }],
+    }],
+    ['a cut flag that is not true', { ...valid, cut: false }],
+    ['a serialization over the byte budget', {
+      ...valid,
+      hunks: [{
+        ...valid.hunks[0],
+        lines: Array.from({ length: MAX_SAVED_DIFF_LINES }, () => `+${'文'.repeat(MAX_SAVED_LINE_CHARS)}`),
+      }],
+    }],
+  ])('rejects %s', (_label, value) => {
+    expect(parseFileChange(value)).toBeNull();
+  });
+});
+
+describe('fileChangeWithoutHunks', () => {
+  it('keeps path, kind and counts and marks dropped hunks as cut', () => {
+    const change = computeFileChange({ path: '/work/a.md', before: 'a\n', after: 'b\n' });
+    expect(fileChangeWithoutHunks(change)).toEqual({
+      path: '/work/a.md',
+      kind: 'modify',
+      added: 1,
+      deleted: 1,
+      cut: true,
+    });
+  });
+
+  it('returns a change without hunks as it is', () => {
+    expect(fileChangeWithoutHunks({ path: '/work/a.md', kind: 'modify', added: 0, deleted: 0 }))
+      .toEqual({ path: '/work/a.md', kind: 'modify', added: 0, deleted: 0 });
+    expect(fileChangeWithoutHunks({ path: '/work/big.log', kind: 'delete' }))
+      .toEqual({ path: '/work/big.log', kind: 'delete' });
   });
 });
 

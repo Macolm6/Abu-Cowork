@@ -1,8 +1,23 @@
 import { structuredPatch } from 'diff';
 import type { FileChange, FileChangeHunk } from '@/types/fileChange';
-import { normalizeSeparators } from '@/utils/pathUtils';
+import {
+  fileChangeWithoutHunks,
+  MAX_FILE_CHANGE_BYTES,
+  MAX_SAVED_DIFF_LINES,
+  MAX_SAVED_LINE_CHARS,
+  serializedFileChangeBytes,
+  utf8Length,
+} from './fileChangeBudget';
 
 export type { FileChange, FileChangeHunk } from '@/types/fileChange';
+export {
+  fileChangeWithoutHunks,
+  MAX_FILE_CHANGE_BYTES,
+  MAX_FILE_CHANGE_PATH_CHARS,
+  MAX_SAVED_DIFF_LINES,
+  MAX_SAVED_LINE_CHARS,
+  parseFileChange,
+} from './fileChangeBudget';
 
 /** Unchanged lines kept on each side of a change. */
 export const DIFF_CONTEXT_LINES = 3;
@@ -10,23 +25,11 @@ export const DIFF_CONTEXT_LINES = 3;
 export const MAX_COMPARABLE_TEXT_BYTES = 2 * 1024 * 1024;
 /** Upper bound on the edit distance the line comparison searches. */
 export const MAX_DIFF_EDIT_LENGTH = 1000;
-/** Hunk lines saved with one file change. */
-export const MAX_SAVED_DIFF_LINES = 400;
-/** Characters saved per hunk line, not counting its marker. */
-export const MAX_SAVED_LINE_CHARS = 500;
-/** UTF-8 bytes of one serialized file change. */
-export const MAX_FILE_CHANGE_BYTES = 64 * 1024;
 
 export interface TextDiff {
   added: number;
   deleted: number;
   hunks: FileChangeHunk[];
-}
-
-const encoder = new TextEncoder();
-
-function utf8Length(text: string): number {
-  return encoder.encode(text).length;
 }
 
 function isComparableText(text: string): boolean {
@@ -139,18 +142,14 @@ function limitLines(hunks: FileChangeHunk[]): { hunks: FileChangeHunk[]; cut: bo
   return { hunks: kept, cut };
 }
 
-function serializedBytes(change: FileChange): number {
-  return utf8Length(JSON.stringify(change));
-}
-
 /** Drops trailing hunk lines until the serialized change fits the byte budget. */
 function limitBytes(change: FileChange): FileChange {
-  let bytes = serializedBytes(change);
+  let bytes = serializedFileChangeBytes(change);
   if (bytes <= MAX_FILE_CHANGE_BYTES || !change.hunks) return change;
 
   const hunks = change.hunks.map((hunk) => ({ ...hunk, lines: [...hunk.lines] }));
   let result: FileChange = { ...change, hunks, cut: true };
-  bytes = serializedBytes(result);
+  bytes = serializedFileChangeBytes(result);
   while (bytes > MAX_FILE_CHANGE_BYTES && hunks.length > 0) {
     const last = hunks[hunks.length - 1];
     // Estimate while popping, then measure the real serialization once.
@@ -160,15 +159,10 @@ function limitBytes(change: FileChange): FileChange {
     }
     if (last.lines.length === 0) hunks.pop();
     else hunks[hunks.length - 1] = withLines(last, last.lines);
-    result = hunks.length > 0 ? { ...result, hunks } : withoutHunks(result);
-    bytes = serializedBytes(result);
+    result = hunks.length > 0 ? { ...result, hunks } : fileChangeWithoutHunks(result);
+    bytes = serializedFileChangeBytes(result);
   }
   return result;
-}
-
-function withoutHunks(change: FileChange): FileChange {
-  const { hunks: _hunks, ...rest } = change;
-  return rest;
 }
 
 /**
@@ -182,7 +176,7 @@ export function computeFileChange(input: {
   after: string | null;
 }): FileChange {
   const kind: FileChange['kind'] = input.before === null ? 'create' : input.after === null ? 'delete' : 'modify';
-  const base: FileChange = { path: normalizeSeparators(input.path), kind };
+  const base: FileChange = { path: input.path.replace(/\\/g, '/'), kind };
   const diff = diffTexts(input.before ?? '', input.after ?? '');
   if (!diff) return base;
 

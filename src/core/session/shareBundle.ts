@@ -334,6 +334,20 @@ function redactToolCall(
     onRedaction({ count: r.count, samples: r.samples });
     out.result = r.value as typeof out.result;
   }
+  if (out.fileChange) {
+    const path = redactText(out.fileChange.path);
+    onRedaction(path);
+    // The first character of a hunk line is its diff marker, not file text.
+    const hunks = out.fileChange.hunks?.map((hunk) => ({
+      ...hunk,
+      lines: hunk.lines.map((line) => {
+        const text = redactText(line.slice(1));
+        onRedaction(text);
+        return line.slice(0, 1) + text.text;
+      }),
+    }));
+    out.fileChange = { ...out.fileChange, path: path.text, ...(hunks ? { hunks } : {}) };
+  }
   return out;
 }
 
