@@ -64,6 +64,7 @@ import {
   type AgentRunTerminal,
 } from '@/core/agent/agentRunTerminal';
 import { normalizeBatchTerminalSummary } from '@/core/agent/batchTerminalSummary';
+import { parseFileChange } from '@/core/files/fileChange';
 import { enqueueUserInputWithId } from '@/core/agent/userInputQueue';
 import { applyPlanModeState } from '@/core/agent/planMode';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
@@ -332,6 +333,13 @@ function parseToolExecutionMetadata(
     metadata.sandboxRecovery = typeof value.sandboxRecovery.targetApp === 'string'
       ? { kind: 'app-automation', targetApp: value.sandboxRecovery.targetApp }
       : { kind: 'app-automation' };
+  }
+  if (value.fileChange !== undefined) {
+    const fileChange = parseFileChange(value.fileChange);
+    if (!fileChange) {
+      throw new RpcError(-32603, 'Invalid tool.invoke file change envelope');
+    }
+    metadata.fileChange = fileChange;
   }
   return Object.keys(metadata).length > 0 ? metadata : undefined;
 }
