@@ -287,6 +287,8 @@ const enUS: TranslationDict = {
     allFilesCount: 'All {count} files',
     collapseFiles: 'Collapse',
     openFileInPreview: 'Preview {name}',
+    showAllDiffLines: 'Show all {count} lines',
+    diffCut: 'This diff is too long, so only the first part is shown',
     userMessageShowMore: 'Show more',
     userMessageCollapse: 'Collapse',
     runPending: 'Sending…',

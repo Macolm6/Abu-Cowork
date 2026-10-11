@@ -330,6 +330,10 @@ export interface TranslationDict {
     collapseFiles: string;
     /** Accessible name of a file name or path in a reply that opens the side preview; `{name}` is the file name. */
     openFileInPreview: string;
+    /** Button in the middle of a folded diff; `{count}` is the number of diff lines. */
+    showAllDiffLines: string;
+    /** Closing line of a diff whose saved lines stop before the end of the change. */
+    diffCut: string;
     userMessageShowMore: string;
     userMessageCollapse: string;
     runPending: string;

@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
-import type { BatchIdentity, Message, MessageContent, ToolCall } from '@/types';
+import type { BatchIdentity, FileChange, Message, MessageContent, ToolCall } from '@/types';
 import { makeBatchKey } from '@/types';
 import { TOOL_NAMES, isDisplayHiddenStepBackedTool } from '@/core/tools/toolNames';
 import type { ExecutionStep } from '@/types/execution';
@@ -607,6 +607,14 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     () => assistantMsgs.flatMap((m) => m.toolCalls || []),
     [assistantMsgs]
   );
+  // File changes of this turn's own file-tool calls, for the steps that show them.
+  const fileChanges = useMemo(() => {
+    const byToolCallId = new Map<string, FileChange>();
+    for (const toolCall of allToolCalls) {
+      if (toolCall.fileChange && !toolCall.fromSubagent) byToolCallId.set(toolCall.id, toolCall.fileChange);
+    }
+    return byToolCallId;
+  }, [allToolCalls]);
   const legacyWorkflowToolCalls = useMemo<ToolCall[]>(() => {
     const seenBatchKeys = new Set<string>();
     return assistantMsgs.flatMap((message) => (message.toolCalls || []).filter((toolCall) => {
@@ -1205,6 +1213,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
             isActive={execIsActive}
             isStopped={isStopped}
             onRetry={seg.isLastGroup && hasError && !isStreaming ? handleRetry : undefined}
+            fileChanges={fileChanges}
           />
         ) : hasLegacySteps && (
           <TaskBlock
@@ -1212,6 +1221,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
             isActive={legacyIsActive}
             isStopped={isStopped}
             onRetry={seg.isLastGroup && hasError && !isStreaming ? handleRetry : undefined}
+            fileChanges={fileChanges}
           />
         )}
         {segSettledUQCards.map((tc) => (

@@ -287,6 +287,8 @@ const zhCN: TranslationDict = {
     allFilesCount: '全部 {count} 个文件',
     collapseFiles: '收起',
     openFileInPreview: '在右侧预览 {name}',
+    showAllDiffLines: '显示全部 {count} 行',
+    diffCut: '对比过长，只显示前面的部分',
     userMessageShowMore: '显示更多',
     userMessageCollapse: '收起',
     runPending: '正在发送…',
