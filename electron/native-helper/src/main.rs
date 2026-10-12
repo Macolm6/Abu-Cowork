@@ -44,6 +44,7 @@ mod windows_backend;
 // src-tauri). See src/cu.rs.
 mod cu;
 mod error;
+mod file_name_comparison;
 use error::HelperError;
 
 const HELPER_PROTOCOL_VERSION: u32 = 2;
@@ -83,6 +84,7 @@ fn supported_commands() -> Vec<&'static str> {
         "version",
         "health",
         "ping",
+        "directory_name_comparison",
         "mouse_click",
         "mouse_move",
         "mouse_scroll",
@@ -463,6 +465,7 @@ fn assert_expected_target(params: &Value) -> Result<(), String> {
 fn handle(method: &str, params: &Value) -> Result<Value, HelperError> {
     match method {
         "ping" => Ok(json!({ "pong": true })),
+        "directory_name_comparison" => file_name_comparison::directory_info(&require_str(params, "path")?),
         "hello" | "version" => Ok(helper_identity()),
         "health" => {
             let mut identity = helper_identity();

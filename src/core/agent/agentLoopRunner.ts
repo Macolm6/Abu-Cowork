@@ -36,6 +36,9 @@ import { taskIdFor, useTeamConfirmationStore } from '@/stores/teamConfirmationSt
  */
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
 import { checkToolApproval, type ToolApprovalDecision } from '../tools/registry';
+import { finalizeToolApproval } from '../tools/approvalFinalization';
+import { captureToolOperationOwner } from '../tools/operationAuthorization';
+import { withResponseFinalizer } from '../sidecar/responseFinalization';
 import type { ToolExecutionContext, Conversation, Message, MessageContent, ToolExecutionMetadata, UpstreamErrorDetails } from '../../types';
 import type { GoalState } from '../goal/goalTypes';
 import type { ComputerUseModelTier } from '../llm/modelCapabilities';
@@ -311,6 +314,7 @@ function rendererRuntimeOptions(
 // only needs these two.
 
 export interface AgentLoopRunOptions {
+  operationOwner?: import('../tools/operationAuthorization').ToolOperationOwner;
   requestCommandConfirmation?: (info: ConfirmationInfo, loopId?: string) => Promise<boolean>;
   requestFilePermission?: FilePermissionCallback;
   blockedTools?: string[];
@@ -1574,6 +1578,7 @@ function contextForSession(
   const browserDenials = browserDenialsForSession(session);
   const trustedContext: ToolExecutionContext = {
     ...incoming,
+    operationOwner: session.options.operationOwner,
     conversationId: session.conversationId,
     loopId: session.loopId,
     authorizationScopeId: session.options.authorizationScopeId,
@@ -1701,6 +1706,7 @@ function assertRunNotStopping(session: RunSession, runId: string): void {
     sessions.get(runId) !== session
     || session.abortRequested
     || session.shellAbortController.signal.aborted
+    || session.options.operationOwner?.isCurrent() === false
   ) {
     throw new SidecarRequestError(-32000, `Agent-loop run is stopping: ${runId}`);
   }
@@ -1869,15 +1875,27 @@ async function handleApprovalCheck(rawParams: unknown): Promise<ToolApprovalDeci
   // concurrently. Never return a stale allow ACK that would let the sidecar
   // begin a new local side effect after this run crossed its abort barrier.
   assertRunNotStopping(session, params.runId);
-  if (decision.decision === 'allow' && !isToolCallReplaySafe(params.toolName, params.input)) {
+  const approvalSession = session;
+  const approvalRunId = params.runId;
+  const approvalToolName = params.toolName;
+  const originalInput = params.input;
+  function finalize(current: ToolApprovalDecision): ToolApprovalDecision | Promise<ToolApprovalDecision> {
+    assertRunNotStopping(approvalSession, approvalRunId);
+    const checked = finalizeToolApproval(current);
+    if (checked instanceof Promise) {
+      return checked.then(value => withResponseFinalizer(value, () => finalize(value)));
+    }
+    if (checked.decision === 'allow' && !isToolCallReplaySafe(approvalToolName, checked.executionInput ?? originalInput)) {
     // The sidecar executes this tool locally immediately after this ACK. From
     // this point onward a transport failure cannot prove whether the local
     // side effect happened, so the whole run must never be auto-replayed.
     // Mark before returning the allow ACK: a crash between ACK receipt and the
     // first delta is deliberately treated as "possibly committed".
-    session.committed = true;
+      approvalSession.committed = true;
+    }
+    return checked;
   }
-  return decision;
+  return withResponseFinalizer(decision, () => finalize(decision));
 }
 
 function isToolCallReplaySafe(toolName: string, input: unknown): boolean {
@@ -2528,6 +2546,7 @@ export function installShellLoopContext(runId: string, session: RunSession): voi
   const browserDenials = browserDenialsForSession(session);
 
   setLoopContext(session.loopId, {
+    ...(session.options.operationOwner ? { operationOwner: session.options.operationOwner } : {}),
     commandConfirmCallback: session.options.requestCommandConfirmation ?? requestCommandConfirmation,
     filePermissionCallback: session.options.requestFilePermission ?? requestFilePermission,
     signal: session.shellAbortController.signal,
@@ -3000,6 +3019,8 @@ async function buildAgentRunParams(
   // resolveEntryModel.ts's doc for why this is the third (not a fourth,
   // hand-copied) caller of the same pure formula.
   const precomputeToolContext = attachTrustedSkillCommandApproval({
+    operationOwner: options?.operationOwner,
+    abortSignal,
     workspacePath: resolveToolContextWorkspacePath(
       options,
       initialConversationSnapshot,
@@ -3600,6 +3621,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     payloadDigest: params.payloadDigest,
     options: {
       requestCommandConfirmation: options?.commandConfirmCallback,
+      operationOwner: options?.operationOwner,
       requestFilePermission: options?.filePermissionCallback,
       blockedTools: options?.blockedTools,
       allowedTools: options?.allowedTools,
@@ -4198,19 +4220,26 @@ export function runAgentLoopDispatched(
   const key = Symbol();
   let finish!: () => void;
   const entry = { conversationId, settled: new Promise<void>(resolve => { finish = resolve; }), controller: undefined as AbortController | undefined };
+  const operationOwner = options?.operationOwner ?? captureToolOperationOwner();
+  const unsubscribeOwner = operationOwner?.onInvalidated?.(() => {
+    entry.controller?.abort('operation-owner-changed');
+  });
   activeDispatches.set(key, entry);
   let controllerDelivered = false;
   return runAgentLoopDispatchedInternal(conversationId, userMessage, {
     ...options,
+    ...(operationOwner ? { operationOwner } : {}),
     onAbortControllerReady: controller => {
       entry.controller = controller;
       if (dispatchBarriers.size > 0) controller.abort('app-quit');
+      if (operationOwner?.isCurrent() === false) controller.abort('operation-owner-changed');
       if (!controllerDelivered) {
         controllerDelivered = true;
         options?.onAbortControllerReady?.(controller);
       }
     },
   }).finally(() => {
+    unsubscribeOwner?.();
     activeDispatches.delete(key);
     finish();
   });
@@ -4319,6 +4348,7 @@ async function runDispatchedTurns(
         // they ARE is human-typed, so the handoff run is user-initiated.
         { initiatedBy: 'user', teamConfirmationRetryId: queuedInput.teamConfirmationRetryId,
           continuesTeamTask: queuedInput.continuesTeamTask,
+          operationOwner: options?.operationOwner,
           onAbortControllerReady: options?.onAbortControllerReady },
       );
       if (handoffResult.reason === 'error' && !handoffResult.messageTaken) {

@@ -43,6 +43,7 @@ import type {
   Message,
 } from '@/types';
 import type { TranslationDict } from '@/i18n/types';
+import { freezeToolInput } from '@/core/tools/operationAuthorization';
 import zhCN from '@/i18n/locales/zh-CN';
 import enUS from '@/i18n/locales/en-US';
 import type { PlannedStep, TaskExecution } from '@/types/execution';
@@ -294,6 +295,7 @@ function toWireToolContext(context: ToolExecutionContext | undefined): ToolExecu
   if (!context) return undefined;
   const {
     abortSignal: _abortSignal,
+    operationOwner: _operationOwner,
     reportMetadata: _reportMetadata,
     reportBrowserDenial: _reportBrowserDenial,
     reportBrowserAllow: _reportBrowserAllow,
@@ -427,7 +429,7 @@ function parseAbortParams(params: unknown): { runId: string } {
  *     longer bucketed together with an explicit deny.
  */
 type LocalApprovalOutcome =
-  | { decision: 'allow'; executionPath?: string }
+  | { decision: 'allow'; executionPath?: string; executionInput?: Readonly<Record<string, unknown>> }
   | { decision: 'deny'; reason: string }
   | { decision: 'unavailable' };
 
@@ -471,6 +473,10 @@ async function checkLocalToolApproval(
     return { decision: 'unavailable' };
   }
   if (isRecord(result) && result.decision === 'allow') {
+    if (result.executionInput !== undefined && !isRecord(result.executionInput)) {
+      return { decision: 'unavailable' };
+    }
+    const executionInput = isRecord(result.executionInput) ? freezeToolInput(result.executionInput) : undefined;
     const executionPath = typeof result.executionPath === 'string' && result.executionPath.length > 0
       ? result.executionPath
       : undefined;
@@ -481,7 +487,10 @@ async function checkLocalToolApproval(
     if (LOCAL_PATH_BOUND_TOOLS.has(toolName) && !executionPath) {
       return { decision: 'unavailable' };
     }
-    return executionPath ? { decision: 'allow', executionPath } : { decision: 'allow' };
+    if (LOCAL_PATH_BOUND_TOOLS.has(toolName) && executionInput && executionInput.path !== executionPath) {
+      return { decision: 'unavailable' };
+    }
+    return { decision: 'allow', ...(executionPath ? { executionPath } : {}), ...(executionInput ? { executionInput } : {}) };
   }
   if (isRecord(result) && result.decision === 'deny') {
     // Mirror registry.ts's executeAnyTool default exactly (`approval.reason
@@ -595,9 +604,9 @@ function createReverseToolInvoker(
             throw error;
           }
           try {
-            const approvedInput = approval.executionPath
+            const approvedInput = approval.executionInput ?? (approval.executionPath
               ? { ...input, path: approval.executionPath }
-              : input;
+              : input);
             return await executeLocalTool(
               name,
               approvedInput,

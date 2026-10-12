@@ -727,6 +727,7 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
     'getPathForFile',
     'getRuntimeDiagnostics',
     'getSidecarBridgeSnapshot',
+    'inspectPathNameComparison',
     'mainSupervisesSidecar',
     'microphone',
     'persistDelegatedMedia',

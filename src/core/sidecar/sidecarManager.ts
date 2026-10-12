@@ -132,6 +132,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { finalizeResponse } from './responseFinalization';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { resolveResource, appDataDir, homeDir, resourceDir } from '@tauri-apps/api/path';
 import { isTauriEnv } from '@/utils/tauriEnv';
@@ -1339,8 +1340,16 @@ async function handleIncomingRequest(
   }
 
   try {
-    const result = await handler(params);
-    await writeRpcMessage({ jsonrpc: '2.0', id, result }, method);
+    let result = await handler(params);
+    while (true) {
+      const finalized = finalizeResponse(result);
+      if (finalized instanceof Promise) {
+        result = await finalized;
+        continue;
+      }
+      await writeRpcMessage({ jsonrpc: '2.0', id, result: finalized }, method);
+      break;
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const data = err instanceof SidecarRequestError ? err.data : undefined;

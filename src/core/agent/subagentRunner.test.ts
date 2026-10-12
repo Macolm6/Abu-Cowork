@@ -445,6 +445,7 @@ describe('subagentRunner', () => {
         'workspacePathSnapshot',
       ]);
       expect(SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS).toEqual([
+        'operationOwner',
         'signal',
         'commandConfirmCallback',
         'filePermissionCallback',
@@ -528,6 +529,33 @@ describe('subagentRunner', () => {
       expect(resolvePreloadedSkillsMock).toHaveBeenCalledTimes(1);
       const loopOptions = runSubagentLoopMock.mock.calls[0][0] as SubagentLoopOptions;
       expect(loopOptions.preloadedSkills).toEqual(PRELOADED_SECTION);
+    });
+
+    it.each(['running', 'stopped'] as const)('cancels an invalidated owner during skill preparation in %s', async (venue) => {
+      getSidecarStatus.mockReturnValue(venue);
+      let releasePreparation!: (value: typeof PRELOADED_SECTION) => void;
+      resolvePreloadedSkillsMock.mockReturnValue(new Promise((resolve) => { releasePreparation = resolve; }));
+      let current = true;
+      let invalidate: (() => void) | undefined;
+      const unsubscribe = vi.fn();
+      const { runSubagent } = await importFresh();
+      const pending = runSubagent({
+        agent: { ...agent, skills: ['weekly-report'] },
+        task: 'prepare under the original account',
+        operationOwner: {
+          isCurrent: () => current,
+          onInvalidated: (listener) => { invalidate = listener; return unsubscribe; },
+        },
+      });
+      expect(resolvePreloadedSkillsMock).toHaveBeenCalledTimes(1);
+      current = false;
+      invalidate?.();
+      releasePreparation(PRELOADED_SECTION);
+      expect((await pending).stopReason).toBe('aborted');
+      expect(sidecarRequestMock).not.toHaveBeenCalled();
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(resolveEffectiveLlmCredsMock).not.toHaveBeenCalled();
+      expect(unsubscribe).toHaveBeenCalledTimes(1);
     });
 
     it('carries the resolved section across the sidecar wire', async () => {

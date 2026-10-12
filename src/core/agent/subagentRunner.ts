@@ -107,6 +107,7 @@ import { isPayloadTooLargeError } from '../ipc/payloadTooLarge';
 import { paramsBuildDisplayMessage } from './paramsBuildFailure';
 import { isUpstreamErrorDetails, sanitizeUntrustedLlmErrorText } from '../llm/adapter';
 import type { LoopContext } from './permissionBridge';
+import { captureToolOperationOwner } from '../tools/operationAuthorization';
 import { attachTrustedSkillCommandApproval } from './skillCommandApproval';
 import { normalizeIMRunCapability } from '../permissions/runPermissionCeiling';
 import {
@@ -121,10 +122,10 @@ const logger = createLogger('subagent-transport');
 /** Security boundary for tool-triggered nesting: inherit the parent run's
  * frozen provider/model snapshot and conversation identity as one unit. */
 export function getSubagentRunInheritance(
-  loopContext: Pick<LoopContext, 'loopId' | 'conversationId' | 'settingsReader' | 'authorizationScopeId' | 'runPermissionCeiling' | 'imReplyTarget' | 'triggerId' | 'scheduledTaskId' | 'initiatedBy' | 'reportBrowserDenial' | 'reportBrowserAllow'> | null | undefined,
+  loopContext: Pick<LoopContext, 'loopId' | 'conversationId' | 'settingsReader' | 'authorizationScopeId' | 'runPermissionCeiling' | 'imReplyTarget' | 'triggerId' | 'scheduledTaskId' | 'initiatedBy' | 'reportBrowserDenial' | 'reportBrowserAllow' | 'operationOwner'> | null | undefined,
   authorizationScopeId?: string,
   workspacePath?: string | null,
-): Pick<SubagentLoopOptions, 'parentLoopId' | 'parentConversationId' | 'settingsReader' | 'authorizationScopeId' | 'runPermissionCeiling' | 'workspaceReader' | 'imContext' | 'triggerId' | 'scheduledTaskId' | 'initiatedBy' | 'reportBrowserDenial' | 'reportBrowserAllow'> {
+): Pick<SubagentLoopOptions, 'parentLoopId' | 'parentConversationId' | 'settingsReader' | 'authorizationScopeId' | 'runPermissionCeiling' | 'workspaceReader' | 'imContext' | 'triggerId' | 'scheduledTaskId' | 'initiatedBy' | 'reportBrowserDenial' | 'reportBrowserAllow' | 'operationOwner'> {
   const imReplyTarget = loopContext?.imReplyTarget;
   const runPermissionCeiling = loopContext?.runPermissionCeiling;
   const imContext = imReplyTarget && runPermissionCeiling?.source === 'im'
@@ -137,6 +138,7 @@ export function getSubagentRunInheritance(
     : undefined;
   return {
     parentLoopId: loopContext?.loopId,
+    ...(loopContext?.operationOwner ? { operationOwner: loopContext.operationOwner } : {}),
     parentConversationId: loopContext?.conversationId,
     settingsReader: loopContext?.settingsReader,
     authorizationScopeId: authorizationScopeId ?? loopContext?.authorizationScopeId,
@@ -282,6 +284,7 @@ export type SubagentWireBackedLoopOptionField = Extract<
 >;
 
 export const SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS = [
+  'operationOwner',
   'signal',
   'commandConfirmCallback',
   'filePermissionCallback',
@@ -413,6 +416,7 @@ function buildTrustedSubagentToolContext(
 ): ToolExecutionContext {
   const trustedContext: ToolExecutionContext = {
     ...incoming,
+    operationOwner: session.options.operationOwner,
     workspacePath: session.options.workspaceReader?.getCurrentPath() ?? null,
     authorizationScopeId: session.options.authorizationScopeId,
     runPermissionCeiling: session.options.runPermissionCeiling,
@@ -533,7 +537,7 @@ async function handleToolInvoke(rawParams: unknown): Promise<unknown> {
   if (!session) {
     throw new SidecarRequestError(-32000, `Unknown subagent runId: ${runId}`);
   }
-  if (session.options.signal?.aborted) {
+  if (session.options.signal?.aborted || session.options.operationOwner?.isCurrent() === false) {
     throw new SidecarRequestError(-32000, `Subagent run is stopping: ${runId}`);
   }
   const boundaryError = checkDispatchToolBoundary(
@@ -841,8 +845,25 @@ function cancelledSubagentResult(): SubagentResult {
  * module doc for the wire protocol and the failure discipline (#549).
  */
 export async function runSubagent(options: SubagentLoopOptions): Promise<SubagentResult> {
+  const owner = options.operationOwner ?? captureToolOperationOwner();
+  const ownerController = owner ? new AbortController() : undefined;
+  const parentSignal = options.signal;
+  const abortFromParent = () => ownerController?.abort(parentSignal?.reason);
+  let unsubscribeOwner: (() => void) | undefined;
   const release = acquirePluginUse(pluginOwnerForAgent(options.agent));
-  try { return await runAdmittedSubagent(options); } finally { release(); }
+  try {
+    if (ownerController) {
+      if (parentSignal?.aborted) abortFromParent();
+      else parentSignal?.addEventListener('abort', abortFromParent, { once: true });
+      unsubscribeOwner = owner?.onInvalidated?.(() => ownerController.abort('operation-owner-changed'));
+      if (owner?.isCurrent() === false) ownerController.abort('operation-owner-changed');
+    }
+    return await runAdmittedSubagent({ ...options, ...(owner && ownerController ? { operationOwner: owner, signal: ownerController.signal } : {}) });
+  } finally {
+    unsubscribeOwner?.();
+    parentSignal?.removeEventListener('abort', abortFromParent);
+    release();
+  }
 }
 
 async function runAdmittedSubagent(options: SubagentLoopOptions): Promise<SubagentResult> {
@@ -915,7 +936,7 @@ async function runLocalSubagentLoop(options: SubagentLoopOptions): Promise<Subag
 }
 
 async function runSubagentForSignal(options: SubagentLoopOptions): Promise<SubagentResult> {
-  if (options.signal?.aborted) {
+  if (options.signal?.aborted || options.operationOwner?.isCurrent() === false) {
     return cancelledSubagentResult();
   }
 
@@ -953,6 +974,9 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
       preloadedSkills: (await resolvePreloadedSkills(options.agent)) ?? undefined,
     };
   }
+  if (options.signal?.aborted || options.operationOwner?.isCurrent() === false) {
+    return cancelledSubagentResult();
+  }
 
   // Generate an app-owned scope for EVERY runtime path. Provider tool-call ids
   // are only run-local; exposing them raw to the parent causes cross-agent
@@ -977,7 +1001,7 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
     try {
       await waitForSidecarVenue({ signal: options.signal, allowRestart: false });
     } catch (err) {
-      if (options.signal?.aborted) return cancelledSubagentResult();
+      if (options.signal?.aborted || options.operationOwner?.isCurrent() === false) return cancelledSubagentResult();
       logger.warn('subagent could not reach the sidecar', {
         runId,
         error: err instanceof Error ? err.message : String(err),
@@ -995,6 +1019,9 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
     }
   }
 
+  if (options.signal?.aborted || options.operationOwner?.isCurrent() === false) {
+    return cancelledSubagentResult();
+  }
   ensureHandlersRegistered();
 
   logger.debug('subagent path selected', { path: 'sidecar', runId, agent: options.agent?.name });
@@ -1080,10 +1107,14 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
   // timeoutMs: 0 — a subagent run is unbounded (same discipline as llm.chat
   // / SidecarLLMAdapter.chat()); hang protection is the abort-grace timer
   // above, armed only once an abort actually happens.
-  const requestPromise = sidecarRequest('subagent.run', params, 0);
-  requestPromise.catch(() => {}); // avoid an unhandled rejection if the grace timer wins the race below
-
   try {
+    // A cancellation before listener registration does not replay its event.
+    // Keep this check adjacent to dispatch and inside the resource cleanup.
+    if (signal?.aborted || options.operationOwner?.isCurrent() === false) {
+      return cancelledSubagentResult();
+    }
+    const requestPromise = sidecarRequest('subagent.run', params, 0);
+    requestPromise.catch(() => {}); // avoid an unhandled rejection if the grace timer wins the race below
     const raw = signal && options.authorizationScopeId === undefined
       ? await Promise.race([requestPromise, gracePromise])
       : await requestPromise;
