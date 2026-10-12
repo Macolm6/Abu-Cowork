@@ -280,8 +280,21 @@ describe('useTurnChanges', () => {
       await expect(result.current.plan('reapply')).resolves.toEqual(PLAN);
 
       expect(mocks.planTurnUndo).toHaveBeenCalledExactlyOnceWith('conv-1', 'loop-1', 'reapply', {
+        authorize: expect.any(Function),
         isConversationPresent: expect.any(Function),
       });
+    });
+
+    it('plans with the write check the run uses, and asks for nothing', async () => {
+      const { result } = renderHook(() => useTurnUndo('conv-1', 'loop-1'));
+      await result.current.plan('undo');
+      const { authorize } = mocks.planTurnUndo.mock.calls[0][3] as { authorize: (path: string) => Promise<boolean> };
+
+      mocks.checkWritePath.mockResolvedValueOnce({ allowed: true, resolvedPath: '/ws/a.md' });
+      await expect(authorize('/ws/a.md')).resolves.toBe(true);
+      mocks.checkWritePath.mockResolvedValueOnce({ allowed: false, needsPermission: true, permissionPath: '/elsewhere' });
+      await expect(authorize('/elsewhere/a.md')).resolves.toBe(false);
+      expect(mocks.checkWritePath.mock.calls).toEqual([['/ws/a.md'], ['/elsewhere/a.md']]);
     });
 
     it('undoes the turn and is busy until that has ended', async () => {

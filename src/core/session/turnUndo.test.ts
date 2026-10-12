@@ -106,7 +106,7 @@ describe('turnUndo', () => {
     it('lists a modified, a created and a deleted file with what undoing does to each', async () => {
       await runMixedTurn();
 
-      await expect(undo.planTurnUndo('conv-1', 'loop-1', 'undo')).resolves.toEqual({
+      await expect(undo.planTurnUndo('conv-1', 'loop-1', 'undo', { authorize })).resolves.toEqual({
         willRestore: [
           { path: `${WS}/new.md`, display: 'new.md', action: 'trash' },
           { path: `${WS}/old.md`, display: 'old.md', action: 'put-back' },
@@ -123,7 +123,7 @@ describe('turnUndo', () => {
       fs.write(`${WS}/old.md`, 'back by hand\n');
       fs.write(`${WS}/new.md`, 'extended\n');
 
-      const plan = await undo.planTurnUndo('conv-1', 'loop-1', 'undo');
+      const plan = await undo.planTurnUndo('conv-1', 'loop-1', 'undo', { authorize });
 
       expect(plan.willRestore).toEqual([]);
       expect(plan.wontRestore).toEqual([
@@ -137,7 +137,7 @@ describe('turnUndo', () => {
       await runMixedTurn();
       fs.writeBytes(`${WS}/plan.md`, BIG);
 
-      const plan = await undo.planTurnUndo('conv-1', 'loop-1', 'undo');
+      const plan = await undo.planTurnUndo('conv-1', 'loop-1', 'undo', { authorize });
 
       expect(plan.wontRestore).toEqual([{ path: `${WS}/plan.md`, display: 'plan.md', reason: 'changed-since' }]);
     });
@@ -154,7 +154,7 @@ describe('turnUndo', () => {
         fs.write(`${WS}/by-command.md`, 'x\n');
       });
 
-      await expect(undo.planTurnUndo('conv-1', 'loop-1', 'undo')).resolves.toEqual({
+      await expect(undo.planTurnUndo('conv-1', 'loop-1', 'undo', { authorize })).resolves.toEqual({
         willRestore: [{ path: `${WS}/plan.md`, display: 'plan.md', action: 'write-before' }],
         wontRestore: [
           { path: `${WS}/by-command.md`, display: 'by-command.md', reason: 'by-command' },
@@ -175,7 +175,7 @@ describe('turnUndo', () => {
       });
       fs.delete(`${WS}/docs`);
 
-      const plan = await undo.planTurnUndo('conv-1', 'loop-1', 'undo');
+      const plan = await undo.planTurnUndo('conv-1', 'loop-1', 'undo', { authorize });
 
       expect(plan.willRestore.map((file) => file.display)).toEqual(['plan.md']);
       expect(plan.wontRestore).toEqual([{ path: `${WS}/docs/old.md`, display: 'docs/old.md', reason: 'folder-gone' }]);
@@ -185,22 +185,54 @@ describe('turnUndo', () => {
       await runMixedTurn();
       fs.delete(`${CHANGES}/loop-1/before/${await pathHashOf(`${WS}/plan.md`)}`);
 
-      const plan = await undo.planTurnUndo('conv-1', 'loop-1', 'undo');
+      const plan = await undo.planTurnUndo('conv-1', 'loop-1', 'undo', { authorize });
 
       expect(plan.willRestore.map((file) => file.display)).toEqual(['new.md', 'old.md']);
       expect(plan.wontRestore.map((file) => file.display)).toEqual(['plan.md']);
+    });
+
+    it('lists a file whose write is not authorized as not authorized, and asks about no file that is left alone anyway', async () => {
+      await runMixedTurn();
+      fs.write(`${WS}/plan.md`, 'mine\n');
+      authorize.mockImplementation(async (path) => path !== `${WS}/old.md`);
+
+      const plan = await undo.planTurnUndo('conv-1', 'loop-1', 'undo', { authorize });
+
+      expect(plan).toEqual({
+        willRestore: [{ path: `${WS}/new.md`, display: 'new.md', action: 'trash' }],
+        wontRestore: [
+          { path: `${WS}/old.md`, display: 'old.md', reason: 'not-authorized' },
+          { path: `${WS}/plan.md`, display: 'plan.md', reason: 'changed-since' },
+        ],
+      });
+      expect(authorize.mock.calls.map(([path]) => path).sort()).toEqual([`${WS}/new.md`, `${WS}/old.md`]);
+      expect(workspaceFiles()).toEqual({ 'plan.md': 'mine\n', 'new.md': 'n\n' });
+    });
+
+    it('lists every file as not authorized when no write is authorized', async () => {
+      await runMixedTurn();
+      authorize.mockResolvedValue(false);
+
+      const plan = await undo.planTurnUndo('conv-1', 'loop-1', 'undo', { authorize });
+
+      expect(plan.willRestore).toEqual([]);
+      expect(plan.wontRestore.map((file) => [file.display, file.reason])).toEqual([
+        ['new.md', 'not-authorized'],
+        ['old.md', 'not-authorized'],
+        ['plan.md', 'not-authorized'],
+      ]);
     });
 
     it('gives an empty plan for a turn that has no undo record', async () => {
       await runTurn('loop-1', () => {
         fs.write(`${WS}/by-command.md`, 'x\n');
       });
-      await expect(undo.planTurnUndo('conv-1', 'loop-1', 'undo')).resolves.toEqual({ willRestore: [], wontRestore: [] });
+      await expect(undo.planTurnUndo('conv-1', 'loop-1', 'undo', { authorize })).resolves.toEqual({ willRestore: [], wontRestore: [] });
     });
 
     it('rejects a plan for the direction the turn is not in', async () => {
       await runMixedTurn();
-      await expect(undo.planTurnUndo('conv-1', 'loop-1', 'reapply')).rejects.toBeInstanceOf(undo.TurnUndoRefusedError);
+      await expect(undo.planTurnUndo('conv-1', 'loop-1', 'reapply', { authorize })).rejects.toBeInstanceOf(undo.TurnUndoRefusedError);
     });
   });
 
@@ -264,7 +296,7 @@ describe('turnUndo', () => {
 
     it('checks each file again when it runs, so a file changed after the plan was read is left alone', async () => {
       await runMixedTurn();
-      const plan = await undo.planTurnUndo('conv-1', 'loop-1', 'undo');
+      const plan = await undo.planTurnUndo('conv-1', 'loop-1', 'undo', { authorize });
       expect(plan.willRestore).toHaveLength(3);
       fs.write(`${WS}/plan.md`, 'changed while the question was open\n');
 
@@ -330,10 +362,10 @@ describe('turnUndo', () => {
       await changes.beginTurn('conv-1', 'loop-2', WS);
 
       await expect(undo.undoTurn('conv-1', 'loop-1', { authorize })).rejects.toBeInstanceOf(undo.TurnUndoRefusedError);
-      await expect(undo.planTurnUndo('conv-1', 'loop-1', 'undo')).resolves.toMatchObject({ willRestore: [{}, {}, {}] });
+      expect(authorize).not.toHaveBeenCalled();
+      await expect(undo.planTurnUndo('conv-1', 'loop-1', 'undo', { authorize })).resolves.toMatchObject({ willRestore: [{}, {}, {}] });
 
       expect(workspaceFiles()).toEqual({ 'plan.md': 'two\n', 'new.md': 'n\n' });
-      expect(authorize).not.toHaveBeenCalled();
       await changes.endTurn('loop-2');
       await expect(undo.undoTurn('conv-1', 'loop-1', { authorize })).resolves.toMatchObject({ done: 3 });
     });
@@ -382,7 +414,7 @@ describe('turnUndo', () => {
       fs.write(`${WS}/plan.md`, 'one\n');
       await restart();
 
-      const plan = await undo.planTurnUndo('conv-1', 'loop-1', 'undo');
+      const plan = await undo.planTurnUndo('conv-1', 'loop-1', 'undo', { authorize });
       expect(plan).toEqual({
         willRestore: [
           { path: `${WS}/new.md`, display: 'new.md', action: 'trash' },
@@ -409,14 +441,14 @@ describe('turnUndo', () => {
       record.entries = record.entries.map((entry) => (entry.path === `${WS}/plan.md` ? { ...entry, path: outside } : entry));
       fs.write(`${CHANGES}/loop-1/undo.json`, JSON.stringify(record));
 
-      const plan = await undo.planTurnUndo('conv-1', 'loop-1', 'undo');
+      const plan = await undo.planTurnUndo('conv-1', 'loop-1', 'undo', { authorize });
       const result = await undo.undoTurn('conv-1', 'loop-1', { authorize });
 
       expect(plan.willRestore.map((file) => file.path)).toEqual([`${WS}/new.md`, `${WS}/old.md`]);
       expect(result.done).toBe(2);
       expect(fs.read(outside)).toBe('keys\n');
       expect(fs.read(`${WS}/plan.md`)).toBe('two\n');
-      expect(authorize.mock.calls.map(([path]) => path).sort()).toEqual([`${WS}/new.md`, `${WS}/old.md`]);
+      expect([...new Set(authorize.mock.calls.map(([path]) => path))].sort()).toEqual([`${WS}/new.md`, `${WS}/old.md`]);
     });
 
     it('rejects a record that does not have the saved shape and writes nothing', async () => {
@@ -432,7 +464,7 @@ describe('turnUndo', () => {
 
     it.each(['index', '../x', ''])('refuses the loop id %j', async (loopId) => {
       await expect(undo.undoTurn('conv-1', loopId, { authorize })).rejects.toThrow();
-      await expect(undo.planTurnUndo('conv-1', loopId, 'undo')).rejects.toThrow();
+      await expect(undo.planTurnUndo('conv-1', loopId, 'undo', { authorize })).rejects.toThrow();
     });
   });
 
@@ -444,7 +476,7 @@ describe('turnUndo', () => {
       const told: string[] = [];
       changes.onTurnChangesSaved((_conversationId, loopId) => told.push(loopId));
 
-      await expect(undo.planTurnUndo('conv-1', 'loop-1', 'reapply')).resolves.toEqual({
+      await expect(undo.planTurnUndo('conv-1', 'loop-1', 'reapply', { authorize })).resolves.toEqual({
         willRestore: [
           { path: `${WS}/new.md`, display: 'new.md', action: 'put-back' },
           { path: `${WS}/old.md`, display: 'old.md', action: 'trash' },
@@ -482,7 +514,7 @@ describe('turnUndo', () => {
       await undo.undoTurn('conv-1', 'loop-1', { authorize });
       fs.write(`${WS}/plan.md`, 'edited after the undo\n');
 
-      const plan = await undo.planTurnUndo('conv-1', 'loop-1', 'reapply');
+      const plan = await undo.planTurnUndo('conv-1', 'loop-1', 'reapply', { authorize });
       const result = await undo.reapplyTurn('conv-1', 'loop-1', { authorize });
 
       expect(plan.wontRestore).toEqual([{ path: `${WS}/plan.md`, display: 'plan.md', reason: 'changed-since' }]);
@@ -501,7 +533,7 @@ describe('turnUndo', () => {
       await undo.undoTurn('conv-1', 'loop-1', { authorize });
       fs.delete(`${WS}/docs`);
 
-      const plan = await undo.planTurnUndo('conv-1', 'loop-1', 'reapply');
+      const plan = await undo.planTurnUndo('conv-1', 'loop-1', 'reapply', { authorize });
 
       expect(plan.willRestore.map((file) => file.display)).toEqual(['plan.md']);
       expect(plan.wontRestore).toEqual([{ path: `${WS}/docs/new.md`, display: 'docs/new.md', reason: 'folder-gone' }]);
@@ -512,7 +544,7 @@ describe('turnUndo', () => {
       await undo.undoTurn('conv-1', 'loop-1', { authorize });
       fs.delete(`${CHANGES}/loop-1/after/${await pathHashOf(`${WS}/new.md`)}`);
 
-      const plan = await undo.planTurnUndo('conv-1', 'loop-1', 'reapply');
+      const plan = await undo.planTurnUndo('conv-1', 'loop-1', 'reapply', { authorize });
       const result = await undo.reapplyTurn('conv-1', 'loop-1', { authorize });
 
       expect(plan.willRestore.map((file) => file.display)).toEqual(['old.md', 'plan.md']);
@@ -535,13 +567,30 @@ describe('turnUndo', () => {
       fs.write(`${WS}/notes.md`, 'mine\n');
       await undo.undoTurn('conv-1', 'loop-1', { authorize });
 
-      await expect(undo.planTurnUndo('conv-1', 'loop-1', 'reapply')).resolves.toEqual({
+      await expect(undo.planTurnUndo('conv-1', 'loop-1', 'reapply', { authorize })).resolves.toEqual({
         willRestore: [{ path: `${WS}/plan.md`, display: 'plan.md', action: 'write-after' }],
         wontRestore: [],
       });
       await expect(undo.reapplyTurn('conv-1', 'loop-1', { authorize })).resolves.toEqual({ done: 1, notDone: [] });
       expect(fs.read(`${WS}/notes.md`)).toBe('mine\n');
       expect(lastByFile()).toEqual({ 'notes.md': undefined, 'plan.md': 'done' });
+    });
+
+    it('lists a file whose write is not authorized as not authorized', async () => {
+      await runMixedTurn();
+      await undo.undoTurn('conv-1', 'loop-1', { authorize });
+      authorize.mockImplementation(async (path) => path !== `${WS}/plan.md`);
+
+      const plan = await undo.planTurnUndo('conv-1', 'loop-1', 'reapply', { authorize });
+
+      expect(plan).toEqual({
+        willRestore: [
+          { path: `${WS}/new.md`, display: 'new.md', action: 'put-back' },
+          { path: `${WS}/old.md`, display: 'old.md', action: 'trash' },
+        ],
+        wontRestore: [{ path: `${WS}/plan.md`, display: 'plan.md', reason: 'not-authorized' }],
+      });
+      expect(workspaceFiles()).toEqual({ 'plan.md': 'one\n', 'old.md': 'gone\n' });
     });
 
     it('records a file whose write is not authorized as not done and keeps the turn undone when none is put back', async () => {
@@ -606,7 +655,7 @@ describe('turnUndo', () => {
       const index = await changes.readTurnIndex('conv-1');
       expect(index['loop-1']).toEqual({ total: 3, added: 2, deleted: 2, firstFile: 'new.md' });
       expect(index['loop-2']).toMatchObject({ restorable: 1 });
-      await expect(undo.planTurnUndo('conv-1', 'loop-1', 'reapply')).resolves.toEqual({ willRestore: [], wontRestore: [] });
+      await expect(undo.planTurnUndo('conv-1', 'loop-1', 'reapply', { authorize })).resolves.toEqual({ willRestore: [], wontRestore: [] });
       await expect(undo.reapplyTurn('conv-1', 'loop-1', { authorize })).rejects.toBeInstanceOf(undo.TurnUndoRefusedError);
       expect(workspaceFiles()).toEqual({ 'plan.md': 'three\n', 'old.md': 'gone\n' });
     });

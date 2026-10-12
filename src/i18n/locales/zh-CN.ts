@@ -320,6 +320,7 @@ const zhCN: TranslationDict = {
     reapplyReasonChangedSince: '这份文件在撤销之后又被改过',
     undoReasonTooLarge: '这份文件过大，没有保存修改前的内容',
     undoReasonFolderGone: '原来的文件夹已经不在',
+    undoReasonNotAuthorized: '阿布现在没有这个位置的写入授权',
     undoPartialNotice: '已恢复 {done} 个，{notDone} 个没有恢复',
     reapplyPartialNotice: '已放回 {done} 个，{notDone} 个没有放回',
     userMessageShowMore: '显示更多',

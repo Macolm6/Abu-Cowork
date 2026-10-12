@@ -320,6 +320,7 @@ const enUS: TranslationDict = {
     reapplyReasonChangedSince: 'This file was changed again after the undo',
     undoReasonTooLarge: 'This file is too large, so its content from before the change was not saved',
     undoReasonFolderGone: 'The original folder is no longer there',
+    undoReasonNotAuthorized: 'Abu is not authorized to write to this location right now',
     undoPartialNotice: '{done} restored, {notDone} not restored',
     reapplyPartialNotice: '{done} put back, {notDone} not put back',
     userMessageShowMore: 'Show more',

@@ -383,6 +383,7 @@ export interface TranslationDict {
     reapplyReasonChangedSince: string;
     undoReasonTooLarge: string;
     undoReasonFolderGone: string;
+    undoReasonNotAuthorized: string;
     /** Notice after an undo or a put-back in which files failed; `{done}` and `{notDone}` are counts. */
     undoPartialNotice: string;
     reapplyPartialNotice: string;

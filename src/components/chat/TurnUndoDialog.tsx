@@ -25,6 +25,7 @@ function reasonLabel(t: TranslationDict, direction: TurnUndoDirection, reason: T
   if (reason === 'by-command') return t.chat.undoReasonByCommand;
   if (reason === 'too-large') return t.chat.undoReasonTooLarge;
   if (reason === 'folder-gone') return t.chat.undoReasonFolderGone;
+  if (reason === 'not-authorized') return t.chat.undoReasonNotAuthorized;
   return direction === 'undo' ? t.chat.undoReasonChangedSince : t.chat.reapplyReasonChangedSince;
 }
 

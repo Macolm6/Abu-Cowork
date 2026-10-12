@@ -214,22 +214,24 @@ export function useTurnUndo(conversationId: string, loopId: string): TurnUndoCon
     () => Boolean(useChatStore.getState().conversations[conversationId]),
     [conversationId],
   );
+  // The plan and the run judge a write by the same check, so the question lists what the run will do.
+  const authorize = useCallback((path: string) => mayWrite(conversationId, path), [conversationId]);
   const plan = useCallback(
-    (direction: TurnUndoDirection) => planTurnUndo(conversationId, loopId, direction, { isConversationPresent }),
-    [conversationId, loopId, isConversationPresent],
+    (direction: TurnUndoDirection) => planTurnUndo(conversationId, loopId, direction, { authorize, isConversationPresent }),
+    [conversationId, loopId, authorize, isConversationPresent],
   );
   const run = useCallback(async (direction: TurnUndoDirection) => {
     if (running.current) return null;
     running.current = true;
     setBusy(true);
     try {
-      const options = { authorize: (path: string) => mayWrite(conversationId, path), isConversationPresent };
+      const options = { authorize, isConversationPresent };
       return await (direction === 'undo' ? undoTurn(conversationId, loopId, options) : reapplyTurn(conversationId, loopId, options));
     } finally {
       running.current = false;
       setBusy(false);
     }
-  }, [conversationId, loopId, isConversationPresent]);
+  }, [conversationId, loopId, authorize, isConversationPresent]);
   return { plan, run, busy };
 }
 

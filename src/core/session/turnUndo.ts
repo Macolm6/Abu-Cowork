@@ -41,7 +41,7 @@ export type TurnUndoDirection = 'undo' | 'reapply';
  */
 export type TurnUndoAction = 'write-before' | 'write-after' | 'trash' | 'put-back';
 
-export type TurnUndoSkipReason = 'by-command' | 'changed-since' | 'too-large' | 'folder-gone';
+export type TurnUndoSkipReason = 'by-command' | 'changed-since' | 'too-large' | 'folder-gone' | 'not-authorized';
 
 export interface PlannedFile {
   path: string;
@@ -74,7 +74,7 @@ export interface TurnUndoResult {
 }
 
 export interface TurnUndoOptions {
-  /** Whether `path` may be written now. A file it refuses is left as it is. */
+  /** Whether `path` may be written now. It only checks. A file it refuses is left as it is. */
   authorize: (path: string) => Promise<boolean>;
   /** Whether the conversation is still there. Nothing is read or written for one that is gone. */
   isConversationPresent?: () => boolean;
@@ -179,20 +179,22 @@ function assertState(record: TurnUndoRecord, direction: TurnUndoDirection): void
 
 /**
  * What undoing a turn, or putting its changes back, would do right now. Reads
- * only. Undoing also lists the turn's files that have no kept content: the
- * ones a command changed and the ones over the copy size. Rejects with
- * `TurnUndoRefusedError` when the turn is not in the state the direction
- * starts from; a turn without an undo record gives an empty plan.
+ * only. A file that would be written and whose write `options.authorize`
+ * refuses is listed as not authorized. Undoing also lists the turn's files
+ * that have no kept content: the ones a command changed and the ones over the
+ * copy size. Rejects with `TurnUndoRefusedError` when the turn is not in the
+ * state the direction starts from; a turn without an undo record gives an
+ * empty plan.
  */
 export async function planTurnUndo(
   conversationId: string,
   loopId: string,
   direction: TurnUndoDirection,
-  options?: Pick<TurnUndoOptions, 'isConversationPresent'>,
+  options: TurnUndoOptions,
 ): Promise<TurnUndoPlan> {
   assertConversationId(conversationId);
   assertLoopId(loopId);
-  const isPresent = options?.isConversationPresent ?? (() => true);
+  const isPresent = options.isConversationPresent ?? (() => true);
   if (!isPresent()) return EMPTY_PLAN;
   await ensureRecovered(conversationId);
   return enqueue(conversationId, async () => {
@@ -203,7 +205,14 @@ export async function planTurnUndo(
     assertState(record, direction);
     const files = (await readTurnChanges(conversationId, loopId))?.files ?? [];
     const { steps, skipped } = await assess(dir, record, new Map(files.map((file) => [file.path, file.display])), direction);
+    const willRestore: PlannedFile[] = [];
     const wontRestore = [...skipped];
+    for (const step of steps) {
+      const file = { path: step.entry.path, display: step.display };
+      // A file that already holds its content is not written, so its write needs no authorization.
+      if (step.inPlace || (await options.authorize(step.entry.path))) willRestore.push({ ...file, action: step.action });
+      else wontRestore.push({ ...file, reason: 'not-authorized' });
+    }
     if (direction === 'undo') {
       const recorded = new Set(record.entries.map((entry) => entry.path));
       const tooLarge = new Set(record.tooLarge ?? []);
@@ -212,10 +221,7 @@ export async function planTurnUndo(
         wontRestore.push({ path: file.path, display: file.display, reason: tooLarge.has(file.path) ? 'too-large' : 'by-command' });
       }
     }
-    return {
-      willRestore: steps.map((step) => ({ path: step.entry.path, display: step.display, action: step.action })),
-      wontRestore: wontRestore.sort(compareDisplay),
-    };
+    return { willRestore, wontRestore: wontRestore.sort(compareDisplay) };
   });
 }
 

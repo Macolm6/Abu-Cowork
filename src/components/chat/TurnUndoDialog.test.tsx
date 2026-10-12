@@ -23,6 +23,7 @@ const UNDO_PLAN: TurnUndoPlan = {
     { path: '/ws/build.sh', display: 'build.sh', reason: 'by-command' },
     { path: '/ws/docs/gone.md', display: 'docs/gone.md', reason: 'folder-gone' },
     { path: '/ws/notes.md', display: 'notes.md', reason: 'changed-since' },
+    { path: '/elsewhere/report.md', display: '/elsewhere/report.md', reason: 'not-authorized' },
   ],
 };
 
@@ -35,6 +36,7 @@ const REAPPLY_PLAN: TurnUndoPlan = {
   wontRestore: [
     { path: '/ws/docs/gone.md', display: 'docs/gone.md', reason: 'folder-gone' },
     { path: '/ws/notes.md', display: 'notes.md', reason: 'changed-since' },
+    { path: '/elsewhere/report.md', display: '/elsewhere/report.md', reason: 'not-authorized' },
   ],
 };
 
@@ -68,6 +70,7 @@ describe('TurnUndoDialog', () => {
       ['build.sh', '这份文件是用命令改动的，没有保存修改前的内容'],
       ['docs/gone.md', '原来的文件夹已经不在'],
       ['notes.md', '这份文件在这一轮之后又被改过'],
+      ['/elsewhere/report.md', '阿布现在没有这个位置的写入授权'],
     ]);
     expect(within(dialog).getByRole('button', { name: '撤销' })).toBeEnabled();
     expect(within(dialog).getByRole('button', { name: '取消' })).toBeInTheDocument();
@@ -87,6 +90,7 @@ describe('TurnUndoDialog', () => {
     expect(lines('turn-undo-wont')).toEqual([
       ['docs/gone.md', '原来的文件夹已经不在'],
       ['notes.md', '这份文件在撤销之后又被改过'],
+      ['/elsewhere/report.md', '阿布现在没有这个位置的写入授权'],
     ]);
     expect(within(dialog).getByRole('button', { name: '放回改动' })).toBeEnabled();
   });
