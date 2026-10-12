@@ -125,12 +125,16 @@ function ChangedFilesCard({ conversationId, loopId }: { conversationId: string; 
     if (!question || !questionOpen) return;
     setQuestionOpen(false);
     const result = await run(question.direction);
-    if (!result || result.notDone.length === 0) return;
+    if (!result) return;
+    // The question already listed these files; the notice counts the ones it did not.
+    const listed = new Set(question.plan.wontRestore.map((file) => file.path));
+    const notDone = result.notDone.filter((file) => !listed.has(file.path)).length;
+    if (notDone === 0) return;
     addToast({
       type: 'warning',
       title: format(
         question.direction === 'undo' ? t.chat.undoPartialNotice : t.chat.reapplyPartialNotice,
-        { done: result.done, notDone: result.notDone.length },
+        { done: result.done, notDone },
       ),
     });
   };

@@ -421,6 +421,29 @@ describe('ChangedFilesCard', () => {
       await waitFor(() => expect(toastTitles()).toEqual(['已恢复 1 个，2 个没有恢复']));
     });
 
+    it('leaves a file the question already listed as not restored out of the notice', async () => {
+      saveRestorableTurn(THREE_FILES, THREE_FILES.map((file) => entryOf(file.display)));
+      mocks.planTurnUndo.mockResolvedValue({
+        willRestore: [PLAN.willRestore[1], PLAN.willRestore[2]],
+        wontRestore: [{ path: '/ws/a.md', display: 'a.md', reason: 'not-authorized' }],
+      } satisfies TurnUndoPlan);
+      const listedOnly: TurnUndoResult = { done: 2, notDone: [{ path: '/ws/a.md', display: 'a.md', reason: 'not-authorized' }] };
+      mocks.undoTurn.mockResolvedValueOnce(listedOnly).mockResolvedValueOnce({
+        done: 1,
+        notDone: [...listedOnly.notDone, { path: '/ws/b.md', display: 'b.md', reason: 'write-failed' }],
+      } satisfies TurnUndoResult);
+      await renderCard();
+
+      fireEvent.click(undoButton());
+      fireEvent.click(within(await question('撤销这一轮的文件改动？')).getByRole('button', { name: '撤销' }));
+      await waitFor(() => expect(mocks.undoTurn).toHaveBeenCalledTimes(1));
+      expect(toastTitles()).toEqual([]);
+
+      fireEvent.click(undoButton());
+      fireEvent.click(within(await question('撤销这一轮的文件改动？')).getByRole('button', { name: '撤销' }));
+      await waitFor(() => expect(toastTitles()).toEqual(['已恢复 1 个，1 个没有恢复']));
+    });
+
     it('titles an undone turn by the files that were restored, marks the others, and offers to put the changes back', async () => {
       saveRestorableTurn(
         [...THREE_FILES, uncounted('报表.xlsx', 'created')],

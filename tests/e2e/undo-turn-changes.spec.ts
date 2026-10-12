@@ -497,8 +497,8 @@ test.describe('story 2: seeing beforehand which files change and which do not', 
     expect(read(workspace, '方案.md')).toBe(PLAN_BEFORE);
     expect(fs.readFileSync(memoPath, 'utf8')).toBe(memo);
     await expect(card.getByRole('listitem').filter({ hasText: '备忘.md' })).toContainText('没有恢复');
-    // The run checks the authorization again, and counts the file it still may not write.
-    await expect(notices(page)).toHaveText([/已恢复 1 个，1 个没有恢复/]);
+    // The question already said this file is not restored, so no notice repeats it.
+    await expect(notices(page)).toHaveCount(0);
   });
 
   test('a file that cannot be written is marked as not restored and counted in a notice, and the others are restored', async () => {
