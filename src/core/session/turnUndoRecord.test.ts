@@ -52,6 +52,19 @@ describe('turnUndoRecord', () => {
       });
     });
 
+    it('reads the paths that were too large to copy', async () => {
+      const tooLarge = ['/Users/testuser/project/big.log'];
+      const record = await parseTurnUndoRecord(recordText([await entryOf()], { tooLarge }));
+      expect(record.tooLarge).toEqual(tooLarge);
+    });
+
+    it.each([
+      ['too-large paths that are no list', { tooLarge: 'big.log' }],
+      ['a too-large path that is relative', { tooLarge: ['big.log'] }],
+    ])('rejects %s', async (_label, overrides) => {
+      await expect(parseTurnUndoRecord(recordText([], overrides))).rejects.toThrow('not in the saved format');
+    });
+
     it('reads a Windows drive path', async () => {
       const path = 'C:/work/a.md';
       const entry = await entryOf({ path, hash: await pathHashOf(path) });

@@ -21,6 +21,12 @@ export interface MemoryHostFs {
   listWorkspace(root: string): ConversationWorkspaceFiles;
   /** Makes the next read of `path` through either interface reject once. */
   failNextRead(path: string): void;
+  /** Makes the next plugin-fs write of `path` reject once. */
+  failNextWrite(path: string): void;
+  /** Paths moved to the trash, in order. */
+  trashed: string[];
+  /** The host's `move_to_trash`: removes the path and records it. */
+  moveToTrash(path: string): Promise<void>;
   pluginFs: {
     exists(path: string): Promise<boolean>;
     mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
@@ -43,6 +49,8 @@ export function createMemoryHostFs(): MemoryHostFs {
   const mtimes = new Map<string, number>();
   const dirs = new Set<string>();
   const failing = new Set<string>();
+  const failingWrites = new Set<string>();
+  const trashed: string[] = [];
   const encoder = new TextEncoder();
   const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
   let clock = 1_000;
@@ -107,6 +115,15 @@ export function createMemoryHostFs(): MemoryHostFs {
     failNextRead: (path) => {
       failing.add(path);
     },
+    failNextWrite: (path) => {
+      failingWrites.add(path);
+    },
+    trashed,
+    moveToTrash: async (path) => {
+      if (!files.has(path) && !dirs.has(path)) throw noEntry(path);
+      removeTree(path);
+      trashed.push(path);
+    },
     pluginFs: {
       exists: async (path) => files.has(path) || dirs.has(path),
       mkdir: async (path) => {
@@ -114,7 +131,10 @@ export function createMemoryHostFs(): MemoryHostFs {
       },
       readFile: async (path) => readBytes(path),
       readTextFile: async (path) => decoder.decode(readBytes(path)),
-      writeFile: async (path, bytes) => writeBytes(path, bytes),
+      writeFile: async (path, bytes) => {
+        if (failingWrites.delete(path)) throw new Error(`EIO: write failed, open '${path}'`);
+        writeBytes(path, bytes);
+      },
       remove: async (path) => {
         if (!files.has(path) && !dirs.has(path)) throw noEntry(path);
         removeTree(path);

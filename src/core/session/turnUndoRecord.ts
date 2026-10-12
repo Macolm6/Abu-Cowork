@@ -33,6 +33,8 @@ export interface TurnUndoRecord {
   entries: TurnUndoEntry[];
   /** 'applied': the files are as the turn left them; 'undone': the turn is undone. */
   state: 'applied' | 'undone';
+  /** Paths the file tools changed that were over the copy size on either side, so no entry names them. */
+  tooLarge?: string[];
 }
 
 function hexOf(digest: ArrayBuffer): string {
@@ -113,6 +115,7 @@ export async function parseTurnUndoRecord(text: string): Promise<TurnUndoRecord>
     || typeof value.loopId !== 'string'
     || !(value.state === 'applied' || value.state === 'undone')
     || !Array.isArray(value.entries)
+    || !(value.tooLarge === undefined || (Array.isArray(value.tooLarge) && value.tooLarge.every(isRecordedPath)))
   ) {
     throw new Error('Turn undo record is not in the saved format');
   }
@@ -121,9 +124,15 @@ export async function parseTurnUndoRecord(text: string): Promise<TurnUndoRecord>
     const entry = parseEntry(item);
     if ((await pathHashOf(entry.path)) === entry.hash) entries.push(entry);
   }
-  return { version: FORMAT_VERSION, loopId: value.loopId, state: value.state, entries };
+  return {
+    version: FORMAT_VERSION,
+    loopId: value.loopId,
+    state: value.state,
+    entries,
+    ...(value.tooLarge === undefined ? {} : { tooLarge: value.tooLarge as string[] }),
+  };
 }
 
-export function createTurnUndoRecord(loopId: string, entries: TurnUndoEntry[]): TurnUndoRecord {
-  return { version: FORMAT_VERSION, loopId, entries, state: 'applied' };
+export function createTurnUndoRecord(loopId: string, entries: TurnUndoEntry[], tooLarge: string[]): TurnUndoRecord {
+  return { version: FORMAT_VERSION, loopId, entries, state: 'applied', ...(tooLarge.length > 0 ? { tooLarge } : {}) };
 }

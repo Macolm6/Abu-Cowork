@@ -58,6 +58,7 @@ export const MAX_TURN_HUNK_BYTES = 5 * 1024 * 1024;
 const FORMAT_VERSION = 1 as const;
 const INDEX_FILENAME = 'index.json';
 const BEFORE_DIRNAME = 'before';
+const AFTER_DIRNAME = 'after';
 const MANIFEST_FILENAME = 'manifest.json';
 const UNDO_FILENAME = 'undo.json';
 
@@ -211,7 +212,7 @@ function yieldToMainThread(): Promise<void> {
 }
 
 /** Queues `task` behind the conversation's earlier settle work. The returned promise carries the task's own outcome. */
-function enqueue(conversationId: string, task: () => Promise<void>): Promise<void> {
+function enqueue<T>(conversationId: string, task: () => Promise<T>): Promise<T> {
   const previous = conversationWork.get(conversationId) ?? Promise.resolve();
   const run = previous.then(task);
   const tail = run.then(() => undefined, () => undefined);
@@ -517,6 +518,8 @@ interface CapturedComparison {
   files: TurnChangedFile[];
   /** Those of them whose content before the turn is kept, in the same order. */
   restorable: TurnUndoEntry[];
+  /** The paths of those that are larger than a copy may be on either side. */
+  tooLarge: string[];
 }
 
 async function compareCapturedFiles(dir: string, turn: TurnScope, entries: ManifestEntry[]): Promise<CapturedComparison> {
@@ -524,6 +527,7 @@ async function compareCapturedFiles(dir: string, turn: TurnScope, entries: Manif
   const budget: HunkBudget = { lines: 0, bytes: 0 };
   const files: TurnChangedFile[] = [];
   const restorable: TurnUndoEntry[] = [];
+  const tooLarge: string[] = [];
   const captured = entries
     .map((entry) => ({ entry, display: displayPathOf(entry.path, turn.workspaceRoots, home) }))
     .sort(compareDisplay);
@@ -537,8 +541,9 @@ async function compareCapturedFiles(dir: string, turn: TurnScope, entries: Manif
     files.push(file);
     const undoEntry = await undoEntryOf(entry, before, after);
     if (undoEntry) restorable.push(undoEntry);
+    else tooLarge.push(entry.path);
   }
-  return { files, restorable };
+  return { files, restorable, tooLarge };
 }
 
 /**
@@ -600,9 +605,9 @@ async function pruneBeforeCopies(dir: string, loopId: string, record: TurnUndoRe
 async function settleTurn(turn: TurnScope, entries: ManifestEntry[]): Promise<void> {
   if (!turn.isConversationPresent()) return;
   const dir = await changesDir(turn.conversationId);
-  const { files: captured, restorable } = await compareCapturedFiles(dir, turn, entries);
+  const { files: captured, restorable, tooLarge } = await compareCapturedFiles(dir, turn, entries);
   if (!turn.isConversationPresent()) return;
-  const record = restorable.length > 0 ? createTurnUndoRecord(turn.loopId, restorable) : null;
+  const record = restorable.length > 0 ? createTurnUndoRecord(turn.loopId, restorable, tooLarge) : null;
   const marks = record ? undoMarksOf(record) : null;
   if (captured.length > 0) await saveTurn(dir, turn.loopId, captured, marks);
   if (record) {
@@ -857,4 +862,32 @@ export function onTurnChangesSaved(listener: TurnChangesListener): () => void {
   return () => {
     listeners.delete(listener);
   };
+}
+
+// ── What turnUndo.ts builds on ──
+
+export type FileSide = Side;
+export { assertLoopId, changesDir, enqueue, ensureRecovered, loadUndoRecord, readCurrentSide };
+
+/** Whether a turn of the conversation is running. */
+export function hasOpenTurn(conversationId: string): boolean {
+  for (const turn of openTurns.values()) if (turn.conversationId === conversationId) return true;
+  return false;
+}
+
+/** Where the copy of one file is kept: what it held before the turn, or when the turn was undone. */
+export function turnCopyPath(dir: string, loopId: string, side: 'before' | 'after', hash: string): string {
+  return joinConversationPath(dir, loopId, side === 'before' ? BEFORE_DIRNAME : AFTER_DIRNAME, hash);
+}
+
+/** Saves a turn's undo record, brings its index entry in line with it and tells listeners. */
+export async function saveUndoRecord(conversationId: string, dir: string, record: TurnUndoRecord): Promise<void> {
+  await atomicWrite(undoRecordPath(dir, record.loopId), JSON.stringify(record));
+  const index = await loadIndex(dir);
+  const entry = index[record.loopId];
+  if (entry) {
+    index[record.loopId] = withUndoMarks(entry, undoMarksOf(record));
+    await saveIndex(dir, index);
+  }
+  emitSaved(conversationId, record.loopId);
 }
