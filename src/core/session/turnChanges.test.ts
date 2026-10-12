@@ -16,6 +16,7 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
   writeFile: (path: string, bytes: Uint8Array) => host.fs.pluginFs.writeFile(path, bytes),
   remove: (path: string, options?: { recursive?: boolean }) => host.fs.pluginFs.remove(path, options),
   readDir: (path: string) => host.fs.pluginFs.readDir(path),
+  stat: (path: string) => host.fs.pluginFs.stat(path),
 }));
 vi.mock('@/core/tools/fsBridge', () => ({
   exists: (path: string) => host.fs.bridge.exists(path),
@@ -443,7 +444,7 @@ describe('turnChanges', () => {
       expect(saved.total).toBe(1);
       expect(fs.readJson(`${CHANGES}/index.json`)).toEqual({
         version: 1,
-        turns: { 'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md', restorable: 1 } },
+        turns: { 'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md', restorable: 1, settledAt: 1, copyBytes: 4 } },
       });
       const undoRecord = fs.read(`${CHANGES}/loop-1/undo.json`);
       expect(JSON.parse(undoRecord)).toMatchObject({ state: 'applied', entries: [{ path: `${WS}/plan.md` }] });
@@ -452,7 +453,7 @@ describe('turnChanges', () => {
 
       const afterRestart = await restart();
       await expect(afterRestart.readTurnIndex('conv-1')).resolves.toEqual({
-        'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md', restorable: 1 },
+        'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md', restorable: 1, settledAt: 1, copyBytes: 4 },
       });
       expect(fs.readJson(`${CHANGES}/loop-1.json`)).toEqual(saved);
       expect(fs.read(`${CHANGES}/loop-1/undo.json`)).toBe(undoRecord);
@@ -472,7 +473,7 @@ describe('turnChanges', () => {
       expect(saved.files.map((file) => file.display)).toEqual(['by-command.md', 'plan.md']);
       expect(saved.total).toBe(2);
       await expect(mod.readTurnIndex('conv-1')).resolves.toEqual({
-        'loop-1': { total: 2, added: 1, deleted: 1, firstFile: 'by-command.md', restorable: 1 },
+        'loop-1': { total: 2, added: 1, deleted: 1, firstFile: 'by-command.md', restorable: 1, settledAt: 1, copyBytes: 4 },
       });
       expect(told).toEqual(['loop-1', 'loop-1']);
     });
@@ -550,7 +551,7 @@ describe('turnChanges', () => {
       expect(saved.total).toBe(502);
       expect(saved.added).toBe(2);
       await expect(mod.readTurnIndex('conv-1')).resolves.toEqual({
-        'loop-1': { total: 502, added: 2, deleted: 0, firstFile: name(0), restorable: 1 },
+        'loop-1': { total: 502, added: 2, deleted: 0, firstFile: name(0), restorable: 1, settledAt: 1, copyBytes: 0 },
       });
     });
 
@@ -625,8 +626,8 @@ describe('turnChanges', () => {
       expect(fs.readJson(`${CHANGES}/index.json`)).toEqual({
         version: 1,
         turns: {
-          'loop-1': { total: 1, added: 2, deleted: 1, firstFile: 'plan.md', restorable: 1 },
-          'loop-2': { total: 1, added: 1, deleted: 0, firstFile: 'b.md', restorable: 1 },
+          'loop-1': { total: 1, added: 2, deleted: 1, firstFile: 'plan.md', restorable: 1, settledAt: 1, copyBytes: 4 },
+          'loop-2': { total: 1, added: 1, deleted: 0, firstFile: 'b.md', restorable: 1, settledAt: 2, copyBytes: 0 },
         },
       });
       expect(saved).toEqual([['conv-1', 'loop-1'], ['conv-1', 'loop-2']]);
@@ -926,6 +927,103 @@ describe('turnChanges', () => {
     });
   });
 
+  describe('copy limit of a conversation', () => {
+    /** A turn that replaces the 10 bytes of `file` with other content. */
+    async function runTenByteTurn(loopId: string, file: string): Promise<void> {
+      fs.write(`${WS}/${file}`, '0123456789');
+      await runTurn(loopId, async (capture) => {
+        await capture(`${WS}/${file}`);
+        fs.write(`${WS}/${file}`, `changed by ${loopId}`);
+      });
+    }
+
+    it('keeps 200 MB of copies per conversation', () => {
+      expect(mod.MAX_CONVERSATION_COPY_BYTES).toBe(200 * 1024 * 1024);
+    });
+
+    it('records the settle order and the copy size of each restorable turn', async () => {
+      await runTenByteTurn('loop-b', 'b.md');
+      await runTurn('loop-x', () => {
+        fs.write(`${WS}/by-command.md`, 'x\n');
+      });
+      await runTenByteTurn('loop-a', 'a.md');
+
+      const index = await mod.readTurnIndex('conv-1');
+      expect(index['loop-b']).toMatchObject({ settledAt: 1, copyBytes: 10 });
+      expect(index['loop-a']).toMatchObject({ settledAt: 2, copyBytes: 10 });
+      expect(index['loop-x']).toEqual({ total: 1, added: 0, deleted: 0, firstFile: 'by-command.md' });
+    });
+
+    it('removes the copies of the turns settled longest ago once the limit is passed', async () => {
+      mod.__testing.setConversationCopyLimit(25);
+      const told: string[] = [];
+      mod.onTurnChangesSaved((_conversationId, loopId) => told.push(loopId));
+      await runTenByteTurn('loop-c', 'c.md');
+      await runTenByteTurn('loop-a', 'a.md');
+      expect(fs.has(`${CHANGES}/loop-c/undo.json`)).toBe(true);
+      told.length = 0;
+
+      await runTenByteTurn('loop-b', 'b.md');
+
+      expect(fs.has(`${CHANGES}/loop-c`)).toBe(false);
+      expect(fs.has(`${CHANGES}/loop-a/undo.json`)).toBe(true);
+      expect(fs.has(`${CHANGES}/loop-b/undo.json`)).toBe(true);
+      const index = await mod.readTurnIndex('conv-1');
+      expect(index['loop-c']).toEqual({ total: 1, added: 1, deleted: 1, firstFile: 'c.md' });
+      expect(index['loop-a']).toMatchObject({ restorable: 1 });
+      expect(index['loop-b']).toMatchObject({ restorable: 1 });
+      expect(fs.has(`${CHANGES}/loop-c.json`)).toBe(true);
+      await expect(mod.readTurnUndoRecord('conv-1', 'loop-c')).resolves.toBeNull();
+      expect(told).toEqual(['loop-c', 'loop-b']);
+    });
+
+    it('removes several turns when one settle passes the limit by more than one of them', async () => {
+      await runTenByteTurn('loop-1', 'a.md');
+      await runTenByteTurn('loop-2', 'b.md');
+      await runTenByteTurn('loop-3', 'c.md');
+      mod.__testing.setConversationCopyLimit(15);
+
+      await runTenByteTurn('loop-4', 'd.md');
+
+      const index = await mod.readTurnIndex('conv-1');
+      expect(Object.entries(index).map(([loopId, entry]) => [loopId, entry.restorable])).toEqual([
+        ['loop-1', undefined],
+        ['loop-2', undefined],
+        ['loop-3', undefined],
+        ['loop-4', 1],
+      ]);
+      expect(fs.list(`${CHANGES}/`).filter((path) => path.endsWith('undo.json'))).toEqual([`${CHANGES}/loop-4/undo.json`]);
+    });
+
+    it('keeps no copies of a turn that is over the limit by itself, also when the list adds files to it', async () => {
+      mod.__testing.setConversationCopyLimit(5);
+      fs.write(`${WS}/a.md`, '0123456789');
+      await runTurn('loop-1', async (capture) => {
+        await capture(`${WS}/a.md`);
+        fs.write(`${WS}/a.md`, 'changed');
+        fs.write(`${WS}/by-command.md`, 'x\n');
+      });
+
+      expect(fs.has(`${CHANGES}/loop-1`)).toBe(false);
+      await expect(mod.readTurnIndex('conv-1')).resolves.toEqual({
+        'loop-1': { total: 2, added: 1, deleted: 1, firstFile: 'a.md' },
+      });
+    });
+
+    it('keeps the turns of another conversation', async () => {
+      mod.__testing.setConversationCopyLimit(15);
+      await runTenByteTurn('loop-1', 'a.md');
+      fs.write(`${WS}/other.md`, '0123456789');
+      await mod.beginTurn('conv-2', 'loop-2', WS);
+      await mod.captureBefore('loop-2', `${WS}/other.md`);
+      fs.write(`${WS}/other.md`, 'changed');
+      await mod.endTurn('loop-2');
+
+      expect(fs.has(`${CHANGES}/loop-1/undo.json`)).toBe(true);
+      expect(fs.has(`${HOME}/.abu/conversations/conv-2/changes/loop-2/undo.json`)).toBe(true);
+    });
+  });
+
   describe('after the app quit in the middle of a turn', () => {
     it('settles the left-over turn from the disk as it is when the conversation is read', async () => {
       fs.write(`${WS}/plan.md`, 'one\n');
@@ -941,7 +1039,9 @@ describe('turnChanges', () => {
       afterRestart.onTurnChangesSaved((_conversationId, loopId) => saved.push(loopId));
       const index = await afterRestart.readTurnIndex('conv-1');
 
-      expect(index).toEqual({ 'loop-1': { total: 2, added: 2, deleted: 1, firstFile: 'new.md', restorable: 2 } });
+      expect(index).toEqual({
+        'loop-1': { total: 2, added: 2, deleted: 1, firstFile: 'new.md', restorable: 2, settledAt: 1, copyBytes: 4 },
+      });
       const turn = await afterRestart.readTurnChanges('conv-1', 'loop-1');
       expect(turn?.files.map((file) => [file.display, file.status, file.added, file.deleted])).toEqual([
         ['new.md', 'created', 1, 0],

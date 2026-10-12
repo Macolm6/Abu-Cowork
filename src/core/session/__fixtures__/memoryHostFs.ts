@@ -35,6 +35,7 @@ export interface MemoryHostFs {
     writeFile(path: string, bytes: Uint8Array): Promise<void>;
     remove(path: string, options?: { recursive?: boolean }): Promise<void>;
     readDir(path: string): Promise<Array<{ name: string; isDirectory: boolean; isFile: boolean; isSymlink: boolean }>>;
+    stat(path: string): Promise<{ isFile: boolean; isDirectory: boolean; isSymlink: boolean; size: number }>;
   };
   bridge: {
     exists(path: string): Promise<boolean>;
@@ -150,6 +151,12 @@ export function createMemoryHostFs(): MemoryHostFs {
           if (key.startsWith(prefix) && !key.slice(prefix.length).includes('/')) names.set(key.slice(prefix.length), false);
         }
         return [...names].map(([name, isDirectory]) => ({ name, isDirectory, isFile: !isDirectory, isSymlink: false }));
+      },
+      stat: async (path) => {
+        const bytes = files.get(path);
+        if (bytes) return { isFile: true, isDirectory: false, isSymlink: false, size: bytes.length };
+        if (dirs.has(path)) return { isFile: false, isDirectory: true, isSymlink: false, size: 0 };
+        throw noEntry(path);
       },
     },
     bridge: {

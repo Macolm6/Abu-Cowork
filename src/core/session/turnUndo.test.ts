@@ -16,6 +16,7 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
   writeFile: (path: string, bytes: Uint8Array) => host.fs.pluginFs.writeFile(path, bytes),
   remove: (path: string, options?: { recursive?: boolean }) => host.fs.pluginFs.remove(path, options),
   readDir: (path: string) => host.fs.pluginFs.readDir(path),
+  stat: (path: string) => host.fs.pluginFs.stat(path),
 }));
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (command: string, args: { path: string }) => {
@@ -578,6 +579,36 @@ describe('turnUndo', () => {
       await expect(changes.readTurnIndex('conv-1')).resolves.toMatchObject({ 'loop-1': { restorable: 3, undone: true } });
       await expect(undo.reapplyTurn('conv-1', 'loop-1', { authorize })).resolves.toEqual({ done: 3, notDone: [] });
       expect(workspaceFiles()).toEqual({ 'plan.md': 'two\n', 'new.md': 'n\n' });
+    });
+  });
+
+  describe('copy limit of a conversation', () => {
+    it('counts the content kept at the undo in the size of the turn', async () => {
+      await runMixedTurn();
+      await expect(changes.readTurnIndex('conv-1')).resolves.toMatchObject({ 'loop-1': { copyBytes: 9 } });
+
+      await undo.undoTurn('conv-1', 'loop-1', { authorize });
+
+      await expect(changes.readTurnIndex('conv-1')).resolves.toMatchObject({ 'loop-1': { copyBytes: 15, settledAt: 1 } });
+    });
+
+    it('removes the copies of an undone turn like any other, after which it cannot be put back', async () => {
+      await runMixedTurn();
+      await undo.undoTurn('conv-1', 'loop-1', { authorize });
+      changes.__testing.setConversationCopyLimit(10);
+
+      await runTurn('loop-2', async (capture) => {
+        await capture(`${WS}/plan.md`);
+        fs.write(`${WS}/plan.md`, 'three\n');
+      });
+
+      expect(fs.has(`${CHANGES}/loop-1`)).toBe(false);
+      const index = await changes.readTurnIndex('conv-1');
+      expect(index['loop-1']).toEqual({ total: 3, added: 2, deleted: 2, firstFile: 'new.md' });
+      expect(index['loop-2']).toMatchObject({ restorable: 1 });
+      await expect(undo.planTurnUndo('conv-1', 'loop-1', 'reapply')).resolves.toEqual({ willRestore: [], wontRestore: [] });
+      await expect(undo.reapplyTurn('conv-1', 'loop-1', { authorize })).rejects.toBeInstanceOf(undo.TurnUndoRefusedError);
+      expect(workspaceFiles()).toEqual({ 'plan.md': 'three\n', 'old.md': 'gone\n' });
     });
   });
 

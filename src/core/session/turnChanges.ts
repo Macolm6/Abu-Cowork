@@ -20,7 +20,7 @@
  * conversation directory through plugin-fs, as the rest of the conversation
  * storage does.
  */
-import { exists, mkdir, readDir, readFile, readTextFile, remove, writeFile } from '@tauri-apps/plugin-fs';
+import { exists, mkdir, readDir, readFile, readTextFile, remove, stat, writeFile } from '@tauri-apps/plugin-fs';
 import { appDataDir, homeDir } from '@tauri-apps/api/path';
 import { exists as fileExists, readFile as readFileBytes, stat as fileStat } from '@/core/tools/fsBridge';
 import { atomicWrite } from '@/utils/atomicFs';
@@ -62,6 +62,10 @@ const AFTER_DIRNAME = 'after';
 const MANIFEST_FILENAME = 'manifest.json';
 const UNDO_FILENAME = 'undo.json';
 
+/** Bytes of before and after copies one conversation keeps; beyond it the oldest turns lose theirs. */
+export const MAX_CONVERSATION_COPY_BYTES = 200 * 1024 * 1024;
+let copyLimitBytes = MAX_CONVERSATION_COPY_BYTES;
+
 export interface TurnChangedFile {
   /** Absolute, '/' separators. */
   path: string;
@@ -96,6 +100,10 @@ export interface TurnIndexEntry {
   restorable?: number;
   /** True while the turn is undone. */
   undone?: boolean;
+  /** The turn's place in the order restorable turns were settled; the lowest is the oldest. */
+  settledAt?: number;
+  /** Bytes of the copies the turn keeps on disk. */
+  copyBytes?: number;
 }
 
 /** loopId → totals of a turn that changed at least one file. */
@@ -274,17 +282,21 @@ function parseTurnIndex(text: string): TurnIndex {
       || typeof entry.firstFile !== 'string'
       || !(entry.restorable === undefined || isCount(entry.restorable))
       || !(entry.undone === undefined || typeof entry.undone === 'boolean')
+      || !(entry.settledAt === undefined || isCount(entry.settledAt))
+      || !(entry.copyBytes === undefined || isCount(entry.copyBytes))
     ) {
       throw new Error('Turn changes index entry is not in the saved format');
     }
-    index[loopId] = {
-      total: entry.total,
-      added: entry.added,
-      deleted: entry.deleted,
-      firstFile: entry.firstFile,
-      ...(entry.restorable ? { restorable: entry.restorable } : {}),
-      ...(entry.undone ? { undone: true } : {}),
-    };
+    const totals = { total: entry.total, added: entry.added, deleted: entry.deleted, firstFile: entry.firstFile };
+    index[loopId] = entry.restorable
+      ? {
+        ...totals,
+        restorable: entry.restorable,
+        ...(entry.undone ? { undone: true } : {}),
+        settledAt: entry.settledAt ?? 0,
+        copyBytes: entry.copyBytes ?? 0,
+      }
+      : totals;
   }
   return index;
 }
@@ -338,12 +350,6 @@ async function saveIndex(dir: string, index: TurnIndex): Promise<void> {
   await atomicWrite(joinConversationPath(dir, INDEX_FILENAME), JSON.stringify({ version: FORMAT_VERSION, turns: index }));
 }
 
-async function saveIndexEntry(dir: string, loopId: string, entry: TurnIndexEntry): Promise<void> {
-  const index = await loadIndex(dir);
-  index[loopId] = entry;
-  await saveIndex(dir, index);
-}
-
 function fileNameOf(display: string): string {
   return display.slice(display.lastIndexOf('/') + 1);
 }
@@ -352,29 +358,42 @@ function fileNameOf(display: string): string {
 interface TurnUndoMarks {
   restorable: number;
   undone: boolean;
+  copyBytes: number;
 }
 
-function undoMarksOf(record: TurnUndoRecord): TurnUndoMarks {
-  return { restorable: record.entries.length, undone: record.state === 'undone' };
+function undoMarksOf(record: TurnUndoRecord, copyBytes: number): TurnUndoMarks {
+  return { restorable: record.entries.length, undone: record.state === 'undone', copyBytes };
 }
 
-/** `entry` with the restorable count and undone mark of `marks`, or with neither. */
-function withUndoMarks(entry: TurnIndexEntry, marks: TurnUndoMarks | null): TurnIndexEntry {
-  return {
-    total: entry.total,
-    added: entry.added,
-    deleted: entry.deleted,
-    firstFile: entry.firstFile,
-    ...(marks && marks.restorable > 0 ? { restorable: marks.restorable } : {}),
-    ...(marks && marks.restorable > 0 && marks.undone ? { undone: true } : {}),
+/**
+ * Puts a turn into `index`: its totals and, with `marks` that name a file to
+ * restore, the marks and the turn's place in settle order. A turn that already
+ * has a place keeps it; a new one goes after every other.
+ */
+function putIndexEntry(index: TurnIndex, loopId: string, entry: TurnIndexEntry, marks: TurnUndoMarks | null): void {
+  const totals = { total: entry.total, added: entry.added, deleted: entry.deleted, firstFile: entry.firstFile };
+  if (!marks || marks.restorable === 0) {
+    index[loopId] = totals;
+    return;
+  }
+  const latest = Object.values(index).reduce((max, other) => Math.max(max, other.settledAt ?? 0), 0);
+  index[loopId] = {
+    ...totals,
+    restorable: marks.restorable,
+    ...(marks.undone ? { undone: true } : {}),
+    settledAt: index[loopId]?.settledAt ?? latest + 1,
+    copyBytes: marks.copyBytes,
   };
 }
 
-function indexEntryOf(turn: TurnChanges, marks: TurnUndoMarks | null): TurnIndexEntry {
-  return withUndoMarks(
-    { total: turn.total, added: turn.added, deleted: turn.deleted, firstFile: fileNameOf(turn.files[0].display) },
-    marks,
-  );
+async function saveIndexEntry(dir: string, loopId: string, entry: TurnIndexEntry, marks: TurnUndoMarks | null): Promise<void> {
+  const index = await loadIndex(dir);
+  putIndexEntry(index, loopId, entry, marks);
+  await saveIndex(dir, index);
+}
+
+function indexEntryOf(turn: TurnChanges): TurnIndexEntry {
+  return { total: turn.total, added: turn.added, deleted: turn.deleted, firstFile: fileNameOf(turn.files[0].display) };
 }
 
 function isInside(root: string, path: string): boolean {
@@ -520,6 +539,8 @@ interface CapturedComparison {
   restorable: TurnUndoEntry[];
   /** The paths of those that are larger than a copy may be on either side. */
   tooLarge: string[];
+  /** Bytes of the before copies of the restorable files. */
+  copyBytes: number;
 }
 
 async function compareCapturedFiles(dir: string, turn: TurnScope, entries: ManifestEntry[]): Promise<CapturedComparison> {
@@ -528,6 +549,7 @@ async function compareCapturedFiles(dir: string, turn: TurnScope, entries: Manif
   const files: TurnChangedFile[] = [];
   const restorable: TurnUndoEntry[] = [];
   const tooLarge: string[] = [];
+  let copyBytes = 0;
   const captured = entries
     .map((entry) => ({ entry, display: displayPathOf(entry.path, turn.workspaceRoots, home) }))
     .sort(compareDisplay);
@@ -540,10 +562,14 @@ async function compareCapturedFiles(dir: string, turn: TurnScope, entries: Manif
     if (!file) continue;
     files.push(file);
     const undoEntry = await undoEntryOf(entry, before, after);
-    if (undoEntry) restorable.push(undoEntry);
-    else tooLarge.push(entry.path);
+    if (!undoEntry) {
+      tooLarge.push(entry.path);
+      continue;
+    }
+    restorable.push(undoEntry);
+    if (before.state === 'file') copyBytes += before.bytes.length;
   }
-  return { files, restorable, tooLarge };
+  return { files, restorable, tooLarge, copyBytes };
 }
 
 /**
@@ -575,7 +601,49 @@ async function saveTurn(dir: string, loopId: string, changed: TurnChangedFile[],
     deleted: files.reduce((sum, file) => sum + (file.deleted ?? 0), 0),
   };
   await atomicWrite(turnFilePath(dir, loopId), JSON.stringify(saved));
-  await saveIndexEntry(dir, loopId, indexEntryOf(saved, marks));
+  await saveIndexEntry(dir, loopId, indexEntryOf(saved), marks);
+}
+
+/** Bytes of the copies a turn keeps: what its files held before the turn and when it was undone. */
+async function measureCopies(dir: string, loopId: string): Promise<number> {
+  let bytes = 0;
+  for (const side of [BEFORE_DIRNAME, AFTER_DIRNAME]) {
+    const sideDir = joinConversationPath(dir, loopId, side);
+    if (!(await exists(sideDir))) continue;
+    for (const item of await readDir(sideDir)) {
+      if (item.isFile) bytes += (await stat(joinConversationPath(sideDir, item.name))).size;
+    }
+  }
+  return bytes;
+}
+
+/**
+ * Keeps the copies of a conversation within `copyLimitBytes`: while they hold
+ * more, the turn settled longest ago loses its directory and, in the index,
+ * everything that says it can be restored. Resolves to the turns that lost
+ * their copies; listeners hear of each one but `settling`, whose own settle
+ * tells them.
+ */
+async function trimCopies(conversationId: string, dir: string, settling: string): Promise<string[]> {
+  const index = await loadIndex(dir);
+  const kept = Object.entries(index)
+    .filter(([, entry]) => entry.restorable)
+    .sort(([, a], [, b]) => (a.settledAt ?? 0) - (b.settledAt ?? 0));
+  let bytes = kept.reduce((sum, [, entry]) => sum + (entry.copyBytes ?? 0), 0);
+  const dropped: string[] = [];
+  for (const [loopId, entry] of kept) {
+    if (bytes <= copyLimitBytes) break;
+    bytes -= entry.copyBytes ?? 0;
+    putIndexEntry(index, loopId, entry, null);
+    dropped.push(loopId);
+  }
+  if (dropped.length === 0) return dropped;
+  await saveIndex(dir, index);
+  for (const loopId of dropped) {
+    await removeTurnDir(dir, loopId);
+    if (loopId !== settling) emitSaved(conversationId, loopId);
+  }
+  return dropped;
 }
 
 /**
@@ -600,28 +668,33 @@ async function pruneBeforeCopies(dir: string, loopId: string, record: TurnUndoRe
  * Then, with a baseline, the workspace is listed and the files only the list
  * shows are saved together with the first ones. When the list request fails
  * this rejects, and the result of the first step stays saved. A turn whose
- * conversation is gone writes nothing.
+ * conversation is gone writes nothing. Resolves to the turns whose copies were
+ * removed to keep the conversation within its copy limit.
  */
-async function settleTurn(turn: TurnScope, entries: ManifestEntry[]): Promise<void> {
-  if (!turn.isConversationPresent()) return;
+async function settleTurn(turn: TurnScope, entries: ManifestEntry[]): Promise<string[]> {
+  if (!turn.isConversationPresent()) return [];
   const dir = await changesDir(turn.conversationId);
-  const { files: captured, restorable, tooLarge } = await compareCapturedFiles(dir, turn, entries);
-  if (!turn.isConversationPresent()) return;
+  const { files: captured, restorable, tooLarge, copyBytes } = await compareCapturedFiles(dir, turn, entries);
+  if (!turn.isConversationPresent()) return [];
   const record = restorable.length > 0 ? createTurnUndoRecord(turn.loopId, restorable, tooLarge) : null;
-  const marks = record ? undoMarksOf(record) : null;
+  let marks = record ? undoMarksOf(record, copyBytes) : null;
+  let dropped: string[] = [];
   if (captured.length > 0) await saveTurn(dir, turn.loopId, captured, marks);
   if (record) {
     await atomicWrite(undoRecordPath(dir, turn.loopId), JSON.stringify(record));
     await pruneBeforeCopies(dir, turn.loopId, record);
+    dropped = await trimCopies(turn.conversationId, dir, turn.loopId);
+    if (dropped.includes(turn.loopId)) marks = null;
   } else {
     await removeTurnDir(dir, turn.loopId);
   }
   if (captured.length > 0) emitSaved(turn.conversationId, turn.loopId);
 
   const listed = await compareWorkspaceWithBaseline(turn, entries);
-  if (!turn.isConversationPresent()) return;
+  if (!turn.isConversationPresent()) return dropped;
   if (listed.length > 0) await saveTurn(dir, turn.loopId, [...captured, ...listed], marks);
   if (listed.length > 0 || captured.length === 0) emitSaved(turn.conversationId, turn.loopId);
+  return dropped;
 }
 
 async function removeTurnDir(dir: string, loopId: string): Promise<void> {
@@ -760,7 +833,7 @@ export function endTurn(loopId: string, options?: { workspacePath?: string | nul
 async function recoverInterruptedTurns(conversationId: string): Promise<void> {
   const dir = await changesDir(conversationId);
   if (!(await exists(dir))) return;
-  const settledMarks = new Map<string, TurnUndoMarks>();
+  const records = new Map<string, TurnUndoRecord>();
   for (const entry of await readDir(dir)) {
     if (!entry.isDirectory || loopIdRejection(entry.name) !== null || turnsOfThisRun.has(entry.name)) continue;
     const loopId = entry.name;
@@ -768,12 +841,11 @@ async function recoverInterruptedTurns(conversationId: string): Promise<void> {
     if (await exists(savedPath)) {
       const saved = parseTurnChanges(await readTextFile(savedPath));
       const record = saved.files.length > 0 ? await loadUndoRecord(dir, loopId) : null;
-      const marks = record && record.entries.length > 0 ? undoMarksOf(record) : null;
       const index = await loadIndex(dir);
-      if (!index[loopId] && saved.files.length > 0) await saveIndexEntry(dir, loopId, indexEntryOf(saved, marks));
-      if (record && marks) {
+      if (!index[loopId] && saved.files.length > 0) await saveIndexEntry(dir, loopId, indexEntryOf(saved), null);
+      if (record && record.entries.length > 0) {
         await pruneBeforeCopies(dir, loopId, record);
-        settledMarks.set(loopId, marks);
+        records.set(loopId, record);
       } else {
         await removeTurnDir(dir, loopId);
       }
@@ -785,7 +857,7 @@ async function recoverInterruptedTurns(conversationId: string): Promise<void> {
       continue;
     }
     const manifest = parseManifest(await readTextFile(manifestPath));
-    await settleTurn(
+    const dropped = await settleTurn(
       {
         conversationId,
         loopId,
@@ -797,17 +869,18 @@ async function recoverInterruptedTurns(conversationId: string): Promise<void> {
       },
       manifest.entries,
     );
+    for (const droppedLoopId of dropped) records.delete(droppedLoopId);
     const record = await loadUndoRecord(dir, loopId);
-    if (record && record.entries.length > 0) settledMarks.set(loopId, undoMarksOf(record));
+    if (record && record.entries.length > 0) records.set(loopId, record);
   }
 
   const index = await loadIndex(dir);
   let changed = false;
   for (const [loopId, entry] of Object.entries(index)) {
     if (turnsOfThisRun.has(loopId)) continue;
-    const marks = settledMarks.get(loopId);
-    if (entry.restorable === marks?.restorable && Boolean(entry.undone) === Boolean(marks?.undone)) continue;
-    index[loopId] = withUndoMarks(entry, marks ?? null);
+    const record = records.get(loopId);
+    if (entry.restorable === record?.entries.length && Boolean(entry.undone) === (record?.state === 'undone')) continue;
+    putIndexEntry(index, loopId, entry, record ? undoMarksOf(record, await measureCopies(dir, loopId)) : null);
     changed = true;
   }
   if (changed) await saveIndex(dir, index);
@@ -886,8 +959,16 @@ export async function saveUndoRecord(conversationId: string, dir: string, record
   const index = await loadIndex(dir);
   const entry = index[record.loopId];
   if (entry) {
-    index[record.loopId] = withUndoMarks(entry, undoMarksOf(record));
+    putIndexEntry(index, record.loopId, entry, undoMarksOf(record, await measureCopies(dir, record.loopId)));
     await saveIndex(dir, index);
   }
   emitSaved(conversationId, record.loopId);
 }
+
+/** @internal — exposed for unit tests only */
+export const __testing = {
+  /** Sets the copy limit of a conversation; without an argument, the shipped one. */
+  setConversationCopyLimit(bytes: number = MAX_CONVERSATION_COPY_BYTES): void {
+    copyLimitBytes = bytes;
+  },
+};
