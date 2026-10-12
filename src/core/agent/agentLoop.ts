@@ -98,7 +98,7 @@ import {
 } from './userInputQueue';
 import { snapshotExecutionSteps } from './executionSnapshot';
 import { emitHook } from './lifecycleHooks';
-import { getI18n, format } from '../../i18n';
+import { getI18n, getLocale, format } from '../../i18n';
 import { clearSkillHooksByLoop } from '../tools/builtins';
 import { agentToolPolicyForRoute, resolveAgentToolNames } from './agentToolPolicy';
 import { executeToolBatch } from './toolExecutor';
@@ -988,7 +988,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     addScratchpadEntry: (entry) => {
       getScratchpadPort().addEntry(entry);
     },
-  });
+  }, getLocale());
 
   // Enterprise mode bypasses personal key requirement — gateway provides the key.
   const { forceOpenAiCompatible: _startForce } = (() => {

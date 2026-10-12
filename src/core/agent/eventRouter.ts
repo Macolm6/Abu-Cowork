@@ -263,7 +263,7 @@ export class EventRouter {
   private readonly activeRichResults = new ActiveToolResultAdmission();
   private readonly activeRichResultOwners = new Map<string, ActiveToolResultToken>();
 
-  constructor(deps: EventRouterDeps, locale: string = 'zh') {
+  constructor(deps: EventRouterDeps, locale: string) {
     this.deps = deps;
     this.locale = locale;
   }
@@ -752,6 +752,6 @@ export class EventRouter {
 
 // --- Factory Function ---
 
-export function createEventRouter(deps: EventRouterDeps, locale?: string): EventRouter {
+export function createEventRouter(deps: EventRouterDeps, locale: string): EventRouter {
   return new EventRouter(deps, locale);
 }

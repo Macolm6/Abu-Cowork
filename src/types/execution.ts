@@ -266,7 +266,16 @@ export interface ExecutionStepSnapshot {
   childSteps?: ExecutionStepSnapshot[];
   batchTask?: BatchTaskRef;
   // Detail block stubs (with truncated content for post-eviction display)
-  detailBlocks?: { id: string; title: string; type: DetailBlockType; content?: string }[];
+  detailBlocks?: {
+    id: string;
+    title: string;
+    /** Language-neutral header key of the block, so a restored header follows the UI locale. */
+    labelKey?: DetailBlockLabelKey;
+    type: DetailBlockType;
+    content?: string;
+    /** Length of the whole content, present when `content` holds only its beginning. */
+    fullContentLength?: number;
+  }[];
 }
 
 // --- Tool Call Context (for LLM history) ---
