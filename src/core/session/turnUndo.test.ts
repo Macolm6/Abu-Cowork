@@ -13,7 +13,7 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
   mkdir: (path: string, options?: { recursive?: boolean }) => host.fs.pluginFs.mkdir(path, options),
   readFile: (path: string) => host.fs.pluginFs.readFile(path),
   readTextFile: (path: string) => host.fs.pluginFs.readTextFile(path),
-  writeFile: (path: string, bytes: Uint8Array) => host.fs.pluginFs.writeFile(path, bytes),
+  writeFile: (path: string, bytes: Uint8Array, options?: { create?: boolean; createNew?: boolean }) => host.fs.pluginFs.writeFile(path, bytes, options),
   remove: (path: string, options?: { recursive?: boolean }) => host.fs.pluginFs.remove(path, options),
   readDir: (path: string) => host.fs.pluginFs.readDir(path),
   stat: (path: string) => host.fs.pluginFs.stat(path),
@@ -306,6 +306,62 @@ describe('turnUndo', () => {
       expect(fs.read(`${WS}/plan.md`)).toBe('changed while the question was open\n');
     });
 
+    it('leaves a file that is changed after every file was checked, and before its own write, as the user has it', async () => {
+      await runMixedTurn();
+      // The authorization of a file is asked after the check of all files and before the write of this one.
+      authorize.mockImplementation(async (path) => {
+        if (path === `${WS}/plan.md`) fs.write(path, 'saved while the undo ran\n');
+        if (path === `${WS}/new.md`) fs.write(path, 'extended while the undo ran\n');
+        return true;
+      });
+
+      const result = await undo.undoTurn('conv-1', 'loop-1', { authorize });
+
+      expect(result).toEqual({ done: 1, notDone: [] });
+      expect(workspaceFiles()).toEqual({
+        'plan.md': 'saved while the undo ran\n',
+        'new.md': 'extended while the undo ran\n',
+        'old.md': 'gone\n',
+      });
+      expect(fs.trashed).toEqual([]);
+      expect(fs.list(`${CHANGES}/loop-1/after/`)).toEqual([]);
+      expect(lastByFile()).toEqual({ 'new.md': 'skipped', 'old.md': 'done', 'plan.md': 'skipped' });
+      expect(recordOf().state).toBe('undone');
+    });
+
+    it('does not overwrite a file that appears where a deleted file is being written back', async () => {
+      await runMixedTurn();
+      const copy = `${CHANGES}/loop-1/before/${await pathHashOf(`${WS}/old.md`)}`;
+      const readFile = fs.pluginFs.readFile;
+      // The copy is read after the file was checked for the last time.
+      fs.pluginFs.readFile = async (path) => {
+        if (path === copy) fs.write(`${WS}/old.md`, 'created while the undo ran\n');
+        return readFile(path);
+      };
+
+      const result = await undo.undoTurn('conv-1', 'loop-1', { authorize });
+
+      expect(result).toEqual({ done: 2, notDone: [{ path: `${WS}/old.md`, display: 'old.md', reason: 'write-failed' }] });
+      expect(fs.read(`${WS}/old.md`)).toBe('created while the undo ran\n');
+      expect(lastByFile()).toMatchObject({ 'old.md': 'failed' });
+    });
+
+    it('does not create a file again that is removed while its content before the turn is being written', async () => {
+      await runMixedTurn();
+      const copy = `${CHANGES}/loop-1/before/${await pathHashOf(`${WS}/plan.md`)}`;
+      const readFile = fs.pluginFs.readFile;
+      fs.pluginFs.readFile = async (path) => {
+        if (path === copy) fs.delete(`${WS}/plan.md`);
+        return readFile(path);
+      };
+
+      const result = await undo.undoTurn('conv-1', 'loop-1', { authorize });
+
+      expect(result).toEqual({ done: 2, notDone: [{ path: `${WS}/plan.md`, display: 'plan.md', reason: 'write-failed' }] });
+      expect(fs.has(`${WS}/plan.md`)).toBe(false);
+      expect(fs.read(`${CHANGES}/loop-1/after/${await pathHashOf(`${WS}/plan.md`)}`)).toBe('two\n');
+    });
+
     it('records a file whose write is not authorized as not done and restores the others', async () => {
       await runMixedTurn();
       authorize.mockImplementation(async (path) => path !== `${WS}/plan.md`);
@@ -521,6 +577,44 @@ describe('turnUndo', () => {
       expect(result).toEqual({ done: 2, notDone: [] });
       expect(fs.read(`${WS}/plan.md`)).toBe('edited after the undo\n');
       expect(lastByFile()).toEqual({ 'new.md': 'done', 'old.md': 'done', 'plan.md': 'skipped' });
+    });
+
+    it('leaves a file that is changed after every file was checked, and before its own write, as the user has it', async () => {
+      await runMixedTurn();
+      await undo.undoTurn('conv-1', 'loop-1', { authorize });
+      authorize.mockImplementation(async (path) => {
+        if (path === `${WS}/plan.md`) fs.write(path, 'saved while the changes were put back\n');
+        if (path === `${WS}/new.md`) fs.write(path, 'created while the changes were put back\n');
+        if (path === `${WS}/old.md`) fs.write(path, 'extended while the changes were put back\n');
+        return true;
+      });
+
+      const result = await undo.reapplyTurn('conv-1', 'loop-1', { authorize });
+
+      expect(result).toEqual({ done: 0, notDone: [] });
+      expect(workspaceFiles()).toEqual({
+        'plan.md': 'saved while the changes were put back\n',
+        'new.md': 'created while the changes were put back\n',
+        'old.md': 'extended while the changes were put back\n',
+      });
+      expect(fs.trashed).toEqual([`${WS}/new.md`]);
+      expect(recordOf().state).toBe('undone');
+    });
+
+    it('does not overwrite a file that appears where a created file is being put back', async () => {
+      await runMixedTurn();
+      await undo.undoTurn('conv-1', 'loop-1', { authorize });
+      const copy = `${CHANGES}/loop-1/after/${await pathHashOf(`${WS}/new.md`)}`;
+      const readFile = fs.pluginFs.readFile;
+      fs.pluginFs.readFile = async (path) => {
+        if (path === copy) fs.write(`${WS}/new.md`, 'created while the changes were put back\n');
+        return readFile(path);
+      };
+
+      const result = await undo.reapplyTurn('conv-1', 'loop-1', { authorize });
+
+      expect(result).toEqual({ done: 2, notDone: [{ path: `${WS}/new.md`, display: 'new.md', reason: 'write-failed' }] });
+      expect(fs.read(`${WS}/new.md`)).toBe('created while the changes were put back\n');
     });
 
     it('lists a file whose folder is gone as folder gone', async () => {

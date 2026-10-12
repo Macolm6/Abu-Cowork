@@ -2,8 +2,9 @@
  * Undoing what a turn's file tools changed, and putting it back.
  *
  * Both directions read the turn's undo record (`turnUndoRecord.ts`) and check
- * every file against the disk first: a file is written only while it still
- * holds what the turn (or the undo) left in it, by the SHA-256 of its content.
+ * every file against the disk first, and each file again right before its own
+ * write: a file is written only while it still holds what the turn (or the
+ * undo) left in it, by the SHA-256 of its content.
  * The content a file holds before it is replaced is kept under the turn's
  * `after/` directory, which is what putting the changes back writes.
  *
@@ -97,11 +98,15 @@ interface Step {
   entry: TurnUndoEntry;
   display: string;
   action: TurnUndoAction;
-  /** What the path holds now. */
-  current: FileSide;
+  /** What the path holds while this direction may write it, with the SHA-256 of that content. */
+  from: 'file' | 'absent';
+  fromHash: string | undefined;
   /** The path already holds the content this direction gives it. */
   inPlace: boolean;
 }
+
+/** 'changed': the file no longer holds what this direction starts from, so it is left as it is. */
+type FileOutcome = 'done' | 'changed' | 'not-authorized';
 
 interface Assessment {
   steps: Step[];
@@ -159,14 +164,14 @@ async function assess(
     const current = await readCurrentSide(entry.path);
     const action = actionOf(direction, from, to);
     if (await holds(current, to, toHash)) {
-      steps.push({ entry, display, action, current, inPlace: true });
+      steps.push({ entry, display, action, from, fromHash, inPlace: true });
     } else if (
       !(await holds(current, from, fromHash))
       || (to === 'file' && !(await exists(turnCopyPath(dir, record.loopId, side, entry.hash))))
     ) {
       skipped.push({ path: entry.path, display, reason: 'changed-since' });
     } else {
-      steps.push({ entry, display, action, current, inPlace: false });
+      steps.push({ entry, display, action, from, fromHash, inPlace: false });
     }
   }
   return { steps: steps.sort(compareDisplay), skipped: skipped.sort(compareDisplay) };
@@ -226,9 +231,13 @@ export async function planTurnUndo(
 }
 
 /**
- * Gives one file the content of this direction. The content it holds now is
- * kept first when undoing; the copy that is written must hold the recorded
- * content. Resolves to false when the write is not authorized.
+ * Gives one file the content of this direction. The file is read again right
+ * before its own write, and is left as it is unless it still holds what this
+ * direction starts from. The content read then is kept first when undoing; the
+ * copy that is written must hold the recorded content. The write itself
+ * refuses a file that appeared or went away since that read: a file that was
+ * absent is written only as a new file, a file that was there only while it
+ * still exists.
  */
 async function restoreFile(
   dir: string,
@@ -236,25 +245,27 @@ async function restoreFile(
   direction: TurnUndoDirection,
   step: Step,
   authorize: TurnUndoOptions['authorize'],
-): Promise<boolean> {
-  if (step.inPlace) return true;
-  const { entry, current } = step;
+): Promise<FileOutcome> {
+  if (step.inPlace) return 'done';
+  const { entry } = step;
+  if (!(await authorize(entry.path))) return 'not-authorized';
+  const current = await readCurrentSide(entry.path);
+  if (!(await holds(current, step.from, step.fromHash))) return 'changed';
   if (direction === 'undo' && current.state === 'file') {
     const kept = turnCopyPath(dir, loopId, 'after', entry.hash);
     await mkdir(getParentDir(kept), { recursive: true });
     await writeFile(kept, current.bytes);
   }
-  if (!(await authorize(entry.path))) return false;
   if (step.action === 'trash') {
     await invoke('move_to_trash', { path: entry.path });
-    return true;
+    return 'done';
   }
   const side = targetSide(direction);
   const bytes = await readFile(turnCopyPath(dir, loopId, side, entry.hash));
   const recorded = side === 'before' ? entry.beforeSha256 : entry.afterSha256;
   if ((await sha256Hex(bytes)) !== recorded) throw new Error('Turn undo copy does not hold the recorded content');
-  await writeFile(entry.path, bytes);
-  return true;
+  await writeFile(entry.path, bytes, step.from === 'absent' ? { createNew: true } : { create: false });
+  return 'done';
 }
 
 /** `entry` with `last` as its latest result, or with none. */
@@ -298,9 +309,13 @@ async function runTurnUndo(
     for (const step of steps) {
       // One file at a time; a file that fails leaves the others to run.
       const [outcome] = await Promise.allSettled([restoreFile(dir, loopId, direction, step, options.authorize)]);
-      if (outcome.status === 'fulfilled' && outcome.value) {
+      if (outcome.status === 'fulfilled' && outcome.value === 'done') {
         done += 1;
         last.set(step.entry.path, 'done');
+        continue;
+      }
+      if (outcome.status === 'fulfilled' && outcome.value === 'changed') {
+        last.set(step.entry.path, 'skipped');
         continue;
       }
       last.set(step.entry.path, 'failed');

@@ -32,7 +32,8 @@ export interface MemoryHostFs {
     mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
     readFile(path: string): Promise<Uint8Array>;
     readTextFile(path: string): Promise<string>;
-    writeFile(path: string, bytes: Uint8Array): Promise<void>;
+    /** `createNew` refuses a path that holds a file; `create: false` refuses one that holds none. */
+    writeFile(path: string, bytes: Uint8Array, options?: { create?: boolean; createNew?: boolean }): Promise<void>;
     remove(path: string, options?: { recursive?: boolean }): Promise<void>;
     readDir(path: string): Promise<Array<{ name: string; isDirectory: boolean; isFile: boolean; isSymlink: boolean }>>;
     stat(path: string): Promise<{ isFile: boolean; isDirectory: boolean; isSymlink: boolean; size: number }>;
@@ -132,8 +133,12 @@ export function createMemoryHostFs(): MemoryHostFs {
       },
       readFile: async (path) => readBytes(path),
       readTextFile: async (path) => decoder.decode(readBytes(path)),
-      writeFile: async (path, bytes) => {
+      writeFile: async (path, bytes, options) => {
         if (failingWrites.delete(path)) throw new Error(`EIO: write failed, open '${path}'`);
+        if (options?.createNew && files.has(path)) throw new Error(`fs: file already exists and createNew is set: ${path}`);
+        if (options?.create === false && !options.createNew && !files.has(path)) {
+          throw new Error(`fs: file does not exist and create is false: ${path}`);
+        }
         writeBytes(path, bytes);
       },
       remove: async (path) => {
