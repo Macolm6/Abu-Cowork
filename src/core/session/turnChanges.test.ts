@@ -1,5 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryHostFs, type MemoryHostFs } from './__fixtures__/memoryHostFs';
+import { pathHashOf, sha256Hex } from './turnUndoRecord';
 import type { ConversationWorkspaceFiles } from '@/core/files/workspaceFiles';
 
 const host = vi.hoisted(() => ({
@@ -272,11 +273,11 @@ describe('turnChanges', () => {
       expect(saved.files).toEqual([{ path: `${WS}/crlf.txt`, display: 'crlf.txt', status: 'modified' }]);
     });
 
-    it('removes the before copies once the result is saved', async () => {
-      fs.write(`${WS}/plan.md`, 'one\n');
+    it('removes the turn directory once the result is saved, when no file can be restored', async () => {
+      fs.writeBytes(`${WS}/big.log`, new Uint8Array(2 * 1024 * 1024 + 1).fill(97));
       await runTurn('loop-1', async (capture) => {
-        await capture(`${WS}/plan.md`);
-        fs.write(`${WS}/plan.md`, 'two\n');
+        await capture(`${WS}/big.log`);
+        fs.write(`${WS}/big.log`, 'small\n');
       });
       expect(fs.has(`${CHANGES}/loop-1.json`)).toBe(true);
       expect(fs.has(`${CHANGES}/loop-1`)).toBe(false);
@@ -442,16 +443,19 @@ describe('turnChanges', () => {
       expect(saved.total).toBe(1);
       expect(fs.readJson(`${CHANGES}/index.json`)).toEqual({
         version: 1,
-        turns: { 'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md' } },
+        turns: { 'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md', restorable: 1 } },
       });
-      expect(fs.has(`${CHANGES}/loop-1`)).toBe(false);
+      const undoRecord = fs.read(`${CHANGES}/loop-1/undo.json`);
+      expect(JSON.parse(undoRecord)).toMatchObject({ state: 'applied', entries: [{ path: `${WS}/plan.md` }] });
+      expect(fs.has(`${CHANGES}/loop-1/before/manifest.json`)).toBe(false);
       expect(told).toEqual(['loop-1']);
 
       const afterRestart = await restart();
       await expect(afterRestart.readTurnIndex('conv-1')).resolves.toEqual({
-        'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md' },
+        'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md', restorable: 1 },
       });
       expect(fs.readJson(`${CHANGES}/loop-1.json`)).toEqual(saved);
+      expect(fs.read(`${CHANGES}/loop-1/undo.json`)).toBe(undoRecord);
     });
 
     it('saves the files the list adds together with the ones the file tools changed', async () => {
@@ -468,7 +472,7 @@ describe('turnChanges', () => {
       expect(saved.files.map((file) => file.display)).toEqual(['by-command.md', 'plan.md']);
       expect(saved.total).toBe(2);
       await expect(mod.readTurnIndex('conv-1')).resolves.toEqual({
-        'loop-1': { total: 2, added: 1, deleted: 1, firstFile: 'by-command.md' },
+        'loop-1': { total: 2, added: 1, deleted: 1, firstFile: 'by-command.md', restorable: 1 },
       });
       expect(told).toEqual(['loop-1', 'loop-1']);
     });
@@ -546,7 +550,7 @@ describe('turnChanges', () => {
       expect(saved.total).toBe(502);
       expect(saved.added).toBe(2);
       await expect(mod.readTurnIndex('conv-1')).resolves.toEqual({
-        'loop-1': { total: 502, added: 2, deleted: 0, firstFile: name(0) },
+        'loop-1': { total: 502, added: 2, deleted: 0, firstFile: name(0), restorable: 1 },
       });
     });
 
@@ -621,8 +625,8 @@ describe('turnChanges', () => {
       expect(fs.readJson(`${CHANGES}/index.json`)).toEqual({
         version: 1,
         turns: {
-          'loop-1': { total: 1, added: 2, deleted: 1, firstFile: 'plan.md' },
-          'loop-2': { total: 1, added: 1, deleted: 0, firstFile: 'b.md' },
+          'loop-1': { total: 1, added: 2, deleted: 1, firstFile: 'plan.md', restorable: 1 },
+          'loop-2': { total: 1, added: 1, deleted: 0, firstFile: 'b.md', restorable: 1 },
         },
       });
       expect(saved).toEqual([['conv-1', 'loop-1'], ['conv-1', 'loop-2']]);
@@ -752,6 +756,176 @@ describe('turnChanges', () => {
     });
   });
 
+  describe('undo record', () => {
+    const text = (value: string): Promise<string> => sha256Hex(new TextEncoder().encode(value));
+
+    it('keeps what a modified, a created and a deleted file held before the turn, with both content hashes', async () => {
+      fs.write(`${WS}/plan.md`, 'one\n');
+      fs.write(`${WS}/old.md`, 'gone\n');
+      fs.write(`${WS}/same.md`, 'same\n');
+      await runTurn('loop-1', async (capture) => {
+        for (const file of ['plan.md', 'new.md', 'old.md', 'same.md']) await capture(`${WS}/${file}`);
+        fs.write(`${WS}/plan.md`, 'two\n');
+        fs.write(`${WS}/new.md`, 'n\n');
+        fs.delete(`${WS}/old.md`);
+      });
+
+      const hashes = {
+        plan: await pathHashOf(`${WS}/plan.md`),
+        created: await pathHashOf(`${WS}/new.md`),
+        old: await pathHashOf(`${WS}/old.md`),
+      };
+      expect(fs.readJson(`${CHANGES}/loop-1/undo.json`)).toEqual({
+        version: 1,
+        loopId: 'loop-1',
+        state: 'applied',
+        entries: [
+          { path: `${WS}/new.md`, hash: hashes.created, before: 'absent', after: 'file', afterSha256: await text('n\n') },
+          { path: `${WS}/old.md`, hash: hashes.old, before: 'file', after: 'absent', beforeSha256: await text('gone\n') },
+          {
+            path: `${WS}/plan.md`,
+            hash: hashes.plan,
+            before: 'file',
+            after: 'file',
+            beforeSha256: await text('one\n'),
+            afterSha256: await text('two\n'),
+          },
+        ],
+      });
+      expect(fs.list(`${CHANGES}/loop-1/`)).toEqual([
+        `${CHANGES}/loop-1/before/${hashes.old}`,
+        `${CHANGES}/loop-1/before/${hashes.plan}`,
+        `${CHANGES}/loop-1/undo.json`,
+      ].sort());
+      expect(fs.read(`${CHANGES}/loop-1/before/${hashes.plan}`)).toBe('one\n');
+      expect(fs.read(`${CHANGES}/loop-1/before/${hashes.old}`)).toBe('gone\n');
+      await expect(mod.readTurnIndex('conv-1')).resolves.toMatchObject({ 'loop-1': { total: 3, restorable: 3 } });
+      await expect(mod.readTurnUndoRecord('conv-1', 'loop-1')).resolves.toMatchObject({ state: 'applied' });
+    });
+
+    it('keeps no before directory when every restorable file was created by the turn', async () => {
+      await runTurn('loop-1', async (capture) => {
+        await capture(`${WS}/new.md`);
+        fs.write(`${WS}/new.md`, 'n\n');
+      });
+
+      expect(fs.list(`${CHANGES}/loop-1/`)).toEqual([`${CHANGES}/loop-1/undo.json`]);
+      expect(fs.has(`${CHANGES}/loop-1/before`)).toBe(false);
+    });
+
+    it('leaves out an unchanged file, a file over 2 MB at either end, and a file only the list shows', async () => {
+      const big = new Uint8Array(2 * 1024 * 1024 + 1).fill(97);
+      fs.write(`${WS}/plan.md`, 'one\n');
+      fs.write(`${WS}/same.md`, 'same\n');
+      fs.writeBytes(`${WS}/was-big.log`, big);
+      fs.write(`${WS}/grew.log`, 'small\n');
+      await runTurn('loop-1', async (capture) => {
+        for (const file of ['plan.md', 'same.md', 'was-big.log', 'grew.log']) await capture(`${WS}/${file}`);
+        fs.write(`${WS}/plan.md`, 'two\n');
+        fs.write(`${WS}/was-big.log`, 'now small\n');
+        fs.writeBytes(`${WS}/grew.log`, big);
+        fs.write(`${WS}/by-command.md`, 'x\n');
+      });
+
+      const record = await mod.readTurnUndoRecord('conv-1', 'loop-1');
+      expect(record?.entries.map((entry) => entry.path)).toEqual([`${WS}/plan.md`]);
+      expect(fs.list(`${CHANGES}/loop-1/before/`)).toEqual([`${CHANGES}/loop-1/before/${await pathHashOf(`${WS}/plan.md`)}`]);
+      await expect(mod.readTurnIndex('conv-1')).resolves.toMatchObject({ 'loop-1': { total: 4, restorable: 1 } });
+    });
+
+    it('removes the turn directory and records no restorable count when only a command changed files', async () => {
+      await runTurn('loop-1', () => {
+        fs.write(`${WS}/by-command.md`, 'x\n');
+      });
+
+      expect(fs.has(`${CHANGES}/loop-1`)).toBe(false);
+      expect(fs.readJson(`${CHANGES}/index.json`)).toEqual({
+        version: 1,
+        turns: { 'loop-1': { total: 1, added: 0, deleted: 0, firstFile: 'by-command.md' } },
+      });
+      await expect(mod.readTurnUndoRecord('conv-1', 'loop-1')).resolves.toBeNull();
+    });
+
+    it('rejects a record that names another turn', async () => {
+      fs.write(`${CHANGES}/loop-1/undo.json`, JSON.stringify({ version: 1, loopId: 'loop-2', state: 'applied', entries: [] }));
+      await expect(mod.readTurnUndoRecord('conv-1', 'loop-1')).rejects.toThrow('another turn');
+    });
+
+    it.each(['index', '../x', ''])('refuses the loop id %j', async (loopId) => {
+      await expect(mod.readTurnUndoRecord('conv-1', loopId)).rejects.toThrow();
+    });
+
+    it('rejects an index entry whose restorable count or undone mark has another type', async () => {
+      const entry = { total: 1, added: 0, deleted: 0, firstFile: 'a.md' };
+      fs.write(`${CHANGES}/index.json`, JSON.stringify({ version: 1, turns: { 'loop-1': { ...entry, restorable: '1' } } }));
+      await expect(mod.readTurnIndex('conv-1')).rejects.toThrow('not in the saved format');
+      fs.write(`${CHANGES}/index.json`, JSON.stringify({ version: 1, turns: { 'loop-1': { ...entry, undone: 1 } } }));
+      await expect((await restart()).readTurnIndex('conv-1')).rejects.toThrow('not in the saved format');
+    });
+
+    describe('after a restart', () => {
+      it('leaves a settled turn with its record and copies as they are', async () => {
+        fs.write(`${WS}/plan.md`, 'one\n');
+        await runTurn('loop-1', async (capture) => {
+          await capture(`${WS}/plan.md`);
+          fs.write(`${WS}/plan.md`, 'two\n');
+        });
+        const kept = fs.list(`${CHANGES}/`).map((path) => [path, fs.read(path)]);
+        fs.write(`${WS}/plan.md`, 'three\n');
+
+        const afterRestart = await restart();
+        const told: string[] = [];
+        afterRestart.onTurnChangesSaved((_conversationId, loopId) => told.push(loopId));
+        await afterRestart.readTurnIndex('conv-1');
+
+        expect(fs.list(`${CHANGES}/`).map((path) => [path, fs.read(path)])).toEqual(kept);
+        expect(told).toEqual([]);
+      });
+
+      it('finishes removing the copies a settled turn does not need when the app quit before that', async () => {
+        fs.write(`${WS}/plan.md`, 'one\n');
+        fs.write(`${WS}/same.md`, 'same\n');
+        await runTurn('loop-1', async (capture) => {
+          await capture(`${WS}/plan.md`);
+          await capture(`${WS}/same.md`);
+          fs.write(`${WS}/plan.md`, 'two\n');
+        });
+        const sameCopy = `${CHANGES}/loop-1/before/${await pathHashOf(`${WS}/same.md`)}`;
+        fs.write(sameCopy, 'same\n');
+        fs.write(`${CHANGES}/loop-1/before/manifest.json`, JSON.stringify({ version: 1, loopId: 'loop-1', workspaceRoots: [WS], entries: [] }));
+
+        await (await restart()).readTurnIndex('conv-1');
+
+        expect(fs.list(`${CHANGES}/loop-1/`)).toEqual([
+          `${CHANGES}/loop-1/before/${await pathHashOf(`${WS}/plan.md`)}`,
+          `${CHANGES}/loop-1/undo.json`,
+        ]);
+      });
+
+      it('drops the restorable count of a turn whose record is not on disk', async () => {
+        fs.write(`${WS}/plan.md`, 'one\n');
+        await runTurn('loop-1', async (capture) => {
+          await capture(`${WS}/plan.md`);
+          fs.write(`${WS}/plan.md`, 'two\n');
+        });
+        fs.delete(`${CHANGES}/loop-1/undo.json`);
+
+        await expect((await restart()).readTurnIndex('conv-1')).resolves.toEqual({
+          'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md' },
+        });
+        expect(fs.has(`${CHANGES}/loop-1`)).toBe(false);
+      });
+
+      it('removes a record that has no saved result beside it', async () => {
+        fs.write(`${CHANGES}/loop-1/undo.json`, JSON.stringify({ version: 1, loopId: 'loop-1', state: 'applied', entries: [] }));
+
+        await mod.readTurnIndex('conv-1');
+
+        expect(fs.has(`${CHANGES}/loop-1`)).toBe(false);
+      });
+    });
+  });
+
   describe('after the app quit in the middle of a turn', () => {
     it('settles the left-over turn from the disk as it is when the conversation is read', async () => {
       fs.write(`${WS}/plan.md`, 'one\n');
@@ -767,13 +941,21 @@ describe('turnChanges', () => {
       afterRestart.onTurnChangesSaved((_conversationId, loopId) => saved.push(loopId));
       const index = await afterRestart.readTurnIndex('conv-1');
 
-      expect(index).toEqual({ 'loop-1': { total: 2, added: 2, deleted: 1, firstFile: 'new.md' } });
+      expect(index).toEqual({ 'loop-1': { total: 2, added: 2, deleted: 1, firstFile: 'new.md', restorable: 2 } });
       const turn = await afterRestart.readTurnChanges('conv-1', 'loop-1');
       expect(turn?.files.map((file) => [file.display, file.status, file.added, file.deleted])).toEqual([
         ['new.md', 'created', 1, 0],
         ['plan.md', 'modified', 1, 1],
       ]);
-      expect(fs.has(`${CHANGES}/loop-1`)).toBe(false);
+      const record = await afterRestart.readTurnUndoRecord('conv-1', 'loop-1');
+      expect(record?.entries.map((entry) => [entry.path, entry.before, entry.after])).toEqual([
+        [`${WS}/new.md`, 'absent', 'file'],
+        [`${WS}/plan.md`, 'file', 'file'],
+      ]);
+      expect(fs.list(`${CHANGES}/loop-1/`)).toEqual([
+        `${CHANGES}/loop-1/before/${await pathHashOf(`${WS}/plan.md`)}`,
+        `${CHANGES}/loop-1/undo.json`,
+      ]);
       expect(saved).toEqual(['loop-1']);
       expect(host.listWorkspace).toHaveBeenCalledTimes(1);
     });

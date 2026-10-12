@@ -1,0 +1,129 @@
+/**
+ * The record a settled turn keeps so its file changes can be undone and put
+ * back: `{appData}/conversations/{convId}/changes/{loopId}/undo.json`.
+ *
+ * An entry names one file the turn's file tools changed, what it held before
+ * the turn and at its end, and the SHA-256 of both contents. The copy of a
+ * content is stored under the hash of the path, so an entry whose `hash` is
+ * not the hash of its `path` points at another file's copy and is dropped.
+ */
+
+const FORMAT_VERSION = 1 as const;
+
+export interface TurnUndoEntry {
+  /** Absolute, '/' separators. */
+  path: string;
+  /** First 16 hexadecimal digits of the SHA-256 of `path`; the file name of its copies. */
+  hash: string;
+  /** What the path held before the turn. */
+  before: 'file' | 'absent';
+  /** What the path held when the turn ended. */
+  after: 'file' | 'absent';
+  /** SHA-256 of the content before the turn, when `before` is 'file'. */
+  beforeSha256?: string;
+  /** SHA-256 of the content at the end of the turn, when `after` is 'file'. */
+  afterSha256?: string;
+  /** What the latest undo or put-back did with this file. */
+  last?: 'done' | 'skipped' | 'failed';
+}
+
+export interface TurnUndoRecord {
+  version: typeof FORMAT_VERSION;
+  loopId: string;
+  entries: TurnUndoEntry[];
+  /** 'applied': the files are as the turn left them; 'undone': the turn is undone. */
+  state: 'applied' | 'undone';
+}
+
+function hexOf(digest: ArrayBuffer): string {
+  let hex = '';
+  for (const byte of new Uint8Array(digest)) hex += byte.toString(16).padStart(2, '0');
+  return hex;
+}
+
+/** The SHA-256 of `bytes` as 64 hexadecimal digits. */
+export async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  return hexOf(await crypto.subtle.digest('SHA-256', bytes as Uint8Array<ArrayBuffer>));
+}
+
+/** The name the copies of `path` are stored under. */
+export async function pathHashOf(path: string): Promise<string> {
+  return (await sha256Hex(new TextEncoder().encode(path))).slice(0, 16);
+}
+
+export function isAbsoluteFilePath(path: string): boolean {
+  return path.startsWith('/') || /^[A-Za-z]:\//.test(path);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isContentHash(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+}
+
+function isSide(value: unknown): value is 'file' | 'absent' {
+  return value === 'file' || value === 'absent';
+}
+
+/** A path as the turn recorded it: absolute, '/' separators, no '.' or '..' segment. */
+function isRecordedPath(value: unknown): value is string {
+  return typeof value === 'string'
+    && isAbsoluteFilePath(value)
+    && !value.includes('\\')
+    && !value.split('/').some((segment) => segment === '.' || segment === '..');
+}
+
+function parseEntry(value: unknown): TurnUndoEntry {
+  if (
+    !isRecord(value)
+    || !isRecordedPath(value.path)
+    || typeof value.hash !== 'string'
+    || !/^[0-9a-f]{16}$/.test(value.hash)
+    || !isSide(value.before)
+    || !isSide(value.after)
+    || (value.before === 'absent' && value.after === 'absent')
+    || (value.before === 'file' ? !isContentHash(value.beforeSha256) : value.beforeSha256 !== undefined)
+    || (value.after === 'file' ? !isContentHash(value.afterSha256) : value.afterSha256 !== undefined)
+    || !(value.last === undefined || value.last === 'done' || value.last === 'skipped' || value.last === 'failed')
+  ) {
+    throw new Error('Turn undo record entry is not in the saved format');
+  }
+  return {
+    path: value.path,
+    hash: value.hash,
+    before: value.before,
+    after: value.after,
+    ...(value.before === 'file' ? { beforeSha256: value.beforeSha256 as string } : {}),
+    ...(value.after === 'file' ? { afterSha256: value.afterSha256 as string } : {}),
+    ...(value.last === undefined ? {} : { last: value.last }),
+  };
+}
+
+/**
+ * Reads the text of an `undo.json`. Rejects when it does not have the saved
+ * shape. An entry whose `hash` is not the hash of its `path` is left out.
+ */
+export async function parseTurnUndoRecord(text: string): Promise<TurnUndoRecord> {
+  const value: unknown = JSON.parse(text);
+  if (
+    !isRecord(value)
+    || value.version !== FORMAT_VERSION
+    || typeof value.loopId !== 'string'
+    || !(value.state === 'applied' || value.state === 'undone')
+    || !Array.isArray(value.entries)
+  ) {
+    throw new Error('Turn undo record is not in the saved format');
+  }
+  const entries: TurnUndoEntry[] = [];
+  for (const item of value.entries as unknown[]) {
+    const entry = parseEntry(item);
+    if ((await pathHashOf(entry.path)) === entry.hash) entries.push(entry);
+  }
+  return { version: FORMAT_VERSION, loopId: value.loopId, state: value.state, entries };
+}
+
+export function createTurnUndoRecord(loopId: string, entries: TurnUndoEntry[]): TurnUndoRecord {
+  return { version: FORMAT_VERSION, loopId, entries, state: 'applied' };
+}
