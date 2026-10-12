@@ -702,12 +702,22 @@ async function removeTurnDir(dir: string, loopId: string): Promise<void> {
   if (await exists(turnDir)) await remove(turnDir, { recursive: true });
 }
 
-async function loadUndoRecord(dir: string, loopId: string): Promise<TurnUndoRecord | null> {
+/**
+ * What a turn's `undo.json` gives: its record, null when the turn has no such
+ * file, and 'unreadable' when the file holds JSON that is no record of this
+ * turn.
+ */
+async function readUndoRecordFile(dir: string, loopId: string): Promise<TurnUndoRecord | 'unreadable' | null> {
   const path = undoRecordPath(dir, loopId);
   if (!(await exists(path))) return null;
   const record = await parseTurnUndoRecord(await readTextFile(path));
-  if (record.loopId !== loopId) throw new Error('Turn undo record belongs to another turn');
-  return record;
+  return record !== null && record.loopId === loopId ? record : 'unreadable';
+}
+
+/** The undo record of a turn, or null when the turn has no record that can be read. */
+async function loadUndoRecord(dir: string, loopId: string): Promise<TurnUndoRecord | null> {
+  const record = await readUndoRecordFile(dir, loopId);
+  return record === 'unreadable' ? null : record;
 }
 
 function writeManifest(turn: OpenTurn): Promise<void> {
@@ -825,10 +835,10 @@ export function endTurn(loopId: string, options?: { workspacePath?: string | nul
 /**
  * Settles what an earlier run of the app left behind in a conversation. A
  * turn directory beside a saved result stays as it is when it holds an undo
- * record and is removed otherwise; one with a manifest and no saved result is
- * compared with the disk as it is now and saved; any other is removed. The
- * index ends up naming a restorable count exactly for the turns whose record
- * is on disk.
+ * record, also one that cannot be read, and is removed otherwise; one with a
+ * manifest and no saved result is compared with the disk as it is now and
+ * saved; any other is removed. The index ends up naming a restorable count
+ * exactly for the turns whose record is on disk and can be read.
  */
 async function recoverInterruptedTurns(conversationId: string): Promise<void> {
   const dir = await changesDir(conversationId);
@@ -840,9 +850,11 @@ async function recoverInterruptedTurns(conversationId: string): Promise<void> {
     const savedPath = turnFilePath(dir, loopId);
     if (await exists(savedPath)) {
       const saved = parseTurnChanges(await readTextFile(savedPath));
-      const record = saved.files.length > 0 ? await loadUndoRecord(dir, loopId) : null;
+      const record = saved.files.length > 0 ? await readUndoRecordFile(dir, loopId) : null;
       const index = await loadIndex(dir);
       if (!index[loopId] && saved.files.length > 0) await saveIndexEntry(dir, loopId, indexEntryOf(saved), null);
+      // The turn has no file to restore here; its directory stays for a version of the app that reads the record.
+      if (record === 'unreadable') continue;
       if (record && record.entries.length > 0) {
         await pruneBeforeCopies(dir, loopId, record);
         records.set(loopId, record);
@@ -919,7 +931,7 @@ export async function readTurnChanges(conversationId: string, loopId: string): P
   return saved;
 }
 
-/** The undo record of a settled turn, or null for a turn that has no file to restore. */
+/** The undo record of a settled turn, or null for a turn that has no file to restore and for one whose record cannot be read. */
 export async function readTurnUndoRecord(conversationId: string, loopId: string): Promise<TurnUndoRecord | null> {
   assertConversationId(conversationId);
   assertLoopId(loopId);

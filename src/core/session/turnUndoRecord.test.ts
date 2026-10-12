@@ -61,8 +61,8 @@ describe('turnUndoRecord', () => {
     it.each([
       ['too-large paths that are no list', { tooLarge: 'big.log' }],
       ['a too-large path that is relative', { tooLarge: ['big.log'] }],
-    ])('rejects %s', async (_label, overrides) => {
-      await expect(parseTurnUndoRecord(recordText([], overrides))).rejects.toThrow('not in the saved format');
+    ])('gives null for %s', async (_label, overrides) => {
+      await expect(parseTurnUndoRecord(recordText([], overrides))).resolves.toBeNull();
     });
 
     it('reads a Windows drive path', async () => {
@@ -73,13 +73,18 @@ describe('turnUndoRecord', () => {
     });
 
     it.each([
-      ['text that is no JSON object', '[]'],
+      ['JSON that is no object', '[]'],
       ['another version', recordText([], { version: 2 })],
+      ['an object that names a version and nothing else', '{"version":2}'],
       ['a loop id that is no text', recordText([], { loopId: 7 })],
       ['an unknown state', recordText([], { state: 'half' })],
       ['entries that are no list', recordText([], { entries: {} })],
-    ])('rejects %s', async (_label, text) => {
-      await expect(parseTurnUndoRecord(text)).rejects.toThrow('not in the saved format');
+    ])('gives null for %s', async (_label, text) => {
+      await expect(parseTurnUndoRecord(text)).resolves.toBeNull();
+    });
+
+    it('rejects text that is no JSON', async () => {
+      await expect(parseTurnUndoRecord('{"version":1,')).rejects.toBeInstanceOf(SyntaxError);
     });
 
     it.each<[string, Record<string, unknown>]>([
@@ -95,12 +100,12 @@ describe('turnUndoRecord', () => {
       ['an after content hash that is not 64 hexadecimal digits', { afterSha256: 'abc' }],
       ['an unknown last result', { last: 'maybe' }],
       ['a file that is absent on both sides', { before: 'absent', after: 'absent', beforeSha256: undefined, afterSha256: undefined }],
-    ])('rejects an entry with %s', async (_label, overrides) => {
-      await expect(parseTurnUndoRecord(recordText([await entryOf(overrides)]))).rejects.toThrow('not in the saved format');
+    ])('gives null for a record that has an entry with %s', async (_label, overrides) => {
+      await expect(parseTurnUndoRecord(recordText([await entryOf(), await entryOf(overrides)]))).resolves.toBeNull();
     });
 
-    it('rejects an entry that is no object', async () => {
-      await expect(parseTurnUndoRecord(recordText(['x']))).rejects.toThrow('not in the saved format');
+    it('gives null for a record that has an entry that is no object', async () => {
+      await expect(parseTurnUndoRecord(recordText([await entryOf(), 'x']))).resolves.toBeNull();
     });
 
     it('drops an entry whose hash is not the hash of its path and keeps the others', async () => {

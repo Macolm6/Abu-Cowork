@@ -77,7 +77,8 @@ function isRecordedPath(value: unknown): value is string {
     && !value.split('/').some((segment) => segment === '.' || segment === '..');
 }
 
-function parseEntry(value: unknown): TurnUndoEntry {
+/** The entry `value` holds, or null when it does not have the saved shape. */
+function parseEntry(value: unknown): TurnUndoEntry | null {
   if (
     !isRecord(value)
     || !isRecordedPath(value.path)
@@ -90,7 +91,7 @@ function parseEntry(value: unknown): TurnUndoEntry {
     || (value.after === 'file' ? !isContentHash(value.afterSha256) : value.afterSha256 !== undefined)
     || !(value.last === undefined || value.last === 'done' || value.last === 'skipped' || value.last === 'failed')
   ) {
-    throw new Error('Turn undo record entry is not in the saved format');
+    return null;
   }
   return {
     path: value.path,
@@ -104,10 +105,12 @@ function parseEntry(value: unknown): TurnUndoEntry {
 }
 
 /**
- * Reads the text of an `undo.json`. Rejects when it does not have the saved
- * shape. An entry whose `hash` is not the hash of its `path` is left out.
+ * Reads the text of an `undo.json`. Resolves to null when the JSON does not
+ * have the saved shape, which a record of another format version does not;
+ * rejects when the text is no JSON. An entry whose `hash` is not the hash of
+ * its `path` is left out.
  */
-export async function parseTurnUndoRecord(text: string): Promise<TurnUndoRecord> {
+export async function parseTurnUndoRecord(text: string): Promise<TurnUndoRecord | null> {
   const value: unknown = JSON.parse(text);
   if (
     !isRecord(value)
@@ -117,11 +120,12 @@ export async function parseTurnUndoRecord(text: string): Promise<TurnUndoRecord>
     || !Array.isArray(value.entries)
     || !(value.tooLarge === undefined || (Array.isArray(value.tooLarge) && value.tooLarge.every(isRecordedPath)))
   ) {
-    throw new Error('Turn undo record is not in the saved format');
+    return null;
   }
   const entries: TurnUndoEntry[] = [];
   for (const item of value.entries as unknown[]) {
     const entry = parseEntry(item);
+    if (!entry) return null;
     if ((await pathHashOf(entry.path)) === entry.hash) entries.push(entry);
   }
   return {

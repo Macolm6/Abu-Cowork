@@ -759,6 +759,12 @@ describe('turnChanges', () => {
 
   describe('undo record', () => {
     const text = (value: string): Promise<string> => sha256Hex(new TextEncoder().encode(value));
+    /** Texts of an `undo.json` of loop-1 that are JSON and no record of that turn. */
+    const UNREADABLE_RECORDS: Array<[string, string]> = [
+      ['of a later format version', '{"version":2}'],
+      ['with an entry that has no path', JSON.stringify({ version: 1, loopId: 'loop-1', state: 'applied', entries: [{ hash: 'x' }] })],
+      ['of another turn', JSON.stringify({ version: 1, loopId: 'loop-2', state: 'applied', entries: [] })],
+    ];
 
     it('keeps what a modified, a created and a deleted file held before the turn, with both content hashes', async () => {
       fs.write(`${WS}/plan.md`, 'one\n');
@@ -847,9 +853,9 @@ describe('turnChanges', () => {
       await expect(mod.readTurnUndoRecord('conv-1', 'loop-1')).resolves.toBeNull();
     });
 
-    it('rejects a record that names another turn', async () => {
-      fs.write(`${CHANGES}/loop-1/undo.json`, JSON.stringify({ version: 1, loopId: 'loop-2', state: 'applied', entries: [] }));
-      await expect(mod.readTurnUndoRecord('conv-1', 'loop-1')).rejects.toThrow('another turn');
+    it.each(UNREADABLE_RECORDS)('reads a record %s as no record', async (_label, text) => {
+      fs.write(`${CHANGES}/loop-1/undo.json`, text);
+      await expect(mod.readTurnUndoRecord('conv-1', 'loop-1')).resolves.toBeNull();
     });
 
     it.each(['index', '../x', ''])('refuses the loop id %j', async (loopId) => {
@@ -916,6 +922,38 @@ describe('turnChanges', () => {
         });
         expect(fs.has(`${CHANGES}/loop-1`)).toBe(false);
       });
+
+      it.each(UNREADABLE_RECORDS)(
+        'takes the undo from a turn that has a record %s, keeps its directory and leaves the other turns as they are',
+        async (_label, unreadable) => {
+          fs.write(`${WS}/plan.md`, 'one\n');
+          fs.write(`${WS}/notes.md`, 'n1\n');
+          await runTurn('loop-1', async (capture) => {
+            await capture(`${WS}/plan.md`);
+            fs.write(`${WS}/plan.md`, 'two\n');
+          });
+          await runTurn('loop-2', async (capture) => {
+            await capture(`${WS}/notes.md`);
+            fs.write(`${WS}/notes.md`, 'n2\n');
+          });
+          fs.write(`${CHANGES}/loop-1/undo.json`, unreadable);
+          const kept = fs.list(`${CHANGES}/loop-1/`).map((path) => [path, fs.read(path)]);
+          const expected = {
+            'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md' },
+            'loop-2': { total: 1, added: 1, deleted: 1, firstFile: 'notes.md', restorable: 1, settledAt: 2, copyBytes: 3 },
+          };
+
+          const afterRestart = await restart();
+          await expect(afterRestart.readTurnIndex('conv-1')).resolves.toEqual(expected);
+          await expect(afterRestart.readTurnIndex('conv-1')).resolves.toEqual(expected);
+          await expect(afterRestart.readTurnChanges('conv-1', 'loop-1')).resolves.toMatchObject({ total: 1 });
+          await expect(afterRestart.readTurnUndoRecord('conv-1', 'loop-1')).resolves.toBeNull();
+          await expect(afterRestart.readTurnUndoRecord('conv-1', 'loop-2')).resolves.toMatchObject({ state: 'applied' });
+
+          await expect((await restart()).readTurnIndex('conv-1')).resolves.toEqual(expected);
+          expect(fs.list(`${CHANGES}/loop-1/`).map((path) => [path, fs.read(path)])).toEqual(kept);
+        },
+      );
 
       it('removes a record that has no saved result beside it', async () => {
         fs.write(`${CHANGES}/loop-1/undo.json`, JSON.stringify({ version: 1, loopId: 'loop-1', state: 'applied', entries: [] }));

@@ -507,13 +507,14 @@ describe('turnUndo', () => {
       expect([...new Set(authorize.mock.calls.map(([path]) => path))].sort()).toEqual([`${WS}/new.md`, `${WS}/old.md`]);
     });
 
-    it('rejects a record that does not have the saved shape and writes nothing', async () => {
+    it('has nothing to restore for a record that does not have the saved shape, and writes nothing', async () => {
       await runMixedTurn();
       const record = fs.readJson<{ entries: Array<{ path: string }> }>(`${CHANGES}/loop-1/undo.json`);
       record.entries[0].path = '../../outside.md';
       fs.write(`${CHANGES}/loop-1/undo.json`, JSON.stringify(record));
 
-      await expect(undo.undoTurn('conv-1', 'loop-1', { authorize })).rejects.toThrow('not in the saved format');
+      await expect(undo.planTurnUndo('conv-1', 'loop-1', 'undo', { authorize })).resolves.toEqual({ willRestore: [], wontRestore: [] });
+      await expect(undo.undoTurn('conv-1', 'loop-1', { authorize })).rejects.toBeInstanceOf(undo.TurnUndoRefusedError);
       expect(workspaceFiles()).toEqual({ 'plan.md': 'two\n', 'new.md': 'n\n' });
       expect(authorize).not.toHaveBeenCalled();
     });
