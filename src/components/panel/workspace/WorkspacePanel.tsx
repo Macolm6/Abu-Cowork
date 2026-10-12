@@ -11,6 +11,7 @@ import TerminalTab from './TerminalTab';
 import BrowserTab from './BrowserTab';
 import SubagentTab from './SubagentTab';
 import TeamTab from './TeamTab';
+import ChangesTab from './ChangesTab';
 
 /**
  * Empty state shown when every tab is closed (TRAE "从这里开始"): a launcher
@@ -97,6 +98,10 @@ function WorkspacePanelImpl() {
                 <BrowserTab tabId={tab.id} url={tab.url} />
               ) : tab.kind === 'team' ? (
                 <TeamTab conversationId={tab.conversationId} />
+              ) : tab.kind === 'changes' ? (
+                isTabVisibleFor(tab, conversationId)
+                  ? <ChangesTab tabId={tab.id} conversationId={tab.conversationId} loopId={tab.loopId} fileIndex={tab.fileIndex} />
+                  : null
               ) : (
                 <SubagentTab identity={tab.identity} taskIndex={tab.taskIndex} title={tab.title} />
               )}

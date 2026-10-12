@@ -284,6 +284,8 @@ describe('createConversationWriter', () => {
       await writer.appendMessage('c1', msg('m1', ''));
       await writer.flushWrites();
       await writer.snapshotMessageRevision('c1', msg('m1', 'partial', { isStreaming: true }));
+      fs.files.set(`${ROOT}/c1/changes/index.json`, '{}');
+      fs.files.set(`${ROOT}/c1/changes/loop-1.json`, '{}');
       await writer.deleteConversationFiles('c1');
       expect(writer.hasArmedStreamSnapshot('c1')).toBe(false);
       expect([...fs.files.keys()].some((p) => p.startsWith(`${ROOT}/c1/`))).toBe(false);
