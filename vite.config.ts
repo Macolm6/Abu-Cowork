@@ -34,6 +34,8 @@ const enterprisePeerPackages = [
   '@tauri-apps/plugin-opener',
   'fflate',
   'lucide-react',
+  'minimatch',
+  'refa',
 ]
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 const enterprisePeerAliases = BUILD_TARGET === 'enterprise'

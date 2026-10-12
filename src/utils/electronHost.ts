@@ -10,6 +10,7 @@ interface AbuShellBridge {
   /** The system material the shell draws behind the window: 'vibrancy', 'mica' or 'none'. */
   windowMaterial?: string;
   canonicalizePathForPolicy?: (path: string, followFinalSymlink?: boolean) => Promise<string>;
+  inspectPathNameComparison?: (path: string, followFinalSymlink?: boolean) => Promise<ElectronPathNameComparison>;
   getPathForFile?: (file: File) => string;
   saveImageAttachment?: (request: ElectronImageSaveRequest) => Promise<ElectronImageSaveResult>;
   authorizeUserAttachment?: (file: File, request: ElectronUserAttachmentAuthorizeRequest) => Promise<ElectronUserAttachmentToken>;
@@ -22,6 +23,27 @@ interface AbuShellBridge {
   getSidecarBridgeSnapshot?: (afterSequence?: number) => Promise<ElectronSidecarBridgeSnapshot>;
   recordRuntimeEvent?: (event: Record<string, unknown>) => void;
   getRuntimeDiagnostics?: () => Promise<ElectronRuntimeDiagnostics>;
+}
+
+export interface ElectronPathComponentComparison {
+  name: string;
+  parentPath: string;
+  caseMode: 'sensitive' | 'insensitive' | 'unknown';
+  directoryIdentity: string | null;
+  platform: string;
+  filesystem: string | null;
+  reason?: string;
+}
+
+export interface ElectronPathNameFacts {
+  path: string;
+  root: string;
+  components: ElectronPathComponentComparison[];
+}
+
+export interface ElectronPathNameComparison {
+  lexical: ElectronPathNameFacts;
+  canonical: ElectronPathNameFacts;
 }
 
 export interface ElectronImageSaveRequest {
@@ -294,6 +316,12 @@ export async function canonicalizeElectronPathForPolicy(
 ): Promise<string | null> {
   const canonicalize = getRuntime().__ABU_SHELL__?.canonicalizePathForPolicy;
   return canonicalize ? await canonicalize(path, followFinalSymlink) : null;
+}
+
+export async function inspectElectronPathNameComparison(path: string, followFinalSymlink = true): Promise<ElectronPathNameComparison> {
+  const inspect = getRuntime().__ABU_SHELL__?.inspectPathNameComparison;
+  if (!inspect) throw new Error('Filesystem name comparison is unavailable');
+  return inspect(path, followFinalSymlink);
 }
 
 export function subscribeElectronSidecarEvents(

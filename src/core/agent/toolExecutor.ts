@@ -185,6 +185,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
 
   // Expose loop context for delegate_to_agent tool (per-loop, supports concurrent agents)
   setLoopContext(loopId, {
+    ...(toolContext.operationOwner ? { operationOwner: toolContext.operationOwner } : {}),
     commandConfirmCallback: confirmCb,
     filePermissionCallback: filePermCb,
     signal: abortController.signal,

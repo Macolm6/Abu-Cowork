@@ -483,6 +483,7 @@ export function buildSubagentMcpPreflightFailure(
 }
 
 export interface SubagentLoopOptions {
+  operationOwner?: import('../tools/operationAuthorization').ToolOperationOwner;
   teamApprovalDispatch?: { id: string; fingerprint: string };
   agent: SubagentDefinition;
   task: string;
@@ -1352,6 +1353,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
           }
 
           const subagentToolContext: ToolExecutionContext = {
+            operationOwner: options.operationOwner,
             workspacePath,
             conversationId: options.parentConversationId,
             // Per-run resources (browser tabs) are owned by the pair

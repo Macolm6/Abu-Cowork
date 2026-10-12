@@ -788,6 +788,24 @@ function nativeHelperDispatch(cmd, args) {
   });
 }
 
+/** Main-only filesystem metadata query; absent from renderer command dispatch. */
+function readDirectoryNameComparison(directoryPath) {
+  return requestScheduler.run(async () => {
+    const hello = await ensureHelperCompatibility();
+    if (!hello.supported_commands.includes('directory_name_comparison')) {
+      throw new Error('native-helper does not support directory name comparison');
+    }
+    const result = await callHelper('directory_name_comparison', { path: directoryPath });
+    if (!result || !['sensitive', 'insensitive'].includes(result.caseMode)
+      || typeof result.directoryIdentity !== 'string' || !result.directoryIdentity
+      || typeof result.filesystem !== 'string' || !result.filesystem
+      || !['windows', 'macos'].includes(result.platform)) {
+      throw new Error('native-helper returned invalid directory comparison facts');
+    }
+    return result;
+  });
+}
+
 /** Kill the helper child (called on app quit; no orphans). */
 function killNativeHelper(reason = 'stopped') {
   requestScheduler.invalidate();
@@ -841,6 +859,7 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
 }
 
 module.exports = {
+  readDirectoryNameComparison,
   nativeHelperDispatch,
   normalizeHelperError,
   normalizeDriverCapabilities,

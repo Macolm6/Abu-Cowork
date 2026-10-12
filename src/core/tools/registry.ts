@@ -126,9 +126,13 @@ export function isToolGatedOff(name: string): boolean {
 export function getToolLabsGateId(name: string): string | undefined {
   return LABS_GATED_TOOLS[name];
 }
-import { getCurrentPolicy } from '@/core/enterprise/policy/enforcer';
-import { checkTool } from '@/core/enterprise/policy/matcher';
-import { showPolicyConfirm } from '@/components/enterprise/policyConfirmQueue';
+import {
+  beginToolOperationAuthorization,
+  freezeToolInput,
+  type OperationAuthorizationDecision,
+} from './operationAuthorization';
+import { finalizeToolApproval, rememberToolApproval } from './approvalFinalization';
+export { finalizeToolApproval } from './approvalFinalization';
 
 // Cache home dir for command-boundary resolution (only resolved on first safe write command).
 let cachedHomeDir: string | null = null;
@@ -488,6 +492,8 @@ export interface ToolApprovalDecision {
   reason?: string;
   /** Canonical file path that the executor must use for an approved file tool. */
   executionPath?: string;
+  /** Complete captured parameters; executors must consume this exact request. */
+  executionInput?: Readonly<Record<string, unknown>>;
   /** Browser-only: approval-time facts the executor must carry to the host. */
   browserExecution?: BrowserExecutionPin;
 }
@@ -1138,6 +1144,8 @@ export async function checkToolApproval(
   onRequireConfirmation?: CommandConfirmCallback,
   onRequireFilePermission?: FilePermissionCallback,
 ): Promise<ToolApprovalDecision> {
+  const operation = beginToolOperationAuthorization(name, input, toolContext);
+  if (operation) input = operation.input;
   let teamFileScope: string | undefined;
   try {
   const t = getI18n();
@@ -1214,7 +1222,7 @@ export async function checkToolApproval(
    * the diagnostic bundle and the card read.
    */
   let recordBrowserGateDenial: ((reason: BrowserDenialReasonCode) => void) | null = null;
-  let recheckBrowserPermission: (() => Promise<ToolApprovalDecision | null>) | undefined;
+  let recheckBrowserPermission: (() => ToolApprovalDecision | null | Promise<ToolApprovalDecision | null>) | undefined;
   let reportBrowserConsent: (() => void) | undefined;
 
   // Safety check for run_command tool
@@ -2148,7 +2156,12 @@ export async function checkToolApproval(
         consented = 'dialog';
       }
 
-      recheckBrowserPermission = async () => {
+      recheckBrowserPermission = () => {
+        const currentOperation = operation?.authorization.inspect();
+        if (currentOperation?.decision === 'deny') {
+          recordOperationDenial(currentOperation);
+          return { decision: 'deny' as const, reason: currentOperation.reason };
+        }
         if (toolContext?.abortSignal?.aborted) return refuseBrowser('user-cancelled');
         const freshGate = evaluateBrowserPermissionGate({ ...gateFacts,
           configured: configuredFor(getSettingsReader().getSnapshot().browserPermissionConfigV2),
@@ -2293,35 +2306,13 @@ export async function checkToolApproval(
     }
   }
 
-  // Enterprise policy pre-check — runs before builtin and MCP tools
-  {
-    const policy = getCurrentPolicy()
-    const summary = typeof input === 'object'
-      ? JSON.stringify(input).slice(0, 200)
-      : String(input).slice(0, 200)
-    const policyCheck = checkTool(policy, name, summary)
-    if (policyCheck.decision === 'deny') {
-      // A browser action refused here is refused as surely as one the gate
-      // above refused, so it belongs in the same taxonomy (B3). No-op for
-      // every non-browser tool.
-      recordBrowserGateDenial?.('enterprise-policy-denied')
-      return { decision: 'deny', reason: `Error: [policy] ${policyCheck.reason}` }
-    }
-    if (policyCheck.decision === 'confirm') {
-      if (toolContext?.interactionMode === 'background') {
-        // The policy demanded a confirmation an unattended run cannot give —
-        // the policy is still what stopped it.
-        recordBrowserGateDenial?.('enterprise-policy-denied')
-        return { decision: 'deny', reason: `Error: [policy] ${policyCheck.reason ?? 'confirmation unavailable in background run'}` }
-      }
-      const allowed = await showPolicyConfirm(policyCheck.reason ?? '此操作需要企业策略二次确认')
-      if (!allowed) {
-        // Here the human is the one who said no, which is a different fact
-        // from the policy blocking it — same code the attended dialog uses.
-        recordBrowserGateDenial?.('user-cancelled')
-        return { decision: 'deny', reason: `Error: [policy] user declined confirmation` }
-      }
-    }
+  const recordOperationDenial = (decision: Exclude<OperationAuthorizationDecision, { decision: 'allow' }>): void => {
+    recordBrowserGateDenial?.(decision.denialKind === 'user-cancelled' ? 'user-cancelled' : 'enterprise-policy-denied');
+  };
+  const inspection = operation?.authorization.inspect();
+  if (inspection?.decision === 'deny') {
+    recordOperationDenial(inspection);
+    return { decision: 'deny', reason: inspection.reason };
   }
 
   if (largeWritePathAfterApproval) {
@@ -2373,13 +2364,38 @@ export async function checkToolApproval(
   // Enterprise confirmation may wait while the user revokes browser access.
   const browserRevocation = await recheckBrowserPermission?.();
   if (browserRevocation) return browserRevocation;
-  reportBrowserConsent?.();
-
-  return {
+  const executionInput = operation ? freezeToolInput(approvedExecutionPath && FILE_TOOL_PATH_MAP[name]
+    ? { ...input, path: approvedExecutionPath } : input) : undefined;
+  if (operation && executionInput) {
+    const authorized = await operation.authorization.authorize(executionInput);
+    if (authorized.decision === 'deny') {
+      recordOperationDenial(authorized);
+      return { decision: 'deny', reason: authorized.reason };
+    }
+    const afterAuthorization = await recheckBrowserPermission?.();
+    if (afterAuthorization) return afterAuthorization;
+  }
+  const decision: ToolApprovalDecision = {
     decision: 'allow',
+    ...(executionInput ? { executionInput } : {}),
     ...(approvedExecutionPath ? { executionPath: approvedExecutionPath } : {}),
     ...(browserExecutionPin ? { browserExecution: browserExecutionPin } : {}),
   };
+  if (operation && executionInput) {
+    let reported = false;
+    rememberToolApproval(decision, {
+      authorization: operation.authorization,
+      input: executionInput,
+      recordDenial: recordOperationDenial,
+      checkPermissions: recheckBrowserPermission,
+      reportConsent: () => {
+        if (reported) return;
+        reported = true;
+        reportBrowserConsent?.();
+      },
+    });
+  } else reportBrowserConsent?.();
+  return decision;
   } finally {
     if (teamFileScope) disposeAuthorizationScope(teamFileScope);
   }
@@ -2518,7 +2534,16 @@ export async function executeAnyTool(
   throwIfAborted();
   // P1-3d-3: approval chain extracted to checkToolApproval — see its doc.
   // Behavior-preserving: same deny-reason strings, same order, same callbacks.
-  const approval = await checkToolApproval(name, input, toolContext, onRequireConfirmation, onRequireFilePermission);
+  let approval = await checkToolApproval(name, input, toolContext, onRequireConfirmation, onRequireFilePermission);
+  while (true) {
+    const finalized = finalizeToolApproval(approval);
+    if (finalized instanceof Promise) {
+      approval = await finalized;
+      continue;
+    }
+    approval = finalized;
+    break;
+  }
   if (approval.decision === 'deny') {
     return approval.reason ?? `Error: tool "${name}" was denied`;
   }
@@ -2527,9 +2552,9 @@ export async function executeAnyTool(
   // starting a builtin/MCP side effect after the run crossed its abort fence.
   throwIfAborted();
 
-  const executionInput = approval.executionPath && FILE_TOOL_PATH_MAP[name]
+  const executionInput = approval.executionInput ?? (approval.executionPath && FILE_TOOL_PATH_MAP[name]
     ? { ...input, path: approval.executionPath }
-    : input;
+    : input);
 
   // First check builtin tools. A Labs-gated-off tool stays in the registry but
   // is treated as absent here too, so a stale/hallucinated tool_use falls
