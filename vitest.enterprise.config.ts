@@ -16,6 +16,7 @@ const enterpriseConfig = mergeConfig(
     resolve: {
       alias: {
         '@enterprise-modules': path.resolve(__dirname, '../Abu-enterprise-modules/src'),
+        '@tauri-apps/api/core': path.resolve(__dirname, 'node_modules/@tauri-apps/api/core.js'),
         '@tauri-apps/api/path': path.resolve(__dirname, 'node_modules/@tauri-apps/api/path.js'),
         '@tauri-apps/plugin-deep-link': path.resolve(__dirname, 'node_modules/@tauri-apps/plugin-deep-link/dist-js/index.js'),
         '@tauri-apps/plugin-fs': path.resolve(__dirname, 'node_modules/@tauri-apps/plugin-fs/dist-js/index.js'),
