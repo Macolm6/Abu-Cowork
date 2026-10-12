@@ -20,6 +20,8 @@ import type { TurnUndoRecord } from '@/core/session/turnUndoRecord';
 import { checkWritePath } from '@/core/tools/pathSafety';
 import { createLogger } from '@/core/logging/logger';
 import { useChatStore } from '@/stores/chatStore';
+import { canonicalizeElectronPathForPolicy } from '@/utils/electronHost';
+import { normalizeSeparators } from '@/utils/pathUtils';
 
 const logger = createLogger('turnChanges');
 
@@ -173,9 +175,26 @@ export function useTurnUndoRecord(conversationId: string, loopId: string, enable
   return useSyncExternalStore(subscribe, () => (enabled ? undoRecords.get(key) ?? null : null));
 }
 
-/** A file may be written when the path check allows it as things stand; nothing is asked. */
-async function mayWrite(path: string): Promise<boolean> {
-  return (await checkWritePath(path)).allowed;
+/**
+ * `path` as it is spelled under the conversation's workspace. A turn records
+ * the resolved path of a file; when the workspace is reached through a link,
+ * that path starts with the resolved folder, and the write check judges a path
+ * by the spelling the workspace was authorized in.
+ */
+async function inWorkspaceSpelling(workspacePath: string | null | undefined, path: string): Promise<string> {
+  if (!workspacePath) return path;
+  const folder = normalizeSeparators(workspacePath).replace(/\/+$/, '');
+  if (path.startsWith(`${folder}/`)) return path;
+  const resolved = await canonicalizeElectronPathForPolicy(folder);
+  if (resolved === null) return path;
+  const resolvedFolder = normalizeSeparators(resolved).replace(/\/+$/, '');
+  return path.startsWith(`${resolvedFolder}/`) ? `${folder}${path.slice(resolvedFolder.length)}` : path;
+}
+
+/** A file may be written when the write check allows its path as things stand; nothing is asked. */
+async function mayWrite(conversationId: string, path: string): Promise<boolean> {
+  const workspacePath = useChatStore.getState().conversations[conversationId]?.workspacePath;
+  return (await checkWritePath(await inWorkspaceSpelling(workspacePath, path))).allowed;
 }
 
 export interface TurnUndoControls {
@@ -204,7 +223,7 @@ export function useTurnUndo(conversationId: string, loopId: string): TurnUndoCon
     running.current = true;
     setBusy(true);
     try {
-      const options = { authorize: mayWrite, isConversationPresent };
+      const options = { authorize: (path: string) => mayWrite(conversationId, path), isConversationPresent };
       return await (direction === 'undo' ? undoTurn(conversationId, loopId, options) : reapplyTurn(conversationId, loopId, options));
     } finally {
       running.current = false;

@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   undoTurn: vi.fn(),
   reapplyTurn: vi.fn(),
   checkWritePath: vi.fn(),
+  canonicalize: vi.fn(),
   listeners: new Set<(conversationId: string, loopId: string) => void>(),
 }));
 
@@ -38,6 +39,11 @@ vi.mock('@/core/session/turnUndo', () => ({
 vi.mock('@/core/tools/pathSafety', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/core/tools/pathSafety')>()),
   checkWritePath: (...args: unknown[]) => mocks.checkWritePath(...args),
+}));
+
+vi.mock('@/utils/electronHost', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/utils/electronHost')>()),
+  canonicalizeElectronPathForPolicy: (...args: unknown[]) => mocks.canonicalize(...args),
 }));
 
 import { __testing, useTurnChangesDetail, useTurnChangesEntry, useTurnUndo, useTurnUndoRecord } from './useTurnChanges';
@@ -67,10 +73,10 @@ function saved(conversationId: string, loopId: string): void {
   for (const listener of [...mocks.listeners]) listener(conversationId, loopId);
 }
 
-function setConversations(ids: string[]): void {
+function setConversations(ids: string[], workspacePath?: string): void {
   const conversations = Object.fromEntries(ids.map((id): [string, Conversation] => [
     id,
-    { id, title: id, messages: [], createdAt: 1_000, updatedAt: 1_000, status: 'idle' },
+    { id, title: id, messages: [], createdAt: 1_000, updatedAt: 1_000, status: 'idle', ...(workspacePath ? { workspacePath } : {}) },
   ]));
   useChatStore.setState({ conversations });
 }
@@ -92,6 +98,8 @@ describe('useTurnChanges', () => {
     mocks.reapplyTurn.mockResolvedValue(RESULT);
     mocks.checkWritePath.mockReset();
     mocks.checkWritePath.mockResolvedValue({ allowed: true });
+    mocks.canonicalize.mockReset();
+    mocks.canonicalize.mockResolvedValue(null);
     setConversations(['conv-1']);
     vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
@@ -346,6 +354,40 @@ describe('useTurnChanges', () => {
       mocks.checkWritePath.mockResolvedValueOnce({ allowed: false, reason: 'blocked' });
       await expect(authorize('/blocked/a.md')).resolves.toBe(false);
       expect(mocks.checkWritePath.mock.calls).toEqual([['/ws/a.md'], ['/elsewhere/a.md'], ['/blocked/a.md']]);
+      expect(mocks.canonicalize).not.toHaveBeenCalled();
+    });
+
+    it('checks a file under the resolved workspace folder in the spelling of the workspace', async () => {
+      setConversations(['conv-1'], '/var/work/project/');
+      mocks.canonicalize.mockResolvedValue('/private/var/work/project');
+      const { result } = renderHook(() => useTurnUndo('conv-1', 'loop-1'));
+      await act(async () => { await result.current.run('undo'); });
+      const { authorize } = mocks.undoTurn.mock.calls[0][2] as { authorize: (path: string) => Promise<boolean> };
+
+      await authorize('/private/var/work/project/docs/a.md');
+      await authorize('/var/work/project/b.md');
+      await authorize('/private/var/work/project-old/c.md');
+      await authorize('/elsewhere/d.md');
+
+      expect(mocks.checkWritePath.mock.calls).toEqual([
+        ['/var/work/project/docs/a.md'],
+        ['/var/work/project/b.md'],
+        ['/private/var/work/project-old/c.md'],
+        ['/elsewhere/d.md'],
+      ]);
+      expect(mocks.canonicalize).toHaveBeenCalledWith('/var/work/project');
+    });
+
+    it('checks the recorded path where the host resolves no paths', async () => {
+      setConversations(['conv-1'], '/var/work/project');
+      mocks.canonicalize.mockResolvedValue(null);
+      const { result } = renderHook(() => useTurnUndo('conv-1', 'loop-1'));
+      await act(async () => { await result.current.run('undo'); });
+      const { authorize } = mocks.undoTurn.mock.calls[0][2] as { authorize: (path: string) => Promise<boolean> };
+
+      await authorize('/private/var/work/project/a.md');
+
+      expect(mocks.checkWritePath.mock.calls).toEqual([['/private/var/work/project/a.md']]);
     });
 
     it('says the conversation is present exactly while the chat store holds it', async () => {
