@@ -1,6 +1,7 @@
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { authorizeWorkspace, checkWritePath, revokeWorkspace } from '@/core/tools/pathSafety';
 import { createMemoryHostFs, type MemoryHostFs } from './__fixtures__/memoryHostFs';
-import { pathHashOf } from './turnUndoRecord';
+import { pathHashOf, sha256Hex } from './turnUndoRecord';
 import type { ConversationWorkspaceFiles } from '@/core/files/workspaceFiles';
 
 const host = vi.hoisted(() => ({
@@ -17,6 +18,8 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
   remove: (path: string, options?: { recursive?: boolean }) => host.fs.pluginFs.remove(path, options),
   readDir: (path: string) => host.fs.pluginFs.readDir(path),
   stat: (path: string) => host.fs.pluginFs.stat(path),
+  // The write check inspects the components of a path; the memory disk holds no link.
+  lstat: async () => ({ isSymlink: false }),
 }));
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (command: string, args: { path: string }) => {
@@ -723,6 +726,88 @@ describe('turnUndo', () => {
       await expect(changes.readTurnIndex('conv-1')).resolves.toMatchObject({ 'loop-1': { restorable: 3, undone: true } });
       await expect(undo.reapplyTurn('conv-1', 'loop-1', { authorize })).resolves.toEqual({ done: 3, notDone: [] });
       expect(workspaceFiles()).toEqual({ 'plan.md': 'two\n', 'new.md': 'n\n' });
+    });
+  });
+
+  describe('a record rewritten as a whole to point outside the workspace', () => {
+    const SENSITIVE = `${HOME}/.ssh/authorized_keys`;
+    const ELSEWHERE = `${HOME}/Documents/elsewhere/notes.md`;
+    const PAYLOAD = 'payload\n';
+    /** The real write check, with the grant the app gives the workspace of a conversation. */
+    let writeCheck: import('vitest').Mock<(path: string) => Promise<boolean>>;
+
+    beforeEach(() => {
+      authorizeWorkspace(WS);
+      writeCheck = vi.fn(async (path: string) => (await checkWritePath(path)).allowed);
+    });
+
+    afterEach(() => {
+      revokeWorkspace(WS);
+    });
+
+    /** Adds an entry for each target that passes every check of the record: path hash, copy and content hash agree. */
+    async function pointRecordAt(targets: string[]): Promise<void> {
+      const record = fs.readJson<{ entries: unknown[] }>(`${CHANGES}/loop-1/undo.json`);
+      for (const target of targets) {
+        fs.makeDir(target.slice(0, target.lastIndexOf('/')));
+        const hash = await pathHashOf(target);
+        fs.write(`${CHANGES}/loop-1/before/${hash}`, PAYLOAD);
+        record.entries.push({
+          path: target,
+          hash,
+          before: 'file',
+          after: 'absent',
+          beforeSha256: await sha256Hex(new TextEncoder().encode(PAYLOAD)),
+        });
+      }
+      fs.write(`${CHANGES}/loop-1/undo.json`, JSON.stringify(record));
+    }
+
+    it('lists the entries as not authorized and plans the files of the workspace', async () => {
+      await runMixedTurn();
+      await pointRecordAt([SENSITIVE, ELSEWHERE]);
+
+      const plan = await undo.planTurnUndo('conv-1', 'loop-1', 'undo', { authorize: writeCheck });
+
+      expect(plan.willRestore.map((file) => file.path)).toEqual([`${WS}/new.md`, `${WS}/old.md`, `${WS}/plan.md`]);
+      expect(plan.wontRestore).toEqual([
+        { path: SENSITIVE, display: SENSITIVE, reason: 'not-authorized' },
+        { path: ELSEWHERE, display: ELSEWHERE, reason: 'not-authorized' },
+      ]);
+      expect(fs.has(SENSITIVE)).toBe(false);
+      expect(fs.has(ELSEWHERE)).toBe(false);
+    });
+
+    it('writes nothing to them when the turn is undone, and restores the files of the workspace', async () => {
+      await runMixedTurn();
+      await pointRecordAt([SENSITIVE, ELSEWHERE]);
+
+      const result = await undo.undoTurn('conv-1', 'loop-1', { authorize: writeCheck });
+
+      expect(result).toEqual({
+        done: 3,
+        notDone: [
+          { path: SENSITIVE, display: SENSITIVE, reason: 'not-authorized' },
+          { path: ELSEWHERE, display: ELSEWHERE, reason: 'not-authorized' },
+        ],
+      });
+      expect(writeCheck).toHaveBeenCalledWith(SENSITIVE);
+      expect(writeCheck).toHaveBeenCalledWith(ELSEWHERE);
+      expect(fs.has(SENSITIVE)).toBe(false);
+      expect(fs.has(ELSEWHERE)).toBe(false);
+      expect(fs.list(`${HOME}/.ssh/`)).toEqual([]);
+      expect(fs.list(`${HOME}/Documents/`)).toEqual([]);
+      expect(workspaceFiles()).toEqual({ 'plan.md': 'one\n', 'old.md': 'gone\n' });
+    });
+
+    it('writes the content there only for an authorization that allows it, which the write check does not', async () => {
+      await runMixedTurn();
+      await pointRecordAt([ELSEWHERE]);
+
+      await expect(checkWritePath(ELSEWHERE)).resolves.toMatchObject({ allowed: false, needsPermission: true });
+      await undo.undoTurn('conv-1', 'loop-1', { authorize });
+
+      expect(fs.read(ELSEWHERE)).toBe(PAYLOAD);
     });
   });
 
