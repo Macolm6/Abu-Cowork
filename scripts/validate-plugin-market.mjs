@@ -28,6 +28,7 @@ import {
 } from '../electron/shared/pluginSpec.mjs';
 import { APP_FILE_PATH, appRuns, parseAppFile, splitRunTarget } from '../electron/shared/appSpec.mjs';
 import { PluginManifestError } from '../electron/shared/pluginManifestError.mjs';
+import { parseLocalizedText } from '../electron/shared/specFields.mjs';
 import { packageFileExists, scanPluginPackageDir } from '../electron/shared/pluginPackageScan.mjs';
 
 const require = createRequire(import.meta.url);
@@ -294,8 +295,16 @@ export async function checkMarket(marketDir, { hostVersion, stagingRoot = path.j
       continue;
     }
     if (source.kind !== 'relative') {
-      for (const key of ['version', 'description', 'minAbuVersion']) {
+      for (const key of ['version', 'minAbuVersion']) {
         if (typeof raw[key] !== 'string') failures.push(new MarketCheckFailure(`app ${label}`, `a remote app entry must state ${key}`, key));
+      }
+      if (raw.description === undefined) failures.push(new MarketCheckFailure(`app ${label}`, 'a remote app entry must state description', 'description'));
+    }
+    if (raw.description !== undefined) {
+      try {
+        parseLocalizedText(raw.description, 'description');
+      } catch (error) {
+        failures.push(new MarketCheckFailure(`app ${label}`, error.message, 'description'));
       }
     }
     let appDir;

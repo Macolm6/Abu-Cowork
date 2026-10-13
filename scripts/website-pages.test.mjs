@@ -326,8 +326,13 @@ test('open platform pages show the parts of an app, the delivery steps and where
   const app = JSON.parse(fs.readFileSync(path.join(root, 'builtin-plugin-market/apps/recruiting/.abu-app/app.json'), 'utf8'));
   assert.equal(app.name, 'recruiting');
   assert.deepEqual(app.defaultRun, { team: 'builtin-team:recruiting' });
-  assert.equal(app.interface.displayName, '招聘');
-  assert.equal(app.interface.shortDescription, '写 JD、筛简历、备面试、查行情');
+  assert.deepEqual(app.interface.displayName, { 'zh-CN': '招聘', 'en-US': 'Recruiting' });
+  assert.deepEqual(app.interface.shortDescription, { 'zh-CN': '写 JD、筛简历、备面试、查行情', 'en-US': 'Write JDs, screen resumes, prepare interviews, check the market' });
+  for (const [file, locale] of [['platform.zh-CN.html', 'zh-CN'], ['platform.html', 'en-US']]) {
+    const source = read(file);
+    assert.ok(source.includes(`"displayName": { "${locale}": "${app.interface.displayName[locale]}" }`), `${file}: the excerpt quotes the app's name in the page's language`);
+    assert.ok(source.includes(`"shortDescription": { "${locale}": "${app.interface.shortDescription[locale]}" }`), `${file}: the excerpt quotes the app's description in the page's language`);
+  }
   assert.equal(app.home.modes.items[0].scenes[0].templates[0].title['zh-CN'], '高级前端 JD');
 });
 

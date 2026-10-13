@@ -1,6 +1,9 @@
 ---
 name: init
 description: 初始化工作区规则文件 (.abu/ABU.md)，分析项目结构生成项目规则模板
+display-description:
+  zh-CN: 初始化工作区规则文件，分析项目结构并生成规则模板
+  en-US: Set up the workspace rules file from an analysis of the project
 user-invocable: true
 context: inline
 allowed-tools:

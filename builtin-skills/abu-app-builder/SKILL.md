@@ -1,6 +1,9 @@
 ---
 name: abu-app-builder
 description: Create an Abu app in its app-creation conversation — a home page with scenes, each handed to an expert or an expert team. Write the draft in the conversation folder, validate it with app_prepare, and let the user confirm the preview card.
+display-description:
+  zh-CN: 在创建应用的对话里生成应用：首页、场景和负责的专家
+  en-US: "Build an Abu app: a home page of scenes, each run by an expert"
 ---
 
 Work only inside the current conversation folder. The draft is `.abu-app/app.json`, plus `agents/<name>.md` for experts the app needs that do not exist yet and `teams/<id>.json` for new expert teams. Never write to ~/.abu, never create experts or teams with other tools, and never add the app yourself: nothing is created until the user confirms the preview card.

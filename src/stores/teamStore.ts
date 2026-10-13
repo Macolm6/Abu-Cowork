@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware';
 
 import { BUILTIN_TEAMS, isBuiltinTeam } from '@/core/team/builtinTeams';
 import { isPluginTeam } from '@/core/team/pluginTeams';
+import type { AgentLocale } from '@/types';
 
 /**
  * Team domain store (R1: management surface only — PRD docs/abu-team-prd-v2.md).
@@ -37,6 +38,15 @@ export interface ManagedTeamMetadata {
   unavailableReason?: string;
 }
 
+/** The team fields the interface shows, as one locale words them. */
+export interface TeamDisplayText {
+  name?: string;
+  description?: string;
+  intro?: string;
+  expertise?: string[];
+  samplePrompts?: string[];
+}
+
 export interface Team {
   id: string;
   name: string;
@@ -61,6 +71,9 @@ export interface Team {
   expertise?: string[];
   /** Suggested questions prefill a new conversation without sending. */
   samplePrompts?: string[];
+  /** Per-locale display text; the interface reads it through `localizedTeam`.
+   *  The fields above stay what saving, matching and prompts use. */
+  i18n?: Partial<Record<AgentLocale, TeamDisplayText>>;
   /** The split the leader used last time (reference input for the next run, never a skip). */
   lastPlan?: TeamLastPlan;
   createdAt: number;

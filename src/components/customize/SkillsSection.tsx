@@ -5,6 +5,7 @@ import { useExtensionsSearchQuery, useSettingsStore } from '@/stores/settingsSto
 import { useChatStore } from '@/stores/chatStore';
 import { format, useI18n } from '@/i18n';
 import { skillLoader } from '@/core/skill/loader';
+import { localizedSkillDescription } from '@/core/skill/displayDescription';
 import SkillEditor from './SkillEditor';
 import SkillDraftsPanel from './SkillDraftsPanel';
 import SkillCategoryBlocksPanel from './SkillCategoryBlocksPanel';
@@ -84,7 +85,7 @@ const SkillCard = memo(function SkillCard({ skill, enabled, gated, market, plugi
   onOpen: (name: string) => void;
   onToggle: (name: string) => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const labelKey = sourceLabelKey(skill);
   const provenance = skill.source === 'plugin' ? <SourceBadge source={{ kind: 'plugin', plugin: pluginName }} />
     : skill.source === 'enterprise' ? <SourceBadge source={{ kind: 'enterprise' }} /> : null;
@@ -94,7 +95,7 @@ const SkillCard = memo(function SkillCard({ skill, enabled, gated, market, plugi
         item={{
           id: skill.name,
           name: skill.name,
-          description: skill.description,
+          description: localizedSkillDescription(skill, locale),
           avatar: <Icon icon={AppIcons.file} size="lg" className="text-label-tertiary" />,
           badge: provenance ?? (labelKey ? <Tag>{t.toolbox[labelKey]}</Tag> : undefined),
           toggle: market ? (
@@ -143,7 +144,7 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
   // A skill the user just wrote or imported is on the other shelf: land them
   // where it actually is, or the create reads as a create that did nothing.
   const setSource = useExtensionSourceStore((s) => s.setSource);
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const confirm = useConfirm();
   const installedPlugins = usePluginStore((s) => s.installed);
 
@@ -261,9 +262,10 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
       const tagStr = (s.tags ?? []).join(' ').toLowerCase();
       return s.name.toLowerCase().includes(searchLower) ||
         s.description.toLowerCase().includes(searchLower) ||
+        localizedSkillDescription(s, locale).toLowerCase().includes(searchLower) ||
         tagStr.includes(searchLower);
     });
-  }, [scopedSkills, searchLower]);
+  }, [scopedSkills, searchLower, locale]);
 
   // Built-ins a same-name user skill covered: still listed under 市场, marked,
   // so the user knows which copy is live instead of thinking one vanished.
@@ -276,9 +278,10 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
     // organization's — sits under 「我的」, which is where the hint points.
     return skillLoader.getShadowedSkills().filter((s) => {
       if (s.source !== 'builtin') return false;
-      return !q || s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q);
+      return !q || s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q)
+        || localizedSkillDescription(s, locale).toLowerCase().includes(q);
     });
-  }, [skills, searchLower, source]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [skills, searchLower, source, locale]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const selected = installedSkills.find((s) => s.name === selectedSkill) ?? null;
   // The detail window keeps showing the skill it held while it fades out.
@@ -403,7 +406,7 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
       item={{
         id: `shadowed:${skill.name}`,
         name: skill.name,
-        description: skill.description,
+        description: localizedSkillDescription(skill, locale),
         avatar: <Icon icon={AppIcons.file} size="lg" className="text-label-tertiary" />,
         badge: (
           <span className="flex" title={t.toolbox.skillShadowedHint}>

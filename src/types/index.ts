@@ -962,7 +962,11 @@ export type SkillUXCategory =
 
 export interface SkillMetadata {
   name: string;
+  /** What the model reads to decide when to use the skill. */
   description: string;
+  /** Per-locale description for the interface (`display-description` in SKILL.md).
+   *  The interface shows `displayDescription[locale] ?? description`; the model never sees it. */
+  displayDescription?: Partial<Record<AgentLocale, string>>;
   source?: SkillSource;       // Where this skill was discovered (set by loader)
   trigger?: string;           // When to auto-invoke, e.g. "用户要求深度调研某个主题"
   doNotTrigger?: string;      // When NOT to auto-invoke, e.g. "用户只是随口问个简单问题"
@@ -999,7 +1003,7 @@ export interface Skill extends SkillMetadata {
 
 /** Locale code used for i18n overrides. Mirrors SupportedLocale from i18n/types.ts
  *  — declared inline here to avoid pulling the i18n module into core agent code. */
-type AgentLocale = 'zh-CN' | 'en-US';
+export type AgentLocale = 'zh-CN' | 'en-US';
 
 /** Metadata attached to definitions supplied by a runtime extension. The host
  * keeps this contract generic; enterprise catalog transport and policy stay in

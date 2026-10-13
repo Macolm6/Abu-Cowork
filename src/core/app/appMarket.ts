@@ -1,4 +1,4 @@
-import type { ParsedAppFile } from '@/types/app';
+import type { LocalizedText, ParsedAppFile } from '@/types/app';
 import type { AppMarketEntry } from '@/core/plugin/marketplace';
 import type { MarketplaceRef } from '@/stores/pluginStore';
 import { loadMarketplaceFromDir } from '@/core/plugin/loadMarketplace';
@@ -23,8 +23,9 @@ export interface AppListing {
   entry: AppMarketEntry;
   /** The id it has once added from this market. */
   appId: string;
-  name: string;
-  description?: string;
+  /** The app's display name (its `name` while only the market entry is known) and one-line description. */
+  name: LocalizedText;
+  description?: LocalizedText;
   version?: string;
   minAbuVersion?: string;
   logo?: string;
