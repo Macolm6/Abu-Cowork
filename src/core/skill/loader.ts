@@ -59,10 +59,13 @@ function parseDisplayDescription(raw: unknown): SkillMetadata['displayDescriptio
 }
 
 /**
- * Parse a SKILL.md file: YAML frontmatter (between ---) + Markdown body
+ * Parse a SKILL.md file: YAML frontmatter (between ---) + Markdown body.
+ * A file checked out or saved with CRLF line endings reads the same as its LF
+ * form: the frontmatter is cut at a line feed, and a carriage return left
+ * after a quoted value at its end is a YAML error.
  */
 export function parseSkillFile(raw: string, filePath: string): Skill | null {
-  const match = raw.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
+  const match = raw.replace(/\r\n/g, '\n').match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
   if (!match) return null;
 
   try {

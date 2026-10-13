@@ -39,6 +39,16 @@ describe('built-in skills', () => {
     expect(english.length).toBeLessThanOrEqual(EN_MAX_CHARS);
     for (const text of [chinese, english]) expect(text).not.toContain('\n');
   });
+
+  // A Windows checkout hands these files over with CRLF line endings.
+  it.each(skillNames)('%s reads the same with CRLF line endings', (name) => {
+    const file = path.join(skillsDir, name, 'SKILL.md');
+    const text = readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
+    const where = file.replace(/\\/g, '/');
+    const fromLf = parseSkillFile(text, where);
+    expect(fromLf?.name).toBe(name);
+    expect(parseSkillFile(text.replace(/\n/g, '\r\n'), where)).toEqual(fromLf);
+  });
 });
 
 const marketApps = ['recruiting', 'finance-reconciliation', 'content-creation'];
