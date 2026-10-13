@@ -41,7 +41,7 @@ const TEXT_COLORS = ['label', 'label-secondary', 'label-tertiary', 'label-placeh
 const BG_COLORS = [
   'desk', 'desk-solid', 'surface', 'raised', 'code', 'diagram-canvas', 'page-canvas', 'field',
   'fill', 'fill-hover', 'fill-selected', 'fill-pressed', 'emphasis', 'scrim', 'brand',
-  'success-soft', 'warning-soft', 'danger-soft', 'info-soft', 'heat-1', 'heat-2', 'heat-3', 'heat-4',
+  'success-soft', 'warning-soft', 'danger-soft', 'danger-soft-pressed', 'info-soft', 'heat-1', 'heat-2', 'heat-3', 'heat-4',
 ];
 // A second name of the same list, to merge against.
 const other = (names: string[], name: string) => names.find((candidate) => candidate !== name)!;

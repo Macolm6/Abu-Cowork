@@ -44,7 +44,7 @@ describe('Button', () => {
     ['primary', 'not-aria-disabled:hover:opacity-90', 'not-aria-disabled:active:opacity-80'],
     ['secondary', 'not-aria-disabled:hover:bg-fill-selected', 'not-aria-disabled:active:bg-fill-pressed'],
     ['plain', 'not-aria-disabled:hover:bg-fill-hover', 'not-aria-disabled:active:bg-fill-pressed'],
-    ['danger', 'not-aria-disabled:hover:bg-fill-selected', 'not-aria-disabled:active:bg-fill-pressed'],
+    ['danger', 'not-aria-disabled:hover:bg-danger-soft', 'not-aria-disabled:active:bg-danger-soft-pressed'],
   ] as const)('answers the pointer in the %s variant only while it is not busy', (variant, hover, pressed) => {
     render(<Button variant={variant}>Go</Button>);
     const button = screen.getByRole('button', { name: 'Go' });
