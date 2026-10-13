@@ -201,6 +201,38 @@ describe('ProjectItem — "+N more" expander', () => {
   });
 });
 
+describe('ProjectItem — a task opened from the search', () => {
+  it('shows every task when the task is past the first five, scrolls its row into view and clears the request', () => {
+    const scrolled: Element[] = [];
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function (this: Element) {
+      scrolled.push(this);
+    });
+    mocks.project.revealConversationId = 'c6';
+    mocks.project.clearRevealConversation = vi.fn();
+
+    renderItem(Array.from({ length: 8 }, (_, i) => makeConv(i)));
+
+    const row = screen.getByText('对话6').closest('[role="button"]');
+    expect(scrolled).toEqual([row]);
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+    expect(mocks.project.clearRevealConversation).toHaveBeenCalledOnce();
+    scrollIntoView.mockRestore();
+  });
+
+  it('leaves the request alone while the project is collapsed, and for a task of another project', () => {
+    mocks.project.revealConversationId = 'c1';
+    mocks.project.clearRevealConversation = vi.fn();
+
+    renderItem([makeConv(0), makeConv(1)], { expanded: false });
+    expect(mocks.project.clearRevealConversation).not.toHaveBeenCalled();
+    cleanup();
+
+    mocks.project.revealConversationId = 'elsewhere';
+    renderItem([makeConv(0), makeConv(1)]);
+    expect(mocks.project.clearRevealConversation).not.toHaveBeenCalled();
+  });
+});
+
 describe('ProjectItem — project row', () => {
   it('toggles the folder from its name and keeps 新任务 beside it', async () => {
     const onNewTask = vi.fn();
