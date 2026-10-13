@@ -164,7 +164,6 @@
   --ds-success: #0b5c24;
   --ds-warning: #6b3b00;
   --ds-danger: #9e1a10;
-  --ds-danger-soft-pressed: rgba(255, 59, 48, 0.41);
   --ds-info: #0040a8;
   --ds-syntax-comment: #3f4b56;
   --ds-syntax-keyword: #7a1a74;
@@ -198,7 +197,6 @@
   --ds-success: #5ce37a;
   --ds-warning: #ffc56b;
   --ds-danger: #ff8f88;
-  --ds-danger-soft-pressed: rgba(255, 24, 20, 0.36);
   --ds-info: #7cc0ff;
   --ds-syntax-comment: #b4bfc8;
   --ds-syntax-keyword: #ffa3cb;
