@@ -121,6 +121,7 @@ const enUS: TranslationDict = {
     recents: 'Recents',
     searchPlaceholder: 'Search chats...',
     noSearchResults: 'No matching conversations',
+    searchMoreResults: 'There are more results. Try a more specific search.',
     noSessionsYet: 'No sessions yet',
     hideSidebar: 'Hide sidebar',
     showSidebar: 'Show sidebar',
