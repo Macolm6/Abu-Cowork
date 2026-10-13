@@ -97,14 +97,18 @@ export function optionalAssetPath(value, field) {
     return value.replace(/\\/g, '/');
 }
 
-/** A string, or `{ "zh-CN": …, "en-US": … }` with at least one locale. */
-export function parseLocalizedText(value, field, { required = false } = {}) {
+/**
+ * A string, or `{ "zh-CN": …, "en-US": … }` with at least one locale. `max`
+ * is a character limit each locale's text is held to on its own.
+ */
+export function parseLocalizedText(value, field, { required = false, max } = {}) {
     if (value === undefined) {
         if (required) fail('is required', field, 'missing');
         return undefined;
     }
     if (typeof value === 'string') {
         if (value.trim().length === 0) fail('must not be empty', field, 'type');
+        if (max !== undefined && value.length > max) fail(`must be at most ${max} characters`, field, 'range');
         return value;
     }
     if (!isPlainObject(value)) fail('must be a string or an object keyed by locale', field, 'type');
@@ -113,6 +117,7 @@ export function parseLocalizedText(value, field, { required = false } = {}) {
     for (const key of keys) {
         if (!LOCALES.includes(key)) fail(`unknown locale "${key}"`, `${field}.${key}`, 'unknown-field');
         if (typeof value[key] !== 'string' || value[key].trim().length === 0) fail('must be a non-empty string', `${field}.${key}`, 'type');
+        if (max !== undefined && value[key].length > max) fail(`must be at most ${max} characters`, `${field}.${key}`, 'range');
     }
     return { ...value };
 }

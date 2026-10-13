@@ -3,9 +3,12 @@
   "version": "1.0.0",
   "minAbuVersion": "0.51.0",
   "interface": {
-    "displayName": "招聘",
-    "shortDescription": "写 JD、筛简历、备面试、查行情",
-    "longDescription": "给招聘专员准备的应用：岗位准备、简历筛选、面试和薪资行情四组场景，都由随阿布附带的招聘专家团负责——HR 招聘官带队，行业调研专家查行情，办公文档专家出物料。",
+    "displayName": { "zh-CN": "招聘", "en-US": "Recruiting" },
+    "shortDescription": { "zh-CN": "写 JD、筛简历、备面试、查行情", "en-US": "Write JDs, screen resumes, prepare interviews, check the market" },
+    "longDescription": {
+      "zh-CN": "给招聘专员准备的应用：岗位准备、简历筛选、面试和薪资行情四组场景，都由随阿布附带的招聘专家团负责——HR 招聘官带队，行业调研专家查行情，办公文档专家出物料。",
+      "en-US": "An app for recruiters: four groups of scenes — preparing the role, screening resumes, interviews and the salary market — all handled by the Recruiting Team that ships with Abu. The HR recruiter leads, the industry researcher checks the market, and the document expert prepares the materials."
+    },
     "developerName": "Abu",
     "category": "hr",
     "brandColor": "#C4633A",

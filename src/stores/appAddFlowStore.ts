@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { homeDir } from '@tauri-apps/api/path';
-import type { AppDefinition } from '@/types/app';
+import type { AppDefinition, LocalizedText } from '@/types/app';
 import { useAppStore } from '@/stores/appStore';
 import { reportAppFailure } from '@/core/app/appFailure';
 import {
@@ -34,7 +34,7 @@ export type AppAddOperation = AppAddPurpose | 'repair';
 
 export type AppAddFlow =
   | { kind: 'closed' }
-  | { kind: 'planning'; name: string }
+  | { kind: 'planning'; name: LocalizedText }
   | { kind: 'ready'; purpose: AppAddPurpose; plan: AppAddPlan }
   | { kind: 'repair'; app: AppDefinition; steps: AppPluginStep[]; resume: () => void }
   /**
@@ -42,7 +42,7 @@ export type AppAddFlow =
    * A failure without one shows the sentence of its operation, and its reason
    * goes to the console (`reportAppFailure`).
    */
-  | { kind: 'error'; name: string; operation: AppAddOperation; refusal?: string };
+  | { kind: 'error'; name: LocalizedText; operation: AppAddOperation; refusal?: string };
 
 /**
  * The confirmation is mounted in two places (`AppAddConfirmDialog`): inside
@@ -59,13 +59,13 @@ interface AppAddFlowState {
 }
 
 interface AppAddFlowActions {
-  start: (source: AppAddSource, name: string, purpose: AppAddPurpose) => Promise<void>;
+  start: (source: AppAddSource, name: LocalizedText, purpose: AppAddPurpose) => Promise<void>;
   repair: (app: AppDefinition, resume: () => void) => Promise<void>;
   confirm: (configuration: Record<string, Record<string, string>>) => Promise<void>;
   cancel: () => Promise<void>;
 }
 
-function failed(name: string, operation: AppAddOperation, error: unknown): AppAddFlow {
+function failed(name: LocalizedText, operation: AppAddOperation, error: unknown): AppAddFlow {
   if (error instanceof AppAddError) return { kind: 'error', name, operation, refusal: error.message };
   reportAppFailure(operation, error);
   return { kind: 'error', name, operation };

@@ -37,6 +37,8 @@ describe('validate-plugin-market', () => {
     expect(byEntry.get('app wrong-ref')).toContain('home.modes.items[0].scenes[0].run.team');
     expect(byEntry.get('app unknown-plugin')).toContain('plugins[0]');
     expect(byEntry.get('app version-drift')).toContain('version');
+    // An entry's description is a string or one text per known locale.
+    expect(byEntry.get('app version-drift')).toContain('description');
   });
 
   it('reports an app that needs a newer Abu', async () => {

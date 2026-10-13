@@ -11,7 +11,7 @@ import { usePreviewStore } from '@/stores/previewStore';
 import { useToastStore } from '@/stores/toastStore';
 import { __testing as turnChangesCache } from '@/hooks/useTurnChanges';
 import type { TurnChangedFile, TurnChanges, TurnIndex } from '@/core/session/turnChanges';
-import type { TurnUndoPlan, TurnUndoResult } from '@/core/session/turnUndo';
+import { TurnUndoRefusedError, type TurnUndoPlan, type TurnUndoResult } from '@/core/session/turnUndo';
 import type { TurnUndoEntry, TurnUndoRecord } from '@/core/session/turnUndoRecord';
 import type { Conversation } from '@/types';
 import ChangedFilesCard from './ChangedFilesCard';
@@ -36,7 +36,8 @@ vi.mock('@/core/session/turnChanges', () => ({
   },
 }));
 
-vi.mock('@/core/session/turnUndo', () => ({
+vi.mock('@/core/session/turnUndo', async (importOriginal) => ({
+  TurnUndoRefusedError: (await importOriginal<typeof import('@/core/session/turnUndo')>()).TurnUndoRefusedError,
   planTurnUndo: (...args: unknown[]) => mocks.planTurnUndo(...args),
   undoTurn: (...args: unknown[]) => mocks.undoTurn(...args),
   reapplyTurn: (...args: unknown[]) => mocks.reapplyTurn(...args),
@@ -419,6 +420,18 @@ describe('ChangedFilesCard', () => {
       fireEvent.click(within(await question('撤销这一轮的文件改动？')).getByRole('button', { name: '撤销' }));
 
       await waitFor(() => expect(toastTitles()).toEqual(['已恢复 1 个，2 个没有恢复']));
+    });
+
+    it('says that Abu is working when a turn began between the question and its answer', async () => {
+      saveRestorableTurn(THREE_FILES, THREE_FILES.map((file) => entryOf(file.display)));
+      mocks.undoTurn.mockRejectedValue(new TurnUndoRefusedError('turn-running'));
+      await renderCard();
+
+      fireEvent.click(undoButton());
+      fireEvent.click(within(await question('撤销这一轮的文件改动？')).getByRole('button', { name: '撤销' }));
+
+      await waitFor(() => expect(toastTitles()).toEqual(['阿布正在工作，结束后可以撤销']));
+      expect(undoButton()).not.toHaveAttribute('aria-disabled');
     });
 
     it('leaves a file the question already listed as not restored out of the notice', async () => {

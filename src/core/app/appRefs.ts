@@ -11,6 +11,7 @@ import { agentRegistry } from '@/core/agent/registry';
 import { isBuiltinAgent } from '@/core/team/roleIdentity';
 import { isPluginOwnedAgent } from '@/utils/agentSource';
 import { pluginTeamId } from '@/core/team/pluginTeams';
+import { localizedTeam } from '@/core/team/localizedTeam';
 import { appRuns, splitRunTarget, type RunTargetKind } from '../../../electron/shared/appSpec.mjs';
 
 /**
@@ -180,7 +181,7 @@ export function resolveTarget(app: AppDefinition, kind: RunTargetKind, value: st
 /** The name a user knows a target by: a team's or an expert's display name, never an id. */
 export function targetDisplayName(target: ResolvedTarget, locale: AppLocale = getLocale()): string {
   if (target.status === 'ok') {
-    if (target.kind === 'team') return target.team.name;
+    if (target.kind === 'team') return localizedTeam(target.team, locale).name;
     if (target.kind === 'expert') return target.agent.displayNames?.[locale] ?? target.agent.name;
     return target.name;
   }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AppDefinition } from '@/types/app';
-import { buildAppBinding, effectiveRun, joinPromptAppend, pickMode } from './appBinding';
+import { buildAppBinding, effectiveRun, joinPromptAppend, pickMode, resolveLocalizedText } from './appBinding';
 import { generalApp } from './appRegistry';
 import { DEFAULT_APP_CONFIG } from '@/data/defaultAppConfig';
 
@@ -55,6 +55,21 @@ describe('buildAppBinding', () => {
     });
     expect(buildAppBinding(app, sourcing, undefined)?.run).toEqual({ team: 'plugin:shop-assistant/store-ops' });
     expect(buildAppBinding({ ...app, origin: { kind: 'enterprise' } }, sourcing, undefined)?.origin).toBe('enterprise');
+  });
+
+  it('keeps a name given per locale as it is, so the label follows the interface language later', () => {
+    const name = { 'zh-CN': '店铺运营', 'en-US': 'Shop Operations' };
+    const bound = buildAppBinding({ ...app, name }, sourcing, undefined);
+    expect(bound?.appName).toEqual(name);
+    expect(resolveLocalizedText(bound!.appName, 'en-US')).toBe('Shop Operations');
+    expect(resolveLocalizedText(bound!.appName, 'zh-CN')).toBe('店铺运营');
+  });
+
+  it('shows the name of a record that holds one string as that string, in every locale', () => {
+    const stored = buildAppBinding(app, sourcing, undefined)!;
+    expect(stored.appName).toBe('店铺运营');
+    expect(resolveLocalizedText(stored.appName, 'en-US')).toBe('店铺运营');
+    expect(resolveLocalizedText(stored.appName, 'zh-CN')).toBe('店铺运营');
   });
 
   it('binds nothing for the general shell', () => {

@@ -40,5 +40,5 @@ export function getApp(apps: AppDefinition[], appId: string): AppDefinition | un
 /** The app's display title for the home header: `home.header.title`, else its name. */
 export function appHomeTitle(app: AppDefinition, locale: AppLocale): string {
   const title = app.config.home.header?.title;
-  return title === undefined ? app.name : resolveLocalizedText(title, locale);
+  return resolveLocalizedText(title === undefined ? app.name : title, locale);
 }

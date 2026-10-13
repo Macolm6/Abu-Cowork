@@ -26,4 +26,10 @@ describe('appHomeTitle', () => {
     expect(appHomeTitle(titled, 'en-US')).toBe('Shop ops');
     expect(appHomeTitle({ ...titled, config: { ...titled.config, home: { modes: titled.config.home.modes } } }, 'en-US')).toBe('店铺运营');
   });
+
+  it('shows a name given per locale in the interface language', () => {
+    const named = app('shop@market', { name: { 'zh-CN': '店铺运营', 'en-US': 'Shop Operations' } });
+    expect(appHomeTitle(named, 'en-US')).toBe('Shop Operations');
+    expect(appHomeTitle(named, 'zh-CN')).toBe('店铺运营');
+  });
 });
