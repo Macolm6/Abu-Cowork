@@ -682,6 +682,8 @@ export interface ToolParameter {
 
 /** Runtime context passed to tool execute(), e.g. the effective workspace for this conversation */
 export interface ToolExecutionContext {
+  /** Trusted host-only access for this invocation; never accepted from the wire. */
+  files?: import('@/core/tools/fileOperation').ToolFileAccess;
   /** Process-local authority owner; never accepted from model or wire context. */
   operationOwner?: import('../core/tools/operationAuthorization').ToolOperationOwner;
   /** Resolved workspace path (from IMContext or global store) */

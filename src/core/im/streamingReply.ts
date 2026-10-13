@@ -16,10 +16,11 @@
  */
 
 import { getAdapter } from './adapters/registry';
-import type { AbuMessage, DirectReplyContext } from './adapters/types';
+import type { AbuMessage, DirectReplyContext, MediaFilePayload } from './adapters/types';
 import type { IMPlatform, IMReplyContext } from '../../types/im';
 import { tokenManager } from './tokenManager';
 import { useIMChannelStore } from '../../stores/imChannelStore';
+import { FileOperationDenied, runFileOperationStage } from '@/core/tools/fileOperation';
 
 export interface ReplyHandle {
   /** Platform */
@@ -105,7 +106,7 @@ async function trySendViaApi(
 export async function sendIMFile(
   platform: IMPlatform,
   chatId: string,
-  payload: { filePath: string; fileName?: string; caption?: string },
+  payload: MediaFilePayload,
 ): Promise<{ sent: boolean; messageId?: string; error?: string }> {
   const adapter = getAdapter(platform);
   if (!adapter) {
@@ -121,10 +122,11 @@ export async function sendIMFile(
   }
 
   try {
-    const token = await tokenManager.getToken(platform, creds.appId, creds.appSecret);
-    const result = await adapter.sendMediaFile(token, { chatId }, payload);
+    const token = await runFileOperationStage(payload.files, () => tokenManager.getToken(platform, creds.appId, creds.appSecret));
+    const result = await runFileOperationStage(payload.files, () => adapter.sendMediaFile!(token, { chatId }, payload));
     return { sent: true, messageId: result.messageId };
   } catch (err) {
+    if (err instanceof FileOperationDenied) throw err;
     const errorMsg = err instanceof Error ? err.message : String(err);
     if (errorMsg.includes('401') || errorMsg.includes('token') || errorMsg.includes('auth')) {
       tokenManager.invalidate(platform, creds.appId);

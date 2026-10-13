@@ -22,6 +22,7 @@ import { homeDir } from '@tauri-apps/api/path';
 import { isWindows } from '../../../utils/platform';
 import type { ImageAttachment } from '../../../types';
 import { createLogger } from '../../logging/logger';
+import { runFileOperationStage, type FileOperationGuard } from '@/core/tools/fileOperation';
 import { BaseAdapter } from './base';
 import type {
   AdapterConfig,
@@ -283,6 +284,7 @@ async function uploadMediaToCdn(
   toUserId: string,
   plaintext: Uint8Array,
   mediaType: number,
+  guard?: FileOperationGuard,
 ): Promise<{ media: CDNMedia; ciphertextSize: number }> {
   const { botToken, baseurl } = creds;
   const rawsize = plaintext.length;
@@ -296,7 +298,7 @@ async function uploadMediaToCdn(
   const f = await getTauriFetch();
 
   // 1. getuploadurl
-  const upResp = await f(ilinkUrl(baseurl, '/ilink/bot/getuploadurl'), {
+  const upResp = await runFileOperationStage(guard, () => f(ilinkUrl(baseurl, '/ilink/bot/getuploadurl'), {
     method: 'POST',
     headers: makeILinkHeaders(botToken),
     body: JSON.stringify({
@@ -310,9 +312,9 @@ async function uploadMediaToCdn(
       aeskey: aesKeyHex,
       base_info: ILINK_BASE_INFO,
     }),
-  });
+  }));
   if (!upResp.ok) throw new Error(`getuploadurl HTTP ${upResp.status}`);
-  const upData = (await upResp.json()) as GetUploadUrlResp;
+  const upData = (await runFileOperationStage(guard, () => upResp.json())) as GetUploadUrlResp;
   if (upData.ret !== undefined && upData.ret !== 0) {
     throw new Error(`getuploadurl ret=${upData.ret} errmsg=${upData.errmsg ?? ''}`);
   }
@@ -333,11 +335,11 @@ async function uploadMediaToCdn(
     ciphertext.byteOffset,
     ciphertext.byteOffset + ciphertext.byteLength,
   ) as ArrayBuffer;
-  const cdnResp = await f(cdnUrl, {
+  const cdnResp = await runFileOperationStage(guard, () => f(cdnUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/octet-stream' },
     body: cipherBuf,
-  });
+  }));
   if (cdnResp.status !== 200) {
     const err = cdnResp.headers.get('x-error-message') ?? `HTTP ${cdnResp.status}`;
     throw new Error(`CDN upload failed: ${err}`);
@@ -945,6 +947,7 @@ export class WeChatAdapter extends BaseAdapter {
     contextToken: string,
     chatId: string,
     items: unknown[],
+    guard?: FileOperationGuard,
   ): Promise<void> {
     const f = await getTauriFetch();
     for (let i = 0; i < items.length; i++) {
@@ -960,7 +963,7 @@ export class WeChatAdapter extends BaseAdapter {
         },
         base_info: ILINK_BASE_INFO,
       };
-      await this.postOneItem(f, creds, body);
+      await this.postOneItem(f, creds, body, guard);
       if (i < items.length - 1) {
         await new Promise<void>((r) => setTimeout(r, 300));
       }
@@ -978,15 +981,16 @@ export class WeChatAdapter extends BaseAdapter {
     f: typeof globalThis.fetch,
     creds: Pick<WeChatCredentials, 'botToken' | 'baseurl'>,
     body: unknown,
+    guard?: FileOperationGuard,
   ): Promise<void> {
     for (let attempt = 0; attempt < 2; attempt++) {
-      const resp = await f(ilinkUrl(creds.baseurl, '/ilink/bot/sendmessage'), {
+      const resp = await runFileOperationStage(guard, () => f(ilinkUrl(creds.baseurl, '/ilink/bot/sendmessage'), {
         method: 'POST',
         headers: makeILinkHeaders(creds.botToken),
         body: JSON.stringify(body),
-      });
+      }));
       if (!resp.ok) throw new Error(`[WeChat] sendmessage HTTP ${resp.status}`);
-      const data = (await resp.json()) as { ret?: number; errmsg?: string };
+      const data = (await runFileOperationStage(guard, () => resp.json())) as { ret?: number; errmsg?: string };
       if (data.ret === undefined || data.ret === 0) return;
       if (data.ret === -2 && attempt === 0) {
         // transient "prepare failed" — back off once and retry
@@ -1053,7 +1057,8 @@ export class WeChatAdapter extends BaseAdapter {
       throw new Error(`[WeChat] No context_token for user ${context.chatId} — user must send a message first`);
     }
 
-    const bytes = await readFile(payload.filePath);
+    const bytes = await runFileOperationStage(payload.files, () => payload.files
+      ? payload.files.readFile(payload.filePath) : readFile(payload.filePath));
     if (bytes.length === 0) throw new Error('[WeChat] cannot send an empty file');
     if (bytes.length > WECHAT_MAX_OUTBOUND_BYTES) {
       throw new Error(
@@ -1074,6 +1079,7 @@ export class WeChatAdapter extends BaseAdapter {
       context.chatId,
       bytes,
       mediaType,
+      payload.files,
     );
 
     const item = isImage
@@ -1087,7 +1093,7 @@ export class WeChatAdapter extends BaseAdapter {
     }
     items.push(item);
 
-    await this.postSendMessageItems(creds, contextToken, context.chatId, items);
+    await this.postSendMessageItems(creds, contextToken, context.chatId, items, payload.files);
     return {};
   }
 }

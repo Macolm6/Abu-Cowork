@@ -11,6 +11,7 @@ interface AbuShellBridge {
   windowMaterial?: string;
   canonicalizePathForPolicy?: (path: string, followFinalSymlink?: boolean) => Promise<string>;
   inspectPathNameComparison?: (path: string, followFinalSymlink?: boolean) => Promise<ElectronPathNameComparison>;
+  fileOperation?: (action: string, request: Record<string, unknown>) => Promise<unknown>;
   getPathForFile?: (file: File) => string;
   saveImageAttachment?: (request: ElectronImageSaveRequest) => Promise<ElectronImageSaveResult>;
   authorizeUserAttachment?: (file: File, request: ElectronUserAttachmentAuthorizeRequest) => Promise<ElectronUserAttachmentToken>;
@@ -322,6 +323,12 @@ export async function inspectElectronPathNameComparison(path: string, followFina
   const inspect = getRuntime().__ABU_SHELL__?.inspectPathNameComparison;
   if (!inspect) throw new Error('Filesystem name comparison is unavailable');
   return inspect(path, followFinalSymlink);
+}
+
+export async function invokeElectronFileOperation<T>(action: string, request: Record<string, unknown>): Promise<T> {
+  const invoke = getRuntime().__ABU_SHELL__?.fileOperation;
+  if (!invoke) throw new Error('Controlled file access is unavailable');
+  return await invoke(action, request) as T;
 }
 
 export function subscribeElectronSidecarEvents(

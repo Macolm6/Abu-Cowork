@@ -108,6 +108,7 @@ import { paramsBuildDisplayMessage } from './paramsBuildFailure';
 import { isUpstreamErrorDetails, sanitizeUntrustedLlmErrorText } from '../llm/adapter';
 import type { LoopContext } from './permissionBridge';
 import { captureToolOperationOwner } from '../tools/operationAuthorization';
+import { requiresHostFileExecution } from '../tools/fileToolTargets';
 import { attachTrustedSkillCommandApproval } from './skillCommandApproval';
 import { normalizeIMRunCapability } from '../permissions/runPermissionCeiling';
 import {
@@ -198,6 +199,7 @@ export interface SerializableToolDefinition {
   description: string;
   inputSchema: ToolDefinition['inputSchema'];
   execution?: ToolDefinition['execution'];
+  executionRoute?: 'host';
 }
 
 /** Exported for reuse by agentLoopRunner.ts's `tool.list` REQUEST handler (P1-3b-2 item 5) — same wire-safe tool projection, no need for a second copy. */
@@ -205,6 +207,7 @@ export function toSerializableTool(t: ToolDefinition): SerializableToolDefinitio
   return {
     name: t.name, description: t.description, inputSchema: t.inputSchema,
     ...(t.execution ? { execution: t.execution } : {}),
+    ...(requiresHostFileExecution(t.name) ? { executionRoute: 'host' as const } : {}),
   };
 }
 

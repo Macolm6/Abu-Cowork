@@ -1280,6 +1280,7 @@ export class MCPClientManager {
        */
       agentRunId?: string;
       signal?: AbortSignal;
+      beforeDispatch?: () => void;
       /**
        * Only meaningful for the browser server's `get_tabs`: pass `false` for a
        * read-only probe that must not provision an automation view as a side
@@ -1442,6 +1443,7 @@ export class MCPClientManager {
       // For browser servers, serverTimeout is 120s — without this, the SDK's
       // 60s default would reject `wait_for`-style long calls before our own
       // race ever gets a chance to.
+      opts?.beforeDispatch?.();
       const result = await Promise.race([
         client.callTool(
           params,

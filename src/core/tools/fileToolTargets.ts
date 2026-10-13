@@ -1,0 +1,118 @@
+import { downloadDir, homeDir } from '@tauri-apps/api/path';
+import type { ToolExecutionContext } from '@/types';
+import { normalizeLexicalPath, isLocalFilePath, joinPath } from '@/utils/pathUtils';
+import { useWorkspaceStore } from '@/stores/workspaceStore';
+import { decodeUploadFiles } from '@/core/permissions/browserUploadFiles';
+import { uploadsFile } from '@/core/permissions/browserToolPolicy';
+import { parsePresentedFilesInput } from '@/core/tools/definitions/presentTools';
+import { freezeToolInput, requiresHostFileOperations } from '@/core/tools/operationAuthorization';
+import type { FileAccessPurpose, FileOperationPlan, FileOperationTarget } from '@/core/tools/fileOperation';
+import { TOOL_NAMES } from '@/core/tools/toolNames';
+
+const singlePurposes: Readonly<Record<string, FileAccessPurpose>> = {
+  [TOOL_NAMES.READ_FILE]: 'read',
+  [TOOL_NAMES.WRITE_FILE]: 'write',
+  [TOOL_NAMES.EDIT_FILE]: 'write',
+  [TOOL_NAMES.DELETE_FILE]: 'delete',
+  [TOOL_NAMES.LIST_DIRECTORY]: 'list',
+  [TOOL_NAMES.SEARCH_FILES]: 'traverse',
+  [TOOL_NAMES.FIND_FILES]: 'traverse',
+  [TOOL_NAMES.SEND_FILE]: 'read',
+  [TOOL_NAMES.CHECK_OPEN_DOCUMENT]: 'read',
+};
+
+export function requiresHostFileExecution(name: string): boolean {
+  return requiresHostFileOperations() && hasToolFileTargets(name);
+}
+
+export function hasToolFileTargets(name: string): boolean {
+  return singlePurposes[name] !== undefined || uploadsFile(name)
+    || name === TOOL_NAMES.PRESENT_FILES || name === TOOL_NAMES.PROCESS_IMAGE || name === TOOL_NAMES.GENERATE_IMAGE;
+}
+
+/** Resolve every declared target before an approval or tool body can await. */
+export async function planToolFiles(
+  name: string,
+  original: Readonly<Record<string, unknown>>,
+  context?: ToolExecutionContext,
+): Promise<FileOperationPlan | null> {
+  const single = singlePurposes[name];
+  const upload = uploadsFile(name);
+  if (!single && !upload && name !== TOOL_NAMES.PRESENT_FILES
+    && name !== TOOL_NAMES.PROCESS_IMAGE && name !== TOOL_NAMES.GENERATE_IMAGE) return null;
+
+  const workspacePath = context?.workspacePath ?? useWorkspaceStore.getState().currentPath;
+  const generatedName = name === TOOL_NAMES.GENERATE_IMAGE ? `abu-image-${Date.now()}.png` : '';
+  const homePath = normalizeLexicalPath(await homeDir());
+  const input: Record<string, unknown> = structuredClone(original);
+  const targets: FileOperationTarget[] = [];
+
+  function target(raw: unknown, purpose: FileAccessPurpose, followFinalSymlink = true): string | undefined {
+    if (typeof raw !== 'string' || !raw.trim()) return undefined;
+    const inputPath = raw.trim();
+    let expanded = inputPath === '~' ? homePath
+      : inputPath.startsWith('~/') || inputPath.startsWith('~\\') ? joinPath(homePath, inputPath.slice(2))
+      : inputPath;
+    if (!isLocalFilePath(expanded) && workspacePath) expanded = joinPath(workspacePath, expanded);
+    const path = normalizeLexicalPath(expanded);
+    targets.push(Object.freeze({ inputPath, path, purpose, followFinalSymlink }));
+    return path;
+  }
+
+  if (single) {
+    const path = target(input.path, single, name !== TOOL_NAMES.DELETE_FILE);
+    if (path !== undefined) input.path = path;
+    if (name === TOOL_NAMES.WRITE_FILE || name === TOOL_NAMES.EDIT_FILE
+      || (name === TOOL_NAMES.DELETE_FILE && (context?.reportMetadata || context?.loopId))) {
+      target(original.path, 'read', name !== TOOL_NAMES.DELETE_FILE);
+    }
+  } else if (name === TOOL_NAMES.PRESENT_FILES) {
+    input.files = parsePresentedFilesInput(input.files).map(file => ({
+      ...file, path: target(file.path, 'read') ?? file.path,
+    }));
+  } else if (name === TOOL_NAMES.PROCESS_IMAGE) {
+    const source = target(input.input_path, 'read');
+    const output = target(input.output_path, 'write');
+    if (source !== undefined) input.input_path = source;
+    if (output !== undefined) input.output_path = output;
+  } else if (name === TOOL_NAMES.GENERATE_IMAGE) {
+    const output = typeof input.save_path === 'string' && input.save_path.trim()
+      ? input.save_path : joinPath(workspacePath || await downloadDir(), generatedName);
+    input.save_path = target(output, 'write');
+  } else if (upload) {
+    const paths = decodeUploadFiles(input);
+    if (paths) {
+      const files = paths.map(path => ({ path: target(path, 'read', false) ?? path }));
+      input.files = typeof original.files === 'string' ? JSON.stringify(files) : files;
+    }
+  }
+
+  return Object.freeze({ input: freezeToolInput(input), targets: Object.freeze(targets), homePath, workspacePath });
+}
+
+/** Pin only the tool's declared file arguments to their observed destinations. */
+export function resolveToolFileInput(
+  name: string,
+  input: Readonly<Record<string, unknown>>,
+  destinations: ReadonlyMap<string, string>,
+): Readonly<Record<string, unknown>> {
+  const resolved: Record<string, unknown> = structuredClone(input);
+  const resolve = (path: unknown) => typeof path === 'string' ? destinations.get(path) ?? path : path;
+  if (name === TOOL_NAMES.PRESENT_FILES) {
+    resolved.files = parsePresentedFilesInput(input.files).map(file => ({ ...file, path: resolve(file.path) }));
+  } else if (uploadsFile(name)) {
+    const paths = decodeUploadFiles(input);
+    if (paths) {
+      const files = paths.map(path => ({ path: resolve(path) }));
+      resolved.files = typeof input.files === 'string' ? JSON.stringify(files) : files;
+    }
+  } else if (name === TOOL_NAMES.PROCESS_IMAGE) {
+    resolved.input_path = resolve(input.input_path);
+    resolved.output_path = resolve(input.output_path);
+  } else if (name === TOOL_NAMES.GENERATE_IMAGE) {
+    resolved.save_path = resolve(input.save_path);
+  } else if (typeof input.path === 'string') {
+    resolved.path = resolve(input.path);
+  }
+  return freezeToolInput(resolved);
+}

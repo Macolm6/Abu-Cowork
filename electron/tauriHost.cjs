@@ -53,6 +53,7 @@ const {
 const { updaterDispatch, UPDATER_MISS } = require('./updaterHost.cjs');
 const { createQuitPreparation } = require('./quitPreparation.cjs');
 const { fsDispatch, FS_MISS, canonicalizeForPathPolicy, inspectPathNameComparison } = require('./fsHost.cjs');
+const { FILE_OPERATION_CHANNEL, createFileOperationHost } = require('./fileOperationHost.cjs');
 const { pluginGitDispatch, PLUGIN_GIT_MISS } = require('./pluginGitHost.cjs');
 const { createMarketSourceHost, marketSourceDispatch, MARKET_SOURCE_MISS } = require('./marketSourceHost.cjs');
 const { PLUGIN_SNAPSHOT_CHANNEL, createPluginSnapshotHost } = require('./pluginSnapshotHost.cjs');
@@ -1723,6 +1724,12 @@ function registerTauriHost(app, options = {}) {
       throw new Error('fs: followFinalSymlink must be a boolean');
     }
     return inspectPathNameComparison(request?.path, request?.followFinalSymlink !== false);
+  });
+
+  const fileOperations = createFileOperationHost({ app, trashItem: filePath => require('electron').shell.trashItem(filePath) });
+  ipcMain.handle(FILE_OPERATION_CHANNEL, async (e, payload = {}) => {
+    assertTrustedMainIpcSender(e);
+    return fileOperations(e.sender, payload.action, payload.request);
   });
 
   ipcMain.handle(SAVE_IMAGE_ATTACHMENT_CHANNEL, async (e, request = {}) => {

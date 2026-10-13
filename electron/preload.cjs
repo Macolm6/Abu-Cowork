@@ -719,6 +719,7 @@ contextBridge.exposeInMainWorld('__ABU_SHELL__', {
   speech: invokeSpeech,
   subscribeSpeechEvents,
   pluginOperation: (action, request) => ipcRenderer.invoke('abu:plugin-operation', { action, request }),
+  fileOperation: (action, request) => ipcRenderer.invoke('abu:file-operation', { action, request }),
   canonicalizePathForPolicy: (path, followFinalSymlink = true) => ipcRenderer.invoke(
     FS_CANONICALIZE_FOR_POLICY_CHANNEL,
     { path, followFinalSymlink },

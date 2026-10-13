@@ -38,6 +38,8 @@ import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry
 import { checkToolApproval, type ToolApprovalDecision } from '../tools/registry';
 import { finalizeToolApproval } from '../tools/approvalFinalization';
 import { captureToolOperationOwner } from '../tools/operationAuthorization';
+import { requiresHostFileExecution } from '../tools/fileToolTargets';
+import { TOOL_NAMES } from '../tools/toolNames';
 import { withResponseFinalizer } from '../sidecar/responseFinalization';
 import type { ToolExecutionContext, Conversation, Message, MessageContent, ToolExecutionMetadata, UpstreamErrorDetails } from '../../types';
 import type { GoalState } from '../goal/goalTypes';
@@ -1425,6 +1427,9 @@ async function handleNativeInvoke(rawParams: unknown): Promise<unknown> {
     || params.cmd === 'ax_close_session'
     || params.cmd === 'computer_use_end_task';
   const assertMayStart = (): void => {
+    if (params.cmd === 'move_to_trash' && requiresHostFileExecution(TOOL_NAMES.DELETE_FILE)) {
+      throw new SidecarRequestError(-32000, 'File deletion requires host-owned tool execution');
+    }
     if (owner.signal?.aborted && !cleanupAfterAbort) {
       throw new SidecarRequestError(-32000, `Run is stopping; native.invoke denied: ${params.cmd}`);
     }
@@ -1579,6 +1584,7 @@ function contextForSession(
   const trustedContext: ToolExecutionContext = {
     ...incoming,
     operationOwner: session.options.operationOwner,
+    files: undefined,
     conversationId: session.conversationId,
     loopId: session.loopId,
     authorizationScopeId: session.options.authorizationScopeId,
@@ -1842,7 +1848,7 @@ async function handleMainLoopToolInvoke(rawParams: unknown): Promise<unknown> {
  * sidecar-local side effect did not happen, so automatic whole-run replay is
  * forbidden.
  */
-async function handleApprovalCheck(rawParams: unknown): Promise<ToolApprovalDecision> {
+async function handleApprovalCheck(rawParams: unknown): Promise<ToolApprovalDecision | { decision: 'host' }> {
   const params = rawParams as {
     runId?: unknown;
     toolName?: unknown;
@@ -1863,6 +1869,9 @@ async function handleApprovalCheck(rawParams: unknown): Promise<ToolApprovalDeci
     throw new SidecarRequestError(-32000, `Conversation no longer exists for agent-loop runId: ${params.runId}`);
   }
   assertRunToolAllowed(session, params.toolName, (params.input as Record<string, unknown>) ?? {});
+
+  // Old sidecar metadata may omit the route. Choose it before any confirmation.
+  if (requiresHostFileExecution(params.toolName)) return { decision: 'host' };
 
   const decision = await checkToolApproval(
     params.toolName,
@@ -2028,6 +2037,10 @@ async function handleSnapshotBeforeAiEdit(rawParams: unknown): Promise<null> {
   }
   if (!useChatStore.getState().conversations[session.conversationId]) {
     throw new SidecarRequestError(-32000, `Conversation no longer exists for agent-loop runId: ${runId}`);
+  }
+
+  if (requiresHostFileExecution(TOOL_NAMES.WRITE_FILE)) {
+    throw new SidecarRequestError(-32000, 'File snapshots require host-owned tool execution');
   }
 
   const rawOpts = (params.opts && typeof params.opts === 'object' ? params.opts : {}) as Record<string, unknown>;
@@ -3324,6 +3337,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     entryConversation?.workspacePath ?? null,
     {
       scopeId: turnChangesScopeId,
+      operationOwner: options.operationOwner,
       isConversationPresent: () => Boolean(useChatStore.getState().conversations[conversationId]),
     },
   ).catch((error: unknown) => {
@@ -4155,9 +4169,9 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     // task starts; only a run outside a task owns its own entry.
     if (!teamTask) clearRunBounds(ownedLoopId);
     // Every way a dispatched run ends — finished, failed, round limit, Stop,
-    // in this renderer or in the sidecar — leaves through here. Not awaited:
-    // the conversation's next turn waits for this settle inside beginTurn.
-    void endTurnChanges(ownedLoopId, {
+    // in this renderer or in the sidecar — leaves through here. Keep the run's
+    // local authorization scope alive until its file record has settled.
+    await endTurnChanges(ownedLoopId, {
       workspacePath: getConversationReader().getConversation(conversationId)?.workspacePath ?? null,
     }).catch((error: unknown) => {
       logger.warn('turn changes: settle failed', {
