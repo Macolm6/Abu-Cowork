@@ -1,13 +1,27 @@
-import { useCallback, useEffect, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import {
   onTurnChangesSaved,
   readTurnChanges,
   readTurnIndex,
+  readTurnUndoRecord,
   type TurnChanges,
   type TurnIndex,
   type TurnIndexEntry,
 } from '@/core/session/turnChanges';
+import {
+  planTurnUndo,
+  reapplyTurn,
+  undoTurn,
+  type TurnUndoDirection,
+  type TurnUndoPlan,
+  type TurnUndoResult,
+} from '@/core/session/turnUndo';
+import type { TurnUndoRecord } from '@/core/session/turnUndoRecord';
+import { checkWritePath } from '@/core/tools/pathSafety';
 import { createLogger } from '@/core/logging/logger';
+import { useChatStore } from '@/stores/chatStore';
+import { canonicalizeElectronPathForPolicy } from '@/utils/electronHost';
+import { normalizeSeparators } from '@/utils/pathUtils';
 
 const logger = createLogger('turnChanges');
 
@@ -25,6 +39,9 @@ const indexRecords = new Map<string, TurnIndex | null>();
 const indexRequests = new Map<string, number>();
 const turnRecords = new Map<string, TurnRecord>();
 const turnRequests = new Map<string, number>();
+/** Turn key → its undo record as last read; null until the first read settles, after a failed read, and for a turn without one. */
+const undoRecords = new Map<string, TurnUndoRecord | null>();
+const undoRequests = new Map<string, number>();
 const subscribers = new Set<() => void>();
 let stopListening: (() => void) | null = null;
 
@@ -81,11 +98,25 @@ function loadTurn(conversationId: string, loopId: string, keepShown: boolean): v
   );
 }
 
+/** What readers see stays in place until the new read settles. A read that fails rejects unhandled and changes nothing. */
+function loadUndoRecord(conversationId: string, loopId: string): void {
+  const key = turnKey(conversationId, loopId);
+  const request = (undoRequests.get(key) ?? 0) + 1;
+  undoRequests.set(key, request);
+  if (!undoRecords.has(key)) undoRecords.set(key, null);
+  void readTurnUndoRecord(conversationId, loopId).then((record) => {
+    if (undoRequests.get(key) !== request) return;
+    undoRecords.set(key, record);
+    notify();
+  });
+}
+
 function subscribe(onChange: () => void): () => void {
   subscribers.add(onChange);
   stopListening ??= onTurnChangesSaved((conversationId, loopId) => {
     if (indexRecords.has(conversationId)) loadIndex(conversationId);
     if (turnRecords.has(turnKey(conversationId, loopId))) loadTurn(conversationId, loopId, true);
+    if (undoRecords.has(turnKey(conversationId, loopId))) loadUndoRecord(conversationId, loopId);
   });
   return () => {
     subscribers.delete(onChange);
@@ -130,6 +161,80 @@ export function useTurnChangesDetail(conversationId: string, loopId: string, ena
   return { status: record.status, turn: record.turn, reload };
 }
 
+/**
+ * The undo record of a turn: which of its files can be restored and what the
+ * latest undo or put-back did with each. Null while it is read, when it could
+ * not be read, and for a turn without one. Read on first use and again
+ * whenever the turn is saved.
+ */
+export function useTurnUndoRecord(conversationId: string, loopId: string, enabled: boolean): TurnUndoRecord | null {
+  const key = turnKey(conversationId, loopId);
+  useEffect(() => {
+    if (enabled && !undoRecords.has(key)) loadUndoRecord(conversationId, loopId);
+  }, [enabled, key, conversationId, loopId]);
+  return useSyncExternalStore(subscribe, () => (enabled ? undoRecords.get(key) ?? null : null));
+}
+
+/**
+ * `path` as it is spelled under the conversation's workspace. A turn records
+ * the resolved path of a file; when the workspace is reached through a link,
+ * that path starts with the resolved folder, and the write check judges a path
+ * by the spelling the workspace was authorized in.
+ */
+async function inWorkspaceSpelling(workspacePath: string | null | undefined, path: string): Promise<string> {
+  if (!workspacePath) return path;
+  const folder = normalizeSeparators(workspacePath).replace(/\/+$/, '');
+  if (path.startsWith(`${folder}/`)) return path;
+  const resolved = await canonicalizeElectronPathForPolicy(folder);
+  if (resolved === null) return path;
+  const resolvedFolder = normalizeSeparators(resolved).replace(/\/+$/, '');
+  return path.startsWith(`${resolvedFolder}/`) ? `${folder}${path.slice(resolvedFolder.length)}` : path;
+}
+
+/** A file may be written when the write check allows its path as things stand; nothing is asked. */
+async function mayWrite(conversationId: string, path: string): Promise<boolean> {
+  const workspacePath = useChatStore.getState().conversations[conversationId]?.workspacePath;
+  return (await checkWritePath(await inWorkspaceSpelling(workspacePath, path))).allowed;
+}
+
+export interface TurnUndoControls {
+  /** What undoing the turn, or putting its changes back, would do right now. */
+  plan: (direction: TurnUndoDirection) => Promise<TurnUndoPlan>;
+  /** Undoes the turn or puts its changes back. Resolves to null when a run is already going. */
+  run: (direction: TurnUndoDirection) => Promise<TurnUndoResult | null>;
+  /** True while `run` is going. */
+  busy: boolean;
+}
+
+/** Undoing one turn's file changes and putting them back, for the card of that turn. */
+export function useTurnUndo(conversationId: string, loopId: string): TurnUndoControls {
+  const [busy, setBusy] = useState(false);
+  const running = useRef(false);
+  const isConversationPresent = useCallback(
+    () => Boolean(useChatStore.getState().conversations[conversationId]),
+    [conversationId],
+  );
+  // The plan and the run judge a write by the same check, so the question lists what the run will do.
+  const authorize = useCallback((path: string) => mayWrite(conversationId, path), [conversationId]);
+  const plan = useCallback(
+    (direction: TurnUndoDirection) => planTurnUndo(conversationId, loopId, direction, { authorize, isConversationPresent }),
+    [conversationId, loopId, authorize, isConversationPresent],
+  );
+  const run = useCallback(async (direction: TurnUndoDirection) => {
+    if (running.current) return null;
+    running.current = true;
+    setBusy(true);
+    try {
+      const options = { authorize, isConversationPresent };
+      return await (direction === 'undo' ? undoTurn(conversationId, loopId, options) : reapplyTurn(conversationId, loopId, options));
+    } finally {
+      running.current = false;
+      setBusy(false);
+    }
+  }, [conversationId, loopId, authorize, isConversationPresent]);
+  return { plan, run, busy };
+}
+
 /** @internal — exposed for unit tests only */
 export const __testing = {
   reset(): void {
@@ -137,6 +242,8 @@ export const __testing = {
     indexRequests.clear();
     turnRecords.clear();
     turnRequests.clear();
+    undoRecords.clear();
+    undoRequests.clear();
     stopListening?.();
     stopListening = null;
   },

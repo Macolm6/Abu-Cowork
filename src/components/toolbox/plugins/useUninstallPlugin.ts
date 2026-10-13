@@ -17,6 +17,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useI18n, format } from '@/i18n';
+import { resolveLocalizedText } from '@/core/app/appBinding';
 import { useConfirm } from '@/components/ds/confirm-context';
 import { useToastStore } from '@/stores/toastStore';
 import { usePluginStore } from '@/stores/pluginStore';
@@ -34,7 +35,7 @@ export function useUninstallPlugin(home: string, onClose: () => void): {
   /** A question of this page is waiting for its answer. */
   asking: boolean;
 } {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const tb = t.toolbox;
   const confirm = useConfirm();
   const uninstall = usePluginStore((s) => s.uninstall);
@@ -55,7 +56,7 @@ export function useUninstallPlugin(home: string, onClose: () => void): {
       agents: target?.contributed.agents.length ?? 0,
     }),
     teamCount > 0 ? format(tb.pluginsUninstallTeamsNote, { teams: teamCount }) : '',
-    usedBy.length > 0 ? format(tb.usedByApps, { names: usedBy.map((app) => app.name).join('、') }) : '',
+    usedBy.length > 0 ? format(tb.usedByApps, { names: usedBy.map((app) => resolveLocalizedText(app.name, locale)).join('、') }) : '',
   ].filter((part) => part !== '').join('');
 
   // Uninstall is not idempotent — the second call for a key finds the package

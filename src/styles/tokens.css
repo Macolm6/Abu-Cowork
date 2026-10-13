@@ -50,6 +50,8 @@
   --ds-warning-soft: rgba(255, 149, 0, 0.16);
   --ds-danger: #c4281c;
   --ds-danger-soft: rgba(255, 59, 48, 0.12);
+  /* The fill of a danger button while it is pressed; its hover fill is `danger-soft`. */
+  --ds-danger-soft-pressed: rgba(255, 59, 48, 0.17);
   --ds-info: #0a64d0;
   --ds-info-soft: rgba(0, 136, 255, 0.12);
   --ds-scrim: rgba(0, 0, 0, 0.28);
@@ -115,6 +117,7 @@
   --ds-warning-soft: rgba(255, 159, 10, 0.18);
   --ds-danger: #ff776f;
   --ds-danger-soft: rgba(255, 24, 20, 0.14);
+  --ds-danger-soft-pressed: rgba(255, 24, 20, 0.23);
   --ds-info: #4da3ff;
   --ds-info-soft: rgba(10, 132, 255, 0.14);
   --ds-scrim: rgba(0, 0, 0, 0.48);
@@ -257,6 +260,7 @@
   --color-warning-soft: var(--ds-warning-soft);
   --color-danger: var(--ds-danger);
   --color-danger-soft: var(--ds-danger-soft);
+  --color-danger-soft-pressed: var(--ds-danger-soft-pressed);
   --color-info: var(--ds-info);
   --color-info-soft: var(--ds-info-soft);
   --color-scrim: var(--ds-scrim);

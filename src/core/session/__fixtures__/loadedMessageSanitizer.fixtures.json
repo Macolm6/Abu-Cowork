@@ -13,12 +13,55 @@
       ]
     },
     {
-      "name": "a stale pending user row becomes a retryable failure",
+      "name": "a stale pending user row becomes a run the application closed on",
       "input": [
-        { "id": "u1", "role": "user", "content": "继续", "timestamp": 1, "runId": "r1", "loopId": "r1", "runState": "pending" }
+        { "id": "u1", "role": "user", "content": "继续", "timestamp": 1, "runId": "r1", "loopId": "r1", "runState": "pending", "runErrorKind": "payload_too_large" }
       ],
       "expected": [
-        { "id": "u1", "role": "user", "content": "继续", "timestamp": 1, "runId": "r1", "loopId": "r1", "runState": "failed", "runError": "<<recovered>>", "isStreaming": false }
+        { "id": "u1", "role": "user", "content": "继续", "timestamp": 1, "runId": "r1", "loopId": "r1", "runState": "interrupted", "runInterruptCause": "app_exit", "isStreaming": false }
+      ]
+    },
+    {
+      "name": "a stale running row whose loop ended on a finished answer without usage is completed",
+      "input": [
+        { "id": "u1", "role": "user", "content": "问", "timestamp": 1, "loopId": "L1", "runState": "running" },
+        { "id": "a0", "role": "assistant", "content": "", "timestamp": 2, "loopId": "L1", "isStreaming": false, "streamEnded": true, "toolCalls": [{ "id": "t1", "name": "read_file", "input": {}, "result": "ok" }] },
+        { "id": "a1", "role": "assistant", "content": "答", "timestamp": 3, "loopId": "L1", "isStreaming": false, "streamEnded": true }
+      ],
+      "expected": [
+        { "id": "u1", "role": "user", "content": "问", "timestamp": 1, "loopId": "L1", "runState": "completed", "isStreaming": false },
+        { "id": "a0", "role": "assistant", "content": "", "timestamp": 2, "loopId": "L1", "isStreaming": false, "streamEnded": true, "toolCalls": [{ "id": "t1", "name": "read_file", "input": {}, "result": "ok", "isExecuting": false }] },
+        { "id": "a1", "role": "assistant", "content": "答", "timestamp": 3, "loopId": "L1", "isStreaming": false, "streamEnded": true }
+      ]
+    },
+    {
+      "name": "a stale running row whose loop stopped after a tool step, or in a stream snapshot, is a run the application closed on",
+      "input": [
+        { "id": "u1", "role": "user", "content": "问", "timestamp": 1, "loopId": "L1", "runState": "running" },
+        { "id": "a1", "role": "assistant", "content": "先读文件", "timestamp": 2, "loopId": "L1", "isStreaming": false, "streamEnded": true, "toolCalls": [{ "id": "t1", "name": "read_file", "input": {}, "result": "ok" }] },
+        { "id": "u2", "role": "user", "content": "再问", "timestamp": 3, "loopId": "L2", "runState": "running" },
+        { "id": "a2", "role": "assistant", "content": "半句", "timestamp": 4, "loopId": "L2", "isStreaming": false }
+      ],
+      "expected": [
+        { "id": "u1", "role": "user", "content": "问", "timestamp": 1, "loopId": "L1", "runState": "interrupted", "runInterruptCause": "app_exit", "isStreaming": false },
+        { "id": "a1", "role": "assistant", "content": "先读文件", "timestamp": 2, "loopId": "L1", "isStreaming": false, "streamEnded": true, "toolCalls": [{ "id": "t1", "name": "read_file", "input": {}, "result": "ok", "isExecuting": false }] },
+        { "id": "u2", "role": "user", "content": "再问", "timestamp": 3, "loopId": "L2", "runState": "interrupted", "runInterruptCause": "app_exit", "isStreaming": false },
+        { "id": "a2", "role": "assistant", "content": "半句", "timestamp": 4, "loopId": "L2", "isStreaming": false }
+      ]
+    },
+    {
+      "name": "the interrupt cause survives only on interrupted rows and only as a known value",
+      "input": [
+        { "id": "u1", "role": "user", "content": "一", "timestamp": 1, "runState": "interrupted", "runInterruptCause": "app_exit" },
+        { "id": "u2", "role": "user", "content": "二", "timestamp": 2, "runState": "interrupted", "runInterruptCause": "somewhere_else" },
+        { "id": "u3", "role": "user", "content": "三", "timestamp": 3, "runState": "completed", "runInterruptCause": "app_exit" },
+        { "id": "u4", "role": "user", "content": "四", "timestamp": 4, "runState": "interrupted" }
+      ],
+      "expected": [
+        { "id": "u1", "role": "user", "content": "一", "timestamp": 1, "runState": "interrupted", "runInterruptCause": "app_exit", "isStreaming": false },
+        { "id": "u2", "role": "user", "content": "二", "timestamp": 2, "runState": "interrupted", "isStreaming": false },
+        { "id": "u3", "role": "user", "content": "三", "timestamp": 3, "runState": "completed", "isStreaming": false },
+        { "id": "u4", "role": "user", "content": "四", "timestamp": 4, "runState": "interrupted", "isStreaming": false }
       ]
     },
     {
@@ -40,7 +83,7 @@
         { "id": "msg-run-9", "role": "user", "content": "新的", "timestamp": 2, "runId": "run-9", "clientMessageId": "msg-run-9", "loopId": "run-9", "runState": "pending" }
       ],
       "expected": [
-        { "id": "u0", "role": "user", "content": "旧的", "timestamp": 1, "runState": "failed", "runError": "<<recovered>>", "isStreaming": false },
+        { "id": "u0", "role": "user", "content": "旧的", "timestamp": 1, "runState": "interrupted", "runInterruptCause": "app_exit", "isStreaming": false },
         { "id": "msg-run-9", "role": "user", "content": "新的", "timestamp": 2, "runId": "run-9", "clientMessageId": "msg-run-9", "loopId": "run-9", "runState": "pending", "isStreaming": false }
       ]
     },

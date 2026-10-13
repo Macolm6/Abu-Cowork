@@ -5,12 +5,16 @@ import { usePluginStore } from '@/stores/pluginStore';
 import type { Team } from '@/stores/teamStore';
 import { useVisibleTeams } from '@/core/team/useVisibleTeams';
 import { resolveRoleId } from '@/core/team/roleIdentity';
+import { localizedTeam } from '@/core/team/localizedTeam';
+import { useI18n } from '@/i18n';
 import type { SubagentDefinition } from '@/types';
 
 /** Who answers in a team-pinned conversation (design §2.3: the leader is the root agent). */
 export interface ConversationTeamLeader {
   teamId: string;
+  /** The team's name in the interface language. */
   teamName: string;
+  /** The leader's name in the interface language. */
   leaderName: string;
   /** Render with <AgentAvatar agent={leader}/> — the one avatar rule. */
   leader: SubagentDefinition;
@@ -37,11 +41,16 @@ export function teamLeaderFromTeam(team: Team | null | undefined): ConversationT
 export function useConversationTeamLeader(conversationId: string | null | undefined): ConversationTeamLeader | null {
   const teamId = useChatStore((s) => (conversationId ? s.conversations[conversationId]?.teamId : undefined));
   const teams = useVisibleTeams();
-  const team = teamId ? teams.find((entry) => entry.id === teamId) ?? null : null;
+  const { locale } = useI18n();
+  const stored = teamId ? teams.find((entry) => entry.id === teamId) ?? null : null;
+  const team = useMemo(() => (stored ? localizedTeam(stored, locale) : null), [stored, locale]);
   // The leader resolves through the agent registry, which fills in after launch.
   const agents = useDiscoveryStore((s) => s.agents);
   // …and a file-backed leader only resolves once plugin records are ready,
   // which at launch lands after discovery (see useConversationTeam).
   const pluginRecordsReady = usePluginStore((s) => s.activationReady);
-  return useMemo(() => teamLeaderFromTeam(team), [team, agents, pluginRecordsReady]); // eslint-disable-line react-hooks/exhaustive-deps
+  return useMemo(() => {
+    const found = teamLeaderFromTeam(team);
+    return found ? { ...found, leaderName: found.leader.displayNames?.[locale] ?? found.leader.name } : null;
+  }, [team, locale, agents, pluginRecordsReady]); // eslint-disable-line react-hooks/exhaustive-deps
 }

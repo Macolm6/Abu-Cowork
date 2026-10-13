@@ -814,17 +814,14 @@ const pendingLedgerStarts = new Map<string, PendingLedgerStart>();
 const LOCALE_DICTIONARIES: Readonly<Record<string, TranslationDict>> = { 'zh-CN': zhCN, 'en-US': enUS };
 
 /**
- * The two strings the loaded-message sanitiser writes into a row. Read from
+ * The string the loaded-message sanitiser writes into a row. Read from
  * the dictionaries by the start's own `locale`: `getI18n()` resolves its
  * locale from a run's context, and a start runs before any run exists.
  */
 function sanitizerTextFor(locale: string): LoadedMessageSanitizerText {
   const dictionary = LOCALE_DICTIONARIES[locale];
   if (!dictionary) throw new RpcError(-32602, `Invalid params: unsupported locale "${locale}"`);
-  return {
-    runRecoveredAfterRestart: dictionary.chat.runRecoveredAfterRestart,
-    errorEmptyBody: dictionary.chat.errorEmptyBody,
-  };
+  return { errorEmptyBody: dictionary.chat.errorEmptyBody };
 }
 
 function registerAcceptedRun(params: IdentifiedRunParams, cancelRequested: boolean): RunRegistryEntry {

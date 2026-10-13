@@ -1,6 +1,9 @@
 ---
 name: infographic
 description: 生成精美的纯 HTML+CSS 信息图 — 时间线、流程、对比分析、SWOT、金字塔、漏斗、数据卡片、组织架构等。无需外部依赖，在沙箱 iframe 中渲染。适合将结构化信息以海报级视觉效果呈现。
+display-description:
+  zh-CN: 生成纯 HTML+CSS 的信息图：时间线、流程、对比、漏斗、数据卡片
+  en-US: "Make HTML and CSS infographics: timelines, flows, comparisons, funnels, data cards"
 trigger: 用户要求生成信息图、数据海报、数据可视化展示、流程展示、对比分析图、组织架构图、漏斗图、雷达图、词云、路线图(roadmap)、SWOT 分析、四象限图、金字塔图、瀑布图、饼图统计海报，或任何需要精美排版的结构化信息展示
 do-not-trigger: 用户要求画流程图/架构图/ER图/序列图等技术图表（用 mermaid-diagram）；用户要求生成照片/插画/艺术画（用 generate_image）；用户要求做数据分析或写代码；需要交互/动画/按钮操作的组件（用 html-widget）
 user-invocable: true

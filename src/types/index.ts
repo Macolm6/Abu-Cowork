@@ -432,6 +432,13 @@ export interface Message {
   content: string | MessageContent[];
   timestamp: number;
   isStreaming?: boolean;
+  /**
+   * Set when the reply's stream ended and the reply was finished
+   * (`finishStreaming`). A ledger row written while the reply was still
+   * streaming, such as a periodic stream snapshot, does not carry it; on disk
+   * `isStreaming` is false either way.
+   */
+  streamEnded?: true;
   /** Persisted terminal reason for an assistant turn that the user stopped. */
   stopReason?: 'user';
   /**
@@ -451,6 +458,8 @@ export interface Message {
   runErrorDetails?: UpstreamErrorDetails;
   /** Why a run failed before the sidecar accepted it (#549); drives the failed-row UI. */
   runErrorKind?: 'payload_too_large' | 'sidecar_unavailable' | 'dispatch_failed';
+  /** Set on an interrupted run that the application closed on; a run the user stopped carries none. */
+  runInterruptCause?: 'app_exit';
   toolCalls?: ToolCall[];
   /** Set on assistant messages created after present_files shipped; file cards read declarations instead of inferring from tool calls. */
   fileCards?: 'declared';
@@ -966,7 +975,11 @@ export type SkillUXCategory =
 
 export interface SkillMetadata {
   name: string;
+  /** What the model reads to decide when to use the skill. */
   description: string;
+  /** Per-locale description for the interface (`display-description` in SKILL.md).
+   *  The interface shows `displayDescription[locale] ?? description`; the model never sees it. */
+  displayDescription?: Partial<Record<AgentLocale, string>>;
   source?: SkillSource;       // Where this skill was discovered (set by loader)
   trigger?: string;           // When to auto-invoke, e.g. "用户要求深度调研某个主题"
   doNotTrigger?: string;      // When NOT to auto-invoke, e.g. "用户只是随口问个简单问题"
@@ -1003,7 +1016,7 @@ export interface Skill extends SkillMetadata {
 
 /** Locale code used for i18n overrides. Mirrors SupportedLocale from i18n/types.ts
  *  — declared inline here to avoid pulling the i18n module into core agent code. */
-type AgentLocale = 'zh-CN' | 'en-US';
+export type AgentLocale = 'zh-CN' | 'en-US';
 
 /** Metadata attached to definitions supplied by a runtime extension. The host
  * keeps this contract generic; enterprise catalog transport and policy stay in

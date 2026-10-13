@@ -1848,7 +1848,7 @@ describe('agentLoopHost', () => {
       expect(handleAgentGetState({ runId: 'ledger-ok' }).state).toBe('accepted');
       const seen = await messagesSeenByTheLoop(params) as { id: string; runState?: string }[];
       expect(seen.map((m) => [m.id, m.runState ?? null])).toEqual([
-        ['u0', 'failed'],
+        ['u0', 'interrupted'],
         ['a0', null],
         ['msg-ledger-ok', 'pending'],
       ]);
@@ -2009,7 +2009,6 @@ describe('agentLoopHost', () => {
             ? testCase.expected
             : [...testCase.expected, { ...currentRow(runId), isStreaming: false }];
           expect(await messagesSeenByTheLoop(params)).toEqual(expectedForText(expected, {
-            runRecoveredAfterRestart: enUS.chat.runRecoveredAfterRestart,
             errorEmptyBody: enUS.chat.errorEmptyBody,
           }));
         });

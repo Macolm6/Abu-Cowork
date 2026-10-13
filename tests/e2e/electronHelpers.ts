@@ -424,8 +424,12 @@ export async function closeAbuElectron(app: ElectronApplication): Promise<void> 
   // browser views, PTYs, helpers, and sidecars. ElectronApplication.close()
   // can otherwise close the BrowserWindow first; Abu's preventable
   // close-request handler may intentionally keep that window alive.
+  // A spec that closes the app has nobody to answer the question a quit asks
+  // while a conversation is running. The quit is announced the way the OS
+  // announces the end of a session, which asks nothing and still saves.
   try {
-    await app.evaluate(({ app: electronApp }) => {
+    await app.evaluate(({ app: electronApp, powerMonitor }) => {
+      powerMonitor.emit('shutdown');
       electronApp.quit();
     });
   } catch {

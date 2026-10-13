@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 
-import { act, cleanup, fireEvent, render as renderBare, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as renderBare, screen, waitFor, within } from '@testing-library/react';
 import { useState, type ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { Button } from '@/components/ds/button';
@@ -169,6 +169,66 @@ describe('MessageBubble user run status', () => {
     expect(screen.getByText('Connection recovery failed')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
     expect(screen.queryByText(message.runError as string)).not.toBeInTheDocument();
+  });
+
+  describe('a turn the application closed on', () => {
+    const closedMidway: Message = { ...baseMessage, runState: 'interrupted', runInterruptCause: 'app_exit' };
+
+    it('says so in a status message with a send-again button, and shows no failure', () => {
+      setConversation(closedMidway, 'idle');
+
+      render(<MessageBubble message={closedMidway} />);
+
+      const notice = screen.getByRole('status');
+      expect(notice).toHaveTextContent('The app was closed before this turn finished.');
+      expect(within(notice).getByRole('button', { name: 'Send again' })).toBeInTheDocument();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      expect(screen.queryByText('Send failed')).not.toBeInTheDocument();
+    });
+
+    it('offers no button while the conversation is running', () => {
+      setConversation(closedMidway, 'running');
+
+      render(<MessageBubble message={closedMidway} />);
+
+      expect(screen.getByRole('status')).toHaveTextContent('The app was closed before this turn finished.');
+      expect(screen.queryByRole('button', { name: 'Send again' })).not.toBeInTheDocument();
+    });
+
+    it('sends the message again as a user-initiated send', async () => {
+      setConversation(closedMidway, 'idle');
+      useSettingsStore.setState((state) => ({
+        providers: state.providers.map((provider) =>
+          provider.id === state.activeModel.providerId
+            ? {
+                ...provider,
+                enabled: true,
+                apiKey: 'test-key',
+                models: [{ id: state.activeModel.modelId, label: state.activeModel.modelId }],
+              }
+            : provider,
+        ),
+      }));
+
+      render(<MessageBubble message={closedMidway} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Send again' }));
+      await waitFor(() => expect(runAgentLoopDispatched).toHaveBeenCalled());
+
+      expect(runAgentLoopDispatched).toHaveBeenCalledWith(
+        'conversation-1',
+        baseMessage.content,
+        expect.objectContaining({ initiatedBy: 'user' }),
+      );
+    });
+
+    it('is not shown for a turn the user stopped', () => {
+      const stopped: Message = { ...baseMessage, runState: 'interrupted' };
+      setConversation(stopped, 'idle');
+
+      render(<MessageBubble message={stopped} />);
+
+      expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    });
   });
 
   it('#549: Retry dispatches as a user-initiated send so a stopped sidecar restarts', async () => {

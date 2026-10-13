@@ -1,6 +1,7 @@
 import { Button } from '@/components/ds/button';
 import { InlineMessage } from '@/components/ds/inline-message';
 import { useI18n } from '@/i18n';
+import { resolveLocalizedText } from '@/core/app/appBinding';
 import type { ConversationAppBinding } from '@/types/app';
 import { useAppStore } from '@/stores/appStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
@@ -16,7 +17,7 @@ import { useEnterpriseStore } from '@/stores/enterpriseStore';
  *   - an app the user made: removed, and nothing can add it back.
  */
 export default function ConversationAppNotice({ binding }: { binding: ConversationAppBinding }) {
-  const { t, format } = useI18n();
+  const { t, format, locale } = useI18n();
   const present = useAppStore((s) => s.addedApps.some((app) => app.appId === binding.appId)
     || Object.values(s.managedApps).some((apps) => apps.some((app) => app.appId === binding.appId)));
   const offline = useEnterpriseStore((s) => s.mode.kind === 'offline');
@@ -25,7 +26,7 @@ export default function ConversationAppNotice({ binding }: { binding: Conversati
   const origin = binding.version === 2 ? binding.origin : 'market';
   const message = origin === 'enterprise'
     ? (offline ? t.appHome.offlineNotice : t.appHome.disabledNotice)
-    : format(origin === 'created' ? t.appHome.removedCreatedNotice : t.appHome.removedNotice, { name: binding.appName });
+    : format(origin === 'created' ? t.appHome.removedCreatedNotice : t.appHome.removedNotice, { name: resolveLocalizedText(binding.appName, locale) });
   const canAddBack = origin === 'market' || origin === 'folder';
   return (
     <div data-testid="conversation-app-removed" data-origin={origin} className="mb-2">

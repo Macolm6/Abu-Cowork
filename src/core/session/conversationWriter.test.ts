@@ -427,6 +427,9 @@ describe('createConversationWriter', () => {
       await writer.snapshotMessageRevision('c1', msg('m1', 'partial', { isStreaming: true }));
       fs.files.set(`${ROOT}/c1/changes/index.json`, '{}');
       fs.files.set(`${ROOT}/c1/changes/loop-1.json`, '{}');
+      fs.files.set(`${ROOT}/c1/changes/loop-1/undo.json`, '{}');
+      fs.files.set(`${ROOT}/c1/changes/loop-1/before/0123456789abcdef`, 'before');
+      fs.files.set(`${ROOT}/c1/changes/loop-1/after/0123456789abcdef`, 'after');
       await writer.deleteConversationFiles('c1');
       expect(writer.hasArmedStreamSnapshot('c1')).toBe(false);
       expect([...fs.files.keys()].some((p) => p.startsWith(`${ROOT}/c1/`))).toBe(false);
