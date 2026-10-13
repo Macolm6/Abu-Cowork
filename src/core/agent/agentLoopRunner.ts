@@ -36,7 +36,7 @@ import { taskIdFor, useTeamConfirmationStore } from '@/stores/teamConfirmationSt
  */
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
 import { checkToolApproval, type ToolApprovalDecision } from '../tools/registry';
-import type { ToolExecutionContext, Conversation, Message, MessageContent, ToolExecutionMetadata, UpstreamErrorDetails } from '../../types';
+import type { ToolExecutionContext, Conversation, ConversationStatus, Message, MessageContent, ToolExecutionMetadata, UpstreamErrorDetails } from '../../types';
 import type { GoalState } from '../goal/goalTypes';
 import type { ComputerUseModelTier } from '../llm/modelCapabilities';
 import {
@@ -54,6 +54,7 @@ import { CAPABILITY_AGENT_START_HISTORY_FROM_LEDGER } from '../sidecar/sidecarPr
 import { takeLedgerHistoryPoint } from '../session/ledgerHistoryPoint';
 import { parseHistoryUnavailableError, type HistoryUnavailableData } from '../ipc/historyUnavailable';
 import { applyDeltaFrames, type PortFrame } from './frameApplier';
+import { ACTIVE_RUN_STATES } from '../session/loadedMessageSanitizer';
 import { getExecutionPort } from './ports/executionPort';
 import { getChatDelta } from './ports/chatDelta';
 import { getConversationReader } from './ports/conversationReader';
@@ -425,6 +426,24 @@ export interface RunSession {
    * race each other and the final response can resolve before disk frames.
    */
   frameApplyTail?: Promise<void>;
+  /**
+   * The status the sidecar's loop gave the conversation when it ended, held
+   * back until this run's terminal state is in the ledger. The conversation
+   * stays `running` in between, so a composer that shows Send means the turn
+   * is saved: a quit at that moment loses nothing. Released by the
+   * dispatcher's teardown; a failed or stopped run sets its own status and
+   * drops this one.
+   */
+  heldFinalStatus?: ConversationStatus;
+  /** Armed by a Stop pressed while `heldFinalStatus` is held; see `onShellAbort`. */
+  heldStopTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * The application is leaving and this run's user row says so
+   * (`closeRunningRunsForExit`). An active state reported after that no
+   * longer reaches the row; a terminal state still does, so a run that ends
+   * while the last writes go out is recorded as it ended.
+   */
+  closedOnExit?: boolean;
   /** Dedicated cancellation for the long-lived `agent.run` transport. The
    * UI AbortController must not cancel it immediately: we first wait for the
    * sidecar's ordered abort ACK, then fence frames and end the transport. */
@@ -686,6 +705,38 @@ export function summarizeFramesForLog(
   });
 }
 
+const CONVERSATION_STATUSES: ReadonlySet<unknown> = new Set<ConversationStatus>([
+  'idle', 'running', 'completed', 'error',
+]);
+
+/**
+ * Take the frame that ends the run's `running` status out of a batch and keep
+ * its status on the session (`RunSession.heldFinalStatus`). A later `running`
+ * frame of the same run means the loop went on: it is applied and the held
+ * status dropped.
+ */
+function holdFinalStatusFrames(session: RunSession, frames: PortFrame[]): PortFrame[] {
+  return frames.filter((frame) => {
+    if (frame.p !== 'chat' || frame.m !== 'setConversationStatus') return true;
+    if (frame.a[0] !== session.conversationId || !CONVERSATION_STATUSES.has(frame.a[1])) return true;
+    const status = frame.a[1] as ConversationStatus;
+    if (status === 'running') {
+      session.heldFinalStatus = undefined;
+      return true;
+    }
+    session.heldFinalStatus = status;
+    return false;
+  });
+}
+
+/** Give the conversation the status its loop ended on, once, after the run's terminal state is saved. */
+function releaseHeldFinalStatus(session: RunSession): void {
+  const status = session.heldFinalStatus;
+  if (status === undefined) return;
+  session.heldFinalStatus = undefined;
+  getChatDelta().setConversationStatus(session.conversationId, status);
+}
+
 /** `agent.delta` (NOTIFICATION) → {runId, frames} → applyDeltaFrames. Unknown runId → silent drop (3a discipline, matches handleSubagentAbort's unknown-runId no-op). */
 function handleAgentDelta(rawParams: unknown): void {
   const params = rawParams as { runId?: unknown; frames?: unknown } | null;
@@ -720,13 +771,15 @@ function handleAgentDelta(rawParams: unknown): void {
       });
     }
   }
+  const framesToApply = holdFinalStatusFrames(session, frames);
+  if (framesToApply.length === 0) return;
   const previous = session.frameApplyTail ?? Promise.resolve();
   // P3: degrade, don't drop. A batch that trips the raw-media guard used to
   // be dropped wholesale, which stranded the settle frames it carried (a
   // dispatch stuck at "executing" forever). Now each offending frame is
   // redacted in place and its tool call settled as a transport failure,
   // while every clean frame in the same batch applies untouched.
-  const { frames: safeFrames, degradedIndexes } = degradeDeltaFramesForMediaFailure(frames);
+  const { frames: safeFrames, degradedIndexes } = degradeDeltaFramesForMediaFailure(framesToApply);
   if (degradedIndexes.length > 0) {
     logger.warn('agent.delta degraded unsafe media payload', {
       runId: params.runId,
@@ -827,6 +880,7 @@ function updateSessionMessageState(
   errorDetails?: UpstreamErrorDetails,
 ): void {
   if (!session.userMessageId) return;
+  if (session.closedOnExit && ACTIVE_RUN_STATES.has(state)) return;
   useChatStore.getState().updateUserMessageRun(
     session.conversationId,
     session.userMessageId,
@@ -836,6 +890,24 @@ function updateSessionMessageState(
       ...(errorDetails ? { errorDetails } : {}),
     },
   );
+}
+
+/**
+ * The application is about to leave: every run that has not reached its
+ * terminal gets `interrupted` with the cause `app_exit` on its user row, so
+ * the next start shows what happened to it. Frames keep applying until the
+ * process is gone.
+ */
+export function closeRunningRunsForExit(): void {
+  for (const session of sessions.values()) {
+    if (session.terminal || session.closedOnExit || !session.userMessageId) continue;
+    session.closedOnExit = true;
+    useChatStore.getState().updateUserMessageRun(
+      session.conversationId,
+      session.userMessageId,
+      { state: 'interrupted', interruptCause: 'app_exit' },
+    );
+  }
 }
 
 async function finalizePreDispatchInterruptedRun(
@@ -1008,6 +1080,7 @@ async function finalizeFailedRun(
 
   session.failureFinalizationPromise = (async () => {
     session.dropFrames = true;
+    session.heldFinalStatus = undefined;
     updateSessionMessageState(session, state, displayMessage, errorDetails);
     await (session.frameApplyTail ?? Promise.resolve());
     try {
@@ -1049,6 +1122,7 @@ async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog
   session.abortFinalizationPromise = (async () => {
     try {
       session.dropFrames = true;
+      session.heldFinalStatus = undefined;
       updateSessionMessageState(session, 'interrupted');
       if (session.abortWatchdog) {
         clearTimeout(session.abortWatchdog);
@@ -3643,6 +3717,17 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     // A click racing with renderer cleanup must not rewrite that first-wins
     // outcome from completed to aborted.
     if (session.terminal) return;
+    // The loop has given the conversation its final status and Stop is on
+    // screen only until the turn is saved: the terminal is due at once, and a
+    // click has no run left to stop. A sidecar that still has not sent it
+    // after the abort grace period is stopped like any other.
+    if (session.heldFinalStatus !== undefined) {
+      session.heldStopTimer = setTimeout(() => {
+        session.heldStopTimer = undefined;
+        if (!session.terminal) void requestSidecarRunAbort(session);
+      }, AGENT_ABORT_FORCE_FINALIZE_MS);
+      return;
+    }
     void requestSidecarRunAbort(session);
   };
   session.onShellAbort = onShellAbort;
@@ -4058,6 +4143,10 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         : {}),
     };
   } finally {
+    // Every return above has awaited the ledger write of the run's terminal
+    // state; only now does the conversation leave `running`.
+    releaseHeldFinalStatus(session);
+    if (session.heldStopTimer) clearTimeout(session.heldStopTimer);
     if (session.firstFrameStallTimer) clearTimeout(session.firstFrameStallTimer);
     // From here the dispatcher, not the UI, owns teardown. Remove the Stop
     // forwarder before aborting a scoped controller for normal resource
