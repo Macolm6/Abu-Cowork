@@ -3,9 +3,12 @@
   "version": "1.0.0",
   "minAbuVersion": "0.51.0",
   "interface": {
-    "displayName": "财务对账",
-    "shortDescription": "对流水、查差异、出报表",
-    "longDescription": "给财务同事准备的应用：对账、分析和报表三组场景，由随阿布附带的财务对账专家团负责——财务助理带队，数据分析师算数，办公文档专家出报表。",
+    "displayName": { "zh-CN": "财务对账", "en-US": "Finance Reconciliation" },
+    "shortDescription": { "zh-CN": "对流水、查差异、出报表", "en-US": "Match statements, find differences, produce reports" },
+    "longDescription": {
+      "zh-CN": "给财务同事准备的应用：对账、分析和报表三组场景，由随阿布附带的财务对账专家团负责——财务助理带队，数据分析师算数，办公文档专家出报表。",
+      "en-US": "An app for finance staff: three groups of scenes — reconciliation, analysis and reports — handled by the Finance Reconciliation Team that ships with Abu. The finance assistant leads, the data analyst does the numbers, and the document expert produces the reports."
+    },
     "developerName": "Abu",
     "category": "finance",
     "brandColor": "#0C447C",

@@ -70,7 +70,7 @@ export default function AppDraftCard({ conversationId, toolCallId }: { conversat
     const app = apps.find((item) => item.appId === addedAppId);
     return (
       <div data-testid="app-draft-card" className={cn(CARD, 'text-ui text-label-secondary')}>
-        {format(t.appDraft.added, { name: app?.name ?? addedAppId })}
+        {format(t.appDraft.added, { name: app ? resolveText(app.name) : addedAppId })}
       </div>
     );
   }
@@ -116,10 +116,10 @@ export default function AppDraftCard({ conversationId, toolCallId }: { conversat
     <div data-testid="app-draft-card" className={CARD}>
       <div className="text-caption font-medium text-label-tertiary">{t.appDraft.title}</div>
       <div className="mt-2 flex items-start gap-3">
-        <AppLogo name={preview.app.name} size="md" />
+        <AppLogo name={resolveText(preview.app.name)} size="md" />
         <div className="min-w-0 flex-1">
-          <h4 className="truncate text-ui font-medium text-label">{preview.app.name}</h4>
-          <p className="text-ui-sm text-label-secondary">{preview.app.description}</p>
+          <h4 className="truncate text-ui font-medium text-label">{resolveText(preview.app.name)}</h4>
+          <p className="text-ui-sm text-label-secondary">{resolveText(preview.app.description)}</p>
         </div>
       </div>
 

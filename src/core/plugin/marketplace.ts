@@ -11,7 +11,9 @@
  * round-trip through this parser untouched.
  */
 
+import type { LocalizedText } from '../../types/app';
 import { validateMinAbuVersion } from '../../../electron/shared/pluginSpec.mjs';
+import { parseLocalizedText } from '../../../electron/shared/specFields.mjs';
 
 export type PluginSource =
   | { kind: 'relative'; path: string }
@@ -45,7 +47,7 @@ export interface AppMarketEntry {
   name: string;
   source: PluginSource;
   version?: string;
-  description?: string;
+  description?: LocalizedText;
   minAbuVersion?: string;
 }
 
@@ -204,17 +206,23 @@ function parseAppEntry(raw: unknown, index: number): AppMarketEntry {
     const reason = err instanceof Error ? err.message : String(err);
     throw new MarketplaceParseError(`app entry "${raw.name}" has an invalid source: ${reason}`, `${field}.source`);
   }
-  const optional = (key: 'version' | 'description' | 'minAbuVersion') => {
+  const optional = (key: 'version' | 'minAbuVersion') => {
     const value = raw[key];
     if (value === undefined) return undefined;
     if (typeof value !== 'string' || value.length === 0) throw new MarketplaceParseError(`${field}.${key} must be a non-empty string`, `${field}.${key}`);
     return value;
   };
+  let description: LocalizedText | undefined;
+  try {
+    description = parseLocalizedText(raw.description, `${field}.description`);
+  } catch (err) {
+    throw new MarketplaceParseError(err instanceof Error ? err.message : String(err), `${field}.description`);
+  }
   const entry: AppMarketEntry = {
     name: raw.name,
     source,
     version: optional('version'),
-    description: optional('description'),
+    description,
     minAbuVersion: optional('minAbuVersion'),
   };
   if (source.kind !== 'relative') {

@@ -240,6 +240,39 @@ describe('parseMarketplace', () => {
   );
   const hasRealMarketplace = existsSync(realMarketplacePath);
 
+  describe('app entries', () => {
+    const market = (app: Record<string, unknown>) => ({ name: 'acme', apps: [{ name: 'shop-ops', source: './apps/shop-ops', ...app }] });
+
+    it('takes a description as one string or as one text per locale', () => {
+      expect(parseMarketplace(market({ description: '店铺运营' })).apps[0].description).toBe('店铺运营');
+      expect(parseMarketplace(market({ description: { 'zh-CN': '店铺运营', 'en-US': 'Shop operations' } })).apps[0].description)
+        .toEqual({ 'zh-CN': '店铺运营', 'en-US': 'Shop operations' });
+      expect(parseMarketplace(market({})).apps[0].description).toBeUndefined();
+    });
+
+    it('refuses a description of any other form, naming the entry field', () => {
+      const failingField = (app: Record<string, unknown>) => {
+        try {
+          parseMarketplace(market(app));
+        } catch (error) {
+          expect(error).toBeInstanceOf(MarketplaceParseError);
+          return (error as MarketplaceParseError).field;
+        }
+        throw new Error('the entry was accepted');
+      };
+      expect(failingField({ description: '' })).toBe('apps[0].description');
+      expect(failingField({ description: 7 })).toBe('apps[0].description');
+      expect(failingField({ description: {} })).toBe('apps[0].description');
+      expect(failingField({ description: { 'fr-FR': 'Boutique' } })).toBe('apps[0].description');
+    });
+
+    it('still asks a remote entry for its description', () => {
+      const remote = { source: { source: 'url', url: 'https://example.com/shop-ops.git', sha: 'a'.repeat(40) }, version: '1.0.0', minAbuVersion: '0.51.0' };
+      expect(() => parseMarketplace(market(remote))).toThrow(/"description" is required/);
+      expect(parseMarketplace(market({ ...remote, description: { 'en-US': 'Shop operations' } })).apps[0].description).toEqual({ 'en-US': 'Shop operations' });
+    });
+  });
+
   (hasRealMarketplace ? it : it.skip)(
     'parses the real claude-plugins-official marketplace.json end to end',
     () => {

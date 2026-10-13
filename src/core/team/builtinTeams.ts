@@ -27,6 +27,15 @@ export const BUILTIN_TEAMS: readonly Team[] = Object.freeze([
     expertise: ['需求澄清与任务拆解', '前后端实现与页面设计', '测试验收与缺陷报告'],
     samplePrompts: ['帮我做一个团队周报收集的小工具', '给这个需求出方案并实现一个可演示的版本', '把这个页面的注册流程重做并测一遍', '给现有系统加一个导出 Excel 的功能'],
     leaderNote: '先用三句话复述需求并列出验收标准，再拆任务；实现完成后必须派测试工程师验收，汇报时附验收结果。',
+    i18n: {
+      'en-US': {
+        name: 'Software Development Team',
+        description: 'From requirements to working software: the product manager scopes it, the engineer and designer build it, QA signs off',
+        intro: "Tell me what you want to build. I'll clarify the requirements and split them into tasks, hand them to the engineer and the designer, have QA check the result, and give you working software with the acceptance record.",
+        expertise: ['Requirements and task planning', 'Front-end, back-end and page design', 'Acceptance testing and bug reports'],
+        samplePrompts: ["Build a small tool that collects my team's weekly reports", 'Propose a design for this requirement and build a demo', 'Rebuild the sign-up flow on this page and test it', 'Add an Excel export to the existing system'],
+      },
+    },
     createdAt: 0,
   },
   {
@@ -40,6 +49,15 @@ export const BUILTIN_TEAMS: readonly Team[] = Object.freeze([
     expertise: ['数据清洗与指标口径', '外部数据与行业对比', 'Excel / Word 交付件'],
     samplePrompts: ['分析这份销售数据，找出下滑的原因', '把我们的数据和行业平均水平对比一下', '做一份季度经营分析报告', '给这次活动的数据做一份复盘报告'],
     leaderNote: '先写清楚要回答的问题和指标口径再动手；涉及外部数据必须由行业调研专家提供来源；交付件统一交给办公文档专家整理。',
+    i18n: {
+      'en-US': {
+        name: 'Data Analysis Team',
+        description: 'From data to conclusions: the analyst leads, the researcher adds outside facts, the document expert delivers the files',
+        intro: "Give me your data files or your question. I'll confirm the business question first, send the researcher for outside data when needed, and have the document expert turn the analysis into a spreadsheet or report.",
+        expertise: ['Data cleaning and metric definitions', 'Outside data and industry comparison', 'Excel and Word deliverables'],
+        samplePrompts: ['Analyze this sales data and find why it dropped', 'Compare our numbers with the industry average', 'Write a quarterly business analysis report', "Write a review of this campaign's data"],
+      },
+    },
     createdAt: 0,
   },
   {
@@ -53,6 +71,15 @@ export const BUILTIN_TEAMS: readonly Team[] = Object.freeze([
     expertise: ['选题与标题', '素材调研与事实核对', '配图与图文页面'],
     samplePrompts: ['围绕这个产品写一篇公众号推文', '把这份行业报告改写成三篇短文', '给这篇文章配一张封面图和三张信息图', '给这次产品发布写一组宣传文案并配好图'],
     leaderNote: '动笔前先给出选题、目标读者和框架让用户确认；所有数据和引述必须由行业调研专家核过来源；配图需求交给网页设计师。',
+    i18n: {
+      'en-US': {
+        name: 'Content Creation Team',
+        description: 'From topic to finished piece: the editor picks the topic and writes, the researcher finds material, the designer makes the visuals and pages',
+        intro: "Tell me what to write and who it is for. I'll settle the topic and outline, send the researcher for material, and have the designer add visuals once the draft is done, so what you get is ready to publish.",
+        expertise: ['Topics and headlines', 'Research and fact-checking', 'Visuals and illustrated pages'],
+        samplePrompts: ['Write an article about this product', 'Turn this industry report into three short posts', 'Make a cover and three infographics for this article', 'Write a set of launch copy with visuals for this release'],
+      },
+    },
     createdAt: 0,
   },
   {
@@ -66,6 +93,15 @@ export const BUILTIN_TEAMS: readonly Team[] = Object.freeze([
     expertise: ['汇报结构与措辞', '数据图表', '行业背景与对标'],
     samplePrompts: ['帮我做本季度的经营汇报 PPT', '把这些数据整理成一份月报', '给领导写一份项目进展周报', '把这份年度总结做成一套汇报 PPT'],
     leaderNote: '先问清楚汇报对象、时长和要拿到的决定；数据图表由数据分析师出，行业对标由行业调研专家出；统稿时保持一套格式。',
+    i18n: {
+      'en-US': {
+        name: 'Reporting Team',
+        description: 'Weekly, monthly and quarterly reports in one place: the document expert edits, the analyst provides the numbers, the researcher adds background',
+        intro: "Give me your material and tell me who the report is for. I'll set the structure, hand the numbers to the analyst and the industry background to the researcher, then pull it together as a Word or PowerPoint file.",
+        expertise: ['Report structure and wording', 'Charts', 'Industry background and benchmarks'],
+        samplePrompts: ["Make this quarter's business review deck", 'Turn this data into a monthly report', 'Write a weekly project update for my manager', 'Turn this annual summary into a presentation'],
+      },
+    },
     createdAt: 0,
   },
   {
@@ -79,6 +115,15 @@ export const BUILTIN_TEAMS: readonly Team[] = Object.freeze([
     expertise: ['费用核对与逐笔对账', '异常与趋势分析', '报表成稿与说明'],
     samplePrompts: ['把这个季度的费用对一下账，差异列清楚', '这堆报销单整理成表，超标的标出来', '分析下今年差旅费为什么涨了', '做一份月度费用报表，附一段说明'],
     leaderNote: '先说清对账口径和期间再逐笔对；差异必须列明金额与可能原因，拿不准的标出来问，不要自行调账把总数凑平。',
+    i18n: {
+      'en-US': {
+        name: 'Finance Reconciliation Team',
+        description: 'From receipts to ledger: the finance assistant reconciles, the analyst checks anomalies, the document expert produces the reports',
+        intro: "Give me the invoices, statements or expense sheets. I'll reconcile them and pull out the differences, have the analyst check whether the anomalies are one-offs or a pattern, and have the document expert turn it into a report you can submit, with a short note.",
+        expertise: ['Expense checks and line-by-line reconciliation', 'Anomaly and trend analysis', 'Finished reports with notes'],
+        samplePrompts: ["Reconcile this quarter's expenses and list the differences", 'Put these expense claims into a table and flag the ones over the limit', 'Find out why travel costs rose this year', 'Make a monthly expense report with a short note'],
+      },
+    },
     createdAt: 0,
   },
   {
@@ -92,6 +137,15 @@ export const BUILTIN_TEAMS: readonly Team[] = Object.freeze([
     expertise: ['岗位画像与 JD 撰写', '薪资行情与候选人背景调研', '面试题与评估表'],
     samplePrompts: ['帮我写一份高级前端的 JD 并定好面试题', '查一下这个岗位在北京的薪资行情', '把这几份简历按岗位要求排个序', '准备一套后端岗的面试评估表'],
     leaderNote: '先把岗位要求、预算和时间线问清楚再动手；薪资行情必须让调研专家去取证并附来源，不要凭印象报数。',
+    i18n: {
+      'en-US': {
+        name: 'Recruiting Team',
+        description: 'From role to offer: the recruiter sets the bar, the researcher checks the market, the document expert prepares the materials',
+        intro: "Tell me who you are hiring. I'll settle the role requirements and the candidate profile, send the researcher to check the market for this role, and have the document expert prepare the JD, interview questions and scorecards.",
+        expertise: ['Role profiles and JD writing', 'Salary market and candidate background research', 'Interview questions and scorecards'],
+        samplePrompts: ['Write a senior front-end JD with interview questions', 'Check the salary market for this role in Beijing', 'Rank these resumes against the role', 'Prepare interview scorecards for a back-end role'],
+      },
+    },
     createdAt: 0,
   },
 ] satisfies Team[]);
