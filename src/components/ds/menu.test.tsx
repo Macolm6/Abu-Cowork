@@ -181,6 +181,19 @@ describe('Menu', () => {
     expect(item.querySelector('svg')).toHaveClass('text-danger');
   });
 
+  // The highlighted row of a destructive item paints the danger tint, which keeps its red words at 4.5:1 on a menu.
+  it('highlights a destructive item on the danger tint and every other item on the neutral fill', async () => {
+    const user = userEvent.setup();
+    render(<TaskMenu onRename={() => undefined} />, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    const destructive = screen.getByRole('menuitem', { name: /Delete/ });
+    expect(destructive).toHaveClass('data-[highlighted]:bg-danger-soft');
+    expect(destructive).not.toHaveClass('data-[highlighted]:bg-fill-selected');
+    const plain = screen.getAllByRole('menuitem').find((item) => item !== destructive)!;
+    expect(plain).toHaveClass('data-[highlighted]:bg-fill-selected');
+    expect(plain).not.toHaveClass('data-[highlighted]:bg-danger-soft');
+  });
+
   it('closes when another menu or popover opens', async () => {
     const user = userEvent.setup();
     const { rerender } = render(<MenuAndPopover popoverOpen={false} />, { wrapper: DesignSystemProvider });
