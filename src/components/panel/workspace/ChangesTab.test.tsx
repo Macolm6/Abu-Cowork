@@ -13,13 +13,18 @@ import type { FileChangeHunk } from '@/types/fileChange';
 import ChangesTab, { TurnFileComparison } from './ChangesTab';
 
 const mocks = vi.hoisted(() => ({
+  readTurnIndex: vi.fn(),
   readTurnChanges: vi.fn(),
+  listeners: new Set<(conversationId: string, loopId: string) => void>(),
 }));
 
 vi.mock('@/core/session/turnChanges', () => ({
-  readTurnIndex: vi.fn(async () => ({})),
+  readTurnIndex: (...args: unknown[]) => mocks.readTurnIndex(...args),
   readTurnChanges: (...args: unknown[]) => mocks.readTurnChanges(...args),
-  onTurnChangesSaved: () => () => {},
+  onTurnChangesSaved: (listener: (conversationId: string, loopId: string) => void) => {
+    mocks.listeners.add(listener);
+    return () => { mocks.listeners.delete(listener); };
+  },
 }));
 
 const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
@@ -76,6 +81,9 @@ describe('ChangesTab', () => {
   beforeEach(() => {
     initLanguage('zh-CN');
     turnChangesCache.reset();
+    mocks.listeners.clear();
+    mocks.readTurnIndex.mockReset();
+    mocks.readTurnIndex.mockResolvedValue({});
     mocks.readTurnChanges.mockReset();
     mocks.readTurnChanges.mockResolvedValue(turnOf(FILES));
     usePreviewStore.setState({
@@ -279,6 +287,45 @@ describe('ChangesTab', () => {
     expect(screen.getByRole('list')).toBeInTheDocument();
   });
 
+  describe('a turn that is undone', () => {
+    const ENTRY = { total: 3, added: 2, deleted: 1, firstFile: 'notes.md', restorable: 2 };
+    const saved = (): void => {
+      for (const listener of [...mocks.listeners]) listener(CONVERSATION_ID, LOOP_ID);
+    };
+
+    it('says on top that the changes of the turn are undone, above the comparison of that time', async () => {
+      mocks.readTurnIndex.mockResolvedValue({ [LOOP_ID]: { ...ENTRY, undone: true } });
+      openTab(1);
+      render(<Harness />);
+
+      const line = await screen.findByText('这一轮的改动已经撤销');
+      expect(line.compareDocumentPosition(screen.getByRole('list')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(diff().textContent).toContain('old plan');
+      expect(diff().textContent).toContain('new plan');
+    });
+
+    it('says nothing of the kind for a turn that is not undone', async () => {
+      mocks.readTurnIndex.mockResolvedValue({ [LOOP_ID]: ENTRY });
+      openTab(1);
+      render(<Harness />);
+      await screen.findByRole('list');
+      await act(async () => {});
+      expect(screen.queryByText('这一轮的改动已经撤销')).toBeNull();
+    });
+
+    it('takes the line away once the changes are put back', async () => {
+      mocks.readTurnIndex.mockResolvedValue({ [LOOP_ID]: { ...ENTRY, undone: true } });
+      openTab(1);
+      render(<Harness />);
+      await screen.findByText('这一轮的改动已经撤销');
+
+      mocks.readTurnIndex.mockResolvedValue({ [LOOP_ID]: ENTRY });
+      act(() => saved());
+
+      await waitFor(() => expect(screen.queryByText('这一轮的改动已经撤销')).toBeNull());
+      expect(diff().textContent).toContain('new plan');
+    });
+  });
 });
 
 describe('TurnFileComparison', () => {
