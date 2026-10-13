@@ -252,7 +252,7 @@ mod platform {
         requested.commonattr = libc::ATTR_CMN_RETURNED_ATTRS;
         requested.forkattr = libc::ATTR_CMNEXT_LINKID;
         let mut result: LinkInfo = unsafe { std::mem::zeroed() };
-        if unsafe { libc::fgetattrlist(file.as_raw_fd(), &mut requested, &mut result as *mut _ as *mut _,
+        if unsafe { libc::fgetattrlist(file.as_raw_fd(), (&mut requested as *mut libc::attrlist).cast(), &mut result as *mut _ as *mut _,
             std::mem::size_of_val(&result), (libc::FSOPT_ATTR_CMN_EXTENDED | libc::FSOPT_REPORT_FULLSIZE) as _) } != 0 {
             return Err(io::Error::last_os_error());
         }
@@ -311,7 +311,7 @@ mod platform {
         requested.commonattr = libc::ATTR_CMN_RETURNED_ATTRS;
         requested.volattr = libc::ATTR_VOL_INFO | libc::ATTR_VOL_CAPABILITIES;
         let mut result: VolumeInfo = unsafe { std::mem::zeroed() };
-        if unsafe { libc::fgetattrlist(volume.as_raw_fd(), &mut requested, &mut result as *mut _ as *mut _,
+        if unsafe { libc::fgetattrlist(volume.as_raw_fd(), (&mut requested as *mut libc::attrlist).cast(), &mut result as *mut _ as *mut _,
             std::mem::size_of_val(&result), libc::FSOPT_REPORT_FULLSIZE as _) } != 0 {
             return Err(io::Error::last_os_error());
         }
