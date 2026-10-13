@@ -835,7 +835,10 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
           const chat = useChatStore.getState();
           if (r.status === 'available' && ownerId && chat.conversations[ownerId]
             && chat.activeConversationId === ownerId
-            && usePreviewStore.getState().currentConversationId === ownerId) openPreview(r.path);
+            && usePreviewStore.getState().currentConversationId === ownerId) {
+            if (r.isFromSnapshot) openPreview(r.path, { keptCopyOf: previewableFile.path });
+            else openPreview(r.path);
+          }
         }).catch(() => {});
       }).catch(() => {});
     }
