@@ -111,7 +111,8 @@ export function MenuItem({ children, icon, shortcut, tone = 'default', disabled,
 }) {
   const kind = useMenuKind();
   const descriptionId = useId();
-  const className = cn(MENU_ITEM, RADIX_ITEM_DISABLED, tone === 'danger' && 'text-danger', description && 'h-auto items-start py-1');
+  // A destructive item is highlighted on the danger tint, which keeps its red words at 4.5:1 on a menu.
+  const className = cn(MENU_ITEM, RADIX_ITEM_DISABLED, tone === 'danger' && 'text-danger data-[highlighted]:bg-danger-soft', description && 'h-auto items-start py-1');
   // aria-hidden keeps the description out of the name; aria-describedby still reads it.
   const label = description ? (
     <span className="flex min-w-0 flex-1 flex-col">

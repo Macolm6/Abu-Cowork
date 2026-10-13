@@ -14,7 +14,8 @@ export const buttonVariants = cva(
         primary: 'bg-emphasis text-on-emphasis not-aria-disabled:hover:opacity-90 not-aria-disabled:active:opacity-80',
         secondary: 'bg-fill text-label not-aria-disabled:hover:bg-fill-selected not-aria-disabled:active:bg-fill-pressed',
         plain: 'text-label not-aria-disabled:hover:bg-fill-hover not-aria-disabled:active:bg-fill-pressed',
-        danger: 'bg-fill text-danger not-aria-disabled:hover:bg-fill-selected not-aria-disabled:active:bg-fill-pressed',
+        // Under the pointer the fill takes the danger hue, which keeps the danger text at 4.5:1 in a window as well.
+        danger: 'bg-fill text-danger not-aria-disabled:hover:bg-danger-soft not-aria-disabled:active:bg-danger-soft-pressed',
       },
       size: { sm: 'h-6 px-2 text-ui-sm', md: 'h-7 px-3 text-ui' },
     },
