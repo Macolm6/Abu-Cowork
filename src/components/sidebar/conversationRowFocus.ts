@@ -26,6 +26,11 @@ export function conversationRowProps(id: string): Record<string, string> {
   return { [ROW]: id };
 }
 
+/** The conversation's row on the page, or null. */
+export function conversationRowElement(id: string): HTMLElement | null {
+  return rowsIn(document).find((row) => row.getAttribute(ROW) === id) ?? null;
+}
+
 /** Where a row sat when it was noted. */
 interface ConversationRowPlace {
   id: string;

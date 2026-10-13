@@ -154,6 +154,7 @@ export interface TranslationDict {
     recents: string;
     searchPlaceholder: string;
     noSearchResults: string;
+    searchMoreResults: string;
     noSessionsYet: string;
     hideSidebar: string;
     showSidebar: string;
