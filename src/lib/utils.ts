@@ -16,7 +16,7 @@ const DS_TEXT_COLORS = [
 const DS_BG_COLORS = [
   "desk", "desk-solid", "surface", "raised", "code", "diagram-canvas", "page-canvas", "field",
   "fill", "fill-hover", "fill-selected", "fill-pressed", "emphasis", "scrim", "brand",
-  "success-soft", "warning-soft", "danger-soft", "info-soft",
+  "success-soft", "warning-soft", "danger-soft", "danger-soft-pressed", "info-soft",
   "heat-1", "heat-2", "heat-3", "heat-4",
 ]
 

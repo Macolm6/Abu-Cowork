@@ -40,6 +40,10 @@ Evidence is retained under the isolated host's `.agent/`: `baseline-electron-con
 
 Final build logs are `build-revision.log`, `typecheck-enterprise-revision.log`, `preflight-revision.log`; final Electron logs are `oss-revision-electron-final.log` and `enterprise-revision-electron-final.log`. An earlier enterprise run timed out while clicking the animated close-setting dropdown before any task was sent. Opening that same setting with real keyboard input resolved the harness failure; shutdown timing and assertions were retained.
 
+Before handoff, `origin/dev` at `1418a3a1` was merged to resolve the PR's generated test-inventory conflict. The official inventory script retained both branches' tests. The integrated `npm run verify` passed: 1,045 files, 21,155 passed, 34 skipped; coverage 81.29% statements, 73.41% branches, 83.21% functions, 83.07% lines. Evidence: `verify-integrated-final.log`.
+
+Integrated build and enterprise typecheck passed (`build-integrated.log`, `typecheck-enterprise-integrated.log`). Both final integrated Electron runs passed the same seven journeys with one Windows-inapplicable POSIX skip (`oss-integrated-electron.log`, `enterprise-integrated-electron.log`).
+
 ## Conditions outside this validation
 
 Installed macOS updates, macOS native helpers, Windows logout/system shutdown, forced process termination, power loss, physical-input takeover and production enterprise gateway credentials were not exercised. Updater window destruction is covered by the native boundary regression. Account ownership rule R02 remains pending separately.
