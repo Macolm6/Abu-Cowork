@@ -144,7 +144,7 @@ describe('agent.start hydration from a real ledger file', () => {
 
     const messages = await hydratedMessages(startParams(runId, upto));
     expect(messages.map((m) => [m.id, m.runState ?? null])).toEqual([
-      ['u0', 'failed'],
+      ['u0', 'interrupted'],
       ['a0', null],
       [`msg-${runId}`, 'pending'],
     ]);

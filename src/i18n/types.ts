@@ -397,7 +397,9 @@ export interface TranslationDict {
     runConnectionFailed: string;
     contentPolicyRejected: string;
     runInterrupted: string;
-    runRecoveredAfterRestart: string;
+    /** Notice under a turn the application closed on. */
+    runClosedMidway: string;
+    runResend: string;
     runRetry: string;
     /** Escape hatch on an oversize failure row — opens a new conversation carrying the text (#549). */
     newConversationAction: string;
@@ -3723,6 +3725,8 @@ export interface TranslationDict {
     title: string;
     message: string;
     agentRunningWarning: string;
+    /** The question asked when the application is quit while a conversation is running. */
+    quitWhileRunning: string;
     quit: string;
     minimize: string;
     rememberChoice: string;
