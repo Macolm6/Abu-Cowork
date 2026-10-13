@@ -200,6 +200,19 @@ describe('MessageGroup retry question', () => {
     expect(stored()).toEqual([earlierUser, earlierReply]);
   });
 
+  it('keeps an earlier question and its answer that share the loop id of the retried one', async () => {
+    const earlierUser: Message = { id: 'user-0', role: 'user', content: 'before', timestamp: 100, loopId: userMessage.loopId };
+    const earlierReply: Message = { id: 'assistant-0', role: 'assistant', content: 'done', timestamp: 200, loopId: userMessage.loopId };
+    seed([earlierUser, earlierReply, userMessage, assistantMessage]);
+    render(<MessageGroup conversationId={CONVERSATION} messages={[userMessage, assistantMessage]} isLastGroup />);
+
+    pressRetry();
+    await answered();
+
+    expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, userMessage.id]]);
+    expect(stored()).toEqual([earlierUser, earlierReply]);
+  });
+
   it('sends a turn that went to an expert to that expert again', async () => {
     const routed: Message = { ...userMessage, delegateAgent: { name: 'researcher', description: 'Researcher' } };
     seed([routed, assistantMessage]);
