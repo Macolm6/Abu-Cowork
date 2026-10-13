@@ -8,7 +8,7 @@ import { usePreviewStore } from '@/stores/previewStore';
 import { useToastStore } from '@/stores/toastStore';
 import { useTurnChangesDetail, useTurnChangesEntry, useTurnUndo, useTurnUndoRecord } from '@/hooks/useTurnChanges';
 import type { TurnChangedFile } from '@/core/session/turnChanges';
-import type { TurnUndoDirection, TurnUndoPlan } from '@/core/session/turnUndo';
+import { TurnUndoRefusedError, type TurnUndoDirection, type TurnUndoPlan } from '@/core/session/turnUndo';
 import type { TurnUndoRecord } from '@/core/session/turnUndoRecord';
 import TurnUndoDialog from './TurnUndoDialog';
 
@@ -124,7 +124,16 @@ function ChangedFilesCard({ conversationId, loopId }: { conversationId: string; 
   const confirm = async (): Promise<void> => {
     if (!question || !questionOpen) return;
     setQuestionOpen(false);
-    const result = await run(question.direction);
+    const [outcome] = await Promise.allSettled([run(question.direction)]);
+    if (outcome.status === 'rejected') {
+      // A turn began between the question and its answer: say why nothing happened.
+      if (outcome.reason instanceof TurnUndoRefusedError && outcome.reason.reason === 'turn-running') {
+        addToast({ type: 'warning', title: question.direction === 'undo' ? t.chat.undoBusyHint : t.chat.reapplyBusyHint });
+        return;
+      }
+      throw outcome.reason;
+    }
+    const result = outcome.value;
     if (!result) return;
     // The question already listed these files; the notice counts the ones it did not.
     const listed = new Set(question.plan.wontRestore.map((file) => file.path));
