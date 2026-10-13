@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useTeamStore } from '@/stores/teamStore';
 import { matchTeamMention } from './chatEntry';
+import { BUILTIN_TEAMS } from './builtinTeams';
 
 describe('matchTeamMention (composer fallback for a typed @团队)', () => {
   beforeEach(() => {
@@ -57,5 +58,48 @@ describe('matchTeamMention (composer fallback for a typed @团队)', () => {
   it('does not treat a mention buried behind ordinary text as a team hand-off', () => {
     seedTeam();
     expect(matchTeamMention('先看这个\n@数据小队 干活')).toBeNull();
+  });
+
+  describe('built-in teams and their English names', () => {
+    beforeEach(() => {
+      useTeamStore.setState({ teams: [...BUILTIN_TEAMS] });
+    });
+
+    it('finds a built-in team by its English name and reports the stored one', () => {
+      expect(matchTeamMention('@Recruiting Team write a senior front-end JD')).toEqual({
+        teamId: 'builtin-team:recruiting', teamName: '招聘专家团', rest: 'write a senior front-end JD',
+      });
+      expect(matchTeamMention('@Finance Reconciliation Team, reconcile this quarter')).toMatchObject({
+        teamId: 'builtin-team:finance-reconciliation', rest: 'reconcile this quarter',
+      });
+    });
+
+    it('takes the English name in any letter case, and a bare mention', () => {
+      expect(matchTeamMention('@recruiting team rank these resumes')).toMatchObject({ teamId: 'builtin-team:recruiting', rest: 'rank these resumes' });
+      expect(matchTeamMention('@Recruiting Team')).toMatchObject({ teamId: 'builtin-team:recruiting', rest: '' });
+    });
+
+    it('still finds a built-in team by its stored Chinese name', () => {
+      expect(matchTeamMention('@招聘专家团 写一份高级前端的 JD')).toEqual({
+        teamId: 'builtin-team:recruiting', teamName: '招聘专家团', rest: '写一份高级前端的 JD',
+      });
+    });
+
+    it('matches nothing for a name no team has, or a longer word that starts with one', () => {
+      expect(matchTeamMention('@Marketing Team plan the launch')).toBeNull();
+      expect(matchTeamMention('@Recruiting Teams plan the launch')).toBeNull();
+      expect(matchTeamMention('@Recruiting plan the launch')).toBeNull();
+    });
+
+    it("leaves a user's team to its own name: it has no other", () => {
+      const mine = useTeamStore.getState().createTeam({ name: '数据小队', leaderRoleId: 'role-l', memberRoleIds: [] });
+      expect(matchTeamMention('@数据小队 出周报')).toMatchObject({ teamId: mine.id, rest: '出周报' });
+      expect(matchTeamMention('@Data Squad weekly report')).toBeNull();
+    });
+
+    it('prefers the longer mention when a user team is named like the start of an English name', () => {
+      useTeamStore.getState().createTeam({ name: 'Recruiting', leaderRoleId: 'role-l', memberRoleIds: [] });
+      expect(matchTeamMention('@Recruiting Team rank these resumes')).toMatchObject({ teamId: 'builtin-team:recruiting', rest: 'rank these resumes' });
+    });
   });
 });

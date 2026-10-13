@@ -102,6 +102,15 @@ describe('resolveRun', () => {
     expect(targetDisplayName(owner, 'zh-CN')).toBe('联调审阅助手');
   });
 
+  it('names a team in the interface language, and a team without that text by its stored name', () => {
+    const recruiting = team('builtin-team:recruiting', { name: '招聘专家团', i18n: { 'en-US': { name: 'Recruiting Team' } } });
+    const owner = run({ team: 'builtin-team:recruiting' }, app(), catalog({ teams: [recruiting, team('team-mine-1', { name: '周报小队' })] })).owner!;
+    expect(targetDisplayName(owner, 'en-US')).toBe('Recruiting Team');
+    expect(targetDisplayName(owner, 'zh-CN')).toBe('招聘专家团');
+    const mine = run({ team: 'mine:team-mine-1' }, app({ kind: 'created', authoringId: 'a' }), catalog({ teams: [team('team-mine-1', { name: '周报小队' })] })).owner!;
+    expect(targetDisplayName(mine, 'en-US')).toBe('周报小队');
+  });
+
   it('finds an organization skill only among the organization\'s skills, never a same-named one of the user', () => {
     const org = app({ kind: 'enterprise' });
     expect(run({ skill: 'enterprise:weekly-report' }, org).skill).toEqual({ status: 'unavailable', label: 'weekly-report' });

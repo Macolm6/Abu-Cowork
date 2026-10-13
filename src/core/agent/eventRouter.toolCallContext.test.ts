@@ -35,7 +35,7 @@ function createHarness() {
   const appendToolCallContext = vi.fn();
 
   return {
-    router: new EventRouter({ executionStore, appendToolCallContext }),
+    router: new EventRouter({ executionStore, appendToolCallContext }, 'en-US'),
     appendToolCallContext,
   };
 }

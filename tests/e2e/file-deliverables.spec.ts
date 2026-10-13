@@ -117,6 +117,18 @@ function workProcessToggle(page: Page): Locator {
   return page.getByRole('button', { name: /^用时/ }).first();
 }
 
+/**
+ * Wait until `target` has stopped moving. Opening the work process or a group
+ * of its steps animates the height of the boxes around the rows, and the
+ * conversation scrolls along with it, so a row travels up the page for as long
+ * as an animation runs on one of the elements that contain it.
+ */
+async function waitUntilAtRest(target: Locator): Promise<void> {
+  await expect.poll(() => target.evaluate((element) => document.getAnimations()
+    .filter((animation) => (animation.effect as KeyframeEffect | null)?.target?.contains(element))
+    .length)).toBe(0);
+}
+
 /** A file card is the button that opens the file in the side preview. */
 function fileCards(page: Page): Locator {
   return page.getByRole('button').and(page.getByTitle('点击预览', { exact: true }));
@@ -199,6 +211,7 @@ test('a presented file gets a card with its description, and a file that was onl
   await page.getByRole('button', { name: /^交付了文件/ }).click();
   const presentedRow = page.getByText('交付了 1 个文件', { exact: true }).locator('xpath=..');
   await expect(presentedRow).toBeVisible();
+  await waitUntilAtRest(presentedRow);
   await presentedRow.getByRole('button', { name: '结果', exact: true }).click();
   await expect(presentedRow).toContainText('report.md');
 });

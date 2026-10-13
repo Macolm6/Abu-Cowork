@@ -128,10 +128,10 @@ export default function AppAddConfirmDialog({ within }: { within: AppAddFlowPlac
   const canConfirm = flow.kind === 'ready' || flow.kind === 'repair';
 
   const title = flow.kind === 'ready'
-    ? format(flow.purpose === 'update' ? t.appMarket.confirmUpdateTitle : flow.purpose === 'preview' ? t.appMarket.previewTitle : t.appMarket.confirmAddTitle, { name: flow.plan.app.name })
+    ? format(flow.purpose === 'update' ? t.appMarket.confirmUpdateTitle : flow.purpose === 'preview' ? t.appMarket.previewTitle : t.appMarket.confirmAddTitle, { name: resolveText(flow.plan.app.name) })
     : flow.kind === 'repair' ? t.appMarket.needInstall
       : flow.kind === 'error' ? FAILED[flow.operation](t)
-        : flow.kind === 'planning' ? format(t.appMarket.confirmAddTitle, { name: flow.name })
+        : flow.kind === 'planning' ? format(t.appMarket.confirmAddTitle, { name: resolveText(flow.name) })
           : '';
 
   const body = (() => {
@@ -151,10 +151,10 @@ export default function AppAddConfirmDialog({ within }: { within: AppAddFlowPlac
     return (
       <div className="space-y-5">
         <div className="flex items-center gap-3">
-          <AppLogo name={app.name} logo={app.logo} logoDark={app.logoDark} size="lg" />
+          <AppLogo name={resolveText(app.name)} logo={app.logo} logoDark={app.logoDark} size="lg" />
           <div className="min-w-0">
-            <p className="text-title text-label">{app.name}</p>
-            {app.description && <p className="text-ui-sm text-label-tertiary">{app.description}</p>}
+            <p className="text-title text-label">{resolveText(app.name)}</p>
+            {app.description && <p className="text-ui-sm text-label-tertiary">{resolveText(app.description)}</p>}
           </div>
         </div>
         {flow.kind === 'ready' && flow.purpose === 'preview' && <ScenePreview app={app} />}

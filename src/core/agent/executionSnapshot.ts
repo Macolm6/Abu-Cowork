@@ -44,11 +44,15 @@ function snapshotStep(step: ExecutionStep): ExecutionStepSnapshot {
       const truncated = b.content.length > maxLen
         ? b.content.slice(0, maxLen) + '...'
         : b.content;
+      const fullContentLength = b.fullContentLength
+        ?? (b.content.length > maxLen ? b.content.length : undefined);
       return {
         id: b.id,
         title: b.label,
+        ...(b.labelKey ? { labelKey: b.labelKey } : {}),
         type: b.type,
         content: truncated || undefined,
+        ...(fullContentLength != null ? { fullContentLength } : {}),
       };
     });
   }
@@ -76,8 +80,10 @@ export function snapshotToExecutionSteps(snapshots: ExecutionStepSnapshot[]): Ex
       stepId: s.id,
       type: b.type,
       label: b.title,
+      labelKey: b.labelKey,
       content: b.content || '',
       isTruncated: b.content ? b.content.endsWith('...') : false,
+      fullContentLength: b.fullContentLength,
       isExpanded: false,
     })) ?? [],
     duration: s.duration,

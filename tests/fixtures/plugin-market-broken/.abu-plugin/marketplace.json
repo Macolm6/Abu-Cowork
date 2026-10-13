@@ -8,6 +8,6 @@
   "apps": [
     { "name": "wrong-ref", "source": "./apps/wrong-ref" },
     { "name": "unknown-plugin", "source": "./apps/unknown-plugin" },
-    { "name": "version-drift", "version": "2.0.0", "source": "./apps/version-drift" }
+    { "name": "version-drift", "version": "2.0.0", "description": { "fr-FR": "Dérive de version" }, "source": "./apps/version-drift" }
   ]
 }

@@ -82,7 +82,7 @@ export default function AppPageView() {
       {/* h-11: the native page's rectangle starts right under this row. */}
       <div className="flex h-11 shrink-0 items-center gap-2 border-b border-separator px-4">
         <span className="min-w-0 flex-1 truncate text-ui font-medium text-label">
-          {navItem?.title === undefined ? app.name : resolveText(navItem.title)}
+          {resolveText(navItem?.title === undefined ? app.name : navItem.title)}
         </span>
         {state?.state === 'loading' && <Spinner size="sm" label={t.common.loading} labelHidden />}
         {appId && navItemId && (

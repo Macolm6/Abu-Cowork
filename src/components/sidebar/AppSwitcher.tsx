@@ -3,6 +3,7 @@ import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { GENERAL_APP_ID, type AppDefinition } from '@/types/app';
 import { useAppStore, useAvailableApps, useSelectedApp } from '@/stores/appStore';
+import { resolveLocalizedText } from '@/core/app/appBinding';
 import { createAppDraft } from '@/core/app/appDraft';
 import { reportAppFailure } from '@/core/app/appFailure';
 import { useToastStore } from '@/stores/toastStore';
@@ -37,7 +38,7 @@ import { Menu, MenuItem, MenuLabel, MenuRadioGroup, MenuRadioItem, MenuSeparator
 const removable = (app: AppDefinition) => app.origin !== null && app.origin.kind !== 'enterprise';
 
 export default function AppSwitcher({ className }: { className?: string }) {
-  const { t, format } = useI18n();
+  const { t, format, locale } = useI18n();
   const apps = useAvailableApps();
   const selected = useSelectedApp();
   const { allowExit } = useEnterpriseAppPolicy();
@@ -88,7 +89,7 @@ export default function AppSwitcher({ className }: { className?: string }) {
       if (!app) return;
       if (app.origin?.kind === 'created') {
         const confirmed = await confirm({
-          title: format(t.appSwitcher.removeCreatedTitle, { name: app.name }),
+          title: format(t.appSwitcher.removeCreatedTitle, { name: resolveLocalizedText(app.name, locale) }),
           message: t.appSwitcher.removeCreatedMessage,
           confirmLabel: t.appSwitcher.remove,
           tone: 'danger',
@@ -111,10 +112,10 @@ export default function AppSwitcher({ className }: { className?: string }) {
   const row = (app: AppDefinition, current: boolean) => (
     <MenuRadioItem key={app.appId} value={app.appId}>
       <span data-testid={`app-switcher-item-${app.appId}`} className="flex items-center gap-2">
-        <AppLogo name={app.name} logo={app.logo} logoDark={app.logoDark} icon={app.icon} general={app.appId === GENERAL_APP_ID} size="sm" />
+        <AppLogo name={resolveLocalizedText(app.name, locale)} logo={app.logo} logoDark={app.logoDark} icon={app.icon} general={app.appId === GENERAL_APP_ID} size="sm" />
         <span className="min-w-0 flex-1 truncate">
-          {app.name}
-          {app.description && <span className="ml-2 text-ui-sm text-label-tertiary">{app.description}</span>}
+          {resolveLocalizedText(app.name, locale)}
+          {app.description && <span className="ml-2 text-ui-sm text-label-tertiary">{resolveLocalizedText(app.description, locale)}</span>}
         </span>
         {!current && (
           <span
@@ -158,12 +159,12 @@ export default function AppSwitcher({ className }: { className?: string }) {
           >
             {isGeneral
               ? <Icon icon={AppIcons.discoverApps} size="sm" className="text-label-secondary" />
-              : <AppLogo name={selected.name} logo={selected.logo} logoDark={selected.logoDark} icon={selected.icon} size="sm" className="h-4 w-4" />}
+              : <AppLogo name={resolveLocalizedText(selected.name, locale)} logo={selected.logo} logoDark={selected.logoDark} icon={selected.icon} size="sm" className="h-4 w-4" />}
             <span
               className={cn('min-w-0 flex-1 text-left', isGeneral ? 'whitespace-nowrap' : 'truncate')}
               data-testid="app-switcher-current"
             >
-              {isGeneral ? t.appSwitcher.discover : selected.name}
+              {isGeneral ? t.appSwitcher.discover : resolveLocalizedText(selected.name, locale)}
             </span>
             <Icon icon={AppIcons.expand} size="sm" className="text-label-tertiary" />
           </Button>
@@ -194,7 +195,7 @@ export default function AppSwitcher({ className }: { className?: string }) {
                   testId={`app-switcher-remove-${app.appId}`}
                   onSelect={() => { afterMenuClose.current = () => { void remove(app.appId); }; }}
                 >
-                  {app.name}
+                  {resolveLocalizedText(app.name, locale)}
                 </MenuItem>
               ))}
             </MenuSub>
