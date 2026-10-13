@@ -50,6 +50,7 @@ import { agentRegistry } from '@/core/agent/registry';
 import { matchTeamMention } from '@/core/team/chatEntry';
 import { getVisibleTeamById } from '@/stores/teamStore';
 import { useVisibleTeams } from '@/core/team/useVisibleTeams';
+import { localizedTeam } from '@/core/team/localizedTeam';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { effectiveRoleId } from '@/core/team/roleIdentity';
 import PermissionDialog from '@/components/common/PermissionDialog';
@@ -317,7 +318,8 @@ export default function ChatView({
   const pendingTeamId = useChatStore((s) => s.pendingTeamId);
   const welcomeTeamId = activeConv ? activeConv.teamId : pendingTeamId;
   const visibleTeams = useVisibleTeams();
-  const welcomeTeam = visibleTeams.find((team) => team.id === welcomeTeamId);
+  const storedWelcomeTeam = visibleTeams.find((team) => team.id === welcomeTeamId);
+  const welcomeTeam = storedWelcomeTeam ? localizedTeam(storedWelcomeTeam, locale) : undefined;
   const expertPrompts = pendingAgent
     ? pendingAgent.samplePromptsI18n?.[locale] ?? pendingAgent.samplePrompts
     : welcomeTeam?.samplePrompts;
@@ -966,13 +968,16 @@ export default function ChatView({
     const teamMention = matchTeamMention(text);
     // A conversation already pinned to another team is not silently re-pinned:
     // say so and send the text as typed (the chip is the way to switch).
+    const shownTeamName = (teamId: string) => {
+      const team = getVisibleTeamById(teamId);
+      return team ? localizedTeam(team, locale).name : '';
+    };
     if (teamMention && activeConv?.teamId && activeConv.teamId !== teamMention.teamId) {
-      const current = getVisibleTeamById(activeConv.teamId)?.name ?? '';
-      useToastStore.getState().addToast({ type: 'info', title: format(t.team.chatReceiptOtherTeam, { current, other: teamMention.teamName }) });
+      useToastStore.getState().addToast({ type: 'info', title: format(t.team.chatReceiptOtherTeam, { current: shownTeamName(activeConv.teamId), other: shownTeamName(teamMention.teamId) }) });
       return false;
     }
     if (teamMention && !teamMention.rest) {
-      useToastStore.getState().addToast({ type: 'info', title: format(t.team.chatReceiptEmptyGoal, { team: teamMention.teamName }) });
+      useToastStore.getState().addToast({ type: 'info', title: format(t.team.chatReceiptEmptyGoal, { team: shownTeamName(teamMention.teamId) }) });
       return false; // hand the text back to the composer
     }
     const sendText = goalCommand?.kind === 'create'
@@ -1000,7 +1005,7 @@ export default function ChatView({
         }
         contact = { identity: shown ? { ...shown.identity, key: identity.key } : identity, introduction: shown?.introduction };
       } else if (team) {
-        const identity = teamIdentity(team);
+        const identity = teamIdentity(localizedTeam(team, locale));
         contact = pendingExpertContact?.identity.key === identity.key ? pendingExpertContact : { identity };
       }
       const latest = useChatStore.getState();

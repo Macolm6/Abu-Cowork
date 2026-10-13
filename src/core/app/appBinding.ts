@@ -3,6 +3,8 @@ import { GENERAL_APP_ID } from '@/types/app';
 import { resolveLocalizedText } from '../../../electron/shared/specFields.mjs';
 import { getLocale } from '@/i18n';
 
+export { resolveLocalizedText };
+
 /** `LocalizedText` for the current UI language (zh-CN, then en-US, as fallbacks). */
 export function resolveText(text: LocalizedText | undefined): string {
   return resolveLocalizedText(text, getLocale());

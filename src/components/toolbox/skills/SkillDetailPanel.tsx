@@ -8,6 +8,7 @@ import { AppIcons } from '@/components/ds/icons';
 import { Pressable } from '@/components/ds/pressable';
 import { Spinner } from '@/components/ds/spinner';
 import { useI18n } from '@/i18n';
+import { localizedSkillDescription } from '@/core/skill/displayDescription';
 import { cn } from '@/lib/utils';
 import { skillLoader } from '@/core/skill/loader';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
@@ -109,7 +110,7 @@ interface SkillDetailPanelProps {
 }
 
 export default function SkillDetailPanel({ skill, onClose, headerActions, footer, disableEscape, onCloseAutoFocus }: SkillDetailPanelProps) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   // Content view mode: preview (rendered) or source (raw)
   const [contentViewMode, setContentViewMode] = useState<'preview' | 'source'>('preview');
   // Supporting-file browsing. `activeFilePath` = 'SKILL.md' shows skill.content;
@@ -171,7 +172,7 @@ export default function SkillDetailPanel({ skill, onClose, headerActions, footer
             <h2 className="text-title text-label">
               {shown.name} <span className="font-normal text-label-tertiary">Skill</span>
             </h2>
-            <p className="text-ui text-label-secondary">{shown.description}</p>
+            <p className="text-ui text-label-secondary">{localizedSkillDescription(shown, locale)}</p>
           </div>
 
           {/* Files: SKILL.md + supporting files, with an on-demand viewer */}

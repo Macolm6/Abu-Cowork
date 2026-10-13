@@ -8,6 +8,7 @@ import { TextArea } from '@/components/ds/text-area';
 import { TextField } from '@/components/ds/text-field';
 import TeamAvatar from '@/components/team/TeamAvatar';
 import { useVisibleTeams } from '@/core/team/useVisibleTeams';
+import { localizedTeam } from '@/core/team/localizedTeam';
 import { useI18n } from '@/i18n';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useIMChannelStore } from '@/stores/imChannelStore';
@@ -90,7 +91,7 @@ export default function ScheduleEditor({ onCloseAutoFocus }: {
   // Runs once the window has gone, before the focus returns to what opened it (ds `Dialog`).
   onCloseAutoFocus?: (event: Event) => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const id = useId();
   const { showEditor, editingTaskId, closeEditor, createTask, updateTask } =
     useScheduleStore();
@@ -160,8 +161,8 @@ export default function ScheduleEditor({ onCloseAutoFocus }: {
   // Stable option objects: the list rows are compared by them.
   const teamOptions = useMemo<ComboboxOption[]>(() => [
     { value: NONE, label: t.schedule.teamExecutorNone },
-    ...teams.map((team) => ({ value: team.id, label: team.name, icon: <TeamAvatar avatar={team.avatar} size="sm" /> })),
-  ], [teams, t]);
+    ...teams.map((team) => ({ value: team.id, label: localizedTeam(team, locale).name, icon: <TeamAvatar avatar={team.avatar} size="sm" /> })),
+  ], [teams, t, locale]);
 
   const frequencyLabels: Record<ScheduleFrequency, string> = {
     hourly: t.schedule.frequencyHourly,

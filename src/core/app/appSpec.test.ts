@@ -66,6 +66,42 @@ describe('parseAppFile', () => {
     expect(parsed.config.home.modes.items[0].scenes[0].run).toEqual({ team: 'builtin-team:recruiting' });
   });
 
+  it('takes the display name and the two descriptions per locale, and keeps a plain string as it is', () => {
+    const plain = parseAppFile(appFile({ interface: { displayName: '合同审阅', shortDescription: '审合同', longDescription: '' } }));
+    expect(plain.interface).toMatchObject({ displayName: '合同审阅', shortDescription: '审合同', longDescription: '' });
+
+    const localized = parseAppFile(appFile({
+      interface: {
+        displayName: { 'zh-CN': '合同审阅', 'en-US': 'Contract Review' },
+        shortDescription: { 'en-US': 'Review contracts the way the firm does' },
+        longDescription: { 'zh-CN': '按律所的做法审合同，逐条给出修改意见。', 'en-US': 'Reviews a contract clause by clause.' },
+      },
+    }));
+    expect(localized.interface.displayName).toEqual({ 'zh-CN': '合同审阅', 'en-US': 'Contract Review' });
+    expect(localized.interface.shortDescription).toEqual({ 'en-US': 'Review contracts the way the firm does' });
+    expect(localized.interface.longDescription).toEqual({ 'zh-CN': '按律所的做法审合同，逐条给出修改意见。', 'en-US': 'Reviews a contract clause by clause.' });
+  });
+
+  it('holds each locale of a display text to the length limit on its own', () => {
+    const iface = (overrides: Record<string, unknown>) => appFile({ interface: { displayName: 'x', shortDescription: 'y', ...overrides } });
+    expect(() => parseAppFile(iface({ displayName: { 'zh-CN': '名'.repeat(64), 'en-US': 'N'.repeat(64) } }))).not.toThrow();
+    expect(failingField(() => parseAppFile(iface({ displayName: 'N'.repeat(65) })))).toBe('interface.displayName');
+    expect(failingField(() => parseAppFile(iface({ displayName: { 'zh-CN': '合同审阅', 'en-US': 'N'.repeat(65) } })))).toBe('interface.displayName.en-US');
+    expect(failingField(() => parseAppFile(iface({ shortDescription: { 'zh-CN': '介'.repeat(201), 'en-US': 'ok' } })))).toBe('interface.shortDescription.zh-CN');
+    expect(() => parseAppFile(iface({ shortDescription: { 'zh-CN': '介'.repeat(200), 'en-US': 'd'.repeat(200) } }))).not.toThrow();
+    expect(failingField(() => parseAppFile(iface({ longDescription: { 'en-US': 'd'.repeat(4001) } })))).toBe('interface.longDescription.en-US');
+  });
+
+  it('refuses a display text that is no string and no text per locale', () => {
+    const iface = (overrides: Record<string, unknown>) => appFile({ interface: { displayName: 'x', shortDescription: 'y', ...overrides } });
+    expect(failingField(() => parseAppFile(iface({ displayName: {} })))).toBe('interface.displayName');
+    expect(failingField(() => parseAppFile(iface({ displayName: { 'fr-FR': 'Revue' } })))).toBe('interface.displayName.fr-FR');
+    expect(failingField(() => parseAppFile(iface({ displayName: { 'en-US': ' ' } })))).toBe('interface.displayName.en-US');
+    expect(failingField(() => parseAppFile(iface({ displayName: 42 })))).toBe('interface.displayName');
+    expect(failingField(() => parseAppFile(iface({ displayName: ' ' })))).toBe('interface.displayName');
+    expect(failingField(() => parseAppFile(iface({ shortDescription: ['a'] })))).toBe('interface.shortDescription');
+  });
+
   it('checks the top-level fields', () => {
     expect(failingField(() => parseAppFile(appFile({ name: 'Contract Review' })))).toBe('name');
     expect(failingField(() => parseAppFile(appFile({ name: undefined })))).toBe('name');
