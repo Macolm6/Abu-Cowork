@@ -22,6 +22,14 @@ describe('display-description', () => {
     });
   });
 
+  it('parses a file with CRLF line endings whose frontmatter ends on a quoted value', () => {
+    const quotedLast = skillFile('description: Builds an app\ndisplay-description:\n  zh-CN: 生成应用\n  en-US: "Build an app: a home page of scenes"');
+    const fromLf = parseSkillFile(quotedLast, filePath)!;
+    const fromCrlf = parseSkillFile(quotedLast.replace(/\n/g, '\r\n'), filePath);
+    expect(fromLf.displayDescription).toEqual({ 'zh-CN': '生成应用', 'en-US': 'Build an app: a home page of scenes' });
+    expect(fromCrlf).toEqual(fromLf);
+  });
+
   it('is shown in the interface language', () => {
     const skill = parseSkillFile(withDisplay, filePath)!;
     expect(localizedSkillDescription(skill, 'en-US')).toBe('Analyze an alert, investigate it by the SOP and write a handling report');
