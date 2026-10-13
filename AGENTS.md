@@ -450,7 +450,7 @@ Its hover and pressed looks are off: every class of a ds button that answers the
 **Menus**
 
 - `InstalledItemMenu` and `ToolboxCreateMenu` are `Menu`s. A menu item that opens a window records the action in a ref; `onCloseAutoFocus` focuses the trigger, then runs it. A question asked from a menu runs after the menu has gone.
-- A menu item that cannot be chosen stays in the menu, disabled, with its reason as `title` (`InstalledItemMenu disabledReason`); it never fires. `MenuItem description` adds a second line.
+- A menu item that cannot be chosen stays in the menu, disabled, with its reason as `title` (`InstalledItemMenu disabledReason`); it never fires. `MenuItem description` adds a second line. `MenuItem tone="danger"` is `text-danger` and its highlighted row is `bg-danger-soft`, in a `Menu`, a nested list and a `ContextMenu` alike; the token guard holds that pair at 4.5:1 over `bg-raised`.
 - `Menu contentProps` and `MenuItem testId` carry the test ids E2E reads. The 「…」 trigger is the default `IconButton` size in every detail header.
 - `Menu` content stops clicks, also for `click` listeners on `document`: outside-press code listens for `pointerdown` / `mousedown`.
 - Menu buttons: a `Menu` trigger and the 「…」 of `RowMenus` open on a click with `detail` 0 (a screen reader, `element.click()`), only while the menu is closed; a pointer press opens on pointer-down and an opening key on key-down, once each. The repeats of Enter, Space and ArrowDown on a closed menu button open nothing. A trigger marked `aria-disabled` (a busy control, or one its owner marks) opens nothing from any kind of press.
