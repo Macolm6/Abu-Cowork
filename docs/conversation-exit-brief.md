@@ -34,6 +34,6 @@ Given 回复正在显示，When 点击停止并立即退出，Then 重启后正�
 - [x] 验证停止后立即退出、正常退出、重启打开历史与继续任务，以及正常完成的保存。
 - [x] 串行执行 verify、build、electron:dev:check、相关 Electron 与 native helper 检查。
 - [x] 独立复审。
-- [ ] 更新关联 Issue 和已有 PR。
+- [x] 更新关联 Issue 和已有 PR。
 
 R02 聊天归属规则维持待确认状态。强制终止进程、断电和未执行平台的行为另列为未覆盖条件。
