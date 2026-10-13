@@ -21,14 +21,22 @@ export interface MemoryHostFs {
   listWorkspace(root: string): ConversationWorkspaceFiles;
   /** Makes the next read of `path` through either interface reject once. */
   failNextRead(path: string): void;
+  /** Makes the next plugin-fs write of `path` reject once. */
+  failNextWrite(path: string): void;
+  /** Paths moved to the trash, in order. */
+  trashed: string[];
+  /** The host's `move_to_trash`: removes the path and records it. */
+  moveToTrash(path: string): Promise<void>;
   pluginFs: {
     exists(path: string): Promise<boolean>;
     mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
     readFile(path: string): Promise<Uint8Array>;
     readTextFile(path: string): Promise<string>;
-    writeFile(path: string, bytes: Uint8Array): Promise<void>;
+    /** `createNew` refuses a path that holds a file; `create: false` refuses one that holds none. */
+    writeFile(path: string, bytes: Uint8Array, options?: { create?: boolean; createNew?: boolean }): Promise<void>;
     remove(path: string, options?: { recursive?: boolean }): Promise<void>;
     readDir(path: string): Promise<Array<{ name: string; isDirectory: boolean; isFile: boolean; isSymlink: boolean }>>;
+    stat(path: string): Promise<{ isFile: boolean; isDirectory: boolean; isSymlink: boolean; size: number }>;
   };
   bridge: {
     exists(path: string): Promise<boolean>;
@@ -43,6 +51,8 @@ export function createMemoryHostFs(): MemoryHostFs {
   const mtimes = new Map<string, number>();
   const dirs = new Set<string>();
   const failing = new Set<string>();
+  const failingWrites = new Set<string>();
+  const trashed: string[] = [];
   const encoder = new TextEncoder();
   const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
   let clock = 1_000;
@@ -107,6 +117,15 @@ export function createMemoryHostFs(): MemoryHostFs {
     failNextRead: (path) => {
       failing.add(path);
     },
+    failNextWrite: (path) => {
+      failingWrites.add(path);
+    },
+    trashed,
+    moveToTrash: async (path) => {
+      if (!files.has(path) && !dirs.has(path)) throw noEntry(path);
+      removeTree(path);
+      trashed.push(path);
+    },
     pluginFs: {
       exists: async (path) => files.has(path) || dirs.has(path),
       mkdir: async (path) => {
@@ -114,7 +133,14 @@ export function createMemoryHostFs(): MemoryHostFs {
       },
       readFile: async (path) => readBytes(path),
       readTextFile: async (path) => decoder.decode(readBytes(path)),
-      writeFile: async (path, bytes) => writeBytes(path, bytes),
+      writeFile: async (path, bytes, options) => {
+        if (failingWrites.delete(path)) throw new Error(`EIO: write failed, open '${path}'`);
+        if (options?.createNew && files.has(path)) throw new Error(`fs: file already exists and createNew is set: ${path}`);
+        if (options?.create === false && !options.createNew && !files.has(path)) {
+          throw new Error(`fs: file does not exist and create is false: ${path}`);
+        }
+        writeBytes(path, bytes);
+      },
       remove: async (path) => {
         if (!files.has(path) && !dirs.has(path)) throw noEntry(path);
         removeTree(path);
@@ -130,6 +156,12 @@ export function createMemoryHostFs(): MemoryHostFs {
           if (key.startsWith(prefix) && !key.slice(prefix.length).includes('/')) names.set(key.slice(prefix.length), false);
         }
         return [...names].map(([name, isDirectory]) => ({ name, isDirectory, isFile: !isDirectory, isSymlink: false }));
+      },
+      stat: async (path) => {
+        const bytes = files.get(path);
+        if (bytes) return { isFile: true, isDirectory: false, isSymlink: false, size: bytes.length };
+        if (dirs.has(path)) return { isFile: false, isDirectory: true, isSymlink: false, size: 0 };
+        throw noEntry(path);
       },
     },
     bridge: {

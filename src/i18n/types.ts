@@ -344,6 +344,49 @@ export interface TranslationDict {
     changeDeleted: string;
     /** Last line of the card when the turn changed more files than it lists; `{count}` is the number left out. */
     moreChangedFiles: string;
+    /** Button on that card: undoes the turn's file changes. */
+    undoTurn: string;
+    /** Button on the card of an undone turn: puts the changes back. */
+    reapplyTurn: string;
+    /** Why the two buttons cannot be used while a turn of the conversation runs. */
+    undoBusyHint: string;
+    reapplyBusyHint: string;
+    /** Title of the card of an undone turn; `{count}` is the number of files restored. */
+    undoneFilesTitle: string;
+    /** That title when one file was restored; `{name}` is the file name. */
+    undoneFileSingleTitle: string;
+    /** Mark on a file row of an undone turn that does not hold its content before the turn. */
+    undoNotRestored: string;
+    /** Mark on a file row whose changes were not put back. */
+    reapplyNotPutBack: string;
+    /** The question before a turn is undone; `{count}` is the number of files that will be restored. */
+    undoConfirmTitle: string;
+    undoConfirmCount: string;
+    /** What undoing does to one file: a modified, a created and a deleted one. */
+    undoActionWriteBefore: string;
+    undoActionTrash: string;
+    undoActionPutBack: string;
+    /** Heading of the files undoing leaves as they are. */
+    undoWontRestore: string;
+    /** The question before the changes are put back; `{count}` is the number of files that will be put back. */
+    reapplyConfirmTitle: string;
+    reapplyConfirmCount: string;
+    /** What putting back does to one file: a modified, a created and a deleted one. */
+    reapplyActionWriteAfter: string;
+    reapplyActionPutBack: string;
+    reapplyActionTrash: string;
+    /** Heading of the files putting back leaves as they are. */
+    reapplyWontPutBack: string;
+    /** Why a file is left as it is. */
+    undoReasonByCommand: string;
+    undoReasonChangedSince: string;
+    reapplyReasonChangedSince: string;
+    undoReasonTooLarge: string;
+    undoReasonFolderGone: string;
+    undoReasonNotAuthorized: string;
+    /** Notice after an undo or a put-back in which files failed; `{done}` and `{notDone}` are counts. */
+    undoPartialNotice: string;
+    reapplyPartialNotice: string;
     userMessageShowMore: string;
     userMessageCollapse: string;
     runPending: string;
@@ -3006,6 +3049,8 @@ export interface TranslationDict {
     noDiffToShow: string;
     /** Shown in the changes tab when the saved changes of the turn cannot be read. */
     changesUnreadable: string;
+    /** First line of the changes tab of a turn that is undone. */
+    changesUndone: string;
     noWorkspaceSelected: string;
     selectWorkspace: string;
     noFilesModified: string;
