@@ -7,7 +7,7 @@ import { CJK_SPECIMEN } from './specimen';
 import { readRootVariable, useComputedValue } from './useComputedValue';
 
 const TEXT_TOKENS = ['label', 'label-secondary', 'label-tertiary', 'label-placeholder', 'link', 'success', 'warning', 'danger', 'info'];
-const SOFT_TOKENS = ['success-soft', 'warning-soft', 'danger-soft', 'info-soft'];
+const SOFT_TOKENS = ['success-soft', 'warning-soft', 'danger-soft', 'danger-soft-pressed', 'info-soft'];
 const TYPE_TOKENS = ['text-title-lg', 'text-title', 'text-ui', 'text-ui-sm', 'text-caption', 'text-body', 'text-h1', 'text-h2', 'text-h3', 'text-mono', 'text-code-inline'];
 const RADIUS_TOKENS = ['rounded-window', 'rounded-panel', 'rounded-control'];
 const SHADOW_TOKENS = ['shadow-panel', 'shadow-float', 'shadow-dialog', 'shadow-composer'];
@@ -26,7 +26,7 @@ const COLOR_CLASS: Record<string, string> = {
   'label-placeholder': 'bg-label-placeholder', link: 'bg-link',
   separator: 'bg-separator', 'control-border': 'bg-control-border', focus: 'bg-focus',
   success: 'bg-success', 'success-soft': 'bg-success-soft', warning: 'bg-warning', 'warning-soft': 'bg-warning-soft',
-  danger: 'bg-danger', 'danger-soft': 'bg-danger-soft', info: 'bg-info', 'info-soft': 'bg-info-soft',
+  danger: 'bg-danger', 'danger-soft': 'bg-danger-soft', 'danger-soft-pressed': 'bg-danger-soft-pressed', info: 'bg-info', 'info-soft': 'bg-info-soft',
   'heat-1': 'bg-heat-1', 'heat-2': 'bg-heat-2', 'heat-3': 'bg-heat-3', 'heat-4': 'bg-heat-4',
 };
 const TEXT_CLASS: Record<string, string> = {
@@ -36,7 +36,7 @@ const TEXT_CLASS: Record<string, string> = {
 };
 const SOFT_CLASS: Record<string, string> = {
   'success-soft': 'bg-success-soft text-success', 'warning-soft': 'bg-warning-soft text-warning',
-  'danger-soft': 'bg-danger-soft text-danger', 'info-soft': 'bg-info-soft text-info',
+  'danger-soft': 'bg-danger-soft text-danger', 'danger-soft-pressed': 'bg-danger-soft-pressed text-danger', 'info-soft': 'bg-info-soft text-info',
 };
 
 // Non-color scales, measured from a sample element that carries the class.

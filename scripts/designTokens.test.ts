@@ -386,6 +386,21 @@ describe.each(APPEARANCES)('design tokens — contrast (%s)', (name) => {
     expect(wcagContrast(color(values, 'danger'), over(values, 'fill', base))).toBeGreaterThanOrEqual(4.5);
   });
 
+  // Under the pointer a danger button paints the danger tint: the soft one, and a stronger one while pressed.
+  it.each(['danger-soft', 'danger-soft-pressed'].flatMap((fill) => TAG_BASES.map((base) => [fill, base] as const)))(
+    'danger on %s over %s is at least 4.5:1',
+    (fill, base) => {
+      expect(wcagContrast(color(values, 'danger'), over(values, fill, base))).toBeGreaterThanOrEqual(4.5);
+    },
+  );
+
+  it('the pressed danger tint is the soft tint at a higher alpha', () => {
+    const { alpha: softAlpha = 1, ...soft } = color(values, 'danger-soft');
+    const { alpha: pressedAlpha = 1, ...pressed } = color(values, 'danger-soft-pressed');
+    expect(pressed).toEqual(soft);
+    expect(pressedAlpha).toBeGreaterThan(softAlpha);
+  });
+
   // A segmented control sits on a page (`surface`) or in a dialog (`raised`) and paints its
   // selected segment over its track (ds/styles.ts). The segment is a shape of its own: it keeps
   // the 1.15:1 from its track that the first heatmap step keeps from an empty day.
