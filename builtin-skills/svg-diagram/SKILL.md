@@ -1,6 +1,9 @@
 ---
 name: svg-diagram
 description: 用 SVG 生成精美的架构图、流程图、时序图、层级图、对比图等结构化图表。直接输出 ```html 代码块（内含 SVG），前端在沙箱 iframe 中渲染。效果比 Mermaid 更美观、布局更灵活。
+display-description:
+  zh-CN: 用 SVG 绘制架构图、流程图、时序图、层级图和对比图
+  en-US: Draw architecture, flow, sequence and hierarchy diagrams as SVG
 trigger: 用户要求画流程图、架构图、序列图、系统架构、技术架构、层级图、部署图、拓扑图、数据流、状态机、对比图、关系图、组织结构图、路线图、思维导图，或任何结构化的图表/可视化需求
 do-not-trigger: 用户要求生成照片、插画、艺术画、海报、UI 设计图、Logo（用 generate_image）；用户要求做数据统计海报（用 infographic）；用户要求做交互/动画/按钮操作的组件（用 html-widget）；用户要求数据图表如折线图/柱状图/饼图（用 html-widget + Chart.js）
 user-invocable: true

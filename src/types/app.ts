@@ -114,9 +114,9 @@ export interface ParsedPluginTeam {
 
 /** Display fields of an app file (`interface`). */
 export interface AppInterface {
-  displayName: string;
-  shortDescription: string;
-  longDescription?: string;
+  displayName: LocalizedText;
+  shortDescription: LocalizedText;
+  longDescription?: LocalizedText;
   developerName?: string;
   category?: string;
   brandColor?: string;
@@ -154,8 +154,9 @@ export type AddedAppOrigin = Exclude<AppOrigin, { kind: 'enterprise' }>;
 /** An app the switcher can enter, or the general shell (`origin` null). */
 export interface AppDefinition {
   appId: string;
-  name: string;
-  description?: string;
+  /** The app's display name and one-line description; shown in the interface language. */
+  name: LocalizedText;
+  description?: LocalizedText;
   /** Absolute paths to the app's own images, or undefined. */
   logo?: string;
   logoDark?: string;
@@ -182,7 +183,8 @@ export interface ConversationAppBinding {
   appId: string;
   appVersion: string;
   origin: AppOriginKind;
-  appName: string;
+  /** The app's display name as its file gives it: one string, or one per locale. */
+  appName: LocalizedText;
   appLogo?: string;
   appLogoDark?: string;
   appIcon?: string;

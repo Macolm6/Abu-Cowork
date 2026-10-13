@@ -205,6 +205,22 @@ describe('teamStore', () => {
       expect(useTeamStore.getState().teams.filter(isBuiltinTeam)).toHaveLength(BUILTIN_TEAMS.length);
     });
 
+    it('keep their per-locale text out of what is written, next to a team of the user', () => {
+      const mine: Team = { id: 'team-mine', name: '我的小队', leaderRoleId: 'role-a', memberRoleIds: ['role-a'], createdAt: 1 };
+      useTeamStore.setState({ teams: [mine, ...BUILTIN_TEAMS] });
+      const persisted = partializeTeamState(useTeamStore.getState());
+      expect(persisted.teams).toEqual([mine]);
+      expect(JSON.stringify(persisted)).not.toContain('Recruiting Team');
+      expect(JSON.stringify(persisted)).not.toContain('i18n');
+    });
+
+    it('carry the shipped per-locale text after hydration', () => {
+      const merged = mergeTeamState({ teams: [] }, useTeamStore.getState());
+      const recruiting = merged.teams.find((team) => team.id === 'builtin-team:recruiting');
+      expect(recruiting?.name).toBe('招聘专家团');
+      expect(recruiting?.i18n?.['en-US']?.name).toBe('Recruiting Team');
+    });
+
     it('come back from the shipped roster on hydration, not from the persisted blob', () => {
       // A blob written by an older version carries a built-in copy (and may be
       // missing one this version added). Hydration must hand back TODAY's

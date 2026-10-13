@@ -23,6 +23,8 @@ import { reportAppFailure } from '@/core/app/appFailure';
 import { resolveBuiltinMarketDir } from '@/core/plugin/builtinMarket';
 import { refreshFetchedMarkets, removeMarket } from '@/core/plugin/marketSource';
 import { loadAppListings, type AppListing, type AppMarketListing } from '@/core/app/appMarket';
+import { resolveLocalizedText } from '@/core/app/appBinding';
+import type { AppLocale } from '@/types/app';
 import { liveRefCatalog } from '@/core/app/appRefs';
 import { getBaseName } from '@/utils/pathUtils';
 import { Button, IconButton } from '@/components/ds/button';
@@ -39,9 +41,9 @@ import { focusIsOnWindow } from '@/components/toolbox/cardFocus';
 import AppAddConfirmDialog from './AppAddConfirmDialog';
 import AppLogo from './AppLogo';
 
-function matches(listing: AppListing, query: string): boolean {
+function matches(listing: AppListing, query: string, locale: AppLocale): boolean {
   if (!query) return true;
-  return [listing.name, listing.description ?? '', ...listing.uses].join(' ').toLowerCase().includes(query);
+  return [resolveLocalizedText(listing.name, locale), resolveLocalizedText(listing.description, locale), ...listing.uses].join(' ').toLowerCase().includes(query);
 }
 
 /**
@@ -57,16 +59,17 @@ const AppCard = memo(function AppCard({ item, addedVersion, onAdd, onUpdate, onE
   onUpdate: (item: AppListing) => void;
   onEnter: (appId: string) => void;
 }) {
-  const { t, format } = useI18n();
+  const { t, format, locale } = useI18n();
   const added = addedVersion !== undefined;
   const canUpdate = added && item.version !== undefined && addedVersion !== item.version && !item.needsUpgrade;
+  const name = resolveLocalizedText(item.name, locale);
   return (
     <div data-testid="app-market-entry" data-app-id={item.appId} className="flex h-full flex-col gap-2 rounded-panel border border-separator bg-surface p-3">
       <div className="flex items-start gap-3">
-        <AppLogo name={item.name} logo={item.logo} logoDark={item.logoDark} size="lg" />
+        <AppLogo name={name} logo={item.logo} logoDark={item.logoDark} size="lg" />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-ui font-medium text-label">{item.name}</p>
-          {item.description && <p className="line-clamp-2 text-ui-sm text-label-secondary">{item.description}</p>}
+          <p className="truncate text-ui font-medium text-label">{name}</p>
+          {item.description && <p className="line-clamp-2 text-ui-sm text-label-secondary">{resolveLocalizedText(item.description, locale)}</p>}
         </div>
       </div>
       {item.uses.length > 0 && <p className="line-clamp-2 text-caption text-label-tertiary">{format(t.appMarket.uses, { names: item.uses.join('、') })}</p>}
@@ -95,7 +98,7 @@ const AppCard = memo(function AppCard({ item, addedVersion, onAdd, onUpdate, onE
 });
 
 export default function AppMarketDialog() {
-  const { t, format } = useI18n();
+  const { t, format, locale } = useI18n();
   const open = useAppStore((s) => s.appMarketOpen);
   const setOpen = useAppStore((s) => s.setAppMarketOpen);
   const addedApps = useAppStore((s) => s.addedApps);
@@ -148,16 +151,17 @@ export default function AppMarketDialog() {
   }, [open, refreshInstalled, ensureBuiltinMarketplace]);
 
   // Re-read whenever the markets change, a flow finishes (an app was added or
-  // updated), or what references resolve against changes.
+  // updated), what references resolve against changes, or the interface
+  // language does (a listing names who it hands work to in that language).
   useEffect(() => {
     if (!open || !flowClosed) return;
     let cancelled = false;
     const markets = [...marketplaces].sort((a, b) => Number(Boolean(b.builtin)) - Number(Boolean(a.builtin)));
     void loadAppListings(markets, liveRefCatalog()).then((result) => { if (!cancelled) setListing(result); });
     return () => { cancelled = true; };
-  }, [open, marketplaces, installed, teams, agents, flowClosed, fetchedAt]);
+  }, [open, marketplaces, installed, teams, agents, flowClosed, fetchedAt, locale]);
 
-  const visible = useMemo(() => (listing?.listings ?? []).filter((item) => matches(item, query.trim().toLowerCase())), [listing, query]);
+  const visible = useMemo(() => (listing?.listings ?? []).filter((item) => matches(item, query.trim().toLowerCase(), locale)), [listing, query, locale]);
   const addedVersionById = useMemo(() => new Map(addedApps.map((app) => [app.appId, app.version])), [addedApps]);
   const userMarkets = marketplaces.filter((market) => !market.builtin);
 
