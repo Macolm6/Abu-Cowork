@@ -28,6 +28,7 @@ vi.mock('@enterprise-modules/core/enterprise/entitlement', () => ({
   isEnterpriseModuleActive: (module: keyof typeof moduleFlags) => moduleFlags[module],
 }))
 vi.mock('@enterprise-modules/stores/enterpriseStore', () => ({
+  getEnterpriseSessionGeneration: () => 0,
   useEnterpriseStore: {
     getState: () => store.state,
     subscribe: vi.fn((listener: (state: typeof store.state) => void) => {

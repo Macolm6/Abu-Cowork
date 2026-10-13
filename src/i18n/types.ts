@@ -397,6 +397,7 @@ export interface TranslationDict {
     runConnectionFailed: string;
     contentPolicyRejected: string;
     runInterrupted: string;
+    exitSaveFailed: string;
     runRecoveredAfterRestart: string;
     runRetry: string;
     /** Escape hatch on an oversize failure row — opens a new conversation carrying the text (#549). */

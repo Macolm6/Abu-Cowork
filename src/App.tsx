@@ -42,6 +42,7 @@ import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import { initNetworkProxy } from '@/core/sandbox/config';
 import { startSidecar } from '@/core/sidecar/sidecarManager';
+import { startClientLifecycle } from '@/core/app/clientLifecycle';
 
 // Initialize platform detection at module load time (before any component renders)
 // so that isWindows()/isMacOS() return correct values immediately
@@ -286,6 +287,7 @@ function App() {
   const [searchModalOpen, setSearchModalOpen] = useState(false);
   const [pendingAnnouncements, setPendingAnnouncements] = useState<AnnouncementItem[]>([]);
   useDeepLinkEnroll();
+  useEffect(() => startClientLifecycle(), []);
   const hasRunningAgent = useChatStore((s) =>
     Object.values(s.conversations).some((c) => c.status === 'running')
   );

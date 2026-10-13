@@ -664,7 +664,46 @@ function readWindowMaterial() {
   return value;
 }
 
+let quitParticipant = null;
+let quitRequest = null;
+ipcRenderer.on('abu:quit-prepare', async (_event, id) => {
+  if (!quitParticipant || quitRequest) throw new Error('Exit preparation participant is unavailable');
+  const request = { id, cancelled: false, release: null, cancel: null, inert: document.body.inert };
+  quitRequest = request;
+  document.body.inert = true;
+  const release = () => {
+    request.release?.();
+    if (quitRequest === request) {
+      document.body.inert = request.inert;
+      quitRequest = null;
+    }
+  };
+  const onCancel = callback => {
+    if (typeof callback !== 'function') throw new Error('Exit cancellation requires a callback');
+    request.cancel = callback;
+    if (request.cancelled) callback();
+  };
+  const [result] = await Promise.allSettled([quitParticipant(onCancel)]);
+  if (result.status === 'fulfilled') request.release = result.value;
+  if (request.cancelled) { release(); return; }
+  const accepted = await ipcRenderer.invoke('abu:quit-ack', { id, success: result.status === 'fulfilled' });
+  if (!accepted || result.status === 'rejected' || request.cancelled) release();
+});
+ipcRenderer.on('abu:quit-cancel', (_event, id) => {
+  if (!quitRequest || quitRequest.id !== id) return;
+  quitRequest.cancelled = true;
+  quitRequest.cancel?.();
+  quitRequest.release?.();
+  document.body.inert = quitRequest.inert;
+  quitRequest = null;
+});
+
 contextBridge.exposeInMainWorld('__ABU_SHELL__', {
+  registerQuitParticipant: async (participant, failureMessage) => {
+    if (typeof participant !== 'function' || quitParticipant) throw new Error('Invalid exit preparation participant');
+    quitParticipant = participant;
+    await ipcRenderer.invoke('abu:quit-register', failureMessage);
+  },
   mainSupervisesSidecar: true,
   deepLinkScheme: readDeepLinkScheme(),
   windowMaterial: readWindowMaterial(),

@@ -845,7 +845,7 @@ function ensureCommandHostLifecycleHooks(app) {
   lifecycleHooksRegistered = true;
   const cleanup = () => teardownCommandHost();
   process.once('exit', cleanup);
-  app?.once?.('before-quit', cleanup);
+  app?.once?.('will-quit', cleanup);
 }
 
 function __resetCommandHostForTests() {

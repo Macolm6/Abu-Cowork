@@ -333,6 +333,7 @@ const zhCN: TranslationDict = {
     runConnectionFailed: '连接恢复失败',
     contentPolicyRejected: '上游内容安全系统拒绝了请求（通常由对话历史触发，可尝试新开会话继续）',
     runInterrupted: '已停止',
+    exitSaveFailed: '聊天内容暂时无法保存，应用已保持打开。请检查可用磁盘空间后再次退出。',
     runRecoveredAfterRestart: '应用重启前任务未完成，请重试。',
     runRetry: '重试',
     newConversationAction: '新建对话',

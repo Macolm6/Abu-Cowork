@@ -51,6 +51,7 @@ const {
   resolveDeviceId,
 } = require('./deviceIdStore.cjs');
 const { updaterDispatch, UPDATER_MISS } = require('./updaterHost.cjs');
+const { createQuitPreparation } = require('./quitPreparation.cjs');
 const { fsDispatch, FS_MISS, canonicalizeForPathPolicy } = require('./fsHost.cjs');
 const { pluginGitDispatch, PLUGIN_GIT_MISS } = require('./pluginGitHost.cjs');
 const { createMarketSourceHost, marketSourceDispatch, MARKET_SOURCE_MISS } = require('./marketSourceHost.cjs');
@@ -267,8 +268,16 @@ function isQuitting() {
  * @param {import('electron').App} app
  */
 function requestAppExit(app) {
-  quitting = true;
   app.quit();
+}
+
+let exitPreparation = null;
+async function prepareAppExit() {
+  await exitPreparation?.prepare();
+}
+function cancelAppExitPreparation() {
+  quitting = false;
+  exitPreparation?.cancel();
 }
 
 /**
@@ -1373,7 +1382,26 @@ function registerTauriHost(app, options = {}) {
   // with closeAction='minimize' would just hide the window and never quit.
   let pluginRegistryQuitReady = false;
   let pluginRegistryQuitPending = false;
+  const quitPreparation = createQuitPreparation({ ipcMain, assertSender: assertTrustedMainIpcSender });
+  exitPreparation = quitPreparation;
+  let quitPreparationPending = false;
   app.on('before-quit', (event) => {
+    if (!quitPreparation.isPrepared()) {
+      event.preventDefault();
+      if (!quitPreparationPending) {
+        quitPreparationPending = true;
+        void quitPreparation.prepare().then(() => {
+          quitPreparationPending = false;
+          app.quit();
+        }, () => {
+          quitPreparationPending = false;
+          quitting = false;
+          quitPreparation.cancel();
+          dialog.showErrorBox('Abu', quitPreparation.failureMessage());
+        });
+      }
+      return;
+    }
     if (!pluginRegistryQuitReady) {
       event.preventDefault();
       if (!pluginRegistryQuitPending) {
@@ -1383,6 +1411,7 @@ function registerTauriHost(app, options = {}) {
           app.quit();
         });
       }
+      return;
     }
     quitting = true;
     // No orphans: tear down every live browser WebContentsView (same
@@ -1830,6 +1859,8 @@ module.exports = {
   getMainWindow,
   isQuitting,
   markQuitting,
+  prepareAppExit,
+  cancelAppExitPreparation,
   getMigrationStartupBlock,
   isMigrationStartupPending,
   getMigrationBackupPath: () => migrationBackupPath,

@@ -333,6 +333,7 @@ const enUS: TranslationDict = {
     runConnectionFailed: 'Connection recovery failed',
     contentPolicyRejected: 'The upstream content-safety system rejected the request (often triggered by conversation history; try continuing in a new conversation)',
     runInterrupted: 'Stopped',
+    exitSaveFailed: 'Your conversation could not be saved. Abu has stayed open. Check available disk space and try quitting again.',
     runRecoveredAfterRestart: 'The task did not finish before the app restarted. Please retry.',
     runRetry: 'Retry',
     newConversationAction: 'New conversation',
