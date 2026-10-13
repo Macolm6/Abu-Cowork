@@ -275,11 +275,23 @@ interface ConversationPersistenceState {
 }
 
 const pendingConversationPersistence = new Map<string, ConversationPersistenceState>();
+const conversationPersistenceRevisions = new Map<string, symbol>();
+
+export function getConversationPersistenceRevision(convId: string): symbol | undefined {
+  return conversationPersistenceRevisions.get(convId);
+}
+
+export function acknowledgeConversationPersistence(convId: string, revision: symbol): void {
+  if (conversationPersistenceRevisions.get(convId) === revision) {
+    conversationPersistenceRevisions.delete(convId);
+  }
+}
 
 function trackConversationPersistence(
   convId: string,
   operation: () => Promise<unknown>,
 ): void {
+  conversationPersistenceRevisions.set(convId, Symbol());
   const state = pendingConversationPersistence.get(convId) ?? {
     tail: Promise.resolve(),
   };
@@ -954,6 +966,7 @@ export const useChatStore = create<ChatStore>()(
           ...(initialModel ? { model: initialModel } : {}),
           ...(initialPermissionMode ? { permissionMode: initialPermissionMode } : {}),
         };
+        conversationPersistenceRevisions.set(id, Symbol());
         set((state) => {
           state.conversations[id] = {
             ...meta,
@@ -1180,6 +1193,7 @@ export const useChatStore = create<ChatStore>()(
       },
 
       deleteConversation: (id) => {
+        conversationPersistenceRevisions.delete(id);
         // P1-3c-2 (design doc §3 change 3 / P1-3C-SCOUT-REPORT.md §5
         // "secondary finding"): this abort MUST run before the `conversations`/
         // `conversationIndex` deletion below — verified still true, not just
@@ -1326,6 +1340,9 @@ export const useChatStore = create<ChatStore>()(
       },
 
       renameConversation: (id, title) => {
+        if (get().conversationIndex[id] || get().conversations[id]) {
+          conversationPersistenceRevisions.set(id, Symbol());
+        }
         set((state) => {
           if (state.conversations[id]) {
             state.conversations[id].title = title;
@@ -2683,6 +2700,10 @@ export const useChatStore = create<ChatStore>()(
             const bundle = parsed as ShareBundle;
             if (!Array.isArray(bundle.messages) || !bundle.conversation) return null;
             const { conv, meta } = buildImportedFromShareBundle(bundle);
+            trackConversationPersistence(conv.id, async () => {
+              const { migrateConversation } = await import('../core/session/conversationStorage');
+              await migrateConversation(conv);
+            });
 
             set((state) => {
               state.conversations[conv.id] = conv;
@@ -2698,10 +2719,7 @@ export const useChatStore = create<ChatStore>()(
               ? bundle.attachments
               : null;
             (async () => {
-              try {
-                const { migrateConversation } = await import('../core/session/conversationStorage');
-                await migrateConversation(conv);
-              } catch { /* non-fatal */ }
+              await waitForConversationPersistence(conv.id).catch(() => undefined);
               if (attachmentsToInstall) {
                 try {
                   const { installSharedAttachments } = await import('../core/session/outputSnapshots');
@@ -2796,9 +2814,10 @@ export const useChatStore = create<ChatStore>()(
             state.activeConversationId = newId;
           });
           // Write messages to disk + update index
-          import('../core/session/conversationStorage').then(async ({ migrateConversation }) => {
+          trackConversationPersistence(newId, async () => {
+            const { migrateConversation } = await import('../core/session/conversationStorage');
             await migrateConversation(imported);
-          }).catch(() => {});
+          });
           // Sync workspace to imported conversation
           const ws = useWorkspaceStore.getState();
           if (imported.workspacePath) {
@@ -2881,9 +2900,12 @@ export const useChatStore = create<ChatStore>()(
           // fails (for example, a transient permission or I/O error). A
           // failed repair must never fall through to the outer load catch
           // and replace a successfully-read conversation with an empty one.
-          await Promise.allSettled(
-            recoveredMessages.map((message) => replaceMessageById(convId, message)),
-          );
+          if (recoveredMessages.length > 0) {
+            trackConversationPersistence(convId, () => Promise.allSettled(
+              recoveredMessages.map((message) => replaceMessageById(convId, message)),
+            ));
+            await waitForConversationPersistence(convId).catch(() => undefined);
+          }
         } catch (err) {
           // The record is on disk and could not be read. No conversation is
           // put in memory for it: an empty one would say "this conversation

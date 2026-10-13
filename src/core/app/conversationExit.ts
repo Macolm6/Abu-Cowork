@@ -1,5 +1,8 @@
 import { acquireAgentDispatchBarrier } from '@/core/agent/agentLoopRunner';
-import { flushTokenBuffer, useChatStore, waitForConversationPersistence } from '@/stores/chatStore';
+import {
+  acknowledgeConversationPersistence, flushTokenBuffer, getConversationPersistenceRevision,
+  useChatStore, waitForConversationPersistence,
+} from '@/stores/chatStore';
 import * as storage from '@/core/session/conversationStorage';
 import { getI18n } from '@/i18n';
 
@@ -25,14 +28,20 @@ export async function prepareConversationExit(onCancel: (cancel: () => void) => 
     // Checkpointing repairs any failed queued write from the loaded history.
     await Promise.allSettled(Object.keys(useChatStore.getState().conversations).map(waitForConversationPersistence));
     controller.signal.throwIfAborted();
+    const saved: { id: string; revision: symbol }[] = [];
     for (const conversation of Object.values(useChatStore.getState().conversations)) {
+      const revision = getConversationPersistenceRevision(conversation.id);
+      if (!revision) continue;
       controller.signal.throwIfAborted();
       await storage.checkpointMessages(conversation.id, conversation.messages, controller.signal);
       controller.signal.throwIfAborted();
       await storage.updateIndexEntry(storage.buildMeta(conversation));
+      saved.push({ id: conversation.id, revision });
     }
     controller.signal.throwIfAborted();
     await storage.flushIndex();
+    controller.signal.throwIfAborted();
+    for (const { id, revision } of saved) acknowledgeConversationPersistence(id, revision);
   })()]);
   if (result.status === 'rejected') {
     barrier.release();

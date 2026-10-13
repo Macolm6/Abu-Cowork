@@ -52,7 +52,7 @@ for (const ending of ['stop', 'stop-close', 'stop-settled', 'complete'] as const
         await page.getByRole('button', { name: /^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/ }).first().click();
         await page.getByRole('menuitem', { name: /^(设置|Settings)$/ }).click();
         await page.getByRole('button', { name: '偏好', exact: true }).click();
-        await page.getByRole('combobox', { name: '关闭窗口时', exact: true }).click();
+        await page.getByRole('combobox', { name: '关闭窗口时', exact: true }).press('Space');
         await page.getByRole('option', { name: '直接退出', exact: true }).click();
         await page.keyboard.press('Escape');
       }
