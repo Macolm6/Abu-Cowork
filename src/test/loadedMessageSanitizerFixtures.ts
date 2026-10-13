@@ -38,12 +38,10 @@ const FIXTURE_PATH = join(
   '../core/session/__fixtures__/loadedMessageSanitizer.fixtures.json',
 );
 
-const RECOVERED_TOKEN = '<<recovered>>';
 const EMPTY_TOKEN = '<<empty>>';
 
-/** The two strings a replay passes to the pure module when it has no locale of its own. */
+/** The string a replay passes to the pure module when it has no locale of its own. */
 export const FIXTURE_TEXT: LoadedMessageSanitizerText = {
-  runRecoveredAfterRestart: RECOVERED_TOKEN,
   errorEmptyBody: EMPTY_TOKEN,
 };
 
@@ -56,11 +54,9 @@ function jsonStringBody(value: string): string {
   return JSON.stringify(value).slice(1, -1);
 }
 
-/** A case's expected rows with the two tokens replaced by the strings a tier actually uses. */
+/** A case's expected rows with the token replaced by the string a tier actually uses. */
 export function expectedForText(expected: unknown[], text: LoadedMessageSanitizerText): unknown[] {
   return JSON.parse(
-    JSON.stringify(expected)
-      .replaceAll(RECOVERED_TOKEN, jsonStringBody(text.runRecoveredAfterRestart))
-      .replaceAll(EMPTY_TOKEN, jsonStringBody(text.errorEmptyBody)),
+    JSON.stringify(expected).replaceAll(EMPTY_TOKEN, jsonStringBody(text.errorEmptyBody)),
   );
 }

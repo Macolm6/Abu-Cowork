@@ -424,6 +424,9 @@ export default function MessageBubble({
   const activeConv = useActiveConversation();
   const isConvRunning = activeConv?.status === 'running';
   const hasRunFailure = message.runState === 'failed' || message.runState === 'connection-failed';
+  // The application closed while this turn was running: what it produced is
+  // kept, and the row offers to send the message again.
+  const closedMidway = message.runState === 'interrupted' && message.runInterruptCause === 'app_exit';
   // #549: an oversize turn can never succeed by retrying — the only way forward
   // is a fresh conversation, so the row swaps Retry for 「新建对话」.
   const isOversizeFailure = hasRunFailure && message.runErrorKind === 'payload_too_large';
@@ -780,6 +783,20 @@ export default function MessageBubble({
                         </p>
                       )}
                     </div>
+                  </InlineMessage>
+                </div>
+              )}
+              {closedMidway && (
+                <div className="max-w-2xl">
+                  <InlineMessage
+                    tone="info"
+                    action={!isConvRunning && (
+                      <Button variant="secondary" size="sm" icon={AppIcons.retry} onClick={handleRunRetry}>
+                        {t.chat.runResend}
+                      </Button>
+                    )}
+                  >
+                    {t.chat.runClosedMidway}
                   </InlineMessage>
                 </div>
               )}
