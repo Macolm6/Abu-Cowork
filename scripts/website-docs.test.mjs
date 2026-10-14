@@ -82,12 +82,14 @@ test('the deployment puts both changelogs where the viewer reads them', () => {
   const workflow = read('.github/workflows/deploy-website.yml');
   const viewer = read('website/docs.js');
 
-  assert.ok(workflow.includes('run: cp CHANGELOG.md CHANGELOG.zh-CN.md website/docs/'));
-  assert.ok(workflow.indexOf('cp CHANGELOG.md') < workflow.indexOf('rsync -avz'), 'the copy runs before the upload');
-  for (const name of ['CHANGELOG.md', 'CHANGELOG.zh-CN.md']) {
-    assert.ok(workflow.includes(`      - '${name}'`), `a change to ${name} on main deploys the site`);
-    assert.ok(viewer.includes(`changelog: 'docs/${name}'`), `viewer does not read docs/${name}`);
+  // The web server serves no file named CHANGELOG.md, so the copies are named release-notes*.md.
+  for (const [source, copy] of [['CHANGELOG.md', 'release-notes.md'], ['CHANGELOG.zh-CN.md', 'release-notes.zh-CN.md']]) {
+    assert.ok(workflow.includes(`cp ${source} website/docs/${copy}`), `the deployment copies ${source} to website/docs/${copy}`);
+    assert.ok(workflow.indexOf(`cp ${source}`) < workflow.indexOf('rsync -avz'), 'the copy runs before the upload');
+    assert.ok(workflow.includes(`      - '${source}'`), `a change to ${source} on main deploys the site`);
+    assert.ok(viewer.includes(`changelog: 'docs/${copy}'`), `viewer does not read docs/${copy}`);
   }
+  assert.ok(!viewer.includes("docs/CHANGELOG"), 'the viewer reads the copies only');
 });
 
 test('every changelog section is a version the viewer can list, or the unreleased one', () => {
