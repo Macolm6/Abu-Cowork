@@ -7,8 +7,8 @@
  * preview offers 「用本地应用打开」, unless the system would run the file. A file saved with a
  * password says so.
  *
- * The files live in a seeded sidebar project and are opened from its file tree, so no model is
- * asked anything. The host reports a change about two seconds after it happens; every wait here
+ * The files live in a seeded sidebar project and are opened from the workspace file list of a new
+ * task in it, so no model is asked anything. The host reports a change about two seconds after it happens; every wait here
  * is an assertion that retries.
  */
 import { expect, test } from '@playwright/test';
@@ -20,6 +20,7 @@ import {
   createElectronDataRoot,
   dismissFirstRunOverlays,
   launchAbuElectron,
+  openWorkspaceFilesOfProject,
   removeElectronDataRoot,
   type ElectronDataRoot,
 } from './electronHelpers';
@@ -42,6 +43,8 @@ test.describe.serial('preview panel and the file on disk', () => {
   const panel = (): Locator => page.locator('[role="tabpanel"]:not([hidden])');
 
   async function open(name: string) {
+    // The preview of the file opened last has taken the file list's place.
+    await page.getByRole('tab', { name: '工作区文件', exact: true }).click();
     await treeRow(name).click();
     await expect(panel().getByText(name, { exact: true }).first()).toBeVisible({ timeout: READY_TIMEOUT });
   }
@@ -77,8 +80,7 @@ test.describe.serial('preview panel and the file on disk', () => {
     }, { ws: workspace, name: PROJECT_NAME, version: persistedStoreVersion('abu-projects') });
     await dismissFirstRunOverlays(page);
 
-    await page.getByRole('button', { name: PROJECT_NAME, exact: true }).locator('xpath=..')
-      .getByRole('button', { name: '项目文件', exact: true }).click();
+    await openWorkspaceFilesOfProject(page, PROJECT_NAME);
     await expect(treeRow('rewrite.pdf')).toBeVisible({ timeout: READY_TIMEOUT });
   });
 

@@ -168,10 +168,12 @@ function patchTree(overrides: Partial<UseWorkspaceTreeResult>) {
   act(() => tree.set({ ...(tree.get() as UseWorkspaceTreeResult), ...overrides }));
 }
 
+const onSelectWorkspace = vi.fn();
+
 function renderTree() {
   return render(
     <DesignSystemProvider>
-      <WorkspaceFileTree />
+      <WorkspaceFileTree onSelectWorkspace={onSelectWorkspace} />
     </DesignSystemProvider>,
   );
 }
@@ -681,12 +683,32 @@ describe('WorkspaceFileTree file operations', () => {
       expect(refresh).not.toHaveBeenCalled();
     });
 
+    it('names the workspace folder in the header', () => {
+      setTree({ rootPath: '/work/quarterly-report' });
+      renderTree();
+
+      expect(screen.getByRole('heading', { name: 'quarterly-report' })).toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: copy.title })).not.toBeInTheDocument();
+    });
+
     it('has no header menu without a workspace', () => {
       setTree({ rootPath: null, rootEntries: [] });
       renderTree();
 
+      expect(screen.getByRole('heading', { name: copy.title })).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: copy.moreActions })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: copy.refresh })).not.toBeInTheDocument();
       expect(screen.getByText(copy.noWorkspace)).toBeInTheDocument();
+    });
+
+    it('re-reads the folder from the refresh button', () => {
+      const refresh = vi.fn();
+      setTree({ refresh });
+      renderTree();
+
+      fireEvent.click(screen.getByRole('button', { name: copy.refresh }));
+
+      expect(refresh).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -809,6 +831,29 @@ describe('WorkspaceFileTree file operations', () => {
       renderTree();
 
       expect(screen.getByText(message)).toBeInTheDocument();
+    });
+
+    it('offers the folder choice while there is no workspace', () => {
+      onSelectWorkspace.mockClear();
+      setTree({ rootPath: null, rootEntries: [] });
+      renderTree();
+
+      fireEvent.click(screen.getByRole('button', { name: enUS.panel.selectWorkspace }));
+
+      expect(onSelectWorkspace).toHaveBeenCalledTimes(1);
+    });
+
+    it('offers a re-read for a folder that cannot be read', () => {
+      const refresh = vi.fn();
+      setTree({ rootError: 'denied', rootEntries: [], refresh });
+      renderTree();
+
+      // The header's button and the one beside the explanation.
+      const buttons = screen.getAllByRole('button', { name: copy.refresh });
+      expect(buttons).toHaveLength(2);
+      fireEvent.click(buttons[1]);
+
+      expect(refresh).toHaveBeenCalledTimes(1);
     });
   });
 });
@@ -1477,7 +1522,7 @@ describe('WorkspaceFileTree menus and rows', () => {
 
       view.rerender(
         <DesignSystemProvider>
-          <WorkspaceFileTree />
+          <WorkspaceFileTree onSelectWorkspace={onSelectWorkspace} />
         </DesignSystemProvider>,
       );
 

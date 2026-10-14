@@ -143,8 +143,6 @@ export interface TranslationDict {
   // Sidebar
   sidebar: {
     newTask: string;
-    projectFiles: string;
-    backToConversations: string;
     automation: string;
     scheduledTasks: string;
     triggers: string;
@@ -3056,6 +3054,7 @@ export interface TranslationDict {
     changesUndone: string;
     noWorkspaceSelected: string;
     selectWorkspace: string;
+    viewFiles: string;
     noFilesModified: string;
     selectWorkspaceHint: string;
     recentlyUsed: string;
@@ -3173,7 +3172,7 @@ export interface TranslationDict {
     imageCopy: string;
     imageCopied: string;
     imageCopyFailed: string;
-    // WorkspaceFileTree (lightweight lazy-loaded project file tree, code-canvas P0)
+    // WorkspaceFileTree (the lazily loaded file tree of the workspace files tab)
     fileTree: {
       title: string;
       noWorkspace: string;
@@ -3224,6 +3223,8 @@ export interface TranslationDict {
     agentTitle: string;
     summaryTitle: string;
     summaryDesc: string;
+    filesTitle: string;
+    filesDesc: string;
     browserDesc: string;
     terminalDesc: string;
     agentStatusQueued: string;

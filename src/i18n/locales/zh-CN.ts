@@ -111,8 +111,6 @@ const zhCN: TranslationDict = {
 
   sidebar: {
     newTask: '新任务',
-    projectFiles: '项目文件',
-    backToConversations: '返回会话',
     automation: '自动化',
     scheduledTasks: '定时任务',
     triggers: '监听事件',
@@ -2473,6 +2471,7 @@ const zhCN: TranslationDict = {
     changesUndone: '这一轮的改动已经撤销',
     noWorkspaceSelected: '未选择工作区',
     selectWorkspace: '选择工作区',
+    viewFiles: '查看文件',
     noFilesModified: '暂无修改的文件',
     selectWorkspaceHint: '点击上方选择工作目录',
     recentlyUsed: '最近使用',
@@ -2590,8 +2589,8 @@ const zhCN: TranslationDict = {
     imageCopyFailed: '复制图片失败',
     // WorkspaceFileTree
     fileTree: {
-      title: '项目文件',
-      noWorkspace: '未绑定工作区文件夹',
+      title: '工作区文件',
+      noWorkspace: '还没有选择工作区',
       empty: '空文件夹',
       loadError: '读取文件夹失败',
       folderDeleted: '该文件夹已删除，无法查看当前任务下的文件',
@@ -2638,6 +2637,8 @@ const zhCN: TranslationDict = {
     agentTitle: '子代理',
     summaryTitle: '任务摘要',
     summaryDesc: '查看任务进展、产物与关联信息',
+    filesTitle: '工作区文件',
+    filesDesc: '查看工作区里的文件',
     browserDesc: '浏览及调试网页',
     terminalDesc: '运行命令及脚本',
     agentStatusQueued: '排队中',
