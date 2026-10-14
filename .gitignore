@@ -83,6 +83,9 @@ eval-results/*.json
 仅供了解*
 docs/
 !website/docs/
+# The deployment copies the two changelogs here from the repository root.
+website/docs/CHANGELOG.md
+website/docs/CHANGELOG.zh-CN.md
 
 # Root-level design docs / drafts / prototypes (not for release)
 # Memory: feedback_no_design_docs — design docs should not be committed.
