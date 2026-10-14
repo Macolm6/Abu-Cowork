@@ -74,6 +74,7 @@ import {
   sanitizeLoadedLedgerMessages,
   sanitizeRunErrorKind,
   sanitizeRunErrorText,
+  sanitizeRunInterruptCause,
   type LoadedMessageSanitizerText,
 } from '../core/session/loadedMessageSanitizer';
 import { clearBrowserToolTrackers } from '../core/observability/browserSignals';
@@ -123,10 +124,9 @@ function toolCallHasNonSuccessMetadata(tc: ToolCall): boolean {
     || batchSummaryHasNonSuccess(tc.batchTerminalSummary);
 }
 
-/** The two strings the shared sanitiser writes into a row, in the UI's locale. */
+/** The string the shared sanitiser writes into a row, in the UI's locale. */
 function loadedMessageSanitizerText(): LoadedMessageSanitizerText {
-  const { chat } = getI18n();
-  return { runRecoveredAfterRestart: chat.runRecoveredAfterRestart, errorEmptyBody: chat.errorEmptyBody };
+  return { errorEmptyBody: getI18n().chat.errorEmptyBody };
 }
 
 function sanitizeRunError(value: unknown, errorDetails?: UpstreamErrorDetails): string | undefined {
@@ -164,7 +164,7 @@ export function sanitizeImportedMessage(msg: Message, answeredLoopIds?: Readonly
       const fileChange = parseFileChange(untrustedFileChange);
       return { ...safeToolCall, ...(fileChange ? { fileChange } : {}), isExecuting: false };
     }),
-  }, { recoveredText: getI18n().chat.runRecoveredAfterRestart, answeredLoopIds }));
+  }, { answeredLoopIds }));
 }
 
 /**
@@ -381,6 +381,38 @@ export async function waitForConversationPersistence(convId: string): Promise<vo
     if (state.firstError !== undefined) throw state.firstError;
     return;
   }
+}
+
+/**
+ * Wait until the persistence every conversation has started is settled: the
+ * barrier before the application leaves. A write that failed was reported to
+ * the dispatch that owns it (`waitForConversationPersistence`); here it only
+ * has to be over, so the remaining conversations are still waited for.
+ */
+export async function waitForAllConversationPersistence(): Promise<void> {
+  await Promise.allSettled(
+    [...pendingConversationPersistence.keys()].map((convId) => waitForConversationPersistence(convId)),
+  );
+}
+
+/**
+ * Hand every reply that is still streaming to the stream snapshot as it
+ * stands, buffered tokens included. The loop's own snapshot runs on a timer;
+ * a quit between two of them would otherwise leave the next start with an
+ * older copy of the reply, or none.
+ */
+export async function snapshotStreamingMessagesForExit(): Promise<void> {
+  const { snapshotMessageRevision } = await import('../core/session/conversationStorage');
+  flushTokenBuffer();
+  const snapshots: Promise<void>[] = [];
+  for (const [convId, conversation] of Object.entries(useChatStore.getState().conversations)) {
+    for (const message of conversation.messages) {
+      if (message.role === 'assistant' && message.isStreaming) {
+        snapshots.push(snapshotMessageRevision(convId, message));
+      }
+    }
+  }
+  await Promise.all(snapshots);
 }
 
 // ── Streaming token buffer (RAF-based debounce) ──
@@ -723,6 +755,8 @@ interface ChatActions {
       error?: string;
       errorDetails?: UpstreamErrorDetails;
       errorKind?: Message['runErrorKind'];
+      /** Kept only with `state: 'interrupted'`. */
+      interruptCause?: Message['runInterruptCause'];
       content?: Message['content'];
       skill?: Message['skill'];
       delegateAgent?: Message['delegateAgent'];
@@ -1511,7 +1545,10 @@ export const useChatStore = create<ChatStore>()(
             state.conversations[convId]?.messages,
             msgId ?? FALLBACK_LAST,
           );
-          if (target) target.isStreaming = false;
+          if (target) {
+            target.isStreaming = false;
+            if (target.role === 'assistant') target.streamEnded = true;
+          }
           state.agentStates = nextAgentStates;
         });
         // Persist the final completed message to disk.
@@ -1833,6 +1870,11 @@ export const useChatStore = create<ChatStore>()(
           const errorKind = isFailure ? sanitizeRunErrorKind(patch.errorKind) : undefined;
           if (errorKind) message.runErrorKind = errorKind;
           else delete message.runErrorKind;
+          const interruptCause = patch.state === 'interrupted'
+            ? sanitizeRunInterruptCause(patch.interruptCause)
+            : undefined;
+          if (interruptCause) message.runInterruptCause = interruptCause;
+          else delete message.runInterruptCause;
           if ('content' in patch && patch.content !== undefined) message.content = patch.content;
           if ('skill' in patch) message.skill = patch.skill;
           if ('delegateAgent' in patch) message.delegateAgent = patch.delegateAgent;
@@ -2850,10 +2892,13 @@ export const useChatStore = create<ChatStore>()(
           const meta = get().conversationIndex[convId];
           if (!meta) return;
 
-          const recoveredMessages = messages.filter((message, index) => (
+          // Rows whose stale active state the sanitiser settled, matched by id:
+          // the sanitiser drops ghost rows, so positions differ between the two lists.
+          const loadedRunStates = new Map(loadedMessages.map((message) => [message.id, message.runState]));
+          const recoveredMessages = messages.filter((message) => (
             message.role === 'user'
-            && message.runState === 'failed'
-            && ACTIVE_RUN_STATES.has(loadedMessages[index]?.runState)
+            && !ACTIVE_RUN_STATES.has(message.runState)
+            && ACTIVE_RUN_STATES.has(loadedRunStates.get(message.id))
           ));
           set((state) => {
             delete state.loadFailures[convId];

@@ -13,6 +13,8 @@ interface ProjectState {
   projects: Record<string, Project>;
   /** Sidebar expanded state (ephemeral, not persisted) */
   expandedProjectIds: string[];
+  /** The conversation whose sidebar row is to be brought into view (ephemeral, not persisted) */
+  revealConversationId: string | null;
 }
 
 interface ProjectActions {
@@ -30,6 +32,12 @@ interface ProjectActions {
   /** Update lastActiveAt (call when a conversation in this project is active) */
   touchProject: (id: string) => void;
   toggleExpanded: (id: string) => void;
+  /**
+   * Ask the sidebar to bring a conversation's row into view. A conversation of a listed
+   * project has its project expanded; the row that scrolls itself into view clears the request.
+   */
+  revealConversation: (conversationId: string, projectId?: string) => void;
+  clearRevealConversation: () => void;
 
   // Queries
   getProjectByWorkspace: (workspacePath: string) => Project | undefined;
@@ -45,6 +53,7 @@ export const useProjectStore = create<ProjectStore>()(
     immer((set, get) => ({
       projects: {},
       expandedProjectIds: [],
+      revealConversationId: null,
 
       // --- CRUD ---
 
@@ -157,6 +166,22 @@ export const useProjectStore = create<ProjectStore>()(
         });
       },
 
+      revealConversation: (conversationId, projectId) => {
+        set((state) => {
+          state.revealConversationId = conversationId;
+          const project = projectId ? state.projects[projectId] : undefined;
+          if (project && !project.archived && !state.expandedProjectIds.includes(project.id)) {
+            state.expandedProjectIds.push(project.id);
+          }
+        });
+      },
+
+      clearRevealConversation: () => {
+        set((state) => {
+          state.revealConversationId = null;
+        });
+      },
+
       // --- Queries ---
 
       getProjectByWorkspace: (workspacePath) => {
@@ -190,6 +215,7 @@ export const useProjectStore = create<ProjectStore>()(
         if (state) {
           // Reset ephemeral fields
           state.expandedProjectIds = [];
+          state.revealConversationId = null;
         }
       },
     },

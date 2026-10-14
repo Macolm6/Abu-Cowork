@@ -277,7 +277,7 @@ async function freshHarness(): Promise<Harness> {
     files,
     store,
     storage,
-    text: { runRecoveredAfterRestart: chat.runRecoveredAfterRestart, errorEmptyBody: chat.errorEmptyBody },
+    text: { errorEmptyBody: chat.errorEmptyBody },
   };
 }
 
