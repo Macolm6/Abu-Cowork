@@ -2616,13 +2616,17 @@ export const useChatStore = create<ChatStore>()(
         // Live-freshness write-through (message-storage hybrid P2): turn-end
         // is the moment a conversation's messages are settled for this round,
         // so re-index its catalog row + FTS body now instead of waiting for
-        // the next startup reconcile. Fire-and-forget, matches the existing
-        // dynamic-import + .catch(()=>{}) pattern used elsewhere in this
-        // store — never await inside the reducer.
+        // the next startup reconcile. The reindex reads messages.jsonl in the
+        // main process, so it rides the conversation's serial persistence
+        // queue: every write this turn already queued there (finishStreaming's
+        // checkpoint of the final reply among them) reaches the file first.
         if (shouldReindex) {
-          import('../core/session/conversationStorage').then(({ catalogReindexConversation }) => {
-            catalogReindexConversation(convId).catch(() => {});
-          });
+          trackConversationPersistence(
+            convId,
+            () => import('../core/session/conversationStorage').then(({ catalogReindexConversation }) =>
+              catalogReindexConversation(convId)
+            ),
+          );
         }
       },
 
