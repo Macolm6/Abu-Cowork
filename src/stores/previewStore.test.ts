@@ -6,7 +6,7 @@ import {
   BATCH_PROGRESS_GLOBAL_RICH_CONTENT_BYTES,
   useBatchProgressStore,
 } from './batchProgressStore';
-import { getVisibleTabs, subagentTabId, usePreviewStore, type WorkspaceTab } from './previewStore';
+import { getVisibleTabs, isWideTab, subagentTabId, usePreviewStore, type WorkspaceTab } from './previewStore';
 import { clearBrowserSignals, getRecentBrowserSignals } from '@/core/observability/browserSignals';
 
 function reset() {
@@ -19,7 +19,7 @@ function reset() {
     previewFilePath: null,
     chatWidth: null,
     reloadNonce: 0,
-    fileTreeMode: false,
+    emptyPanelShownFor: null,
     currentConversationId: null,
     lastActiveTabByConversation: {},
     panelStateByConversation: {},
@@ -166,6 +166,111 @@ describe('previewStore', () => {
 
       usePreviewStore.getState().openPreview('/data/outputs/files/ab12/notes.md', { line: 2 });
       expect(usePreviewStore.getState().tabs[0]).toMatchObject({ keptCopyOf: '/w/notes.md', line: 2 });
+    });
+  });
+
+  describe('openFiles', () => {
+    beforeEach(() => {
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
+    });
+
+    it('opens the file list after the other tabs, makes it active and expands the panel', () => {
+      usePreviewStore.getState().openSummary();
+      useSettingsStore.getState().setRightPanelCollapsed(true);
+
+      const id = usePreviewStore.getState().openFiles();
+
+      const state = usePreviewStore.getState();
+      expect(state.tabs.map((tab) => tab.kind)).toEqual(['summary', 'files']);
+      expect(state.tabs[1]).toEqual({ id, kind: 'files', ownerConversationId: 'conv-a' });
+      expect(state.activeTabId).toBe(id);
+      expect(useSettingsStore.getState().rightPanelCollapsed).toBe(false);
+    });
+
+    it('returns to the open file list and adds no second one', () => {
+      const first = usePreviewStore.getState().openFiles();
+      usePreviewStore.getState().openPreview('/work/a.md');
+      useSettingsStore.getState().setRightPanelCollapsed(true);
+
+      const second = usePreviewStore.getState().openFiles();
+
+      const state = usePreviewStore.getState();
+      expect(second).toBe(first);
+      expect(state.tabs.filter((tab) => tab.kind === 'files')).toHaveLength(1);
+      expect(state.activeTabId).toBe(first);
+      expect(useSettingsStore.getState().rightPanelCollapsed).toBe(false);
+    });
+
+    it('keeps one file list per conversation', () => {
+      const ofA = usePreviewStore.getState().openFiles();
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-b');
+      expect(getVisibleTabs()).toEqual([]);
+
+      const ofB = usePreviewStore.getState().openFiles();
+
+      expect(ofB).not.toBe(ofA);
+      expect(getVisibleTabs().map((tab) => tab.id)).toEqual([ofB]);
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
+      expect(getVisibleTabs().map((tab) => tab.id)).toEqual([ofA]);
+      expect(usePreviewStore.getState().activeTabId).toBe(ofA);
+    });
+
+    it('leaves the previewed file unset: the list is no preview', () => {
+      usePreviewStore.getState().openPreview('/work/a.md');
+      usePreviewStore.getState().openFiles();
+
+      expect(usePreviewStore.getState().previewFilePath).toBeNull();
+    });
+  });
+
+  describe('isWideTab', () => {
+    it('keeps the summary and the file list narrow and every other tab wide', () => {
+      const tabs: WorkspaceTab[] = [
+        { id: 's', kind: 'summary' },
+        { id: 'f', kind: 'files' },
+        { id: 'p', kind: 'preview', filePath: '/work/a.md' },
+        { id: 'b', kind: 'browser', url: '' },
+        { id: 't', kind: 'terminal' },
+        { id: 'team', kind: 'team', conversationId: 'conv-a' },
+        { id: 'c', kind: 'changes', conversationId: 'conv-a', loopId: 'loop', fileIndex: 0, title: 'Changes' },
+        { id: 'a', kind: 'subagent', identity: identity('conv-a'), taskIndex: 0, title: 'Worker' },
+      ];
+
+      expect(tabs.filter(isWideTab).map((tab) => tab.kind)).toEqual([
+        'preview', 'browser', 'terminal', 'team', 'changes', 'subagent',
+      ]);
+    });
+  });
+
+  describe('showEmptyPanel', () => {
+    it('records the conversation in view and expands the panel', () => {
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
+      useSettingsStore.getState().setRightPanelCollapsed(true);
+
+      usePreviewStore.getState().showEmptyPanel();
+
+      expect(usePreviewStore.getState().emptyPanelShownFor).toBe('conv-a');
+      expect(useSettingsStore.getState().rightPanelCollapsed).toBe(false);
+    });
+
+    it('does nothing while no conversation is in view', () => {
+      useSettingsStore.getState().setRightPanelCollapsed(true);
+
+      usePreviewStore.getState().showEmptyPanel();
+
+      expect(usePreviewStore.getState().emptyPanelShownFor).toBeNull();
+      expect(useSettingsStore.getState().rightPanelCollapsed).toBe(true);
+    });
+
+    it('is forgotten with the conversation it was asked for', () => {
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
+      usePreviewStore.getState().showEmptyPanel();
+
+      usePreviewStore.getState().closeOwnedTabsForConversation('conv-b');
+      expect(usePreviewStore.getState().emptyPanelShownFor).toBe('conv-a');
+
+      usePreviewStore.getState().closeOwnedTabsForConversation('conv-a');
+      expect(usePreviewStore.getState().emptyPanelShownFor).toBeNull();
     });
   });
 

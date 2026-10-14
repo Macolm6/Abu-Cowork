@@ -32,8 +32,6 @@ import { cn } from '@/lib/utils';
 import { getPlatformShortLabel } from '@/core/im/platformLabels';
 import type { ConversationStatus } from '@/types';
 import ProjectsSection from '@/components/sidebar/ProjectsSection';
-import WorkspaceFileTree from '@/components/panel/WorkspaceFileTree';
-import { usePreviewStore } from '@/stores/previewStore';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { readTextFile } from '@tauri-apps/plugin-fs';
 import ShareExportDialog from '@/components/share/ShareExportDialog';
@@ -130,8 +128,6 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   // PreviewPanel — which is a separate column, so the tree stays visible
   // (left tree + right editor), unlike when the tree lived in the swapping
   // right panel.
-  const showFileTree = usePreviewStore((s) => s.fileTreeMode);
-  const setShowFileTree = usePreviewStore((s) => s.setFileTreeMode);
 
   // Inline rename state
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -357,7 +353,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                 icon={AppIcons.add}
                 label={navTitle(item, t.sidebar.newTask)}
                 selected={activeConversationId === null && viewMode === 'chat'}
-                onClick={() => { startNewConversation(); setViewMode('chat'); setShowFileTree(false); }}
+                onClick={() => { startNewConversation(); setViewMode('chat'); }}
               />
             );
           }
@@ -385,7 +381,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                 icon={AppIcons.team}
                 label={navTitle(item, t.sidebar.team)}
                 selected={viewMode === 'team'}
-                onClick={() => { openTeam(); setShowFileTree(false); }}
+                onClick={() => openTeam()}
               />
             );
           }
@@ -399,7 +395,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                 trailing={pluginUpdateCount > 0
                   ? <span className="flex"><PluginUpdateBadge testId="extensions-update-badge" /></span>
                   : undefined}
-                onClick={() => { openExtensions(); setShowFileTree(false); }}
+                onClick={() => openExtensions()}
               />
             );
           }
@@ -410,7 +406,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                 icon={AppIcons.automation}
                 label={navTitle(item, t.sidebar.automation)}
                 selected={viewMode === 'automation'}
-                onClick={() => { openAutomation(); setShowFileTree(false); }}
+                onClick={() => openAutomation()}
               />
             );
           }
@@ -422,34 +418,13 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
               icon={AppIcons.webPage}
               label={navTitle(item, item.id)}
               selected={viewMode === 'app-page' && activeAppPage?.navItemId === item.id}
-              onClick={() => { openAppPage(item.id); setShowFileTree(false); }}
+              onClick={() => openAppPage(item.id)}
             />
           );
         })}
       </nav>
 
-      {/* File-tree mode swaps the whole conversation list for the active
-          conversation's project file tree (TRAE-style). Files open in the
-          right PreviewPanel, so the tree (here in the sidebar) stays put. */}
-      {showFileTree ? (
-        <div className="flex-1 min-h-0 flex flex-col">
-          <div className="shrink-0 px-4 py-1">
-            <Button
-              variant="plain"
-              size="sm"
-              icon={AppIcons.back}
-              onClick={() => setShowFileTree(false)}
-              className="text-label-tertiary hover:text-label"
-            >
-              {t.sidebar.backToConversations}
-            </Button>
-          </div>
-          <div className="flex-1 min-h-0 px-4">
-            <WorkspaceFileTree />
-          </div>
-        </div>
-      ) : (
-      /* Scrollable middle section: projects + scheduled + triggers + recents */
+      {/* Scrollable middle section: projects + scheduled + triggers + recents */}
       <ScrollArea className="flex-1 min-h-0">
         {/* Projects Section */}
         <ProjectsSection onCreateProject={() => setCreateProjectOpen(true)} />
@@ -555,22 +530,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                   status={convStatus}
                   onComplete={() => handleClearCompletedStatus(conv.id)}
                 />
-                {/* Row actions step aside while renaming so the field gets the row's width. */}
-                {!editing && conv.workspacePath && (
-                  <IconButton
-                    icon={AppIcons.fileTree}
-                    label={t.sidebar.projectFiles}
-                    size="sm"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      switchConversation(conv.id);
-                      setViewMode('chat');
-                      clearBadge(conv.id);
-                      setShowFileTree(true);
-                    }}
-                    className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-                  />
-                )}
+                {/* The row action steps aside while renaming so the field gets the row's width. */}
                 {!editing && (
                   <IconButton
                     icon={AppIcons.more}
@@ -591,7 +551,6 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
         </div>
         )}
       </ScrollArea>
-      )}
 
       {/* User Section — single avatar trigger opening the account popover */}
       <div className="px-3 py-3 shrink-0">

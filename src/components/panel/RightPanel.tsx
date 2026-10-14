@@ -1,6 +1,6 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { getVisibleTabs, isTabVisibleFor, useHasTabs, usePreviewStore } from '@/stores/previewStore';
+import { getVisibleTabs, isTabVisibleFor, isWideTab, useHasTabs, usePreviewStore } from '@/stores/previewStore';
 import { useChatStore } from '@/stores/chatStore';
 import { cn } from '@/lib/utils';
 import WorkspacePanel from './workspace/WorkspacePanel';
@@ -27,10 +27,14 @@ function RightPanelImpl() {
   // stays in the store (its native view is alive) but is not this
   // conversation's content and must not size or open this conversation's panel.
   const hasAnyTab = useHasTabs();
-  // "Wide" content (preview/browser/terminal) flex-fills; the summary tab and
-  // the empty state stay at the narrow fixed width.
+  // "Wide" content (preview/browser/terminal) flex-fills; the summary tab, the
+  // file list and the empty state stay at the narrow fixed width.
   const hasWideContent = usePreviewStore(
-    (s) => s.tabs.some((t) => t.kind !== 'summary' && isTabVisibleFor(t, s.currentConversationId)),
+    (s) => s.tabs.some((t) => isWideTab(t) && isTabVisibleFor(t, s.currentConversationId)),
+  );
+  // The user opened this conversation's panel before it had a message or a tab.
+  const emptyPanelShown = usePreviewStore(
+    (s) => s.emptyPanelShownFor !== null && s.emptyPanelShownFor === s.currentConversationId,
   );
   // The conversation the tab set is currently scoped to. Read from the STORE
   // (not `conversationId` below, which is the chat's active conversation and
@@ -100,7 +104,7 @@ function RightPanelImpl() {
     const startX = e.clientX;
     // Wide content flex-fills, so the divider resizes the chat; otherwise it
     // resizes the narrow panel itself.
-    const isWide = getVisibleTabs().some((t) => t.kind !== 'summary');
+    const isWide = getVisibleTabs().some(isWideTab);
     const sidebarOpen = !useSettingsStore.getState().sidebarCollapsed;
 
     if (isWide) {
@@ -215,9 +219,7 @@ function RightPanelImpl() {
     setDragWidth(null);
     if (!hasWideContent) return;
     if (collapsed) setRightPanelCollapsed(false);
-    // In file-tree mode the sidebar hosts the tree the user is browsing, so
-    // collapsing it on file-open would hide the tree — keep it open then.
-    if (!sidebarCollapsed && !usePreviewStore.getState().fileTreeMode) toggleSidebar();
+    if (!sidebarCollapsed) toggleSidebar();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasWideContent, scopedConversationId]);
 
@@ -239,14 +241,16 @@ function RightPanelImpl() {
   );
 
   // Hide the panel when collapsed (the toggle lives in the title bar), when the
-  // app is not on the chat view, or before a conversation has anything to show.
+  // app is not on the chat view, or before a conversation has anything to show:
+  // a message, a tab, or a workspace whose panel the user asked for.
   //
   // HIDE, never unmount: unmounting tears down every tab body, and a browser
   // tab body owns a live native webview an agent may be driving. Same
   // keep-alive contract WorkspacePanel already applies to its inactive tabs —
   // the hidden placeholder yields a zero rect, which is exactly the signal
   // BrowserTab uses to hide its native layer.
-  const panelHidden = viewMode !== 'chat' || (!hasMessages && !hasAnyTab) || collapsed;
+  const hasContent = hasMessages || hasAnyTab || (hasWorkspace && emptyPanelShown);
+  const panelHidden = viewMode !== 'chat' || !hasContent || collapsed;
 
   // When expanded, render the tabbed workspace.
   // Wide content: flex-fill the space the chat column leaves (chat owns width).

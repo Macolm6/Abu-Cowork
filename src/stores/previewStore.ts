@@ -68,6 +68,8 @@ function expandRightPanel(): void {
  */
 export type WorkspaceTab = (
   | { id: string; kind: 'summary' }
+  // The file list of the conversation's workspace folder; one per conversation.
+  | { id: string; kind: 'files' }
   // `line` is the 1-based line the latest open request asked the source view to show;
   // `lineRequest` counts the requests that named a line, so the same line asked for
   // again is a new request.
@@ -109,6 +111,15 @@ export interface TurnChangesTarget {
 export function isTabVisibleFor(tab: WorkspaceTab, conversationId: string | null): boolean {
   if (!tab.ownerConversationId) return true;
   return tab.ownerConversationId === conversationId;
+}
+
+/**
+ * Whether `tab` asks for the wide panel. The task summary and the workspace
+ * file list are columns of details and keep the narrow, resizable width; every
+ * other tab shows content that fills the space the chat leaves.
+ */
+export function isWideTab(tab: WorkspaceTab): boolean {
+  return tab.kind !== 'summary' && tab.kind !== 'files';
 }
 
 export function visibleTabsFor(tabs: WorkspaceTab[], conversationId: string | null): WorkspaceTab[] {
@@ -203,12 +214,10 @@ interface PreviewState {
   // Resizable chat-column width (px) while the workspace is open; null = use default.
   // The workspace column flex-fills whatever the chat leaves.
   chatWidth: number | null;
-  // True while the left sidebar is showing the active conversation's project
-  // file tree (TRAE-style file mode). Lives here (not local Sidebar state) so
-  // RightPanel can read it and skip its "collapse the sidebar when a preview
-  // opens" behavior — otherwise clicking a file in the tree would collapse the
-  // very sidebar that hosts the tree. Ephemeral (no persist).
-  fileTreeMode: boolean;
+  // The conversation whose panel the user opened before it had a message or a
+  // tab. Such a panel has nothing of its own to show and stays off the page
+  // until asked for; then it shows the launcher. Ephemeral.
+  emptyPanelShownFor: string | null;
   // Back-compat derived read for the many call sites that only care about
   // "the currently previewed file": active tab's filePath if it's a preview
   // tab, else null. Kept as a plain field (not a getter) so it stays
@@ -225,6 +234,11 @@ interface PreviewState {
   // default right-panel tab (progress / workspace files / context). Created at
   // the FRONT so it stays leftmost.
   openSummary: () => void;
+  // Open (or activate an existing) the workspace file list of this conversation.
+  openFiles: () => string;
+  // Show the panel of the current conversation although it has no message and
+  // no tab yet. No-op without a current conversation.
+  showEmptyPanel: () => void;
   // Open (or activate an existing) preview tab for `filePath`. Call sites
   // (~11 across the app) are unchanged from the pre-tabs single-preview API.
   // `options.line` asks the source view to show that line; the tab keeps the
@@ -294,8 +308,6 @@ interface PreviewState {
   // Force a refresh of whatever is displayed. Legacy/back-compat only — see
   // `reloadNonce` above.
   refreshPreview: () => void;
-  // Toggle the sidebar file-tree mode.
-  setFileTreeMode: (on: boolean) => void;
   // Mark a workspace popover as open/closed (so the native browser webview can
   // hide while it's up).
   setMenuOpen: (open: boolean) => void;
@@ -400,7 +412,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
   appModalOpen: false,
   dsModalOpen: false,
   chatWidth: null,
-  fileTreeMode: false,
+  emptyPanelShownFor: null,
   previewFilePath: null,
   reloadNonce: 0,
 
@@ -415,6 +427,27 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
     // Summary is the default tab — put it first so it stays leftmost.
     const nextTabs: WorkspaceTab[] = [{ id, kind: 'summary', ...ownerScope() }, ...tabs];
     commitTabs(nextTabs, id);
+  },
+
+  openFiles: () => {
+    const { tabs } = get();
+    const existing = visibleNow().find((t) => t.kind === 'files');
+    if (existing) {
+      commitTabs(tabs, existing.id);
+      expandRightPanel();
+      return existing.id;
+    }
+    const id = genId();
+    commitTabs([...tabs, { id, kind: 'files', ...ownerScope() }], id);
+    expandRightPanel();
+    return id;
+  },
+
+  showEmptyPanel: () => {
+    const id = get().currentConversationId;
+    if (!id) return;
+    set({ emptyPanelShownFor: id });
+    expandRightPanel();
   },
 
   openPreview: (filePath, options) => {
@@ -665,6 +698,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
       delete lastActiveTabByConversation[conversationId];
       return { panelStateByConversation, lastActiveTabByConversation,
         ...(state.currentConversationId === conversationId ? { currentConversationId: null } : {}),
+        ...(state.emptyPanelShownFor === conversationId ? { emptyPanelShownFor: null } : {}),
       };
     });
   },
@@ -739,10 +773,6 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
 
   refreshPreview: () => {
     set((s) => ({ reloadNonce: s.reloadNonce + 1 }));
-  },
-
-  setFileTreeMode: (on) => {
-    set({ fileTreeMode: on });
   },
 
   setMenuOpen: (open) => {

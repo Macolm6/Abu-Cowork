@@ -111,8 +111,6 @@ const enUS: TranslationDict = {
 
   sidebar: {
     newTask: 'New Task',
-    projectFiles: 'Project Files',
-    backToConversations: 'Back to conversations',
     automation: 'Automation',
     scheduledTasks: 'Scheduled Tasks',
     triggers: 'Triggers',
@@ -2469,6 +2467,7 @@ const enUS: TranslationDict = {
     changesUndone: "This turn's changes have been undone",
     noWorkspaceSelected: 'No workspace selected',
     selectWorkspace: 'Select Workspace',
+    viewFiles: 'View files',
     noFilesModified: 'No modified files',
     selectWorkspaceHint: 'Select a workspace folder above',
     recentlyUsed: 'Recently Used',
@@ -2586,8 +2585,8 @@ const enUS: TranslationDict = {
     imageCopyFailed: 'Failed to copy image',
     // WorkspaceFileTree
     fileTree: {
-      title: 'Project Files',
-      noWorkspace: 'No workspace folder bound',
+      title: 'Workspace Files',
+      noWorkspace: 'No workspace selected yet',
       empty: 'Empty folder',
       loadError: 'Failed to read folder',
       folderDeleted: "This folder has been deleted — files for this task can't be shown",
@@ -2634,6 +2633,8 @@ const enUS: TranslationDict = {
     agentTitle: 'Subagent',
     summaryTitle: 'Task Summary',
     summaryDesc: 'Progress, outputs, and related info',
+    filesTitle: 'Workspace Files',
+    filesDesc: 'Browse the files in the workspace',
     browserDesc: 'Browse and debug web pages',
     terminalDesc: 'Run commands and scripts',
     agentStatusQueued: 'Queued',

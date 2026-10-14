@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { usePreviewStore } from '@/stores/previewStore';
 import { useNoticeBadgeStore } from '@/stores/noticeBadgeStore';
 import { useI18n } from '@/i18n';
 import { Dialog } from '@/components/ds/dialog';
@@ -39,7 +38,6 @@ export default function ConversationSearchModal({ open, onClose }: { open: boole
   const switchConversation = useChatStore((s) => s.switchConversation);
   const clearCompletedStatus = useChatStore((s) => s.clearCompletedStatus);
   const setViewMode = useSettingsStore((s) => s.setViewMode);
-  const setFileTreeMode = usePreviewStore((s) => s.setFileTreeMode);
   const clearBadge = useNoticeBadgeStore((s) => s.clear);
   const [query, setQuery] = useState('');
   const [hits, setHits] = useState<SearchHit[]>([]);
@@ -110,7 +108,6 @@ export default function ConversationSearchModal({ open, onClose }: { open: boole
   const pick = (id: string, jumpQuery?: string) => {
     switchConversation(id);
     setViewMode('chat');
-    setFileTreeMode(false);
     clearBadge(id);
     clearCompletedStatus(id);
     // Body-content hits carry the query so ChatView can scroll to + highlight
