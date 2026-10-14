@@ -195,15 +195,18 @@ test('release notes live on the documentation page, the home page keeps version 
   assert.ok(homeScript.includes("whatsnew: `${docsPage}#changelog`, news: `${docsPage}#changelog`"), 'old update addresses open the release notes');
 
   const viewer = read('docs.js');
-  assert.ok(viewer.includes("'changelog': { release: 'zh-CN', title: '更新日志' }"));
-  assert.ok(viewer.includes("'changelog': { release: 'en-US', title: 'Release notes' }"));
+  assert.ok(viewer.includes("'changelog': { changelog: 'docs/CHANGELOG.zh-CN.md', title: '更新日志' }"));
+  assert.ok(viewer.includes("'changelog': { changelog: 'docs/CHANGELOG.md', title: 'Release notes' }"));
   assert.ok(viewer.includes("const RELEASE_METADATA = 'https://abu-agent.oss-cn-beijing.aliyuncs.com/electron/latest-release.json';"));
-  assert.ok(viewer.includes("(data.notes_i18n || {})[doc.release]"), 'the notes are taken in the page language only');
-  assert.ok(viewer.includes("version.textContent = source.version;"), 'the version shows at the top');
+  assert.ok(viewer.includes('keep = numbers !== null && isReleased(numbers, latest);'), 'only released versions are shown');
+  for (const source of [read('docs.zh-CN.html'), read('docs.html')]) {
+    assert.ok(source.includes('<div class="wrap docs" id="docs">'));
+    assert.ok(source.includes('class="docs-rail"') && source.includes('id="contents"'), 'the page has the contents column');
+  }
   assert.ok(viewer.includes("const DEFAULT_DOC = 'installation';"));
   for (const [file, labels] of [
     ['docs.zh-CN.html', ['安装指南', '使用指南', '浏览网页', '应用规范', '插件规范', '更新日志']],
-    ['docs.html', ['Installation Guide', 'User Guide', 'Web Browsing', 'App Spec (Chinese)', 'Plugin Spec (Chinese)', 'Release notes']],
+    ['docs.html', ['Installation Guide', 'User Guide', 'Web Browsing', 'App Spec', 'Plugin Spec', 'Release notes']],
   ]) {
     const source = read(file);
     assert.deepEqual([...source.matchAll(/<a class="doc-link" href="#[a-z-]+" data-doc="[a-z-]+">([^<]+)<\/a>/g)].map((match) => match[1]), labels, file);

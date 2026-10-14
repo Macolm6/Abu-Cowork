@@ -1,5 +1,7 @@
 # Abu 应用 · 开发者规范
 
+[English](app-spec.en.md) | **中文**
+
 > 适用版本：Abu 0.51.0 起。
 > 相关：[插件规范](plugin-spec.md)（技能、专家、专家团、连接器）；[使用指南](User-Guide.zh-CN.md) 的「应用」一节。
 
