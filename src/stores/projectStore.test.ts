@@ -5,6 +5,7 @@ function resetStore() {
   useProjectStore.setState({
     projects: {},
     expandedProjectIds: [],
+    revealConversationId: null,
   });
 }
 
@@ -219,6 +220,46 @@ describe('projectStore', () => {
       expect(useProjectStore.getState().expandedProjectIds).not.toContain(id);
       useProjectStore.getState().toggleExpanded(id);
       expect(useProjectStore.getState().expandedProjectIds).toContain(id);
+    });
+  });
+
+  describe('revealConversation', () => {
+    it('records the conversation and expands its collapsed project', () => {
+      const id = useProjectStore.getState().createProject({ name: 'Test', workspacePath: '/test' });
+      useProjectStore.getState().toggleExpanded(id);
+
+      useProjectStore.getState().revealConversation('conv1', id);
+
+      expect(useProjectStore.getState().revealConversationId).toBe('conv1');
+      expect(useProjectStore.getState().expandedProjectIds).toEqual([id]);
+    });
+
+    it('leaves an expanded project expanded', () => {
+      const id = useProjectStore.getState().createProject({ name: 'Test', workspacePath: '/test' });
+
+      useProjectStore.getState().revealConversation('conv1', id);
+
+      expect(useProjectStore.getState().expandedProjectIds).toEqual([id]);
+    });
+
+    it('expands nothing for a conversation of no project, of an archived project or of a deleted one', () => {
+      const id = useProjectStore.getState().createProject({ name: 'Test', workspacePath: '/test' });
+      useProjectStore.getState().toggleExpanded(id);
+      useProjectStore.getState().archiveProject(id);
+
+      useProjectStore.getState().revealConversation('conv1');
+      useProjectStore.getState().revealConversation('conv2', id);
+      useProjectStore.getState().revealConversation('conv3', 'gone');
+
+      expect(useProjectStore.getState().revealConversationId).toBe('conv3');
+      expect(useProjectStore.getState().expandedProjectIds).toEqual([]);
+    });
+
+    it('is cleared by clearRevealConversation', () => {
+      useProjectStore.getState().revealConversation('conv1');
+      useProjectStore.getState().clearRevealConversation();
+
+      expect(useProjectStore.getState().revealConversationId).toBeNull();
     });
   });
 

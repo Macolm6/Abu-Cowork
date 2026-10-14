@@ -65,6 +65,7 @@ const { Tray, Menu, BrowserWindow, screen, nativeImage, app: electronApp } = req
 const path = require('node:path');
 const fs = require('node:fs');
 const { execFile } = require('node:child_process');
+const { ownedChildProcesses } = require('./ownedChildProcesses.cjs');
 const { REPO_ROOT } = require('./appEnv.cjs');
 const { registerPrivilegedWindow } = require('./securityBoundary.cjs');
 const { resolveWindowPosition, wireWindowMoveEvent } = require('./windowPlacement.cjs');
@@ -738,10 +739,12 @@ const WINDOWS_ACTIVE_WINDOW_SCRIPT = `
 
 function execFileP(file, args) {
   return new Promise((resolve, reject) => {
-    execFile(file, args, { timeout: 8000, windowsHide: true }, (err, stdout) => {
+    ownedChildProcesses.assertAdmission();
+    const child = execFile(file, args, { timeout: 8000, windowsHide: true }, (err, stdout) => {
       if (err) reject(err);
       else resolve(stdout);
     });
+    ownedChildProcesses.track(child, () => { if (!child.killed) child.kill('SIGKILL'); });
   });
 }
 

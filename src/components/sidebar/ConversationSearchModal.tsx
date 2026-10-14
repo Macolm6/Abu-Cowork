@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { useChatStore } from '@/stores/chatStore';
+import { useProjectStore } from '@/stores/projectStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useNoticeBadgeStore } from '@/stores/noticeBadgeStore';
@@ -12,30 +13,84 @@ import { NavItem } from '@/components/ds/nav-item';
 import { TextField } from '@/components/ds/text-field';
 import { catalogSearch, type SearchHit, type ConversationMeta } from '@/core/session/conversationStorage';
 import { renderMarkedText, highlightQuery } from '@/utils/searchHighlight';
+import type { Project } from '@/types/project';
 
 const HL = 'rounded-control bg-fill-selected font-semibold text-label';
+
+// The catalog cuts its answer to a row count before this window leaves out the conversations
+// that stay out of the search, so it is asked for more conversations than the window lists.
+const CONTENT_FETCH_LIMIT = 500;
+const CONTENT_LIST_LIMIT = 50;
 
 // Strip the `[Attachment: `name`]` prefix from a title for display (mirrors the
 // sidebar's row rendering), falling back to the raw title if stripping empties it.
 const ATTACH_RE = /\[Attachment:\s*`[^`]*`\]\s*/g;
 const cleanTitle = (title: string): string => title.replace(ATTACH_RE, '').trim() || title;
 
-// Only flat conversations belong in the palette — scheduled/trigger/team/project
-// conversations live in their own sections and are hidden from the sidebar
-// recents, so the search must not surface them either.
-const isFlat = (c: ConversationMeta): boolean => !c.scheduledTaskId && !c.triggerId && !c.projectId;
+type Projects = Record<string, Project>;
+
+// The conversations the user started, wherever the sidebar lists them: the recent tasks and
+// the tasks of every listed project. The runs of scheduled tasks and triggers are produced in
+// the background and stay out, as do the tasks of an archived project.
+const isSearchable = (c: ConversationMeta, projects: Projects): boolean =>
+  !c.scheduledTaskId && !c.triggerId && !(c.projectId && projects[c.projectId]?.archived);
+
+const projectNameOf = (c: ConversationMeta, projects: Projects): string | undefined =>
+  c.projectId ? projects[c.projectId]?.name : undefined;
+
+// One result: the title, and under it the project the conversation belongs to and the
+// passage that matched, each only when there is one.
+function ResultRow({ id, title, project, passage, onPick }: {
+  id: string;
+  title: ReactNode;
+  project?: ReactNode;
+  passage?: ReactNode;
+  onPick: () => void;
+}) {
+  const detailId = `search-detail-${id}`;
+  const hasDetail = project !== undefined || passage !== undefined;
+  return (
+    <div>
+      <NavItem
+        icon={AppIcons.conversation}
+        label={title}
+        aria-describedby={hasDetail ? detailId : undefined}
+        onClick={onPick}
+      />
+      {hasDetail && (
+        <div
+          id={detailId}
+          onClick={onPick}
+          className="flex cursor-pointer items-center gap-2 pl-8 pr-2 text-ui-sm text-label-tertiary"
+        >
+          {project !== undefined && (
+            <span data-search-project className="flex max-w-1/2 shrink-0 items-center gap-1">
+              <Icon icon={AppIcons.folder} size="sm" />
+              <span className="truncate">{project}</span>
+            </span>
+          )}
+          {passage !== undefined && <span className="min-w-0 truncate">{passage}</span>}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /**
  * Command-palette-style conversation search. Opened from the title-bar search
  * icon. Empty query lists recent conversations; typing shows instant in-memory
- * title matches PLUS FTS5 body-content hits (via `catalogSearch`), so an existing
- * conversation is always findable by title even if the catalog is cold/unindexed.
+ * matches on the title and the project name PLUS FTS5 body-content hits (via
+ * `catalogSearch`), so an existing conversation is always findable by title even
+ * if the catalog is cold/unindexed. A conversation of a project shows the
+ * project's name under its title.
  * Enter opens the first result, the arrow keys move between the field and the
- * results, and picking a result jumps to that conversation.
+ * results, and picking a result jumps to that conversation and brings its
+ * sidebar row into view.
  */
 export default function ConversationSearchModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { t } = useI18n();
   const conversationIndex = useChatStore((s) => s.conversationIndex);
+  const projects = useProjectStore((s) => s.projects);
   const switchConversation = useChatStore((s) => s.switchConversation);
   const clearCompletedStatus = useChatStore((s) => s.clearCompletedStatus);
   const setViewMode = useSettingsStore((s) => s.setViewMode);
@@ -69,7 +124,7 @@ export default function ConversationSearchModal({ open, onClose }: { open: boole
     }
     const token = ++tokenRef.current;
     const timer = setTimeout(() => {
-      catalogSearch(trimmed).then((res) => {
+      catalogSearch(trimmed, CONTENT_FETCH_LIMIT).then((res) => {
         if (tokenRef.current === token) setHits(res);
       });
     }, 200);
@@ -80,32 +135,38 @@ export default function ConversationSearchModal({ open, onClose }: { open: boole
   const recents = useMemo(
     () =>
       Object.values(conversationIndex)
-        .filter(isFlat)
+        .filter((c) => isSearchable(c, projects))
         .sort((a, b) => b.createdAt - a.createdAt)
         .slice(0, 50),
-    [conversationIndex]
+    [conversationIndex, projects]
   );
 
-  // Instant in-memory title matches — reliable regardless of catalog state.
+  // Instant in-memory matches on the title and on the project's name — reliable
+  // regardless of catalog state.
   const titleMatches = useMemo(() => {
     if (!isSearching) return [];
     const q = trimmed.toLowerCase();
     return Object.values(conversationIndex)
-      .filter(isFlat)
-      .filter((c) => cleanTitle(c.title).toLowerCase().includes(q))
+      .filter((c) => isSearchable(c, projects))
+      .filter((c) =>
+        cleanTitle(c.title).toLowerCase().includes(q)
+        || (projectNameOf(c, projects)?.toLowerCase().includes(q) ?? false))
       .sort((a, b) => b.createdAt - a.createdAt);
-  }, [conversationIndex, trimmed, isSearching]);
+  }, [conversationIndex, projects, trimmed, isSearching]);
 
-  // FTS body-content hits, scoped to flat conversations and deduped against the
-  // instant title matches (title matches render first, richer body hits after).
-  const bodyHits = useMemo(() => {
+  // FTS body-content hits, scoped to the searchable conversations and deduped against the
+  // instant matches (those render first, richer body hits after).
+  const contentMatches = useMemo(() => {
     if (!isSearching) return [];
     const titleIds = new Set(titleMatches.map((c) => c.id));
     return hits.filter((h) => {
       const meta = conversationIndex[h.conv_id];
-      return !!meta && isFlat(meta) && !titleIds.has(h.conv_id);
+      return !!meta && isSearchable(meta, projects) && !titleIds.has(h.conv_id);
     });
-  }, [hits, titleMatches, conversationIndex, isSearching]);
+  }, [hits, titleMatches, conversationIndex, projects, isSearching]);
+  const bodyHits = contentMatches.slice(0, CONTENT_LIST_LIMIT);
+  // More conversations match than are listed: the list ends with a line that says so.
+  const hasMore = contentMatches.length > CONTENT_LIST_LIMIT || hits.length >= CONTENT_FETCH_LIMIT;
 
   const pick = (id: string, jumpQuery?: string) => {
     switchConversation(id);
@@ -113,12 +174,20 @@ export default function ConversationSearchModal({ open, onClose }: { open: boole
     setFileTreeMode(false);
     clearBadge(id);
     clearCompletedStatus(id);
+    useProjectStore.getState().revealConversation(id, conversationIndex[id]?.projectId);
     // Body-content hits carry the query so ChatView can scroll to + highlight
     // the matching message. Title/recents picks pass nothing (no in-body target).
     if (jumpQuery) {
       useChatStore.getState().setPendingSearchJump({ convId: id, query: jumpQuery });
     }
     onClose();
+  };
+
+  // The project's name as a row shows it, with the query marked where the name matched it.
+  const projectLabel = (c: ConversationMeta | undefined, marked?: string): ReactNode | undefined => {
+    const name = c ? projectNameOf(c, projects) : undefined;
+    if (name === undefined) return undefined;
+    return marked ? highlightQuery(name, marked, HL) : name;
   };
 
   // ArrowDown / ArrowUp step through the field and the results in order.
@@ -159,43 +228,41 @@ export default function ConversationSearchModal({ open, onClose }: { open: boole
             <EmptyState icon={AppIcons.search} title={t.sidebar.noSearchResults} />
           ) : isSearching ? (
             <>
-              {/* Instant title matches */}
+              {/* Instant matches on the title or the project's name */}
               {titleMatches.map((c) => (
-                <NavItem
+                <ResultRow
                   key={c.id}
-                  icon={AppIcons.conversation}
-                  label={highlightQuery(cleanTitle(c.title), trimmed, HL)}
-                  onClick={() => pick(c.id)}
+                  id={c.id}
+                  title={highlightQuery(cleanTitle(c.title), trimmed, HL)}
+                  project={projectLabel(c, trimmed)}
+                  onPick={() => pick(c.id)}
                 />
               ))}
               {/* FTS body-content hits: the title, and the matching passage under it */}
               {bodyHits.map((h) => (
-                <div key={h.conv_id}>
-                  <NavItem
-                    icon={AppIcons.conversation}
-                    label={highlightQuery(cleanTitle(h.title), trimmed, HL)}
-                    aria-describedby={h.snippet ? `search-snippet-${h.conv_id}` : undefined}
-                    onClick={() => pick(h.conv_id, trimmed)}
-                  />
-                  {h.snippet && (
-                    <div
-                      id={`search-snippet-${h.conv_id}`}
-                      onClick={() => pick(h.conv_id, trimmed)}
-                      className="cursor-pointer truncate pl-8 pr-2 text-ui-sm text-label-tertiary"
-                    >
-                      {renderMarkedText(h.snippet, HL)}
-                    </div>
-                  )}
-                </div>
+                <ResultRow
+                  key={h.conv_id}
+                  id={h.conv_id}
+                  title={highlightQuery(cleanTitle(h.title), trimmed, HL)}
+                  project={projectLabel(conversationIndex[h.conv_id])}
+                  passage={h.snippet ? renderMarkedText(h.snippet, HL) : undefined}
+                  onPick={() => pick(h.conv_id, trimmed)}
+                />
               ))}
+              {hasMore && (
+                <p role="status" className="px-2 py-1 text-ui-sm text-label-tertiary">
+                  {t.sidebar.searchMoreResults}
+                </p>
+              )}
             </>
           ) : (
             recents.map((c) => (
-              <NavItem
+              <ResultRow
                 key={c.id}
-                icon={AppIcons.conversation}
-                label={cleanTitle(c.title)}
-                onClick={() => pick(c.id)}
+                id={c.id}
+                title={cleanTitle(c.title)}
+                project={projectLabel(c)}
+                onPick={() => pick(c.id)}
               />
             ))
           )}

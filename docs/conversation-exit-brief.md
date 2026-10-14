@@ -47,7 +47,11 @@ flowchart TD
 
 公开客户端的退出没有等待 sidecar 终止确认、消息处理和异步保存。最新 dev 的真实 Electron 重现已显示正文丢失：文件只包含空 assistant 消息，用户消息仍为 running，重启恢复将其标记 failed。
 
-沿用公开 PR #677 的退出参与接口、dispatch barrier 与完整历史 checkpoint，在公开客户端启动时注册通用保存处理。私有 PR #49 的通用保存处理迁入公开客户端，企业专属内容保留私有仓库。
+公开客户端启动时注册通用保存处理，通过退出参与接口、dispatch barrier 与完整历史 checkpoint 保存会话。OSS 和企业构建使用同一保存流程，企业构建配对私有 main 验证。
+
+Windows 原生提示验证还确认了退出资源清理的顺序问题：窗口关闭并发出 `quit` 后，主进程仍可能等待子进程句柄注销。直接启动生产入口、仅连接 Chromium CDP 的复现也出现相同结果。DbgEng 记录显示主线程在 `node::FreeEnvironment` 调用 `UnregisterWaitEx` 时等待，另一个线程正在处理 UI Automation COM 回调。
+
+保存成功或用户明确选择仍然退出后，保持 Node 事件循环运行，停止应用管理的 MCP、sidecar、命令、原生 helper、GUI helper、Git 和 PTY，并等待各自的 `close` 或 `onExit`。完成后才允许 Electron 最终退出。重复退出请求共享这个等待过程；取消重启时恢复创建资源的能力，保留真实的进程关闭通知，后续任务能够重新连接。
 
 ## 执行与验证
 
@@ -63,8 +67,8 @@ R02 聊天归属规则维持待确认状态。强制终止进程、断电和未�
 
 ## 退出等待整合计划
 
-- [ ] `quitGate` 只处理运行中确认，`quitPreparation` 校验保存 ACK，`exitSaveController` 处理等待、重试、取消和主动退出；对应 Node 测试覆盖迟到回复与重复退出。
-- [ ] `conversationExit` 等待 Agent 收尾和聊天保存；退出导致中断保留原因，手动停止保留原有含义；对应运行与存储测试。
-- [ ] 普通退出、窗口退出、重启安装共享保存准备，重启期间由重启入口负责最终动作；验证取消及重复退出。
+- [x] `quitGate` 只处理运行中确认，`quitPreparation` 校验保存 ACK，`exitSaveController` 处理等待、重试、取消和主动退出；对应 Node 测试覆盖迟到回复与重复退出。
+- [x] `conversationExit` 等待 Agent 收尾和聊天保存；退出导致中断保留原因，手动停止保留原有含义；对应运行与存储测试。
+- [x] 普通退出、窗口退出、重启安装共享保存准备，重启期间由重启入口负责最终动作；验证取消及重复退出。
 - [ ] 真实 Electron 验证停止后立即退出、完成后退出、再次打开历史与继续任务，以及原生提示交互；串行运行公开和私有质量检查。
 - [ ] 独立复审、更新 PR 证据，全部必需检查通过后合并。

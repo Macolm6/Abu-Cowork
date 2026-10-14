@@ -88,6 +88,7 @@ const {
   cleanupFsWatchesForSender,
 } = require('./fsWatchHost.cjs');
 const { mcpDispatch } = require('./mcpBridge.cjs');
+const { ownedChildProcesses } = require('./ownedChildProcesses.cjs');
 const { SIDECAR_BRIDGE_STATE_CHANNEL } = require('./sidecarEventChannel.cjs');
 const { sidecarRunRegistry } = require('./sidecarRunRegistry.cjs');
 const {
@@ -293,6 +294,7 @@ function cancelAppExitPreparation() {
   quitting = false;
   externalExitPending = false;
   exitPreparation?.cancel();
+  ownedChildProcesses.resume();
   quitGate?.reset();
 }
 
@@ -1427,13 +1429,17 @@ function registerTauriHost(app, options = {}) {
       cancelId: kind === 'waiting' ? 0 : 1, noLink: true, signal,
     };
     const window = getMainWindow();
-    if (window && !window.isDestroyed()) {
-      window.show();
-      return choices[(await dialog.showMessageBox(window, options)).response];
-    }
-    return choices[(await dialog.showMessageBox(options)).response];
+    if (window && !window.isDestroyed()) window.show();
+    const result = await (window && !window.isDestroyed()
+      ? dialog.showMessageBox(window, options)
+      : dialog.showMessageBox(options));
+    return choices[result.response];
   }
-  exitPreparation = createExitSaveController({ preparation: quitPreparation, ask: askAboutExitSave });
+  exitPreparation = createExitSaveController({
+    preparation: quitPreparation,
+    ask: askAboutExitSave,
+    finish: () => ownedChildProcesses.shutdown(),
+  });
   let quitConfirmationPending = false;
   quitGate = createQuitGate({
     send: payload => emitWindowEvent(getMainWindow(), 'quit-requested', payload),

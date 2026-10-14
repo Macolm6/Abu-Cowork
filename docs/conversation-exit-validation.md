@@ -1,51 +1,52 @@
 # Conversation shutdown durability
 
-Validated on 2026-10-14 using Windows 11 Pro 10.0.26200, Electron 43.1.1, Node 24.18.0 and Abu 0.51.0. The isolated host started from `origin/dev` at `3ec84a27`, incorporating the shutdown interfaces from PR #677. The paired private checkout started from `origin/main` at `608166a` and incorporated PR #49.
+Validation environment: Windows 11 Pro 10.0.26200, Electron 43.1.1, Node 24.18.0 and Abu 0.51.0. The isolated host integrates `dev` at `8d011f370e434ee34203c9f83bc33dbd6c533e46`. OSS and enterprise builds use the same public save coordinator.
 
-## Reproduction and cause
+## Reproduction and confirmed causes
 
-1. Start the actual Electron app and send a request that streams a partial reply.
-2. Wait until the reply text is visibly rendered.
-3. Click Stop and immediately quit the application.
-4. Restart, open the conversation from the sidebar, and inspect the reply and task state.
+1. Send a request in the real Electron application and wait for part of the reply to appear.
+2. Press Stop and immediately quit the application or close its native window with the close action configured to quit.
+3. Restart and open the conversation from the sidebar.
 
-On the initial host, the displayed reply was absent after restart. The ledger contained an empty assistant message and a user message still marked `running`; restart recovery marked that user message `failed`. The Stop action signals the sidecar and returns before its ordered abort acknowledgement and final transcript writes. Native quit did not wait for those operations or the message/index write queues.
+The baseline lost the displayed reply. Its ledger contained an empty assistant message and a user message still marked `running`; restart recovery marked that message `failed`. Stop signalled the sidecar before the ordered abort acknowledgement and final transcript writes had completed. Native quit did not await those operations or the message/index write queues.
 
-The public client registers the save coordinator for OSS and enterprise builds. Quit stops running tasks, blocks new dispatches, awaits complete dispatch lifetimes, flushes buffered text, drains queued persistence, checkpoints histories modified in this process and flushes the index before native resources close. Each modification keeps a revision until both messages and index have saved. Changes made during saving trigger another pass, with each conversation and revision read together at its checkpoint. A history opened for viewing alone is left byte for byte unchanged. Recovery, import and undo-delete writes enter the same queue.
+Native save-failure tests also reproduced a Windows process that remained alive after its windows closed and Electron emitted `quit`. This occurred with the production main entry launched directly, using Chromium CDP and Windows UI Automation without a Node inspector connection. DbgEng recorded the main thread waiting in `UnregisterWaitEx` during `node::FreeEnvironment`, with another thread processing a UI Automation COM callback. Emitting the JavaScript `process.exit` event did not prove OS process termination.
 
-After five seconds the native dialog offers Keep waiting and Quit anyway. Saving successfully closes the dialog and continues exit. A save failure keeps admission and renderer interaction frozen while the dialog offers Retry, Cancel quit and Quit anyway. Retry acquires its barrier before releasing the previous attempt; Cancel quit restores interaction and retains unsaved revisions. Only the explicit Quit anyway action bypasses saving. Running-task confirmation, save acknowledgement and the native decision use separately scoped requests. Restart owns its final relaunch/install operation; a confirmed save remains valid when an updater destroys the window before `before-quit`. Manual Stop retains its existing state, and exit interruption records `app_exit`.
+## Implemented ordering
+
+Quit stops running tasks, blocks new dispatches, awaits complete dispatch lifetimes, flushes buffered text, drains queued persistence, checkpoints modified histories and flushes the index. Each modification retains its revision until both messages and index are saved. Concurrent changes trigger another pass. Viewing a history alone preserves its bytes. Recovery, import and undo-delete writes use the same queue.
+
+After five seconds a native dialog offers Keep waiting and Quit anyway. Successful saving closes that dialog. Save failure offers Retry, Cancel quit and Quit anyway. Retry acquires its barrier before releasing the previous attempt. Cancellation restores interaction and retains unsaved revisions. Only the explicit Quit anyway choice bypasses saving. Requests and responses are scoped to the current operation.
+
+After saving or explicit forced exit, the host stops its registered child processes while Node's event loop is active and awaits their `close` events; PTY completion uses `onExit`. Registration retains older process generations until they close. MCP, sidecar, commands, native helpers, GUI helpers and Git processes participate. New resources are rejected during this phase. Repeated exit requests share its completion. Final Electron quit follows completion. Cancelling a prepared restart reopens admission, and genuine MCP close notifications allow the next task to reconnect.
+
+Manual Stop keeps its existing meaning. App exit records the interruption cause `app_exit`. Update/restart entry points own their final operation; a confirmed save survives updater window destruction.
 
 ## Executed checks
 
-| Check | Result |
-|---|---|
-| Public `npm run verify`, `VITEST_MAX_WORKERS=2` | Exit 0; 1,043 files, 21,108 passed, 34 existing skips |
-| Coverage | Statements 81.29%, branches 73.40%, functions 83.21%, lines 83.07%; original thresholds retained |
-| `npm run build`, `npm run typecheck:enterprise`, `npm run electron:dev:check` | Exit 0 each |
-| Writer / lifecycle / exit unit tests | 86 passed; native quit tests 10 passed in verify |
-| OSS real Electron | Stop and immediate application quit; Stop and immediate native window close; settled Stop and quit; completed stream and immediate quit: 4 passed |
-| Enterprise real Electron | Same 4 journeys passed with `ABU_BUILD_TARGET=enterprise` |
-| Electron smoke | 5 passed |
-| Paired private `npm run verify` | Exit 0; 34 infra checks; 50 files, 902 passed, 1 existing skip |
-| Real Windows native helper | Exit 0; Calculator 30/30, Notepad UIA 30/30, keyboard, WGC, screenshot and window ownership checks passed |
-| Independent review | `gpt-6-astra / xhigh`; no remaining confirmed finding |
+Final serial quality-gate results are recorded here after completion.
 
-Every exit journey restarts twice, opens sidebar history, checks the original visible reply, continues the task, and verifies that the next model request contains the earlier reply. The completed-stream ledger retained `completed` terminals for both turns. The sole model boundary is the repository's permitted loopback LLM service; renderer, sidecar, native Electron exit and filesystem persistence use production code.
+- Native Windows scenarios repeated three times: 15 passed. These cover cancelling a prepared restart and sending another task, delayed renderer saving, retry after a real filesystem failure, cancel and force.
+- Direct production-main launch without a Node inspector: eight consecutive native force-exit runs passed with full-window UI Automation traversal.
+- Related process-owner and exit-controller Node tests: 97 passed, three existing platform skips; exit 0.
+- Independent review: `gpt-6-astra / xhigh`, no remaining confirmed blocking finding.
 
-The byte-preservation regression was reproduced locally with the existing real Electron read-error journey. Final OSS and enterprise runs each combined all four exit journeys and history read-error/retry/delete journeys: seven passed, one POSIX permission check skipped on Windows. Three additional unit cases use the real store, storage and writer with only the permitted native filesystem boundary replaced: recovery and both import formats first encounter failed append/atomic writes, then successful shutdown repairs the file and a fresh read retains the message and recovered terminal state.
+The four conversation journeys cover immediate Stop/quit, immediate Stop/window-close, settled Stop/quit and completed-stream/quit. Each restarts twice, checks sidebar history, sends another task and checks that the model request includes the earlier reply. The completed-stream journey checks `completed` terminals. The permitted loopback LLM is the network boundary; renderer, sidecar, Electron exit and filesystem persistence execute production code.
 
-The first full gate encountered three 5-second test timeouts. All 66 tests in those files passed in isolation; the complete gate then passed with two workers, retaining every test and the original timeout/coverage settings. Private canonical fixtures were extracted with `git archive` from workspace commit `9679af531a1e6c684257b5a68708972e123c65b9` and passed the unchanged SHA guard.
+Native failure tests replace the actual index path with a directory, use Windows UI Automation to read the dialog and physical pointer input to choose an action. The wait test pauses the renderer through CDP, verifies the native waiting choice, resumes saving and awaits actual application closure. The cancelled-restart case executes the host's prepare/cancel methods and sends a real next task through the restarted sidecar.
 
-## Local evidence
+## Evidence
 
-Evidence is retained under the isolated host's `.agent/`: `baseline-electron-confirm.log`, `fixed-electron-final.log`, `enterprise-electron.log`, `verify-public-final.log`, `build-public.log`, `typecheck-enterprise.log`, `preflight.log`, `native-helper.log`, and `updater-destroyed-red.log` / `updater-destroyed-green.log`. Revision checks additionally retain `read-only-red.log`, `revision-electron.log`, `revision-repair-unit-final.log` and `verify-revision-final.log`. Isolated Electron profiles retain the actual ledgers. Private checks are in the sibling `.agent/verify-private-final.log`. Raw machine logs are kept locally.
+The isolated checkout retains `.agent/` logs and Electron profiles with actual ledgers:
 
-Final build logs are `build-revision.log`, `typecheck-enterprise-revision.log`, `preflight-revision.log`; final Electron logs are `oss-revision-electron-final.log` and `enterprise-revision-electron-final.log`. An earlier enterprise run timed out while clicking the animated close-setting dropdown before any task was sent. Opening that same setting with real keyboard input resolved the harness failure; shutdown timing and assertions were retained.
+- Original reply-loss reproduction: `baseline-electron-confirm.log`.
+- Windows native process diagnosis: `no-inspector-full.log`, `no-inspector-native-waits.log`; passing direct-launch runs: `no-inspector-drained.log`.
+- Repeated native interaction checks: `runtime-drained-e2e.log` and `runtime-drained-e2e-results/`.
+- Process ownership checks: `owned-runtime-check-final.log`; exit completion regressions: `runtime-drain-red.log` and `runtime-drain-green.log`.
+- Final serial gates: `validation-progress.log`, `build-c01-final.log`, `typecheck-enterprise-c01-final.log`, `preflight-c01-final.log`, `preflight-enterprise-c01-final.log`, `oss-c01-final.log`, `enterprise-c01-final.log`, `native-helper-c01-final.log` and `verify-c01-final.log`.
 
-Before handoff, `origin/dev` at `1418a3a1` was merged to resolve the PR's generated test-inventory conflict. The official inventory script retained both branches' tests. The integrated `npm run verify` passed: 1,045 files, 21,155 passed, 34 skipped; coverage 81.29% statements, 73.41% branches, 83.21% functions, 83.07% lines. Evidence: `verify-integrated-final.log`.
-
-Integrated build and enterprise typecheck passed (`build-integrated.log`, `typecheck-enterprise-integrated.log`). Both final integrated Electron runs passed the same seven journeys with one Windows-inapplicable POSIX skip (`oss-integrated-electron.log`, `enterprise-integrated-electron.log`).
+Raw machine logs remain local. Test reports attach native dialog text and retain traces on failure.
 
 ## Conditions outside this validation
 
-Installed macOS updates, macOS native helpers, Windows logout/system shutdown, forced process termination, power loss, physical-input takeover and production enterprise gateway credentials were not exercised. Updater window destruction is covered by the native boundary regression. Account ownership rule R02 remains pending separately.
+Installed macOS updates, macOS native helpers, Windows logout/system shutdown, forced process termination, power loss, physical-input takeover and production enterprise gateway credentials were not exercised. Updater window destruction has a native boundary regression. Cancellation after preparation has a real Electron continuation test; an installed updater failure was not exercised. Conversation ownership rule R02 remains pending separately.

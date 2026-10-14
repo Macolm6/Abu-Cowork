@@ -8,6 +8,58 @@ import { closeAbuElectron, configureLocalMockProvider, createElectronDataRoot, l
 import { CHAT_PLACEHOLDER, startOpenAiMock, waitForApp } from './openAiMock';
 
 const run = promisify(execFile);
+
+test('a cancelled restart can start a new task after its sidecar has closed', async () => {
+  const mock = await startOpenAiMock([
+    { kind: 'complete', responseText: 'BEFORE-RESTART' },
+    { kind: 'complete', responseText: 'AFTER-CANCELLED-RESTART' },
+  ]);
+  const { app } = await launchAbuElectron(createElectronDataRoot(), { recordMainProcess: true });
+  try {
+    const page = await app.firstWindow();
+    await waitForApp(page);
+    await configureLocalMockProvider(page, mock.baseUrl);
+    await page.getByPlaceholder(CHAT_PLACEHOLDER).fill('before restart');
+    await page.getByPlaceholder(CHAT_PLACEHOLDER).press('Enter');
+    await expect(page.getByText('BEFORE-RESTART', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: /^(停止|Stop)$/ })).toHaveCount(0);
+    await app.evaluate(async () => {
+      const host = (globalThis as typeof globalThis & {
+        __abuTauriHostForE2E: () => {
+          prepareAppExit(external: boolean): Promise<void>;
+          cancelAppExitPreparation(): void;
+        };
+      }).__abuTauriHostForE2E();
+      await host.prepareAppExit(true);
+      host.cancelAppExitPreparation();
+    });
+    await page.getByPlaceholder(CHAT_PLACEHOLDER).fill('continue after cancelled restart');
+    await page.getByPlaceholder(CHAT_PLACEHOLDER).press('Enter');
+    await expect(page.getByText('AFTER-CANCELLED-RESTART', { exact: true })).toBeVisible();
+  } finally {
+    await closeAbuElectron(app);
+    await mock.close();
+  }
+});
+
+async function recordExit(app: ElectronApplication, root: string) {
+  const file = path.join(root, 'exit-events.jsonl');
+  app.process().stderr?.on('data', chunk => fs.appendFileSync(path.join(root, 'main-stderr.log'), chunk));
+  app.process().stdout?.on('data', chunk => fs.appendFileSync(path.join(root, 'main-stdout.log'), chunk));
+  await app.evaluate(({ app: electronApp, BrowserWindow }, destination) => {
+    const files = process.getBuiltinModule('fs');
+    const record = (event: string) => files.appendFileSync(destination, JSON.stringify({ event, pid: process.pid }) + '\n');
+    for (const event of ['before-quit', 'will-quit', 'quit', 'window-all-closed'] as const) {
+      electronApp.on(event, () => record(event));
+    }
+    process.on('exit', () => record('process-exit'));
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.on('closed', () => record('window-closed'));
+      window.webContents.on('destroyed', () => record('webcontents-destroyed'));
+    }
+    record('recording');
+  }, file);
+}
 async function nativeDialog(app: ElectronApplication, button: string, press = false) {
   const mainPid = await app.evaluate(() => process.pid);
   const result = await run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
@@ -63,6 +115,7 @@ for (const choice of ['retry', 'cancel', 'force'] as const) {
     const root = createElectronDataRoot();
     const mock = await startOpenAiMock([{ kind: 'complete', responseText: 'SAVE-FAILURE-REPLY' }]);
     const { app } = await launchAbuElectron(root);
+    await recordExit(app, root.rootDir);
     let exited = false;
     let blockedPath: string | undefined;
     const repair = () => {

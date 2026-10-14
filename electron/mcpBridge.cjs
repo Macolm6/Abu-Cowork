@@ -69,6 +69,7 @@
 'use strict';
 
 const { spawn, execFileSync } = require('node:child_process');
+const { ownedChildProcesses } = require('./ownedChildProcesses.cjs');
 const { resolveBundledProgram, withBundledRuntimeEnv } = require('./runtimeResolver.cjs');
 const {
   BROWSER_RUNTIME_COMMAND,
@@ -499,6 +500,7 @@ function mcpSpawnPrepared(app, { id, command, args = [], env = {}, heartbeat }) 
   }
   let child;
   try {
+    ownedChildProcesses.assertAdmission();
     child = spawn(launcherPath, [], {
       env: spawnEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -510,6 +512,7 @@ function mcpSpawnPrepared(app, { id, command, args = [], env = {}, heartbeat }) 
     return Promise.reject(new Error(`mcp_spawn failed for "${command}": ${errMsg(err)}`));
   }
   children.set(id, child);
+  ownedChildProcesses.track(child, () => killProcessTree(child));
 
   let targetReady = false;
   let emittedClose = false;

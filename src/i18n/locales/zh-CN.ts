@@ -121,6 +121,7 @@ const zhCN: TranslationDict = {
     recents: '最近',
     searchPlaceholder: '搜索对话...',
     noSearchResults: '没有匹配的对话',
+    searchMoreResults: '还有更多结果，请输入更具体的词',
     noSessionsYet: '暂无会话',
     hideSidebar: '隐藏侧栏',
     showSidebar: '显示侧栏',
