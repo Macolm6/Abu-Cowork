@@ -25,7 +25,6 @@ import { CHAT_PLACEHOLDER, READY_TIMEOUT, startOpenAiMock, waitForApp, type Open
 
 const PROJECT_NAME = '季度报告';
 const PROJECT_TASK = '销售数据清洗';
-const FOLLOW_UP = '再核对一遍';
 const RECENT_TASK = '周末出行计划';
 const REPLY = '已经按同比口径核对完成';
 const PASSAGE = '同比口径';
@@ -79,9 +78,6 @@ test('a conversation of a project is found by title, project name and content, a
   await projectRow.hover();
   await projectRow.locator('xpath=..').getByRole('button', { name: '新任务', exact: true }).click();
   await sendTurn(page, PROJECT_TASK, 1);
-  // The end of a turn indexes the conversation as far as the turn before it, so the first
-  // reply is in the full-text index once a second turn has ended.
-  await sendTurn(page, FOLLOW_UP, 2);
   await page.getByLabel('Main navigation').getByRole('button', { name: '新任务', exact: true }).click();
   await sendTurn(page, RECENT_TASK, 1);
 
