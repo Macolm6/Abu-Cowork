@@ -37,7 +37,7 @@ import { readTextFile } from '@tauri-apps/plugin-fs';
 import ShareExportDialog from '@/components/share/ShareExportDialog';
 import ImportedBadge from './ImportedBadge';
 import { RowMenus } from './RowMenus';
-import { conversationRowProps, useConversationRowFocus } from './conversationRowFocus';
+import { conversationRowElement, conversationRowProps, useConversationRowFocus } from './conversationRowFocus';
 import { opensOnKey } from './rowKeys';
 import { useDeleteConversation } from './useDeleteConversation';
 import { isMacOS, isWindows } from '@/utils/platform';
@@ -122,13 +122,6 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   const [shareConvId, setShareConvId] = useState<string | null>(null);
   const projectsMap = useProjectStore((s) => s.projects);
   const [recentsCollapsed, setRecentsCollapsed] = useState(false);
-  // File-tree mode: the sidebar swaps its conversation list for the active
-  // conversation's project file tree (TRAE-style), entered from a per-row
-  // folder icon and exited via "back". Clicking a file opens it in the right
-  // PreviewPanel — which is a separate column, so the tree stays visible
-  // (left tree + right editor), unlike when the tree lived in the swapping
-  // right panel.
-
   // Inline rename state
   const [editingId, setEditingId] = useState<string | null>(null);
   const renameAfterClose = useRef<string | null>(null);
@@ -193,6 +186,19 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   const handleClearCompletedStatus = useCallback((convId: string) => {
     clearCompletedStatus(convId);
   }, [clearCompletedStatus]);
+
+  // A recent task opened from the search: a collapsed list opens for it, and its row scrolls
+  // into view and clears the request. A project's task is brought into view by its project row.
+  const revealConversationId = useProjectStore((s) => s.revealConversationId);
+  const revealsRecent = revealConversationId !== null && sortedConvs.some((c) => c.id === revealConversationId);
+  if (revealsRecent && recentsCollapsed) setRecentsCollapsed(false);
+  useEffect(() => {
+    if (!revealsRecent || !revealConversationId) return;
+    const row = conversationRowElement(revealConversationId);
+    if (!row) return;
+    row.scrollIntoView({ block: 'nearest' });
+    useProjectStore.getState().clearRevealConversation();
+  }, [revealsRecent, revealConversationId, recentsCollapsed]);
 
   const handleExport = async (convId: string) => {
     // Ensure the conversation is loaded before the dialog reads from it;
