@@ -214,10 +214,11 @@ interface PreviewState {
   // Resizable chat-column width (px) while the workspace is open; null = use default.
   // The workspace column flex-fills whatever the chat leaves.
   chatWidth: number | null;
-  // The conversation whose panel the user opened before it had a message or a
-  // tab. Such a panel has nothing of its own to show and stays off the page
-  // until asked for; then it shows the launcher. Ephemeral.
-  emptyPanelShownFor: string | null;
+  // The conversations whose panel the user opened before they had a message or
+  // a tab. Such a panel has nothing of its own to show and stays off the page
+  // until asked for; then it shows the launcher. Kept per conversation, like
+  // the rest of the panel's layout. Ephemeral.
+  emptyPanelShown: Record<string, true>;
   // Back-compat derived read for the many call sites that only care about
   // "the currently previewed file": active tab's filePath if it's a preview
   // tab, else null. Kept as a plain field (not a getter) so it stays
@@ -412,7 +413,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
   appModalOpen: false,
   dsModalOpen: false,
   chatWidth: null,
-  emptyPanelShownFor: null,
+  emptyPanelShown: {},
   previewFilePath: null,
   reloadNonce: 0,
 
@@ -446,7 +447,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
   showEmptyPanel: () => {
     const id = get().currentConversationId;
     if (!id) return;
-    set({ emptyPanelShownFor: id });
+    set((state) => ({ emptyPanelShown: { ...state.emptyPanelShown, [id]: true } }));
     expandRightPanel();
   },
 
@@ -696,9 +697,10 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
       const lastActiveTabByConversation = { ...state.lastActiveTabByConversation };
       delete panelStateByConversation[conversationId];
       delete lastActiveTabByConversation[conversationId];
-      return { panelStateByConversation, lastActiveTabByConversation,
+      const emptyPanelShown = { ...state.emptyPanelShown };
+      delete emptyPanelShown[conversationId];
+      return { panelStateByConversation, lastActiveTabByConversation, emptyPanelShown,
         ...(state.currentConversationId === conversationId ? { currentConversationId: null } : {}),
-        ...(state.emptyPanelShownFor === conversationId ? { emptyPanelShownFor: null } : {}),
       };
     });
   },

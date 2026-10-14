@@ -34,7 +34,7 @@ function RightPanelImpl() {
   );
   // The user opened this conversation's panel before it had a message or a tab.
   const emptyPanelShown = usePreviewStore(
-    (s) => s.emptyPanelShownFor !== null && s.emptyPanelShownFor === s.currentConversationId,
+    (s) => s.currentConversationId !== null && s.emptyPanelShown[s.currentConversationId] === true,
   );
   // The conversation the tab set is currently scoped to. Read from the STORE
   // (not `conversationId` below, which is the chat's active conversation and

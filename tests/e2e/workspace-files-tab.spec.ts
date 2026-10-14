@@ -99,15 +99,15 @@ test('工作区文件 opens in the right panel before the first message, lists a
     // The folder is as open as it was left.
     await expect(row(NESTED_FILE)).toBeVisible();
 
-    // Story 3: the list follows the folder on disk, and 刷新 reads it again.
+    // Story 3: the list follows the folder on disk, and the header offers 刷新 beside the
+    // folder's name. (That the button reads the folder again is a unit test's to show: here
+    // the list has already followed every change by itself.)
     fs.writeFileSync(path.join(workspace, ADDED_FILE), 'added\n');
     await expect(row(ADDED_FILE)).toBeVisible({ timeout: FOLLOW_TIMEOUT });
     fs.rmSync(path.join(workspace, ADDED_FILE));
     await expect(row(ADDED_FILE)).toHaveCount(0, { timeout: FOLLOW_TIMEOUT });
-    await visiblePanel.getByRole('button', { name: '刷新', exact: true }).click();
-    await expect(row(FOLDER)).toBeVisible();
-    await expect(row(ROOT_FILE)).toBeVisible();
-    await expect(row(NESTED_FILE)).toBeVisible();
+    await expect(visiblePanel.getByRole('heading', { name: 'files-tab-workspace', exact: true })).toBeVisible();
+    await expect(visiblePanel.getByRole('button', { name: '刷新', exact: true })).toBeVisible();
 
     // Story 1: the new-tab menu returns to the open list and adds no second one.
     await previewTab.click();

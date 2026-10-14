@@ -139,7 +139,7 @@ describe('RightPanel', () => {
       previewFilePath: null,
       chatWidth: null,
       reloadNonce: 0,
-      emptyPanelShownFor: null,
+      emptyPanelShown: {},
       currentConversationId: null,
       lastActiveTabByConversation: {},
       panelStateByConversation: {},

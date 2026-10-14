@@ -19,7 +19,7 @@ function reset() {
     previewFilePath: null,
     chatWidth: null,
     reloadNonce: 0,
-    emptyPanelShownFor: null,
+    emptyPanelShown: {},
     currentConversationId: null,
     lastActiveTabByConversation: {},
     panelStateByConversation: {},
@@ -249,7 +249,7 @@ describe('previewStore', () => {
 
       usePreviewStore.getState().showEmptyPanel();
 
-      expect(usePreviewStore.getState().emptyPanelShownFor).toBe('conv-a');
+      expect(usePreviewStore.getState().emptyPanelShown).toEqual({ 'conv-a': true });
       expect(useSettingsStore.getState().rightPanelCollapsed).toBe(false);
     });
 
@@ -258,8 +258,18 @@ describe('previewStore', () => {
 
       usePreviewStore.getState().showEmptyPanel();
 
-      expect(usePreviewStore.getState().emptyPanelShownFor).toBeNull();
+      expect(usePreviewStore.getState().emptyPanelShown).toEqual({});
       expect(useSettingsStore.getState().rightPanelCollapsed).toBe(true);
+    });
+
+    // The panel of one task stays asked for while another task's panel is opened.
+    it('is kept per conversation', () => {
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
+      usePreviewStore.getState().showEmptyPanel();
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-b');
+      usePreviewStore.getState().showEmptyPanel();
+
+      expect(usePreviewStore.getState().emptyPanelShown).toEqual({ 'conv-a': true, 'conv-b': true });
     });
 
     it('is forgotten with the conversation it was asked for', () => {
@@ -267,10 +277,10 @@ describe('previewStore', () => {
       usePreviewStore.getState().showEmptyPanel();
 
       usePreviewStore.getState().closeOwnedTabsForConversation('conv-b');
-      expect(usePreviewStore.getState().emptyPanelShownFor).toBe('conv-a');
+      expect(usePreviewStore.getState().emptyPanelShown).toEqual({ 'conv-a': true });
 
       usePreviewStore.getState().closeOwnedTabsForConversation('conv-a');
-      expect(usePreviewStore.getState().emptyPanelShownFor).toBeNull();
+      expect(usePreviewStore.getState().emptyPanelShown).toEqual({});
     });
   });
 

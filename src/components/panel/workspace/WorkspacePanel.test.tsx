@@ -59,7 +59,7 @@ function resetStores() {
     previewFilePath: null,
     chatWidth: null,
     reloadNonce: 0,
-    emptyPanelShownFor: null,
+    emptyPanelShown: {},
   });
   useBatchProgressStore.setState({
     batches: {},

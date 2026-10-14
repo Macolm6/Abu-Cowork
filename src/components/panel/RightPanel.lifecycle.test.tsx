@@ -166,7 +166,7 @@ describe('RightPanel browser view lifecycle', () => {
       previewFilePath: null,
       chatWidth: null,
       reloadNonce: 0,
-      emptyPanelShownFor: null,
+      emptyPanelShown: {},
       currentConversationId: null,
       lastActiveTabByConversation: {},
       panelStateByConversation: {},
