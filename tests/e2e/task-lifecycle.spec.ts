@@ -534,9 +534,10 @@ test.describe.serial('Electron product task lifecycle', () => {
     await recentConversation.click();
     await expect(secondPage.getByText(prompt, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(secondPage.getByText(partial, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
-    await expect(secondPage.getByText(/上次对话.*等待模型响应时中断/)).toBeVisible({
+    await expect(secondPage.getByText('上次关闭应用时，这一轮没有做完。', { exact: true })).toBeVisible({
       timeout: READY_TIMEOUT,
     });
+    await expect(secondPage.getByText('发送失败')).toHaveCount(0);
 
     const restoredInput = secondPage.getByPlaceholder(CHAT_PLACEHOLDER);
     await expect(restoredInput).toBeEditable({ timeout: READY_TIMEOUT });

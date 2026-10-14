@@ -11,6 +11,7 @@ import {
   recoverInterruptedUserRun,
   sanitizeLoadedLedgerMessages,
   sanitizeRunErrorKind,
+  sanitizeRunInterruptCause,
 } from './loadedMessageSanitizer';
 
 const { cases } = loadLoadedMessageSanitizerFixtures();
@@ -47,7 +48,16 @@ describe('sanitizeLoadedLedgerMessages', () => {
   it('without currentRunMessageId the newest pending row is recovered like any other', () => {
     const current = cases.find((c) => c.currentRunMessageId !== undefined)!;
     const out = sanitizeLoadedLedgerMessages(current.input as Message[], { text: FIXTURE_TEXT });
-    expect(out.map((m) => m.runState)).toEqual(['failed', 'failed']);
+    expect(out.map((m) => m.runState)).toEqual(['interrupted', 'interrupted']);
+    expect(out.map((m) => m.runInterruptCause)).toEqual(['app_exit', 'app_exit']);
+  });
+
+  it('a row recovered from a stale active state carries no failure text', () => {
+    const out = sanitizeLoadedLedgerMessages([
+      { id: 'u1', role: 'user', content: 'x', timestamp: 1, runState: 'running', runError: 'left over' },
+    ] as Message[], { text: FIXTURE_TEXT });
+    expect(out[0]).toMatchObject({ runState: 'interrupted', runInterruptCause: 'app_exit' });
+    expect('runError' in out[0]).toBe(false);
   });
 });
 
@@ -59,16 +69,25 @@ describe('recoverInterruptedUserRun', () => {
   });
 
   it('returns the current run row as the same object', () => {
-    expect(recoverInterruptedUserRun(pending, { recoveredText: 'r', currentRunMessageId: 'm1' })).toBe(pending);
+    expect(recoverInterruptedUserRun(pending, { currentRunMessageId: 'm1' })).toBe(pending);
   });
 
-  it('drops a stored runErrorKind when it brands a row failed', () => {
-    const out = recoverInterruptedUserRun(
-      { ...pending, runErrorKind: 'payload_too_large' },
-      { recoveredText: 'r' },
-    );
-    expect(out).toMatchObject({ runState: 'failed', runError: 'r' });
-    expect('runErrorKind' in out).toBe(false);
+  it('marks a stale active row as a run the application closed on', () => {
+    expect(recoverInterruptedUserRun(pending, {})).toMatchObject({
+      runState: 'interrupted',
+      runInterruptCause: 'app_exit',
+    });
+  });
+
+  it('completes a stale active row whose loop answered', () => {
+    const out = recoverInterruptedUserRun({ ...pending, loopId: 'L1' }, { answeredLoopIds: new Set(['L1']) });
+    expect(out.runState).toBe('completed');
+    expect('runInterruptCause' in out).toBe(false);
+  });
+
+  it('leaves a run the user stopped as it is', () => {
+    const stopped = { ...pending, runState: 'interrupted' } as Message;
+    expect(recoverInterruptedUserRun(stopped, {})).toBe(stopped);
   });
 });
 
@@ -81,12 +100,33 @@ describe('helpers', () => {
     expect(sanitizeRunErrorKind(7)).toBeUndefined();
   });
 
-  it('collectAnsweredLoopIds needs usage on a substantive assistant row', () => {
+  it('sanitizeRunInterruptCause keeps the closed set only', () => {
+    expect(sanitizeRunInterruptCause('app_exit')).toBe('app_exit');
+    expect(sanitizeRunInterruptCause('user')).toBeUndefined();
+    expect(sanitizeRunInterruptCause(true)).toBeUndefined();
+  });
+
+  it('collectAnsweredLoopIds takes usage on a substantive assistant row as proof', () => {
     const rows = [
       { id: 'a', role: 'assistant', content: '半句', timestamp: 1, loopId: 'L-cut' },
       { id: 'b', role: 'assistant', content: '整句', timestamp: 2, loopId: 'L-done', usage: { inputTokens: 1, outputTokens: 1 } },
       { id: 'c', role: 'assistant', content: '', timestamp: 3, loopId: 'L-ghost', usage: { inputTokens: 1, outputTokens: 0 } },
     ] as Message[];
     expect([...collectAnsweredLoopIds(rows)]).toEqual(['L-done']);
+  });
+
+  it('collectAnsweredLoopIds takes a finished last answer without usage as proof', () => {
+    const tool = [{ id: 't', name: 'read_file', input: {}, result: 'ok' }];
+    const rows = [
+      { id: 'a', role: 'assistant', content: '答', timestamp: 1, loopId: 'L-final', isStreaming: false, streamEnded: true },
+      // What a periodic stream snapshot leaves on disk: the flag is cleared, the mark is absent.
+      { id: 'b', role: 'assistant', content: '半句', timestamp: 2, loopId: 'L-snapshot', isStreaming: false },
+      { id: 'c', role: 'assistant', content: '没有标记', timestamp: 3, loopId: 'L-unmarked' },
+      { id: 'd', role: 'assistant', content: '先读', timestamp: 4, loopId: 'L-tool-step', isStreaming: false, streamEnded: true, toolCalls: tool },
+      { id: 'e', role: 'assistant', content: '答', timestamp: 5, loopId: 'L-then-tool', isStreaming: false, streamEnded: true },
+      { id: 'f', role: 'assistant', content: '', timestamp: 6, loopId: 'L-then-tool', isStreaming: false, streamEnded: true, toolCalls: tool },
+      { id: 'g', role: 'assistant', content: [{ type: 'text', text: '  ' }], timestamp: 7, loopId: 'L-blank', isStreaming: false, streamEnded: true },
+    ] as Message[];
+    expect([...collectAnsweredLoopIds(rows)]).toEqual(['L-final']);
   });
 });

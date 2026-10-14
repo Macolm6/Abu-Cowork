@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { useChatStore } from '@/stores/chatStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -18,7 +18,7 @@ import { FOCUS_RING } from '@/components/ds/styles';
 import { TextField } from '@/components/ds/text-field';
 import ImportedBadge from './ImportedBadge';
 import { RowMenus } from './RowMenus';
-import { conversationRowProps, useConversationRowFocus } from './conversationRowFocus';
+import { conversationRowElement, conversationRowProps, useConversationRowFocus } from './conversationRowFocus';
 import { useDeleteConversation } from './useDeleteConversation';
 import { projectRowElement, projectRowProps } from './projectRowFocus';
 import { opensOnKey } from './rowKeys';
@@ -68,6 +68,19 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
   // Whether to show every conversation under this project, or just the first
   // MAX_VISIBLE_CONVERSATIONS. Toggled by the "+N more" / "show less" button.
   const [showAll, setShowAll] = useState(false);
+  // A task of this project opened from the search: the list shows every task when the task is
+  // past the first ones, and its row scrolls into view and clears the request.
+  const revealConversationId = useProjectStore((s) => s.revealConversationId);
+  const clearRevealConversation = useProjectStore((s) => s.clearRevealConversation);
+  const revealIndex = revealConversationId ? conversations.findIndex((c) => c.id === revealConversationId) : -1;
+  if (expanded && revealIndex >= MAX_VISIBLE_CONVERSATIONS && !showAll) setShowAll(true);
+  useEffect(() => {
+    if (!expanded || revealIndex < 0 || !revealConversationId) return;
+    const row = conversationRowElement(revealConversationId);
+    if (!row) return;
+    row.scrollIntoView({ block: 'nearest' });
+    clearRevealConversation();
+  }, [expanded, revealIndex, revealConversationId, showAll, clearRevealConversation]);
   // Whether the project row's 「更多操作」 menu is open: its button stays visible meanwhile.
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   // After a task is deleted from its row menu the focus goes on to a row of this project, else to

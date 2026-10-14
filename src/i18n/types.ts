@@ -154,6 +154,7 @@ export interface TranslationDict {
     recents: string;
     searchPlaceholder: string;
     noSearchResults: string;
+    searchMoreResults: string;
     noSessionsYet: string;
     hideSidebar: string;
     showSidebar: string;
@@ -397,7 +398,9 @@ export interface TranslationDict {
     runConnectionFailed: string;
     contentPolicyRejected: string;
     runInterrupted: string;
-    runRecoveredAfterRestart: string;
+    /** Notice under a turn the application closed on. */
+    runClosedMidway: string;
+    runResend: string;
     runRetry: string;
     /** Escape hatch on an oversize failure row — opens a new conversation carrying the text (#549). */
     newConversationAction: string;
@@ -3099,6 +3102,7 @@ export interface TranslationDict {
     failedToReadFile: string;
     passwordProtectedFile: string;
     fileNotFound: string;
+    keptCopyNotice: string;
     // Editable preview (P2): autosave + external-change conflict notices
     saveFailedTitle: string;
     externalChangeTitle: string;
@@ -3722,6 +3726,8 @@ export interface TranslationDict {
     title: string;
     message: string;
     agentRunningWarning: string;
+    /** The question asked when the application is quit while a conversation is running. */
+    quitWhileRunning: string;
     quit: string;
     minimize: string;
     rememberChoice: string;
