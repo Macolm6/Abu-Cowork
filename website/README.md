@@ -13,8 +13,8 @@
 | `site.css`, `site.js` | Styles and script shared by every page: colors for the light and dark appearance, navigation, buttons, closing block |
 | `home.css`, `home.js` | Home page only: hero, product preview, release record behind the version and the download buttons |
 | `enterprise.css` | Enterprise page only |
-| `docs.css`, `docs.js` | Documentation page only: reads and renders the Markdown guides and the release notes of the current version |
-| `docs/` | Markdown guides shown on the documentation page; `User-Guide*.md` and `Installation-Guide*.md` mirror the repository's `docs/` |
+| `docs.css`, `docs.js` | Documentation page only: reads and renders the Markdown guides and the release notes of every released version |
+| `docs/` | Markdown guides shown on the documentation page; `User-Guide*.md` and `Installation-Guide*.md` mirror the repository's `docs/`. The deployment copies `CHANGELOG.md` and `CHANGELOG.zh-CN.md` here from the repository root; the release notes read them |
 | `assets/shots/` | Screenshots of the desktop client used by the pages (WebP; `-1440` files are the half-size versions for small screens; `hero-window-*` is the home hero, `step-*` are 3:2 regions cut from whole-window screenshots) |
 | `assets/fonts/` | Self-hosted serif fonts: Noto Serif SC 500 and Instrument Serif, with their licenses |
 | `assets/vendor/` | The Markdown renderer (`marked`) used by the documentation page |

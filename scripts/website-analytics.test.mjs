@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const websiteDir = path.join(root, 'website');
 
-const BAIDU_TONGJI_SITE_ID = '01567fba26100539d5fb9f494c789f4d';
+const BAIDU_TONGJI_SITE_ID = 'c45beefad88f58c50e011c5fb5245c86';
 const BAIDU_TONGJI_SNIPPET = [
   '<script>',
   'var _hmt = _hmt || [];',

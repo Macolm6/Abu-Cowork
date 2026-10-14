@@ -13,8 +13,8 @@
 | `site.css`、`site.js` | 所有页面共用的样式和脚本：浅色与深色外观的颜色、导航、按钮、结尾区块 |
 | `home.css`、`home.js` | 只用于首页：首屏、产品预览、版本号和下载按钮使用的发布信息 |
 | `enterprise.css` | 只用于企业版页面 |
-| `docs.css`、`docs.js` | 只用于文档页：读取并显示 Markdown 文档和当前版本的更新日志 |
-| `docs/` | 文档页显示的 Markdown 文档；`User-Guide*.md` 与 `Installation-Guide*.md` 和仓库的 `docs/` 保持一致 |
+| `docs.css`、`docs.js` | 只用于文档页：读取并显示 Markdown 文档和每个已发布版本的更新日志 |
+| `docs/` | 文档页显示的 Markdown 文档；`User-Guide*.md` 与 `Installation-Guide*.md` 和仓库的 `docs/` 保持一致。部署时把仓库根目录的 `CHANGELOG.md` 和 `CHANGELOG.zh-CN.md` 复制到这里，更新日志读取这两份文件 |
 | `assets/shots/` | 页面使用的客户端截图（WebP；文件名带 `-1440` 的是给小屏幕用的一半尺寸；`hero-window-*` 是首页首屏的窗口，`step-*` 是从整窗截图里取出的 3:2 区域） |
 | `assets/fonts/` | 放在自己服务器上的衬线字体：Noto Serif SC 500 与 Instrument Serif，附带各自的许可证 |
 | `assets/vendor/` | 文档页使用的 Markdown 渲染库（`marked`） |

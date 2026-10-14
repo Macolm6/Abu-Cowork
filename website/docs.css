@@ -9,6 +9,13 @@
 .toc-link.is-h3 { padding-left: 28px; font-size: 13px; }
 .toc-link:hover { color: var(--ink); }
 .toc-link.is-active { color: var(--ink); border-left-color: var(--ink); font-weight: 500; }
+.toc-date { display: block; font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em; font-weight: 400; color: var(--ink-3); }
+/* Contents of the document in view: a third column beside the text; the same list in the side column stays hidden */
+.docs-rail { display: none; }
+.docs.has-rail { grid-template-columns: 184px minmax(0, 1fr) 296px; gap: 48px; }
+.docs.has-rail .docs-rail { display: block; position: sticky; top: 72px; align-self: start; max-height: calc(100vh - 72px); overflow-y: auto; padding: 72px 0 40px; }
+.docs.has-rail .docs-rail .eyebrow { display: block; margin-bottom: 12px; }
+.docs.has-rail #toc { display: none; }
 .docs-main { padding: 56px 0 0; min-height: 80vh; }
 .docs-state { padding: 80px 0; color: var(--ink-2); display: grid; gap: 16px; justify-items: start; }
 .docs-menu { display: none; }
@@ -16,8 +23,6 @@
 .article { max-width: 760px; font-size: 17px; line-height: 1.8; overflow-wrap: break-word; }
 .article > * + * { margin-top: 1.1em; }
 .article h1 { font-family: var(--serif); font-weight: 500; font-size: clamp(40px, 5vw, 68px); line-height: 1.12; letter-spacing: -0.02em; margin-bottom: 0.5em; text-wrap: balance; }
-/* Version shown under the title of the release notes */
-.article .doc-version { margin-top: 0; font-family: var(--mono); font-size: 14px; letter-spacing: 0.06em; color: var(--ink-3); }
 .article h2 { font-family: var(--serif); font-weight: 500; font-size: clamp(28px, 2.8vw, 38px); line-height: 1.2; letter-spacing: -0.01em; margin-top: 2.2em; padding-top: 1.1em; border-top: 1px solid var(--line-strong); text-wrap: balance; }
 .article h3 { font-size: 21px; font-weight: 600; line-height: 1.4; margin-top: 1.9em; text-wrap: balance; }
 .article h4 { font-size: 17px; font-weight: 600; margin-top: 1.6em; text-wrap: balance; }
@@ -45,8 +50,14 @@
 .docs-foot span { margin-right: auto; }
 .docs-foot a:hover { color: var(--ink); }
 
+@media (max-width: 1180px) {
+  .docs.has-rail { grid-template-columns: 264px minmax(0, 1fr); gap: 72px; }
+  .docs.has-rail .docs-rail { display: none; }
+  .docs.has-rail #toc { display: block; }
+}
+
 @media (max-width: 900px) {
-  .docs { grid-template-columns: 1fr; gap: 0; }
+  .docs, .docs.has-rail { grid-template-columns: 1fr; gap: 0; }
   .docs-side { position: static; max-height: none; padding: 24px 0 0; display: none; }
   .docs-side.is-open { display: grid; }
   .docs-menu { display: inline-flex; margin-top: 24px; justify-self: start; }

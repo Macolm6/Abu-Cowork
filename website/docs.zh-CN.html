@@ -23,7 +23,7 @@
     var _hmt = _hmt || [];
     (function() {
       var hm = document.createElement("script");
-      hm.src = "https://hm.baidu.com/hm.js?01567fba26100539d5fb9f494c789f4d";
+      hm.src = "https://hm.baidu.com/hm.js?c45beefad88f58c50e011c5fb5245c86";
       var s = document.getElementsByTagName("script")[0];
       s.parentNode.insertBefore(hm, s);
     })();
@@ -52,7 +52,7 @@
   </div>
 </header>
 
-<div class="wrap docs">
+<div class="wrap docs" id="docs">
   <button class="btn btn-line btn-sm docs-menu" type="button" id="docsMenu" aria-expanded="false" aria-controls="docsSide">文档与目录</button>
 
   <aside class="docs-side" id="docsSide">
@@ -73,6 +73,8 @@
     <article class="article" id="article"></article>
     <footer class="docs-foot"><span>© 2026 Abu 阿布</span><a href="index.zh-CN.html">首页</a><a href="enterprise.zh-CN.html">企业版</a><a href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener">GitHub</a><a href="docs.html" lang="en" onclick="try{localStorage.setItem('abu-lang','en')}catch(e){}">English</a></footer>
   </main>
+
+  <nav class="docs-rail" aria-label="本页目录" id="contents"></nav>
 </div>
 
 <script src="assets/vendor/marked.umd.js"></script>
