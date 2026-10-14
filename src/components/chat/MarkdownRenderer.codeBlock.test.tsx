@@ -50,6 +50,17 @@ describe('MarkdownRenderer code block', () => {
     expect(screen.getByRole('button', { name: 'Copy' })).not.toHaveClass('text-success');
   });
 
+  it('highlights a language whose grammar loads on first use', async () => {
+    vi.useRealTimers();
+    const rust = ['```rust', 'fn main() { let total: u32 = 42; }', '```'].join('\n');
+    const { container } = renderInProvider(<MarkdownRenderer content={rust} />);
+    expect(container.textContent).toContain('fn main()');
+    await vi.waitFor(() => {
+      const keyword = [...container.querySelectorAll<HTMLElement>('span')].find((span) => span.textContent === 'fn');
+      expect(keyword?.style.color).toBe('var(--ds-syntax-keyword)');
+    });
+  });
+
   it('names the save button with the save-as label', () => {
     renderInProvider(<MarkdownRenderer content={CODE_BLOCK} />);
     expect(screen.getByRole('button', { name: 'Save as' })).toBeInTheDocument();
