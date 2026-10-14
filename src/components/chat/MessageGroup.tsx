@@ -236,7 +236,9 @@ const LEGACY_STOP_MARKER = /\s*\*\[已停止\]\*\s*$/;
 // eslint-disable-next-line react-refresh/only-export-components
 export function hasPersistedStopState(messages: Message[]): boolean {
   return messages.some((message) =>
-    (message.role === 'user' && message.runState === 'interrupted')
+    // A turn the application closed on says so under the user's message
+    // (`MessageBubble`); 「已停止」 is for a turn the user stopped.
+    (message.role === 'user' && message.runState === 'interrupted' && message.runInterruptCause !== 'app_exit')
     || (message.role === 'assistant' && message.stopReason === 'user')
     || (message.role === 'assistant'
       && typeof message.content === 'string'

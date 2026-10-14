@@ -37,7 +37,7 @@ test('exit requests share one preparation and require the matching main-frame ac
   assert.equal(f.preparation.isPrepared(), true);
 });
 
-test('failed saves cancel preparation and a retry needs a fresh acknowledgement', async () => {
+test('failed saves retain the participant until a retry or cancellation', async () => {
   const f = fixture();
   f.invoke('abu:quit-register', 'Save failed. Please try again.');
   const failed = f.preparation.prepare();
@@ -45,10 +45,10 @@ test('failed saves cancel preparation and a retry needs a fresh acknowledgement'
   const oldId = f.sent[0].payload;
   f.invoke('abu:quit-ack', { id: oldId, success: false });
   await rejected;
-  assert.equal(f.sent[1].channel, 'abu:quit-cancel');
+  assert.equal(f.sent.length, 1);
   assert.equal(f.preparation.isPrepared(), false);
   const retry = f.preparation.prepare();
-  const id = f.sent[2].payload;
+  const id = f.sent[1].payload;
   assert.notEqual(id, oldId);
   assert.equal(f.invoke('abu:quit-ack', { id: oldId, success: true }), false);
   f.invoke('abu:quit-ack', { id, success: true });

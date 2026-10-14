@@ -29,7 +29,7 @@
  */
 'use strict';
 
-const { ipcMain, nativeTheme, screen, BrowserWindow, dialog } = require('electron');
+const { ipcMain, nativeTheme, powerMonitor, screen, BrowserWindow, dialog } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
@@ -52,6 +52,7 @@ const {
 } = require('./deviceIdStore.cjs');
 const { updaterDispatch, UPDATER_MISS } = require('./updaterHost.cjs');
 const { createQuitPreparation } = require('./quitPreparation.cjs');
+const { createExitSaveController } = require('./exitSaveController.cjs');
 const { fsDispatch, FS_MISS, canonicalizeForPathPolicy } = require('./fsHost.cjs');
 const { pluginGitDispatch, PLUGIN_GIT_MISS } = require('./pluginGitHost.cjs');
 const { createMarketSourceHost, marketSourceDispatch, MARKET_SOURCE_MISS } = require('./marketSourceHost.cjs');
@@ -175,6 +176,7 @@ const {
   assertResourceOwner,
 } = require('./securityBoundary.cjs');
 const { wireRendererResourceCleanup } = require('./rendererLifecycle.cjs');
+const { createQuitGate } = require('./quitGate.cjs');
 
 // Window-family state (Phase 2 slice D). `mainWindow` is set by main.cjs right
 // after createWindow() via setMainWindow(); `quitting` is the standard
@@ -183,6 +185,11 @@ const { wireRendererResourceCleanup } = require('./rendererLifecycle.cjs');
 // prevent-loop.
 let mainWindow = null;
 let quitting = false;
+// The handshake every quit goes through before any teardown (quitGate.cjs);
+// created in registerTauriHost. `sessionEnding` is set when the OS is shutting
+// down or logging out, and tells the renderer to ask the user nothing.
+let quitGate = null;
+let sessionEnding = false;
 let computerUseGate = null;
 let computerUseGrantStore = null;
 let unsubscribeNativeHelperEvents = null;
@@ -272,12 +279,21 @@ function requestAppExit(app) {
 }
 
 let exitPreparation = null;
-async function prepareAppExit() {
-  await exitPreparation?.prepare();
+let externalExitPending = false;
+async function prepareAppExit(external = false) {
+  if (external) externalExitPending = true;
+  try {
+    await exitPreparation?.prepare();
+  } catch (error) {
+    cancelAppExitPreparation();
+    throw error;
+  }
 }
 function cancelAppExitPreparation() {
   quitting = false;
+  externalExitPending = false;
   exitPreparation?.cancel();
+  quitGate?.reset();
 }
 
 /**
@@ -293,6 +309,9 @@ function cancelAppExitPreparation() {
  */
 function markQuitting() {
   quitting = true;
+  // Update callers await prepareAppExit before closing windows. Their user
+  // confirmation also covers interruption of running work.
+  quitGate?.allow();
 }
 
 /** True iff any live subscription exists for `event`. */
@@ -327,6 +346,16 @@ function wireWindowEvents(win) {
     e.preventDefault();
     emitEvent('close-requested', null);
   });
+  // Windows ends the session through the window; macOS and Linux report it on
+  // powerMonitor (registerTauriHost).
+  win.on('session-end', () => {
+    sessionEnding = true;
+  });
+  // A handshake has nobody to answer it once the window is closed or its
+  // renderer process has ended. A page that only stopped responding is found
+  // out by the next quit attempt (quitGate.cjs, `request` while asking).
+  win.on('closed', () => quitGate?.rendererGone());
+  win.webContents.on('render-process-gone', () => quitGate?.rendererGone());
   // Purge this renderer's resources only when its top-level document is being
   // replaced. Child-frame loads (notably HTML widget `srcdoc` previews) keep
   // the renderer alive and must not disconnect its main→renderer event bridge.
@@ -336,6 +365,8 @@ function wireWindowEvents(win) {
     cleanupGlobalShortcutsForSender(win.webContents);
     computerUseGate?.revokeSender(win.webContents);
     runtimeState.noteRendererResourcesCleared({ reason, subscriptionCount });
+    // The page a quit handshake was talking to has been replaced.
+    quitGate?.rendererGone();
   });
 }
 
@@ -834,6 +865,10 @@ function windowDispatch(app, cmd, args, callerWin) {
       return null;
     case 'app_exit':
       requestAppExit(app);
+      return null;
+    case 'app_quit_report':
+      // The main window's answer to 'quit-requested' (quitGate.cjs).
+      if (callerWin === win) quitGate?.report(Number(a.requestId), String(a.stage));
       return null;
     case 'window_hide':
       if (win) win.hide();
@@ -1383,21 +1418,63 @@ function registerTauriHost(app, options = {}) {
   let pluginRegistryQuitReady = false;
   let pluginRegistryQuitPending = false;
   const quitPreparation = createQuitPreparation({ ipcMain, assertSender: assertTrustedMainIpcSender });
-  exitPreparation = quitPreparation;
+  async function askAboutExitSave(kind, signal) {
+    const text = quitPreparation.dialogText();
+    const choices = kind === 'waiting' ? ['wait', 'force'] : ['retry', 'cancel', 'force'];
+    const options = {
+      type: 'warning', title: 'Abu', message: text[kind],
+      buttons: choices.map(choice => text[choice]), defaultId: 0,
+      cancelId: kind === 'waiting' ? 0 : 1, noLink: true, signal,
+    };
+    const window = getMainWindow();
+    if (window && !window.isDestroyed()) {
+      window.show();
+      return choices[(await dialog.showMessageBox(window, options)).response];
+    }
+    return choices[(await dialog.showMessageBox(options)).response];
+  }
+  exitPreparation = createExitSaveController({ preparation: quitPreparation, ask: askAboutExitSave });
+  let quitConfirmationPending = false;
+  quitGate = createQuitGate({
+    send: payload => emitWindowEvent(getMainWindow(), 'quit-requested', payload),
+    onProceed: () => app.quit(),
+    onCancelled: () => { quitting = false; },
+    onUnavailable: () => {
+      if (quitConfirmationPending) return;
+      quitConfirmationPending = true;
+      void askAboutExitSave('waiting', new AbortController().signal).then(answer => {
+        quitConfirmationPending = false;
+        if (answer === 'force') {
+          exitPreparation.force();
+          quitGate.allow();
+        }
+        app.quit();
+      });
+    },
+  });
+  powerMonitor.on('shutdown', () => { sessionEnding = true; });
   let quitPreparationPending = false;
   app.on('before-quit', (event) => {
-    if (!quitPreparation.isPrepared()) {
+    // Restart owns the final installer/relaunch action while its save is pending.
+    if (externalExitPending && !quitting) {
+      event.preventDefault();
+      return;
+    }
+    if (quitConfirmationPending || !quitGate.request({ sessionEnding })) {
+      event.preventDefault();
+      quitting = false;
+      return;
+    }
+    if (!exitPreparation.isPrepared()) {
       event.preventDefault();
       if (!quitPreparationPending) {
         quitPreparationPending = true;
-        void quitPreparation.prepare().then(() => {
+        void prepareAppExit().then(() => {
           quitPreparationPending = false;
-          app.quit();
+          if (!externalExitPending) app.quit();
         }, () => {
           quitPreparationPending = false;
-          quitting = false;
-          quitPreparation.cancel();
-          dialog.showErrorBox('Abu', quitPreparation.failureMessage());
+          cancelAppExitPreparation();
         });
       }
       return;

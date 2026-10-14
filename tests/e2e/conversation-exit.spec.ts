@@ -7,6 +7,7 @@ import {
 import { CHAT_PLACEHOLDER, READY_TIMEOUT, startOpenAiMock, taskRequests, waitForApp } from './openAiMock';
 
 async function quit(app: ElectronApplication, closeWindow = false): Promise<void> {
+  const page = await app.firstWindow();
   const closed = app.waitForEvent('close', { timeout: READY_TIMEOUT });
   if (closeWindow) {
     await app.evaluate(({ BrowserWindow }) => {
@@ -17,6 +18,10 @@ async function quit(app: ElectronApplication, closeWindow = false): Promise<void
   } else {
     await app.evaluate(({ app: electronApp }) => electronApp.quit());
   }
+  const confirmation = page.getByRole('alertdialog').filter({ hasText: '阿布还在处理任务，现在退出会中断它。' });
+  const answering = confirmation.getByRole('button', { name: '退出', exact: true }).click({ timeout: READY_TIMEOUT })
+    .catch(error => { if (!page.isClosed()) throw error; });
+  await Promise.race([closed, answering]);
   await closed;
 }
 

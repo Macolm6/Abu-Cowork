@@ -453,7 +453,7 @@ function processRestart(app) {
 async function processRestartInternal(app) {
   const { prepareAppExit, cancelAppExitPreparation } = require('./tauriHost.cjs');
   const { createApplicationExitWait } = require('./applicationExitWait.cjs');
-  await prepareAppExit();
+  await prepareAppExit(true);
   // If a downloaded update is pending (updaterHost's download_and_install
   // completed), restart must apply it: quitAndInstall replaces the app and
   // relaunches. Plain relaunch would boot the OLD version — and note the
@@ -471,7 +471,7 @@ async function processRestartInternal(app) {
 }
 
 async function processExit(app, a) {
-  await require('./tauriHost.cjs').prepareAppExit();
+  await require('./tauriHost.cjs').prepareAppExit(true);
   app.exit(Number((a && a.code) || 0));
   return null;
 }

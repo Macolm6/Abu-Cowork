@@ -3,7 +3,7 @@
 const { randomUUID } = require('node:crypto');
 const { wireRendererResourceCleanup } = require('./rendererLifecycle.cjs');
 
-function createQuitPreparation({ ipcMain, assertSender, timeoutMs = 30000 }) {
+function createQuitPreparation({ ipcMain, assertSender }) {
   let owner = null;
   let generation = 0;
   let preparedGeneration = -1;
@@ -11,6 +11,11 @@ function createQuitPreparation({ ipcMain, assertSender, timeoutMs = 30000 }) {
   let pending = null;
   let preparedRequest = null;
   let disposeOwner = null;
+  let dialogText = {
+    waiting: 'Preparing to save your conversations. Quitting now may lose unsaved content.',
+    failed: 'Your conversations could not be saved. Check available disk space and retry.',
+    wait: 'Keep waiting', retry: 'Retry', cancel: 'Cancel quit', force: 'Quit anyway',
+  };
 
   function cancel() {
     preparedGeneration = -1;
@@ -21,7 +26,6 @@ function createQuitPreparation({ ipcMain, assertSender, timeoutMs = 30000 }) {
     if (pending) {
       const request = pending;
       pending = null;
-      clearTimeout(request.timer);
       if (!request.sender.isDestroyed()) request.sender.send('abu:quit-cancel', request.id);
       request.reject(new Error('Application exit preparation was cancelled'));
     }
@@ -42,10 +46,18 @@ function createQuitPreparation({ ipcMain, assertSender, timeoutMs = 30000 }) {
     if (saved) preparedGeneration = generation;
   }
 
-  ipcMain.handle('abu:quit-register', (event, failureMessage) => {
+  ipcMain.handle('abu:quit-register', (event, failureMessage, text) => {
     assertSender(event);
     if (typeof failureMessage !== 'string' || !failureMessage.trim() || failureMessage.length > 500) {
       throw new Error('Invalid exit preparation message');
+    }
+    if (text !== undefined) {
+      for (const key of Object.keys(dialogText)) {
+        if (typeof text?.[key] !== 'string' || !text[key].trim() || text[key].length > 500) {
+          throw new Error('Invalid exit dialog text');
+        }
+      }
+      dialogText = Object.fromEntries(Object.keys(dialogText).map(key => [key, text[key]]));
     }
     clearOwner();
     required = true;
@@ -68,13 +80,12 @@ function createQuitPreparation({ ipcMain, assertSender, timeoutMs = 30000 }) {
     if (!pending || pending.sender !== event.sender || pending.id !== payload.id) return false;
     const request = pending;
     pending = null;
-    clearTimeout(request.timer);
     if (payload.success) {
       preparedGeneration = generation;
       preparedRequest = request;
       request.resolve();
     } else {
-      event.sender.send('abu:quit-cancel', request.id);
+      preparedRequest = request;
       request.reject(new Error('Application data could not be saved'));
     }
     return true;
@@ -90,8 +101,7 @@ function createQuitPreparation({ ipcMain, assertSender, timeoutMs = 30000 }) {
     let resolve;
     let reject;
     const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
-    const timer = setTimeout(cancel, timeoutMs);
-    pending = { id, sender: owner.sender, promise, resolve, reject, timer };
+    pending = { id, sender: owner.sender, promise, resolve, reject };
     owner.sender.send('abu:quit-prepare', id);
     return promise;
   }
@@ -101,6 +111,7 @@ function createQuitPreparation({ ipcMain, assertSender, timeoutMs = 30000 }) {
     prepare,
     isPrepared,
     cancel,
+    dialogText: () => dialogText,
     failureMessage: () => owner?.failureMessage ?? 'Your data could not be saved. Please try closing the application again.',
   };
 }
