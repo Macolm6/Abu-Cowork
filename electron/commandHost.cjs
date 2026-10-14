@@ -845,7 +845,9 @@ function ensureCommandHostLifecycleHooks(app) {
   lifecycleHooksRegistered = true;
   const cleanup = () => teardownCommandHost();
   process.once('exit', cleanup);
-  app?.once?.('before-quit', cleanup);
+  // 'will-quit' comes once the quit is certain; 'before-quit' also fires for a
+  // quit the user calls off, and commands in flight have to outlive that one.
+  app?.once?.('will-quit', cleanup);
 }
 
 function __resetCommandHostForTests() {

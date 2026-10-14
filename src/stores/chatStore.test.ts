@@ -2794,7 +2794,7 @@ describe('chatStore', () => {
 
   describe('sandbox recovery restart sanitization', () => {
     it.each(['pending', 'accepted', 'running'] as const)(
-      'turns a persisted %s user run into an explicit retryable failure',
+      'turns a persisted %s user run into a run the application closed on',
       (runState) => {
         const [message] = sanitizeLoadedMessages([{
           id: 'msg-running-before-restart',
@@ -2805,8 +2805,9 @@ describe('chatStore', () => {
           runState,
         }]);
 
-        expect(message.runState).toBe('failed');
-        expect(message.runError).toBeTruthy();
+        expect(message.runState).toBe('interrupted');
+        expect(message.runInterruptCause).toBe('app_exit');
+        expect(message.runError).toBeUndefined();
         expect(message.runId).toBe('run-before-restart');
       },
     );
@@ -3802,7 +3803,7 @@ describe('sanitizeLoadedMessages — stale pending rows whose loop actually repl
     expect(sanitized[0].runError).toBeUndefined();
   });
 
-  it('still fails a pending row whose loop never produced a reply', () => {
+  it('marks a pending row whose loop never produced a reply as closed on', () => {
     const sanitized = sanitizeLoadedMessages([
       {
         id: 'u1', role: 'user', content: 'hello',
@@ -3811,7 +3812,7 @@ describe('sanitizeLoadedMessages — stale pending rows whose loop actually repl
       // Ghost placeholder — empty assistant row, filtered out and NOT a reply.
       { id: 'a1', role: 'assistant', content: '', timestamp: 2, loopId: 'loop-b' },
     ] as never);
-    expect(sanitized[0].runState).toBe('failed');
+    expect(sanitized[0]).toMatchObject({ runState: 'interrupted', runInterruptCause: 'app_exit' });
     expect(sanitized).toHaveLength(1);
   });
 
@@ -3828,7 +3829,7 @@ describe('sanitizeLoadedMessages — truncated replies are not completion', () =
   // Review finding on the inference: non-empty text alone also describes a
   // stream that died mid-sentence. Such a turn must keep the failed/retry
   // affordance — only a usage-bearing (cleanly ended) reply proves completion.
-  it('keeps a pending row failed when the reply has text but no usage', () => {
+  it('does not complete a pending row when the reply has text but neither usage nor a finished mark', () => {
     const sanitized = sanitizeLoadedMessages([
       {
         id: 'u1', role: 'user', content: 'explain this',
@@ -3839,7 +3840,7 @@ describe('sanitizeLoadedMessages — truncated replies are not completion', () =
         timestamp: 2, loopId: 'loop-t',
       },
     ] as never);
-    expect(sanitized[0].runState).toBe('failed');
+    expect(sanitized[0]).toMatchObject({ runState: 'interrupted', runInterruptCause: 'app_exit' });
   });
 });
 
@@ -3863,11 +3864,11 @@ describe('sanitizeImportedMessage — same completion inference as disk load', (
     expect((sanitized[0] as { runState?: string }).runState).toBe('completed');
   });
 
-  it('still fails a stale row without the set (legacy call shape)', () => {
+  it('marks a stale row as closed on without the set (legacy call shape)', () => {
     const sanitized = sanitizeImportedMessage({
       id: 'u1', role: 'user', content: 'x', timestamp: 1, runState: 'pending', loopId: 'loop-z',
     } as never);
-    expect((sanitized as { runState?: string }).runState).toBe('failed');
+    expect(sanitized).toMatchObject({ runState: 'interrupted', runInterruptCause: 'app_exit' });
   });
 
   it.each([
@@ -4133,7 +4134,6 @@ describe('sanitizeLoadedMessages replays the shared sanitiser fixtures (#549 P2a
       const { chat } = getI18n();
       const out = sanitizeLoadedMessages(testCase.input as never);
       expect(JSON.parse(JSON.stringify(out))).toEqual(expectedForText(testCase.expected, {
-        runRecoveredAfterRestart: chat.runRecoveredAfterRestart,
         errorEmptyBody: chat.errorEmptyBody,
       }));
     });

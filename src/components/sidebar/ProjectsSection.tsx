@@ -51,6 +51,13 @@ export default function ProjectsSection({ onCreateProject }: { onCreateProject: 
   const [showArchived, setShowArchived] = useState(false);
   const [sectionCollapsed, setSectionCollapsed] = useState(false);
 
+  // A conversation opened from the search is brought into view in the sidebar: when it belongs
+  // to a listed project, a collapsed section opens for it. The project's row does the rest.
+  const revealConversationId = useProjectStore((s) => s.revealConversationId);
+  const revealProjectId = revealConversationId ? conversationIndex[revealConversationId]?.projectId : undefined;
+  const revealProject = revealProjectId ? projectsMap[revealProjectId] : undefined;
+  if (revealProject && !revealProject.archived && sectionCollapsed) setSectionCollapsed(false);
+
   // Group conversations by projectId using lightweight index
   const projectConversations = useMemo(() => {
     const map: Record<string, typeof conversationIndex[string][]> = {};

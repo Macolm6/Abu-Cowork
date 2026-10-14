@@ -641,7 +641,8 @@ test('command host leaves SIGINT and SIGTERM exit ownership to the main process'
   assert.doesNotMatch(source, /process\.once\(['"]SIGINT['"]/);
   assert.doesNotMatch(source, /process\.once\(['"]SIGTERM['"]/);
   assert.match(source, /process\.once\(['"]exit['"], cleanup\)/);
-  assert.match(source, /app\?\.once\?\.\(['"]before-quit['"], cleanup\)/);
+  assert.match(source, /app\?\.once\?\.\(['"]will-quit['"], cleanup\)/);
+  assert.doesNotMatch(source, /['"]before-quit['"], cleanup/);
 });
 
 test('run_shell_command with a missing working directory names the directory, not the launcher', async () => {
