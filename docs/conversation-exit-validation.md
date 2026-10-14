@@ -1,6 +1,6 @@
 # Conversation shutdown durability
 
-Validation environment: Windows 11 Pro 10.0.26200, Electron 43.1.1, Node 24.18.0 and Abu 0.51.0. The isolated host integrates `dev` at `2aa9a4d202879e5d4dce4b94bc157005edba3879`. OSS and enterprise builds use the same public save coordinator.
+Validated on 2026-10-15 using Windows 11 Pro 10.0.26200, Electron 43.1.1, Node 24.18.0 and Abu 0.51.0. The isolated host integrates `dev` at `2aa9a4d202879e5d4dce4b94bc157005edba3879`. OSS and enterprise builds use the same public save coordinator.
 
 ## Reproduction and confirmed causes
 
