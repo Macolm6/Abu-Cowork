@@ -163,6 +163,8 @@ test('a copy the sidecar keeps after the renderer has read the record opens in t
   await reopened.getByRole('button', { name: new RegExp(`^${FIRST_PROMPT}`) }).click();
   await expect(reopened.getByText(SECOND_TEXT)).toBeVisible();
 
+  // The second turn opened its file in a preview tab; the files list is on the summary tab.
+  await reopened.getByRole('tab', { name: '任务摘要', exact: true }).click();
   await fileRow(reopened, SECOND_FILE).click();
   const preview = panel(reopened);
   await expect(preview.getByRole('status').filter({ hasText: KEPT_COPY_NOTICE })).toBeVisible();
