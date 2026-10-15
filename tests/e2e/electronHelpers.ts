@@ -305,7 +305,7 @@ export interface LocalMockProviderOptions {
   maxOutputTokens?: number;
   modelId?: string;
   modelLabel?: string;
-  permissionMode?: 'standard' | null;
+  permissionMode?: 'standard' | 'autonomous' | null;
   providerId?: string;
   providerName?: string;
   supportsReasoning?: boolean | null;
