@@ -79,13 +79,17 @@ test('image processing resizes retained input into the approved output and prese
   assert.deepEqual(await fs.readFile(input), original);
 });
 
-test('image processing uses explicit crop coordinates on Windows', async t => {
+test('image processing crops at the requested offset, and at the origin without one', async t => {
   const { output, processImage } = await imageFixture(t);
-  await processImage({ operation: 'crop', params: { width: 2, height: 2, x: 1, y: 1 } });
-  const result = PNG.sync.read(await fs.readFile(output));
-  assert.equal(result.width, 2);
-  assert.equal(result.height, 2);
-  assert.deepEqual([...result.data.subarray(0, 4)], [40, 64, 128, 128]);
+  // Pixel n of the 4x4 fixture has red n * 8; a centered 2x2 crop would start at (1, 1), red 40.
+  await processImage({ operation: 'crop', params: { width: 2, height: 2, x: 2, y: 1 } });
+  const offset = PNG.sync.read(await fs.readFile(output));
+  assert.equal(offset.width, 2);
+  assert.equal(offset.height, 2);
+  assert.deepEqual([...offset.data.subarray(0, 4)], [48, 64, 128, 128]);
+  await processImage({ operation: 'crop', params: { width: 2, height: 2 } });
+  const origin = PNG.sync.read(await fs.readFile(output));
+  assert.deepEqual([...origin.data.subarray(0, 4)], [0, 64, 128, 128]);
 });
 
 test('image processing supports declared conversion formats and JPEG quality', async t => {
@@ -144,6 +148,11 @@ test('scoped Office query discloses only its approved retained target', async t 
   const call = await open([target(file)]);
   const observed = await call('observe', target(file));
   const report = await call('office-document', { reference: observed.reference });
+  if (process.platform !== 'win32') {
+    // Office open-document reporting is a Windows capability; elsewhere the helper says so and discloses nothing.
+    assert.deepEqual(report, { supported: false, complete: false, documents: [] });
+    return;
+  }
   assert.equal(report.supported, true);
   assert.equal(typeof report.complete, 'boolean');
   assert.ok(Array.isArray(report.documents));

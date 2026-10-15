@@ -347,7 +347,7 @@ impl Observation {
         let anchors = if path_kind == "lexical" { &self.resolved.anchors } else { &self.canonical_anchors };
         let result = if let Some(anchor) = anchors.iter().find(|anchor| !anchor.follow && anchor.path == path) {
             let parent = anchor.parent.as_ref().ok_or_else(refused)?;
-            platform::compare_component(parent, &anchor.file, pattern,
+            platform::compare_component(parent, &anchor.identity, &anchor.canonical, pattern,
                 &|| check(cancelled).map_err(|_| io::Error::other("File session cancelled")))
                 .unwrap_or("unknown")
         } else { "unknown" };
@@ -516,9 +516,7 @@ impl Session {
                     options.get(name).map(|value| value.as_u64().and_then(|value| u32::try_from(value).ok())
                         .ok_or_else(refused)).transpose().map(|value| value.unwrap_or(0))
                 };
-                let (x, y) = if cfg!(target_os = "macos") {
-                    ((source_width - width) / 2, (source_height - height) / 2)
-                } else { (coordinate("x")?, coordinate("y")?) };
+                let (x, y) = (coordinate("x")?, coordinate("y")?);
                 if x.checked_add(width).filter(|value| *value <= source_width).is_none()
                     || y.checked_add(height).filter(|value| *value <= source_height).is_none() { return Err(refused()); }
                 source.crop_imm(x, y, width, height)

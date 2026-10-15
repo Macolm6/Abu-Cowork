@@ -115,22 +115,26 @@ for (const interruption of ['release', 'navigation', 'helper restart']) {
 }
 
 test('the file session IPC preserves the filesystem host root capability gate', async t => {
-  const { file, sender, dispatch, sessions, target } = await fixture(t);
+  const { root, sender, dispatch, sessions } = await fixture(t);
+  // A path under the volume root lies outside every root the gate allows, on either platform
+  // (the fixture itself sits in the repository, which on macOS is inside the home directory).
+  const outside = path.join(path.parse(root).root, 'abu-scope-gate', 'entry.txt');
+  const target = { path: outside, purpose: 'read', followFinalSymlink: true };
   const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
   let opened;
-  // Only the OS capability selection is substituted. Both dispatchers and all
-  // subsequent file requests use their real implementations and the real helper.
+  // Only the OS capability selection is substituted. Both dispatchers use their
+  // real implementations and the real helper.
   Object.defineProperty(process, 'platform', { ...descriptor, value: 'darwin' });
   try {
-    assert.throws(() => fsDispatch({}, 'plugin:fs|read_text_file', { args: { path: file } }), /outside the allowed scope/);
-    opened = dispatch(sender, 'open', { targets: [target('read')] });
+    assert.throws(() => fsDispatch({}, 'plugin:fs|read_text_file', { args: { path: outside } }), /outside the allowed scope/);
+    // Called now, while the substitution holds; a synchronous refusal becomes a rejection.
+    opened = (async () => dispatch(sender, 'open', { targets: [target] }))();
   } finally {
     Object.defineProperty(process, 'platform', descriptor);
   }
-  await assert.rejects(opened.then(async result => {
+  await assert.rejects(opened.then(result => {
     sessions.push({ session: result.session, sender });
-    const observed = await dispatch(sender, 'observe', { session: result.session, ...target('read') });
-    return dispatch(sender, 'read', { session: result.session, reference: observed.reference });
+    return result;
   }), /outside the allowed scope/);
 });
 

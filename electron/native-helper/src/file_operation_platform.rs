@@ -99,14 +99,12 @@ mod platform {
             "filesystem": String::from_utf16(&filesystem[..length]).map_err(|_| error())? }))
     }
 
-    pub(crate) fn compare_component(parent: &File, entry: &File, pattern: &str,
+    pub(crate) fn compare_component(parent: &File, expected_identity: &str, expected_path: &Path, pattern: &str,
         check: &dyn Fn() -> io::Result<()>) -> io::Result<&'static str> {
         check()?;
         if pattern.contains(['?', '<', '>', '"', ':', '/', '\\']) { return Ok("unknown"); }
         if pattern.contains('*') {
             if sensitive(parent)? || pattern == "*.*" { return Ok("unknown"); }
-            let expected_identity = identity(entry)?;
-            let expected_path = canonical(entry)?;
             for name in matching_names(parent, Some(pattern), check)? {
                 check()?;
                 let found = relative(parent, &name, Access::Attributes, false, None)?;
@@ -124,7 +122,7 @@ mod platform {
             Err(error) => return Err(error),
         };
         check()?;
-        if identity(&found)? != identity(entry)? || canonical(&found)? != canonical(entry)? {
+        if identity(&found)? != expected_identity || canonical(&found)? != expected_path {
             return Ok("no-match");
         }
         long_name_equivalence(&found, check)
@@ -271,7 +269,10 @@ mod platform {
         let path = unsafe { CStr::from_ptr(path.as_ptr() as *const _) };
         Ok(PathBuf::from(path.to_str().map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?))
     }
-    pub(crate) fn compare_component(parent: &File, entry: &File, pattern: &str,
+    /// `expected_identity` and `expected_path` are the entry's values recorded when it was
+    /// observed. APFS gives every hard link of one file a single vnode whose link id and
+    /// path follow the name looked up last, so they are not read again from the entry here.
+    pub(crate) fn compare_component(parent: &File, expected_identity: &str, expected_path: &Path, pattern: &str,
         check: &dyn Fn() -> io::Result<()>) -> io::Result<&'static str> {
         check()?;
         if pattern.contains('*') { return Ok("unknown"); }
@@ -281,7 +282,7 @@ mod platform {
             Err(error) => return Err(error),
         };
         check()?;
-        Ok(if identity(&found)? == identity(entry)? && canonical(&found)? == canonical(entry)? {
+        Ok(if identity(&found)? == expected_identity && canonical(&found)? == expected_path {
             "match"
         } else { "no-match" })
     }
