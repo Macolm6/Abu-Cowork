@@ -10,7 +10,7 @@
         'web-browsing': { file: 'docs/browser-bridge-vs-playwright.zh-CN.md', title: '浏览网页' },
         'app-spec': { file: 'docs/app-spec.md', title: '应用规范' },
         'plugin-spec': { file: 'docs/plugin-spec.md', title: '插件规范' },
-        'changelog': { changelog: 'docs/CHANGELOG.zh-CN.md', title: '更新日志' },
+        'changelog': { changelog: 'docs/release-notes.zh-CN.md', title: '更新日志' },
       }
     : {
         'installation': { file: 'docs/Installation-Guide.md', title: 'Installation Guide' },
@@ -18,7 +18,7 @@
         'web-browsing': { file: 'docs/browser-bridge-vs-playwright.md', title: 'Web Browsing' },
         'app-spec': { file: 'docs/app-spec.en.md', title: 'App Spec' },
         'plugin-spec': { file: 'docs/plugin-spec.en.md', title: 'Plugin Spec' },
-        'changelog': { changelog: 'docs/CHANGELOG.md', title: 'Release notes' },
+        'changelog': { changelog: 'docs/release-notes.md', title: 'Release notes' },
       };
   const DEFAULT_DOC = 'installation';
   const RELEASE_METADATA = 'https://abu-agent.oss-cn-beijing.aliyuncs.com/electron/latest-release.json';

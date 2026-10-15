@@ -46,10 +46,6 @@ vi.mock('@/stores/settingsStore', async () => {
   const { create } = await import('zustand');
   return { useSettingsStore: create(() => ({ setViewMode: () => undefined })) };
 });
-vi.mock('@/stores/previewStore', async () => {
-  const { create } = await import('zustand');
-  return { usePreviewStore: create(() => ({ setFileTreeMode: () => undefined })) };
-});
 
 import { useProjectHintStore } from '@/stores/projectHintStore';
 import { useProjectStore as projectStore } from '@/stores/projectStore';

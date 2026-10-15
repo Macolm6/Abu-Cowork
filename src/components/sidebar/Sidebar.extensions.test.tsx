@@ -41,13 +41,6 @@ vi.mock('@/stores/noticeBadgeStore', () => ({
 vi.mock('@/stores/inboxStore', () => ({
   useInboxStore: (selector: (state: Record<string, unknown>) => unknown) => selector({ getPendingCount: () => 0 }),
 }));
-const preview = vi.hoisted(() => ({ fileTreeMode: false }));
-vi.mock('@/stores/previewStore', () => ({
-  usePreviewStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
-    fileTreeMode: preview.fileTreeMode,
-    setFileTreeMode: vi.fn(),
-  }),
-}));
 vi.mock('@/components/common/GuideModal', () => ({ default: () => null }));
 vi.mock('@/components/common/ProfileEditModal', () => ({ default: () => null }));
 vi.mock('@/components/sidebar/AccountMenu', () => ({ default: () => null }));
@@ -68,7 +61,6 @@ vi.mock('@/components/common/CreateProjectDialog', async () => {
     ),
   };
 });
-vi.mock('@/components/panel/WorkspaceFileTree', () => ({ default: () => null }));
 // Stands in for the export window: it shows which conversation it was opened for.
 vi.mock('@/components/share/ShareExportDialog', () => ({
   default: ({ convId }: { convId: string }) => <div data-testid="share-export-window" data-conversation={convId} />,
@@ -899,12 +891,10 @@ describe('Sidebar — the create project window', () => {
   beforeEach(() => {
     initLanguage('zh-CN');
     resetChat();
-    preview.fileTreeMode = false;
     useSettingsStore.setState({ viewMode: 'chat', guideOpen: false });
   });
   afterEach(() => {
     cleanup();
-    preview.fileTreeMode = false;
   });
 
   const createWindow = () => screen.getByTestId('create-project-window');
@@ -918,20 +908,5 @@ describe('Sidebar — the create project window', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Stub: close the window' }));
     expect(createWindow()).toHaveAttribute('data-open', 'false');
-  });
-
-  // A created project turns the sidebar to its file tree, which takes the projects section off
-  // the page. The window belongs to the sidebar, so it is closed and not taken off with it.
-  it('stays in the page, as open as it was, when the sidebar turns to the file tree', () => {
-    const view = renderSidebar();
-    fireEvent.click(screen.getByRole('button', { name: 'Stub: create a project' }));
-    const before = createWindow();
-
-    preview.fileTreeMode = true;
-    view.rerender(<Sidebar />);
-
-    expect(screen.queryByRole('button', { name: 'Stub: create a project' })).not.toBeInTheDocument();
-    expect(createWindow()).toBe(before);
-    expect(createWindow()).toHaveAttribute('data-open', 'true');
   });
 });

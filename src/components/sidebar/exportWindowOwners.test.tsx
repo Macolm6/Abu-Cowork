@@ -35,15 +35,11 @@ vi.mock('@/stores/noticeBadgeStore', () => ({
 vi.mock('@/stores/inboxStore', () => ({
   useInboxStore: (selector: (state: Record<string, unknown>) => unknown) => selector({ getPendingCount: () => 0 }),
 }));
-vi.mock('@/stores/previewStore', () => ({
-  usePreviewStore: (selector: (state: Record<string, unknown>) => unknown) => selector({ fileTreeMode: false, setFileTreeMode: vi.fn() }),
-}));
 vi.mock('@/components/common/GuideModal', () => ({ default: () => null }));
 vi.mock('@/components/common/ProfileEditModal', () => ({ default: () => null }));
 vi.mock('@/components/common/CreateProjectDialog', () => ({ default: () => null }));
 vi.mock('@/components/sidebar/AccountMenu', () => ({ default: () => null }));
 vi.mock('@/components/sidebar/ProjectsSection', () => ({ default: () => null }));
-vi.mock('@/components/panel/WorkspaceFileTree', () => ({ default: () => null }));
 vi.mock('./ImportedBadge', () => ({ default: () => null }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn(), save: vi.fn() }));
 vi.mock('@tauri-apps/plugin-fs', () => ({ readTextFile: vi.fn(), writeTextFile: vi.fn() }));
