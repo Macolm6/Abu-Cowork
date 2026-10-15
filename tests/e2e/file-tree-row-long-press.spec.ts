@@ -1,5 +1,5 @@
 /**
- * Real-Electron acceptance: a touch held on a row of the project file tree opens the row menu of
+ * Real-Electron acceptance: a touch held on a row of the workspace file tree opens the row menu of
  * that row, also after another row was right-clicked. 删除 chosen there asks about that file, and
  * 重命名 chosen there renames that file on the disk. A touch held on a line that is no row opens
  * nothing.
@@ -7,7 +7,7 @@
  * The touch is Chromium's own touch input (`Input.dispatchTouchEvent`): the page gets real touch
  * pointer events and waits the real 700 ms. No touch screen is involved.
  *
- * The tree is opened from a seeded sidebar project, so no model is asked anything.
+ * The tree is opened in a new task of a seeded sidebar project, so no model is asked anything.
  */
 import { expect, test } from '@playwright/test';
 import fs from 'node:fs';
@@ -18,6 +18,7 @@ import {
   createElectronDataRoot,
   dismissFirstRunOverlays,
   launchAbuElectron,
+  openWorkspaceFilesOfProject,
   removeElectronDataRoot,
   type LaunchedApp,
 } from './electronHelpers';
@@ -66,8 +67,7 @@ test('a touch held on a file row opens the menu of that file after another file 
     }, { ws: workspace, name: PROJECT_NAME, version: persistedStoreVersion('abu-projects') });
     await dismissFirstRunOverlays(page);
 
-    await page.getByRole('button', { name: PROJECT_NAME, exact: true }).locator('xpath=..')
-      .getByRole('button', { name: '项目文件', exact: true }).click();
+    await openWorkspaceFilesOfProject(page, PROJECT_NAME);
 
     const firstRow = page.getByRole('button', { name: FIRST_FILE, exact: true });
     const secondRow = page.getByRole('button', { name: SECOND_FILE, exact: true });

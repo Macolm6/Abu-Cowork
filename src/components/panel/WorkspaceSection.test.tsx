@@ -12,6 +12,7 @@ import { scanMemoryFiles } from '@/core/memdir/scan';
 import { initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { usePermissionStore } from '@/stores/permissionStore';
+import { usePreviewStore } from '@/stores/previewStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import type { Conversation } from '@/types';
@@ -372,6 +373,26 @@ describe('WorkspaceSection', () => {
     expect(memory).toHaveClass('bg-fill');
     // An entry with nothing behind it yet is still text on a fill: secondary, never tertiary.
     expect(memory).toHaveClass('text-label-secondary');
+  });
+
+  it('opens the workspace file list from its entry', async () => {
+    const user = userEvent.setup();
+    usePreviewStore.setState({ tabs: [], activeTabId: null, currentConversationId: null });
+    renderSection();
+    await settle();
+
+    await user.click(screen.getByRole('button', { name: 'View files' }));
+
+    const { tabs, activeTabId } = usePreviewStore.getState();
+    expect(tabs.map((tab) => tab.kind)).toEqual(['files']);
+    expect(activeTabId).toBe(tabs[0].id);
+  });
+
+  it('has no file list entry when there is no workspace', () => {
+    useWorkspaceStore.setState({ currentPath: null, recentPaths: [] });
+    renderSection();
+
+    expect(screen.queryByRole('button', { name: 'View files' })).not.toBeInTheDocument();
   });
 
   it('offers to pick a workspace when there is none', async () => {

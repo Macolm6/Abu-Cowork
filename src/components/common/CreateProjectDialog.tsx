@@ -15,7 +15,6 @@ import { TextField } from '@/components/ds/text-field';
 import { focusIsOnWindow } from '@/components/toolbox/cardFocus';
 import { useI18n } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
-import { usePreviewStore } from '@/stores/previewStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
@@ -249,7 +248,6 @@ export default function CreateProjectDialog({
       useChatStore.getState().startNewConversation();
       useWorkspaceStore.getState().setWorkspace(finalFolder);
       useSettingsStore.getState().setViewMode('chat');
-      usePreviewStore.getState().setFileTreeMode(true);
       created.current = true;
       onClose();
     } finally {

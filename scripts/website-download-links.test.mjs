@@ -78,7 +78,7 @@ test('English and Chinese documentation pages read the changelog of their own la
   assert.match(fs.readFileSync(path.join(root, 'website/docs.html'), 'utf8'), /<html lang="en">/);
   assert.match(fs.readFileSync(path.join(root, 'website/docs.zh-CN.html'), 'utf8'), /<html lang="zh-CN">/);
   assert.ok(viewer.includes("const zh = document.documentElement.lang.toLowerCase().indexOf('zh') === 0;"));
-  assert.ok(viewer.includes("'changelog': { changelog: 'docs/CHANGELOG.zh-CN.md', title: '更新日志' }"));
-  assert.ok(viewer.includes("'changelog': { changelog: 'docs/CHANGELOG.md', title: 'Release notes' }"));
+  assert.ok(viewer.includes("'changelog': { changelog: 'docs/release-notes.zh-CN.md', title: '更新日志' }"));
+  assert.ok(viewer.includes("'changelog': { changelog: 'docs/release-notes.md', title: 'Release notes' }"));
   assert.ok(!viewer.includes('notes_i18n'), 'docs.js reads the notes from the changelog files');
 });

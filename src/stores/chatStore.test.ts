@@ -2391,6 +2391,45 @@ describe('chatStore', () => {
       expect(reindex).toBeUndefined();
     });
 
+    // The reindex reads messages.jsonl in the main process, so the reply that
+    // finishStreaming checkpoints at the end of the same turn has to be in the
+    // file by then, or search finds the turn only after a later reindex.
+    it('reindexes after the final reply of the turn has reached messages.jsonl', async () => {
+      const id = useChatStore.getState().createConversation();
+      const ledgerWritesAtReindex: string[][] = [];
+      const ledgerWrites: string[] = [];
+      // A replacement is written only to a ledger file that exists.
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(invoke).mockImplementation(async (command, args) => {
+        const payload = args as { path?: string; content?: string; data?: string } | undefined;
+        if (payload?.path?.endsWith(`${id}/messages.jsonl`)) {
+          if (command === 'append_file_text') ledgerWrites.push(payload.data ?? '');
+          if (command === 'atomic_write_text') ledgerWrites.push(payload.content ?? '');
+        }
+        if (command === 'catalog_reindex_conversation') ledgerWritesAtReindex.push([...ledgerWrites]);
+        return undefined;
+      });
+
+      try {
+        useChatStore.getState().addMessage(id, { id: 'turn-user', role: 'user', content: 'question', timestamp: 1 });
+        useChatStore.getState().setConversationStatus(id, 'running');
+        useChatStore.getState().addMessage(id, {
+          id: 'turn-reply', role: 'assistant', content: '', timestamp: 2, isStreaming: true,
+        });
+        useChatStore.getState().setLastMessageContent(id, 'the settled answer', 'turn-reply');
+        useChatStore.getState().finishStreaming(id, 'turn-reply');
+        useChatStore.getState().setConversationStatus(id, 'completed');
+
+        await vi.waitFor(() => expect(ledgerWritesAtReindex).toHaveLength(1));
+        expect(ledgerWritesAtReindex[0].join('')).toContain('the settled answer');
+        await waitForConversationPersistence(id);
+      } finally {
+        vi.mocked(exists).mockReset();
+        vi.mocked(exists).mockResolvedValue(false);
+        vi.mocked(invoke).mockReset();
+      }
+    });
+
     // Fix #5: a convId absent from state (e.g. already deleted) must never
     // trigger a reindex call.
     it('does not fire a catalog reindex for a convId absent from state', async () => {

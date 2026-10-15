@@ -195,8 +195,8 @@ test('release notes live on the documentation page, the home page keeps version 
   assert.ok(homeScript.includes("whatsnew: `${docsPage}#changelog`, news: `${docsPage}#changelog`"), 'old update addresses open the release notes');
 
   const viewer = read('docs.js');
-  assert.ok(viewer.includes("'changelog': { changelog: 'docs/CHANGELOG.zh-CN.md', title: '更新日志' }"));
-  assert.ok(viewer.includes("'changelog': { changelog: 'docs/CHANGELOG.md', title: 'Release notes' }"));
+  assert.ok(viewer.includes("'changelog': { changelog: 'docs/release-notes.zh-CN.md', title: '更新日志' }"));
+  assert.ok(viewer.includes("'changelog': { changelog: 'docs/release-notes.md', title: 'Release notes' }"));
   assert.ok(viewer.includes("const RELEASE_METADATA = 'https://abu-agent.oss-cn-beijing.aliyuncs.com/electron/latest-release.json';"));
   assert.ok(viewer.includes('keep = numbers !== null && isReleased(numbers, latest);'), 'only released versions are shown');
   for (const source of [read('docs.zh-CN.html'), read('docs.html')]) {
