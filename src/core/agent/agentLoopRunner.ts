@@ -886,6 +886,8 @@ function updateSessionMessageState(
     session.userMessageId,
     {
       state,
+      ...(state === 'interrupted' && session.shellAbortController.signal.reason === 'app-quit'
+        ? { interruptCause: 'app_exit' as const } : {}),
       ...(error ? { error } : {}),
       ...(errorDetails ? { errorDetails } : {}),
     },
@@ -900,7 +902,7 @@ function updateSessionMessageState(
  */
 export function closeRunningRunsForExit(): void {
   for (const session of sessions.values()) {
-    if (session.terminal || session.closedOnExit || !session.userMessageId) continue;
+    if (session.terminal || session.closedOnExit || !session.userMessageId || session.shellAbortController.signal.aborted) continue;
     session.closedOnExit = true;
     useChatStore.getState().updateUserMessageRun(
       session.conversationId,
@@ -916,9 +918,11 @@ async function finalizePreDispatchInterruptedRun(
   runId: string,
   stage: 'params_build_aborted' | 'before_dispatch' | 'waiting_for_sidecar',
   runtimeStartedAt: number,
+  signal: AbortSignal,
 ): Promise<AgentLoopDispatchResult> {
   useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
     state: 'interrupted',
+    ...(signal.reason === 'app-quit' ? { interruptCause: 'app_exit' as const } : {}),
   });
   getAbortRegistry().clearAbortController(conversationId);
   getChatDelta().setConversationStatus(conversationId, 'idle');
@@ -3549,6 +3553,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         runId,
         'waiting_for_sidecar',
         runtimeStartedAt,
+        shellAbortController.signal,
       );
     }
     return finalizePreAcceptFailure({
@@ -3606,6 +3611,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         runId,
         'params_build_aborted',
         runtimeStartedAt,
+        shellAbortController.signal,
       );
     }
     // Failed before any dispatch. Nothing ran in either venue (#549), so the
@@ -3643,6 +3649,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       runId,
       'before_dispatch',
       runtimeStartedAt,
+      shellAbortController.signal,
     );
   }
 
@@ -4264,7 +4271,48 @@ async function runSingleAgentLoopDispatched(
  * sender receives `{ reason: 'enqueued' }` immediately; the owner of the active
  * run performs the FIFO handoff once its session has been fully unregistered.
  */
-export async function runAgentLoopDispatched(
+const dispatchBarriers = new Set<symbol>();
+const activeDispatches = new Map<symbol, { conversationId: string; controller?: AbortController; settled: Promise<void> }>();
+
+/** Hold admission and wait for every dispatch, including preparation and final output. */
+export function acquireAgentDispatchBarrier(): { wait: () => Promise<void>; release: () => void } {
+  const key = Symbol();
+  dispatchBarriers.add(key);
+  for (const entry of activeDispatches.values()) entry.controller?.abort('app-quit');
+  return {
+    wait: async () => { await Promise.all([...activeDispatches.values()].map(entry => entry.settled)); },
+    release: () => { dispatchBarriers.delete(key); },
+  };
+}
+
+export function runAgentLoopDispatched(
+  conversationId: string,
+  userMessage: string,
+  options?: AgentLoopOptions,
+): Promise<AgentLoopDispatchResult> {
+  if (dispatchBarriers.size > 0) return Promise.reject(new Error('Agent dispatch is unavailable during application exit'));
+  const key = Symbol();
+  let finish!: () => void;
+  const entry = { conversationId, settled: new Promise<void>(resolve => { finish = resolve; }), controller: undefined as AbortController | undefined };
+  activeDispatches.set(key, entry);
+  let controllerDelivered = false;
+  return runAgentLoopDispatchedInternal(conversationId, userMessage, {
+    ...options,
+    onAbortControllerReady: controller => {
+      entry.controller = controller;
+      if (dispatchBarriers.size > 0) controller.abort('app-quit');
+      if (!controllerDelivered) {
+        controllerDelivered = true;
+        options?.onAbortControllerReady?.(controller);
+      }
+    },
+  }).finally(() => {
+    activeDispatches.delete(key);
+    finish();
+  });
+}
+
+async function runAgentLoopDispatchedInternal(
   conversationId: string,
   userMessage: string,
   options?: AgentLoopOptions,
@@ -4346,11 +4394,11 @@ async function runDispatchedTurns(
   let queuedInputInFlight: ReturnType<typeof dequeueNextUserInput>;
 
   try {
-    while (
+    while (dispatchBarriers.size === 0 && (
       previousResult.reason === 'completed'
       || previousResult.reason === 'max_turns'
       || previousResult.reason === 'no_progress'
-    ) {
+    )) {
       const queuedInput = dequeueNextUserInput(conversationId);
       if (!queuedInput) break;
       queuedInputInFlight = queuedInput;
@@ -4366,7 +4414,8 @@ async function runDispatchedTurns(
         // reach this dequeue path (`dequeueNextUserInput` skips them). What
         // they ARE is human-typed, so the handoff run is user-initiated.
         { initiatedBy: 'user', teamConfirmationRetryId: queuedInput.teamConfirmationRetryId,
-          continuesTeamTask: queuedInput.continuesTeamTask },
+          continuesTeamTask: queuedInput.continuesTeamTask,
+          onAbortControllerReady: options?.onAbortControllerReady },
       );
       if (handoffResult.reason === 'error' && !handoffResult.messageTaken) {
         restoreDequeuedUserInput(conversationId, queuedInput);

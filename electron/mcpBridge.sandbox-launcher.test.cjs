@@ -183,7 +183,9 @@ test('MCP spawn rejects before ready when the target executable is missing', asy
       args: [],
       env: {},
     }),
-    /mcp_spawn failed.*failed to spawn target/s,
+    process.platform === 'win32'
+      ? /mcp_spawn failed.*launcher exited with 127: \[sandbox-launcher\] CreateProcessW failed: 2/s
+      : /mcp_spawn failed.*failed to spawn target/s,
   );
 });
 
