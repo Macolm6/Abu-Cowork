@@ -4,6 +4,7 @@ import * as nodeFs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Conversation } from '@/types';
+import { normalizeSeparators } from '@/utils/pathUtils';
 
 /**
  * The renderer and the sidecar each load their own copy of
@@ -61,10 +62,11 @@ describe('output manifest shared by two processes', () => {
     await nodeFs.rm(root, { recursive: true, force: true });
   });
 
+  /** Write a user file and return its path with '/' separators, the form the app records. */
   async function userFile(name: string, content: string): Promise<string> {
     const path = join(userDir, name);
     await nodeFs.writeFile(path, content, 'utf-8');
-    return path;
+    return normalizeSeparators(path);
   }
 
   /** What a process that starts now reads from disk. */
