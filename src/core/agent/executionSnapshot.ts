@@ -82,7 +82,8 @@ export function snapshotToExecutionSteps(snapshots: ExecutionStepSnapshot[]): Ex
       label: b.title,
       labelKey: b.labelKey,
       content: b.content || '',
-      isTruncated: b.content ? b.content.endsWith('...') : false,
+      // snapshotStep keeps a full length exactly when the block holds only its beginning.
+      isTruncated: b.fullContentLength != null,
       fullContentLength: b.fullContentLength,
       isExpanded: false,
     })) ?? [],
