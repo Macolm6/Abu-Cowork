@@ -69,7 +69,6 @@ const requestedHints = new Set<string>();
 // Grammar name per loader key, once per grammar however many hints name it.
 const grammarLoads = new Map<string, Promise<string>>();
 const listeners = new Set<() => void>();
-let revision = 0;
 
 function loadGrammar(table: LoaderTable, key: string): Promise<string> {
   let load = grammarLoads.get(key);
@@ -107,7 +106,6 @@ export function loadCodeLanguage(hint: string | null): void {
     const key = Object.keys(table).find((candidate) => candidate.toLowerCase() === name) ?? LANGUAGE_ALIASES[name];
     if (!key) return;
     loadedNames.set(name, await loadGrammar(table, key));
-    revision += 1;
     for (const listener of listeners) listener();
   });
 }
@@ -117,13 +115,12 @@ export function subscribeCodeLanguages(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
-function getRevision(): number {
-  return revision;
-}
-
-/** {@link codeLanguageName}, loading the grammar and re-rendering the caller once it is registered. */
+/**
+ * {@link codeLanguageName}, loading the grammar and re-rendering the caller once
+ * it is registered; a grammar that loads for another language re-renders nothing.
+ */
 export function useCodeLanguage(hint: string | null): string {
-  useSyncExternalStore(subscribeCodeLanguages, getRevision, getRevision);
+  const name = useSyncExternalStore(subscribeCodeLanguages, () => codeLanguageName(hint), () => codeLanguageName(hint));
   useEffect(() => loadCodeLanguage(hint), [hint]);
-  return codeLanguageName(hint);
+  return name;
 }

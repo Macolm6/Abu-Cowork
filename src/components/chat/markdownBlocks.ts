@@ -18,17 +18,22 @@ export interface MarkdownBlock {
   key: number;
   /** The reply's text from the end of the previous block to the end of this one. */
   source: string;
-  /** Set on an unclosed top-level code fence at the end of the reply. */
-  openFence?: { lang: string | null; value: string };
-  /** Set on a display formula at the end of the reply whose closing delimiter has not arrived. */
-  pendingMath?: boolean;
+  /**
+   * Set on a top-level code block. The renderer draws it straight from these
+   * fields whether or not its closing fence has arrived, so the elements it
+   * renders into survive the fence closing.
+   */
+  code?: { lang: string | null; value: string; open: boolean };
+  /** The TeX of a display formula at the end of the reply whose closing delimiter has not arrived. */
+  pendingMath?: string;
 }
 
 export type MarkdownSplit =
   | { mode: 'blocks'; blocks: readonly MarkdownBlock[] }
   // A reference-style link definition or a footnote resolves across the whole
-  // reply, so a reply that has one renders as one document.
-  | { mode: 'whole' };
+  // reply, so a reply that has one renders as one document; an unfinished
+  // display formula at its end is set apart from it.
+  | { mode: 'whole'; pendingMath: { start: number; tex: string } | null };
 
 const processor = unified().use(remarkParse).use(REMARK_PLUGINS);
 
@@ -50,6 +55,11 @@ function holdsDefinition(node: Nodes): boolean {
 }
 
 const CLOSED_DISPLAY_MATH = /(?:\$\$|\\\])[ \t]*$/;
+
+/** A `$$` or `\[` block whose closing delimiter has not arrived. */
+function isPendingDisplayMath(source: string): boolean {
+  return /^(?:\$\$|\\\[)/.test(source) && !CLOSED_DISPLAY_MATH.test(source.trimEnd().slice(2));
+}
 const OPENING_FENCE = /^(`{3,}|~{3,})([^\n]*)\n/;
 
 interface OpenFence {
@@ -100,7 +110,7 @@ export function createMarkdownSplitter(parse: (text: string) => Root): (content:
     blocks[openFence.index] = {
       ...fence,
       source: fence.source + content.slice(previous.length),
-      openFence: { lang: openFence.lang, value },
+      code: { lang: openFence.lang, value, open: true },
     };
     openFence.scannedLineStart = content.lastIndexOf('\n') + 1;
     return { mode: 'blocks', blocks };
@@ -118,25 +128,35 @@ export function createMarkdownSplitter(parse: (text: string) => Root): (content:
     block: MarkdownBlock,
   ): Omit<OpenFence, 'index'> | null => {
     if (node.type === 'math') {
-      const source = content.slice(start, end);
-      if (/^(?:\$\$|\\\[)/.test(source) && !CLOSED_DISPLAY_MATH.test(source.trimEnd().slice(2))) {
-        block.pendingMath = true;
-      }
+      if (isPendingDisplayMath(content.slice(start, end))) block.pendingMath = node.value;
       return null;
     }
-    if (node.type !== 'code' || content.slice(end).trim() !== '') return null;
+    if (!block.code) return null;
     const source = content.slice(start, end);
     const opening = OPENING_FENCE.exec(source);
-    // Only an unindented fence keeps its content verbatim, which the fast path relies on.
-    if (!opening || (start > 0 && content[start - 1] !== '\n')) return null;
+    if (!opening) return null;
     const contentStart = start + opening[0].length;
     if (mayCloseFence(content.slice(contentStart), opening[1])) return null;
-    block.openFence = { lang: node.lang ?? null, value: node.value };
+    block.code.open = true;
+    // Only an unindented fence keeps its text verbatim, which the fast path relies on;
+    // a carriage return would stay in the slice where the parser drops it.
+    if ((start > 0 && content[start - 1] !== '\n') || content.slice(end).trim() !== '' || source.includes('\r')) return null;
     return {
       marker: opening[1],
       contentStart,
       scannedLineStart: content.lastIndexOf('\n') + 1,
-      lang: node.lang ?? null,
+      lang: block.code.lang,
+    };
+  };
+
+  /** One document: parsed whole on each update, only to find an unfinished formula at its end. */
+  const whole = (content: string): MarkdownSplit => {
+    const last = parse(content).children.at(-1);
+    if (last?.type !== 'math') return { mode: 'whole', pendingMath: null };
+    const { start, end } = offsetsOf(last);
+    return {
+      mode: 'whole',
+      pendingMath: isPendingDisplayMath(content.slice(start, end)) ? { start, tex: last.value } : null,
     };
   };
 
@@ -145,6 +165,7 @@ export function createMarkdownSplitter(parse: (text: string) => Root): (content:
     if (!content.startsWith(previous)) reset();
     if (result.mode === 'whole' && previous !== '') {
       previous = content;
+      result = whole(content);
       return result;
     }
 
@@ -159,7 +180,7 @@ export function createMarkdownSplitter(parse: (text: string) => Root): (content:
     const nodes = parse(tailText).children;
     if (nodes.some(holdsDefinition)) {
       previous = content;
-      result = { mode: 'whole' };
+      result = whole(content);
       return result;
     }
 
@@ -171,6 +192,7 @@ export function createMarkdownSplitter(parse: (text: string) => Root): (content:
       const start = frozenEnd + offsets.start;
       const end = frozenEnd + offsets.end;
       const block: MarkdownBlock = { key: start, source: content.slice(blockStart, end) };
+      if (node.type === 'code') block.code = { lang: node.lang ?? null, value: node.value, open: false };
       if (index === nodes.length - 1) tailFence = describeTail(content, node, start, end, block);
       blocks.push(block);
       blockStart = end;

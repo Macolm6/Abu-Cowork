@@ -1,4 +1,4 @@
-import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform, type ExtraProps } from 'react-markdown';
 // The PrismLight module itself: the package root's CommonJS entry, which Vitest
 // resolves, also loads every Prism grammar.
 import SyntaxHighlighter from 'react-syntax-highlighter/dist/esm/prism-light';
@@ -7,7 +7,7 @@ import python from 'react-syntax-highlighter/dist/esm/languages/prism/python';
 import bash from 'react-syntax-highlighter/dist/esm/languages/prism/bash';
 import json from 'react-syntax-highlighter/dist/esm/languages/prism/json';
 import markdown from 'react-syntax-highlighter/dist/esm/languages/prism/markdown';
-import { useState, memo, useMemo, useCallback, Suspense, lazy, type ReactNode } from 'react';
+import { useState, memo, useMemo, useCallback, Suspense, lazy, type ComponentProps, type ReactNode } from 'react';
 import { useI18n, format } from '@/i18n';
 import { cn } from '@/lib/utils';
 import type { SearchResult } from '@/types';
@@ -336,7 +336,6 @@ function buildMarkdownComponents(
   onCitationClick?: (index: number) => void,
   variant: MarkdownVariant = 'assistant',
   resolveFileMention?: FileMentionResolver,
-  pendingMath = false,
 ) {
   const sr = searchResults && searchResults.length > 0 ? searchResults : null;
   const isUser = variant === 'user';
@@ -349,8 +348,7 @@ function buildMarkdownComponents(
       // `$…$`, `\(…\)` and inline `$$…$$` arrive as `math-inline`; `$$` and `\[`
       // blocks as `math-display`, and a ```math fence as plain `language-math`.
       if (match?.[1] === 'math') {
-        const display = !/\bmath-inline\b/.test(className);
-        return <MathBlock tex={codeString} display={display} pending={pendingMath && display} />;
+        return <MathBlock tex={codeString} display={!/\bmath-inline\b/.test(className)} />;
       }
 
       const isInline = !match && !codeString.includes('\n');
@@ -399,10 +397,9 @@ function buildMarkdownComponents(
 
     // A display formula comes as <pre><code class="language-math">: it is no code
     // block, so it is not set in the block's preformatted box.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    pre({ node, children, ...props }: any) {
-      const code = node?.children?.[0];
-      const classes: unknown = code?.type === 'element' ? code.properties?.className : undefined;
+    pre({ node, children, ...props }: ComponentProps<'pre'> & ExtraProps) {
+      const code = node?.children[0];
+      const classes = code?.type === 'element' ? code.properties.className : undefined;
       if (Array.isArray(classes) && classes.includes('language-math')) return <>{children}</>;
       return <pre {...props}>{children}</pre>;
     },
@@ -492,11 +489,14 @@ const MarkdownBlockView = memo(function MarkdownBlockView({ block, components, u
   components: MarkdownComponents;
   urlTransform: UrlTransform;
 }) {
-  if (block.openFence) {
-    // The fence is still being written: its text grows without parsing the block again.
-    const { lang, value } = block.openFence;
-    if (lang === 'math') return <MathBlock tex={value} display pending />;
-    return <pre>{components.code({ className: lang ? `language-${lang}` : undefined, children: `${value}\n` })}</pre>;
+  if (block.pendingMath !== undefined) return <MathBlock tex={block.pendingMath} display pending />;
+  if (block.code) {
+    // Drawn the way react-markdown draws a code node (mdast-util-to-hast's `code`
+    // handler), so the block keeps its elements while its fence is open and after
+    // it closes; an open fence grows here without the block being parsed again.
+    const { lang, value, open } = block.code;
+    if (lang === 'math') return <MathBlock tex={value} display pending={open} />;
+    return <pre>{components.code({ className: lang ? `language-${lang}` : undefined, children: value ? `${value}\n` : undefined })}</pre>;
   }
   return (
     <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={components} urlTransform={urlTransform}>
@@ -508,8 +508,25 @@ const MarkdownBlockView = memo(function MarkdownBlockView({ block, components, u
   && before.urlTransform === after.urlTransform
   && before.block.source === after.block.source
   && before.block.pendingMath === after.block.pendingMath
-  && before.block.openFence?.value === after.block.openFence?.value
-  && before.block.openFence?.lang === after.block.openFence?.lang);
+  && before.block.code?.value === after.block.code?.value
+  && before.block.code?.lang === after.block.code?.lang
+  && before.block.code?.open === after.block.code?.open);
+
+/** The whole reply as one document, with an unfinished display formula at its end set apart. */
+function WholeReply({ content, pendingMath, components, urlTransform }: {
+  content: string;
+  pendingMath: { start: number; tex: string } | null;
+  components: MarkdownComponents;
+  urlTransform: UrlTransform;
+}) {
+  const document = (
+    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={components} urlTransform={urlTransform}>
+      {closeOpenFences(pendingMath ? content.slice(0, pendingMath.start) : content)}
+    </ReactMarkdown>
+  );
+  // One shape with and without the formula, so the document keeps its elements when it closes.
+  return <>{document}{pendingMath && '\n'}{pendingMath && <MathBlock tex={pendingMath.tex} display pending />}</>;
+}
 
 interface MarkdownRendererProps {
   content: string;
@@ -538,10 +555,6 @@ export default memo(function MarkdownRenderer({ content, searchResults, onCitati
       : variant === 'user' ? defaultUserComponents : defaultAssistantComponents,
     [searchResults, onCitationClick, variant, resolveFileMention]
   );
-  const pendingMathComponents = useMemo(
-    () => buildMarkdownComponents(searchResults ?? null, onCitationClick, variant, resolveFileMention, true),
-    [searchResults, onCitationClick, variant, resolveFileMention]
-  );
   const urlTransform = resolveFileMention ? keepLocalPathTargets : undefined;
 
   const [splitter] = useState(() => createMarkdownSplitter(parseMarkdown));
@@ -557,7 +570,7 @@ export default memo(function MarkdownRenderer({ content, searchResults, onCitati
         <MarkdownBlockView
           key={block.key}
           block={block}
-          components={block.pendingMath ? pendingMathComponents : components}
+          components={components}
           urlTransform={urlTransform}
         />,
       );
@@ -566,12 +579,11 @@ export default memo(function MarkdownRenderer({ content, searchResults, onCitati
   }
 
   return (
-    <ReactMarkdown
-      remarkPlugins={REMARK_PLUGINS}
+    <WholeReply
+      content={content}
+      pendingMath={split?.mode === 'whole' ? split.pendingMath : null}
       components={components}
       urlTransform={urlTransform}
-    >
-      {closeOpenFences(content)}
-    </ReactMarkdown>
+    />
   );
 });

@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { render, cleanup } from '@testing-library/react';
+import { render, cleanup, fireEvent } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import { DesignSystemProvider } from '@/components/ds/provider';
 
@@ -85,6 +85,17 @@ describe('MarkdownRenderer while a reply streams', () => {
     expect(container.querySelector('table')).toBe(table);
   });
 
+  it('keeps a code block the user expanded expanded when its closing fence arrives', () => {
+    const lines = Array.from({ length: 20 }, (_, i) => `const value${i} = ${i};`).join('\n');
+    const open = `说明\n\n\`\`\`ts\n${lines}\n`;
+    const { container, rerender, getByRole, queryByRole } = render(inProvider(<MarkdownRenderer content={open} streaming />));
+    fireEvent.click(getByRole('button', { name: /20/ }));
+    const codeArea = container.querySelector('pre');
+    rerender(inProvider(<MarkdownRenderer content={`${open}\`\`\`\n\n后文`} streaming />));
+    expect(container.querySelector('pre')).toBe(codeArea);
+    expect(queryByRole('button', { name: /20/ })).toBeNull();
+  });
+
   it('hands ReactMarkdown text proportional to the reply, not to the reply times its chunks', () => {
     const reply = Array.from({ length: 200 }, (_, i) => `第 ${i} 段，带一些 **强调** 的文字。`).join('\n\n');
     const { rerender } = render(inProvider(<MarkdownRenderer content="" streaming />));
@@ -139,5 +150,18 @@ describe('MarkdownRenderer math', () => {
     expect(container.textContent).toContain('E = mc');
     rerender(inProvider(<MarkdownRenderer content={'前文\n\n$$\nE = mc^2\n$$'} streaming />));
     await vi.waitFor(() => expect(container.querySelector('.katex-display')).not.toBeNull());
+  });
+
+  it('shows an unfinished formula as its source in a reply that renders as one document', async () => {
+    const head = 'See [docs][d].\n\n[d]: https://example.com\n\n$$ ready $$\n\n';
+    const { container, rerender } = render(inProvider(<MarkdownRenderer content={`${head}$$\n\\frac{a}{`} streaming />));
+    await vi.waitFor(() => expect(container.querySelectorAll('.katex')).toHaveLength(1));
+    expect(container.querySelector('a')).toHaveAttribute('href', 'https://example.com');
+    expect(container.querySelector('.katex-error')).toBeNull();
+    expect(container.textContent).toContain('\\frac{a}{');
+    const link = container.querySelector('a');
+    rerender(inProvider(<MarkdownRenderer content={`${head}$$\n\\frac{a}{b}\n$$`} streaming />));
+    await vi.waitFor(() => expect(container.querySelectorAll('.katex-display')).toHaveLength(1));
+    expect(container.querySelector('a')).toBe(link);
   });
 });

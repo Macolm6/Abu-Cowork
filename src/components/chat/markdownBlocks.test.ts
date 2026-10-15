@@ -15,9 +15,9 @@ function blocksOf(result: MarkdownSplit): readonly MarkdownBlock[] {
   return result.blocks;
 }
 
-/** What a block renders: its source, or for an open fence the fence's language and text. */
+/** What a block renders: its source, or for a code block its language, text and whether it is open. */
 function rendered(block: MarkdownBlock): string {
-  return block.openFence ? `fence(${block.openFence.lang}):${block.openFence.value}` : block.source;
+  return block.code ? `code(${block.code.lang},${block.code.open}):${block.code.value}` : block.source;
 }
 
 const REPLY = [
@@ -102,7 +102,7 @@ describe('createMarkdownSplitter', () => {
       const results = stream(reply, 16, counting);
       expect(parsed).toBeLessThan(reply.length * 3);
       const last = blocksOf(results.at(-1)!).at(-1)!;
-      expect(last.openFence).toEqual({ lang: 'ts', value: code });
+      expect(last.code).toEqual({ lang: 'ts', value: code, open: true });
     });
   });
 
@@ -121,7 +121,8 @@ describe('createMarkdownSplitter', () => {
       const split = createMarkdownSplitter(parseMarkdown);
       split('```ts\nconst a = 1;\n');
       const closed = blocksOf(split('```ts\nconst a = 1;\n```\n\n后文'));
-      expect(closed.some((block) => block.openFence)).toBe(false);
+      expect(closed.some((block) => block.code?.open)).toBe(false);
+      expect(closed[0].code).toEqual({ lang: 'ts', value: 'const a = 1;', open: false });
       expect(closed.at(-1)!.source).toContain('后文');
     });
 
@@ -129,7 +130,14 @@ describe('createMarkdownSplitter', () => {
       const split = createMarkdownSplitter(parseMarkdown);
       split('````md\n');
       const blocks = blocksOf(split('````md\n```ts\nx\n```\n'));
-      expect(blocks.at(-1)!.openFence).toEqual({ lang: 'md', value: '```ts\nx\n```' });
+      expect(blocks.at(-1)!.code).toEqual({ lang: 'md', value: '```ts\nx\n```', open: true });
+    });
+
+    it('parses a fence written with carriage returns, keeping its text as the parser reads it', () => {
+      const reply = '说明\r\n\r\n```ts\r\nconst a = 1;\r\nconst b = 2;\r\n';
+      const results = stream(reply, 3);
+      const once = blocksOf(createMarkdownSplitter(parseMarkdown)(reply)).map(rendered);
+      expect(blocksOf(results.at(-1)!).map(rendered)).toEqual(once);
     });
   });
 
@@ -141,7 +149,15 @@ describe('createMarkdownSplitter', () => {
       ['\\[a + b\\]', false],
     ])('marks %j as pending: %s', (reply, pending) => {
       const blocks = blocksOf(createMarkdownSplitter(parseMarkdown)(`前文\n\n${reply}`));
-      expect(Boolean(blocks.at(-1)!.pendingMath)).toBe(pending);
+      expect(blocks.at(-1)!.pendingMath !== undefined).toBe(pending);
+    });
+
+    it('sets an unfinished formula apart from a reply that renders as one document', () => {
+      const split = createMarkdownSplitter(parseMarkdown);
+      split('See [docs][d].\n\n[d]: https://example.com\n\n');
+      const reply = 'See [docs][d].\n\n[d]: https://example.com\n\n$$\n\\frac{a}{';
+      expect(split(reply)).toEqual({ mode: 'whole', pendingMath: { start: reply.indexOf('$$'), tex: '\\frac{a}{' } });
+      expect(split(`${reply}b}\n$$`)).toEqual({ mode: 'whole', pendingMath: null });
     });
   });
 
