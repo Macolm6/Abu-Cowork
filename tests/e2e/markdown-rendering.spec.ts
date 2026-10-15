@@ -83,7 +83,8 @@ test.describe.serial('Markdown rendering — real Electron', () => {
     mock = undefined;
   });
 
-  test('shows formulas, prices, a lazily highlighted language and a long streamed reply', async ({}, testInfo) => {
+  test('shows formulas, prices, a lazily highlighted language and a long streamed reply', async () => {
+    const testInfo = test.info();
     const page = await app!.firstWindow({ timeout: READY_TIMEOUT });
     await waitForApp(page);
     await configureLocalMockProvider(page, mock!.baseUrl);
