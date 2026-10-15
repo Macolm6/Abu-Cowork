@@ -183,6 +183,15 @@ describe('executionSnapshot', () => {
 
       expect(restored[0].detailBlocks[0].isTruncated).toBe(false);
     });
+
+    it('restores a block cut by a snapshot written before full lengths were kept as partial', () => {
+      const [restored] = snapshotToExecutionSteps([{
+        id: 'step-1', type: 'command', label: 'Run', status: 'completed', toolName: 'run_command',
+        detailBlocks: [{ id: 'step-1-result', title: 'Result', type: 'result', content: `${'y'.repeat(500)}...` }],
+      }]);
+
+      expect(restored.detailBlocks[0].isTruncated).toBe(true);
+    });
   });
 
   describe('backfillDetailBlockImages', () => {

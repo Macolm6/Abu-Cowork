@@ -65,9 +65,9 @@ function ResultRows({ rows, t }: { rows: ToolResultRow[]; t: TranslationDict }) 
   return (
     <>
       {groups.map((group, index) => (group.kind === 'text' ? (
-        <pre key={index} className="m-0 whitespace-pre-wrap break-all">{group.lines.join('\n')}</pre>
+        <pre key={index} className="m-0 whitespace-pre-wrap break-all font-code text-mono">{group.lines.join('\n')}</pre>
       ) : (
-        <div key={index} data-tool-result-note className="my-1 font-sans text-caption text-label-tertiary">
+        <div key={index} data-tool-result-note className="my-1 text-caption text-label-tertiary">
           {noteText(group, t)}
         </div>
       )))}
@@ -84,11 +84,11 @@ function WholeResult({ text, isError }: { text: string; isError: boolean }) {
   return (
     <div
       data-tool-result
-      className={cn('max-h-[300px] overflow-y-auto px-3 py-2 font-code text-mono', isError ? 'text-danger' : 'text-label')}
+      className={cn('max-h-[300px] overflow-y-auto px-3 py-2', isError ? 'text-danger' : 'text-label')}
     >
       <ResultRows rows={folded ? fold.head : fold.rows} t={t} />
       {folded && fold.hidden && (
-        <div className="py-1 font-sans">
+        <div className="py-1">
           <Button variant="plain" size="sm" onClick={() => setShowAll(true)}>
             {format(
               fold.hidden.unit === 'lines' ? t.chat.toolResultShowAllLines : t.chat.toolResultShowAllChars,
