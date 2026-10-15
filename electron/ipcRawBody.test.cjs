@@ -265,6 +265,16 @@ test('write_file_atomic replace refuses a missing file and a folder, and leaves 
   assert.deepEqual(fs.readdirSync(dir), ['folder']);
 });
 
+test('write_file_atomic replace leaves a read-only file as it is, as a plain write does', { skip: process.platform === 'win32' }, (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'locked.md');
+  fs.writeFileSync(file, 'one\n');
+  fs.chmodSync(file, 0o444);
+  assert.throws(() => atomicWrite(file, bytesOf('two\n'), 'replace'), { code: 'EACCES' });
+  assert.equal(fs.readFileSync(file, 'utf8'), 'one\n');
+  assert.deepEqual(fs.readdirSync(dir), ['locked.md']);
+});
+
 // The scope guard resolves a final symlink to the file it names, as it does for plugin:fs writes.
 test('write_file_atomic replace through a symlink replaces the file it names and keeps the link', { skip: process.platform === 'win32' }, (t) => {
   const dir = tempDir(t);

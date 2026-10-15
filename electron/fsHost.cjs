@@ -218,8 +218,9 @@ function writeAtomic(target, content) {
  * Publishes `content` as the whole of `target`: it is written to a sibling
  * temp file and synced, then made the target in one step, so a reader sees the
  * file as it was or with all of `content`, never a part.
- *   - 'replace': `target` must be a regular file now (a symlink is refused);
- *     the new file keeps its permission bits and takes its place by rename.
+ *   - 'replace': `target` must be a regular file now that this process may
+ *     write; the new file keeps its permission bits and takes its place by
+ *     rename.
  *   - 'create': nothing may be at `target`; the temp file is hard-linked
  *     there, which fails with EEXIST when a file appeared meanwhile, and it
  *     gets the permissions a newly created file gets.
@@ -235,6 +236,8 @@ function writeFileAtomic(target, content, mode) {
   if (mode === 'replace') {
     const info = fs.lstatSync(target);
     if (!info.isFile()) throw new Error(`fs: not a regular file: ${target}`);
+    // A rename needs write access to the folder only; a file that cannot be written stays as it is.
+    fs.accessSync(target, fs.constants.W_OK);
     keptMode = info.mode & 0o7777;
   }
   // 0o666 is the mode open() asks for a new file; the process umask applies to it.
