@@ -443,7 +443,17 @@ function notificationIsPermissionGranted() {
 // process plugin
 // ─────────────────────────────────────────────────────────────────────────
 
+let restartPending = null;
 function processRestart(app) {
+  if (restartPending) return restartPending;
+  restartPending = processRestartInternal(app).finally(() => { restartPending = null; });
+  return restartPending;
+}
+
+async function processRestartInternal(app) {
+  const { prepareAppExit, cancelAppExitPreparation } = require('./tauriHost.cjs');
+  const { createApplicationExitWait } = require('./applicationExitWait.cjs');
+  await prepareAppExit(true);
   // If a downloaded update is pending (updaterHost's download_and_install
   // completed), restart must apply it: quitAndInstall replaces the app and
   // relaunches. Plain relaunch would boot the OLD version — and note the
@@ -452,13 +462,16 @@ function processRestart(app) {
   // quitting-guard marking + error fallback (see its JSDoc); it returns
   // false when nothing is pending or the install attempt failed, in which
   // case an honest plain relaunch of the current version is correct.
-  if (quitAndInstallIfPending()) return null;
+  const exit = createApplicationExitWait(app, cancelAppExitPreparation);
+  if (quitAndInstallIfPending(exit.fail)) { await exit.wait; return null; }
+  exit.cancel();
   app.relaunch();
   app.exit(0);
   return null;
 }
 
-function processExit(app, a) {
+async function processExit(app, a) {
+  await require('./tauriHost.cjs').prepareAppExit(true);
   app.exit(Number((a && a.code) || 0));
   return null;
 }

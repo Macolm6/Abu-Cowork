@@ -64,6 +64,10 @@ export async function flushWrites(): Promise<void> {
   await writer.flushWrites();
 }
 
+export async function checkpointMessages(convId: string, messages: Message[], signal?: AbortSignal): Promise<void> {
+  await writer.checkpointMessages(convId, messages, signal);
+}
+
 /**
  * Flush the write queue and report the ledger's size in bytes — the offset up
  * to which every line is durable and complete, which is what makes it usable

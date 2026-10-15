@@ -3,12 +3,8 @@
  *
  * The main process sends `quit-requested` before it lets the application
  * leave. This module answers it: it asks the user when a conversation is
- * running, records the running turns as closed on, waits until every
- * conversation is on disk, and reports each stage back.
+ * running and reports the user's decision before the host starts saving.
  */
-import { closeRunningRunsForExit } from '@/core/agent/agentLoopRunner';
-import { shutdownConversationStorage } from '@/core/session/conversationStorage';
-import { snapshotStreamingMessagesForExit, waitForAllConversationPersistence } from '@/stores/chatStore';
 
 export interface QuitRequest {
   requestId: number;
@@ -16,14 +12,13 @@ export interface QuitRequest {
   sessionEnding: boolean;
 }
 
-export type QuitStage = 'asking' | 'cancelled' | 'flushing' | 'ready';
+export type QuitStage = 'asking' | 'cancelled' | 'ready';
 
 export interface QuitAnswerDeps {
   hasRunningConversation: () => boolean;
   /** Bring the window forward and ask; true means quit. */
   askToQuit: () => Promise<boolean>;
   report: (requestId: number, stage: QuitStage) => Promise<void>;
-  save: () => Promise<void>;
 }
 
 // The user chose 「退出」 in the close dialog while it showed the running-task
@@ -32,19 +27,6 @@ let quitConfirmedByUser = false;
 
 export function noteQuitConfirmedByUser(): void {
   quitConfirmedByUser = true;
-}
-
-/**
- * Everything the next start reads is on disk when this resolves: running
- * turns are marked as closed on, replies still streaming are snapshotted as
- * they stand, queued conversation writes have gone out, and the writer has
- * promoted its stream snapshots and flushed the index.
- */
-export async function saveConversationsForExit(): Promise<void> {
-  closeRunningRunsForExit();
-  await snapshotStreamingMessagesForExit();
-  await waitForAllConversationPersistence();
-  await shutdownConversationStorage();
 }
 
 // The request whose question is on screen. The main process sends it again
@@ -68,7 +50,5 @@ export async function answerQuitRequest(request: QuitRequest, deps: QuitAnswerDe
       return;
     }
   }
-  await deps.report(request.requestId, 'flushing');
-  await deps.save();
   await deps.report(request.requestId, 'ready');
 }

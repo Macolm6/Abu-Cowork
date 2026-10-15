@@ -19,6 +19,7 @@
  */
 
 const { spawn } = require('node:child_process');
+const { ownedChildProcesses } = require('./ownedChildProcesses.cjs');
 
 class PluginGitError extends Error {
   constructor(message, code) {
@@ -168,12 +169,14 @@ const GIT_HARDENING = ['-c', 'safe.bareRepository=explicit', '-c', 'protocol.ext
  */
 function runGit(args, { spawnImpl = spawn, env, timeoutMs, cwd } = {}) {
   return new Promise((resolve, reject) => {
+    ownedChildProcesses.assertAdmission();
     const child = spawnImpl('git', [...GIT_HARDENING, ...args], {
       env: cleanGitEnv(env ?? process.env),
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
+    ownedChildProcesses.track(child, () => { if (!child.killed) child.kill('SIGKILL'); });
     let stderr = '';
     let timedOut = false;
     const timer = timeoutMs
