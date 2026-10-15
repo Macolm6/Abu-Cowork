@@ -396,6 +396,12 @@ export interface TranslationDict {
     runConnectionFailed: string;
     contentPolicyRejected: string;
     runInterrupted: string;
+    exitSaveFailed: string;
+    exitSaveWaiting: string;
+    exitSaveWait: string;
+    exitSaveRetry: string;
+    exitSaveCancel: string;
+    exitSaveForce: string;
     /** Notice under a turn the application closed on. */
     runClosedMidway: string;
     runResend: string;

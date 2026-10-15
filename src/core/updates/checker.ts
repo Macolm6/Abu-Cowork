@@ -320,8 +320,5 @@ export async function downloadAndInstallUpdate(): Promise<void> {
 }
 
 export async function restartApp(): Promise<void> {
-  // A relaunch leaves without the quit handshake, so the conversations are saved here.
-  const { saveConversationsForExit } = await import('@/core/session/quitFlush');
-  await saveConversationsForExit();
   await relaunch();
 }

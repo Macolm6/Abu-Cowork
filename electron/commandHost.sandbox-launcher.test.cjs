@@ -151,7 +151,7 @@ afterEach(() => {
 
 test('run_shell_command executes ordinary shell commands through launcher', async () => {
   const result = await commandDispatch(app, 'run_shell_command', {
-    command: 'printf hello',
+    command: process.platform === 'win32' ? 'Write-Host -NoNewline hello' : 'printf hello',
     background: false,
     timeout: 5,
     sandboxEnabled: false,
@@ -221,7 +221,7 @@ test('macOS cannot execute an osascript alias copied before sandbox launch', {
 
 test('foreground shell execution records a diagnostics event with command, exit code, and duration', async () => {
   const result = await commandDispatch(app, 'run_shell_command', {
-    command: 'printf observed-foreground',
+    command: process.platform === 'win32' ? 'Write-Host -NoNewline observed-foreground' : 'printf observed-foreground',
     background: false,
     timeout: 5,
     sandboxEnabled: false,
@@ -254,7 +254,7 @@ test('foreground shell execution records a non-zero exit code as an error outcom
 
 test('background shell execution records a diagnostics event once the wait window settles', async () => {
   const result = await commandDispatch(app, 'run_shell_command', {
-    command: 'printf observed-background',
+    command: process.platform === 'win32' ? 'Write-Host -NoNewline observed-background' : 'printf observed-background',
     background: true,
     timeout: 5,
     sandboxEnabled: false,

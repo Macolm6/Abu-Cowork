@@ -49,6 +49,147 @@ function seededSnapshotLookup(files: Map<string, string>): FindToolResultImageSn
 }
 
 describe('createConversationWriter', () => {
+  it('checkpoints stopped content and recovers a failed checkpoint on retry', async () => {
+    const fs = createMemoryConversationFs();
+    const writer = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+    await writer.appendMessage('c1', msg('m1', 'initial'));
+    const stopped = msg('m1', 'partial answer', { stopReason: 'user' });
+    fs.failNextAppend(`${ROOT}/c1/messages.jsonl`, new Error('disk full'));
+    await expect(writer.checkpointMessages('c1', [stopped])).rejects.toThrow('disk full');
+    await writer.checkpointMessages('c1', [stopped]);
+    const reopened = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+    expect(await reopened.loadMessages('c1', { strictRead: true })).toEqual([stopped]);
+    const ledger = fs.files.get(`${ROOT}/c1/messages.jsonl`);
+    await writer.checkpointMessages('c1', [stopped]);
+    expect(fs.files.get(`${ROOT}/c1/messages.jsonl`)).toBe(ledger);
+  });
+
+  it('checkpoints a message whose initial append failed', async () => {
+    const fs = createMemoryConversationFs();
+    const writer = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+    await writer.checkpointMessages('c1', [msg('m1', 'new reply')]);
+    const reopened = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+    expect(await reopened.loadMessages('c1', { strictRead: true })).toEqual([msg('m1', 'new reply')]);
+  });
+
+  it('checkpoints a complete history in one batch without repeating unchanged parent-linked rows', async () => {
+    const fs = createMemoryConversationFs();
+    const writer = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+    const messages = Array.from({ length: 350 }, (_, index) => msg(`m${index}`, `reply ${index}`));
+    await writer.checkpointMessages('c1', messages);
+    const path = `${ROOT}/c1/messages.jsonl`;
+    const first = fs.files.get(path);
+    expect(fs.calls.filter(call => call === `appendText ${path}`)).toHaveLength(1);
+    await writer.checkpointMessages('c1', messages);
+    await writer.checkpointMessages('c1', messages);
+    expect(fs.files.get(path)).toBe(first);
+    expect((await writer.loadMessages('c1')).map(message => message.content)).toEqual(messages.map(message => message.content));
+  });
+
+  it('repairs an unsuccessful removal and preserves the surviving history', async () => {
+    const fs = createMemoryConversationFs();
+    const writer = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+    const user = msg('u1', 'question', { role: 'user' });
+    await writer.checkpointMessages('c1', [user, msg('empty', '')]);
+    fs.failNextAppend(`${ROOT}/c1/messages.jsonl`, new Error('disk full'));
+    await expect(writer.appendTruncateEvent('c1', 'empty', { pid: 'u1', removedIds: ['empty'] })).rejects.toThrow('disk full');
+    await writer.checkpointMessages('c1', [user]);
+    const reopened = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+    expect(await reopened.loadMessages('c1', { strictRead: true })).toEqual([user]);
+  });
+
+  it('cancels a checkpoint before its next write and leaves subsequent content intact', async () => {
+    const fs = createMemoryConversationFs();
+    const writer = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+    await writer.checkpointMessages('c1', [msg('m1', 'initial')]);
+    const controller = new AbortController();
+    const read = fs.readTextFile;
+    fs.readTextFile = async path => {
+      const result = await read(path);
+      if (path.endsWith('messages.jsonl')) controller.abort();
+      return result;
+    };
+    await expect(writer.checkpointMessages('c1', [msg('m1', 'old checkpoint')], controller.signal)).rejects.toThrow();
+    fs.readTextFile = read;
+    await writer.checkpointMessages('c1', [msg('m1', 'new reply')]);
+    expect((await writer.loadMessages('c1'))[0].content).toBe('new reply');
+  });
+
+  it('preserves message order when an earlier image waits for its output manifest', async () => {
+    const fs = createMemoryConversationFs();
+    let ready!: () => void;
+    let entered!: () => void;
+    const manifestStarted = new Promise<void>(resolve => { entered = resolve; });
+    const manifest = new Promise<void>(resolve => { ready = resolve; });
+    const writer = createConversationWriter({ fs, env: makeEnv({ outputManifest: {
+      refresh: async () => { entered(); await manifest; return {}; },
+      findToolResultImageSnapshot: () => null,
+    } }), capabilities: ALL });
+    const first = msg('a', 'image reply', { toolCalls: [{ id: 'tool', name: 'read_file', input: {},
+      resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } }] }] });
+    const save = writer.checkpointMessages('c1', [first, msg('b', 'next reply')]);
+    await manifestStarted;
+    expect(fs.calls.filter(call => call.startsWith('appendText '))).toHaveLength(0);
+    ready();
+    await save;
+    const reopened = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+    expect((await reopened.loadMessages('c1')).map(message => message.id)).toEqual(['a', 'b']);
+  });
+
+  it('removes an obsolete middle ghost without rewriting its surviving successors', async () => {
+    const fs = createMemoryConversationFs();
+    const writer = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+    const messages = [msg('u1', 'first'), msg('ghost', ''), msg('u2', 'second'), msg('a2', 'answer')];
+    await writer.checkpointMessages('c1', messages);
+    const ledger = fs.files.get(`${ROOT}/c1/messages.jsonl`)!;
+    await writer.checkpointMessages('c1', messages.filter(message => message.id !== 'ghost'));
+    const appended = fs.files.get(`${ROOT}/c1/messages.jsonl`)!.slice(ledger.length);
+    expect(appended).toContain('msg.tomb');
+    expect(appended).not.toContain('msg.truncate');
+    expect(appended).not.toContain('answer');
+    const reopened = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+    expect((await reopened.loadMessages('c1')).map(message => message.id)).toEqual(['u1', 'u2', 'a2']);
+  });
+
+  it('atomically restores a missing earlier message in the displayed order', async () => {
+    const fs = createMemoryConversationFs();
+    const writer = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+    const user = msg('u1', 'question', { role: 'user' });
+    const answer = msg('a1', 'answer');
+    await writer.appendMessage('c1', answer);
+    const path = `${ROOT}/c1/messages.jsonl`;
+    const original = fs.files.get(path);
+    const atomicWrite = fs.atomicWriteText;
+    fs.atomicWriteText = async (destination, content) => {
+      if (destination === path) throw new Error('disk full');
+      await atomicWrite(destination, content);
+    };
+    await expect(writer.checkpointMessages('c1', [user, answer])).rejects.toThrow('disk full');
+    expect(fs.files.get(path)).toBe(original);
+    fs.atomicWriteText = atomicWrite;
+    await writer.checkpointMessages('c1', [user, answer]);
+    const reopened = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+    expect((await reopened.loadMessages('c1')).map(message => message.id)).toEqual(['u1', 'a1']);
+  });
+
+  it('keeps a newline-free ledger appendable after an atomic repair fails', async () => {
+    const fs = createMemoryConversationFs();
+    const writer = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+    const answer = msg('a1', 'saved answer');
+    const path = `${ROOT}/c1/messages.jsonl`;
+    fs.files.set(path, JSON.stringify(answer));
+    const atomicWrite = fs.atomicWriteText;
+    fs.atomicWriteText = async (destination, content) => {
+      if (destination === path) throw new Error('disk full');
+      await atomicWrite(destination, content);
+    };
+    await expect(writer.checkpointMessages('c1', [msg('u1', 'question'), answer])).rejects.toThrow('disk full');
+    fs.atomicWriteText = atomicWrite;
+    await writer.appendMessage('c1', msg('m2', 'new reply'));
+    const reopened = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+    expect((await reopened.loadMessages('c1')).map(message => message.id)).toEqual(['a1', 'm2']);
+  });
+
   for (const testCase of loadConversationWriterFixtures()) {
     it(`shared fixture: ${testCase.name}`, async () => {
       const fs = createMemoryConversationFs();

@@ -664,7 +664,52 @@ function readWindowMaterial() {
   return value;
 }
 
+let quitParticipant = null;
+let quitRequest = null;
+ipcRenderer.on('abu:quit-prepare', async (_event, id) => {
+  if (!quitParticipant || (quitRequest && !quitRequest.failed)) throw new Error('Exit preparation participant is unavailable');
+  const previous = quitRequest;
+  const request = { id, cancelled: false, failed: false, release: null, cancel: null, inert: previous?.inert ?? document.body.inert };
+  quitRequest = request;
+  document.body.inert = true;
+  const release = () => {
+    request.release?.();
+    if (quitRequest === request) {
+      document.body.inert = request.inert;
+      quitRequest = null;
+    }
+  };
+  const onCancel = callback => {
+    if (typeof callback !== 'function') throw new Error('Exit cancellation requires a callback');
+    request.cancel = callback;
+    if (request.cancelled) callback();
+  };
+  const preparation = quitParticipant(onCancel);
+  // A retry acquires its task barrier before releasing the failed attempt's.
+  previous?.cancel?.();
+  previous?.release?.();
+  const [result] = await Promise.allSettled([preparation]);
+  request.failed = result.status === 'rejected';
+  if (result.status === 'fulfilled') request.release = result.value;
+  if (request.cancelled) { release(); return; }
+  const accepted = await ipcRenderer.invoke('abu:quit-ack', { id, success: result.status === 'fulfilled' });
+  if (!accepted || request.cancelled) { request.cancel?.(); release(); }
+});
+ipcRenderer.on('abu:quit-cancel', (_event, id) => {
+  if (!quitRequest || quitRequest.id !== id) return;
+  quitRequest.cancelled = true;
+  quitRequest.cancel?.();
+  quitRequest.release?.();
+  document.body.inert = quitRequest.inert;
+  quitRequest = null;
+});
+
 contextBridge.exposeInMainWorld('__ABU_SHELL__', {
+  registerQuitParticipant: async (participant, failureMessage, dialogText) => {
+    if (typeof participant !== 'function' || quitParticipant) throw new Error('Invalid exit preparation participant');
+    quitParticipant = participant;
+    await ipcRenderer.invoke('abu:quit-register', failureMessage, dialogText);
+  },
   mainSupervisesSidecar: true,
   deepLinkScheme: readDeepLinkScheme(),
   windowMaterial: readWindowMaterial(),

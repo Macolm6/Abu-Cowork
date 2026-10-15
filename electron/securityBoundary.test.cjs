@@ -737,6 +737,7 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
     'readDelegatedMedia',
     'readUserAttachment',
     'recordRuntimeEvent',
+    'registerQuitParticipant',
     'releaseUserAttachment',
     'saveImageAttachment',
     'selectUserAttachments',
