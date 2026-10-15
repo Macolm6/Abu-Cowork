@@ -311,10 +311,13 @@ function createDesktopModelDriver(scope) {
       errors.push('physical-input-interruption');
       return sse({ content: 'ABU_DESKTOP_TASK_FAILED' });
     }
-    if (/^Error(?:\s|:)/i.test(text)) { errors.push('tool-execution-failed'); return sse({ content: 'ABU_DESKTOP_TASK_FAILED' }); }
-    if (listWindows) {
-      const candidates = [...text.matchAll(/^- window_ref:\s*(wr-[A-Za-z0-9_-]+)([\s\S]*?)(?=\n- window_ref:|(?![\s\S]))/gm)]
-        .map((match) => ({ ref: match[1], title: match[2].match(/^\s+title:\s*(.+)$/m)?.[1] ?? '' }));
+    const candidates = [...text.matchAll(/^- window_ref:\s*(wr-[A-Za-z0-9_-]+)([\s\S]*?)(?=\n- window_ref:|(?![\s\S]))/gm)]
+      .map((match) => ({ ref: match[1], title: match[2].match(/^\s+title:\s*(.+)$/m)?.[1] ?? '' }));
+    if (/^Error(?:\s|:)/i.test(text) && candidates.length === 0) {
+      errors.push('tool-execution-failed');
+      return sse({ content: 'ABU_DESKTOP_TASK_FAILED' });
+    }
+    if (listWindows || candidates.length > 0) {
       if (candidates.length === 0) return call({ action: 'list_windows' });
       const preferred = scope.scenario === 'nested-modal'
         ? candidates.find((item) => /nested/i.test(item.title)) ?? candidates.find((item) => /dialog/i.test(item.title))
@@ -322,7 +325,7 @@ function createDesktopModelDriver(scope) {
           ? candidates.find((item) => /dialog/i.test(item.title))
           : currentWindowRef
             ? candidates.find((item) => /secondary/i.test(item.title) && item.ref !== currentWindowRef)
-            : candidates.find((item) => !/secondary/i.test(item.title));
+            : candidates.find((item) => item.title === 'Abu CU Desktop');
       const selected = preferred ?? candidates.find((item) => item.ref !== currentWindowRef) ?? candidates[0];
       currentWindowRef = selected.ref;
       listWindows = false;

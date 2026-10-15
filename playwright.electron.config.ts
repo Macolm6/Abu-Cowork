@@ -17,6 +17,7 @@ export default defineConfig({
   // Playwright's default testMatch (`**/*.@(spec|test).*`) would otherwise
   // load — and thereby execute — during collection.
   testMatch: '**/*.spec.ts',
+  testIgnore: process.env.ABU_BUILD_TARGET === 'enterprise' ? [] : ['**/app-enterprise.spec.ts'],
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: 0,

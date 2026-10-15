@@ -100,6 +100,11 @@ beforeEach(() => {
 });
 
 describe('marketplaces', () => {
+  it.each(['mine', 'local', 'Mine', 'LOCAL', 'mine.', 'local...'])('refuses the personal app market name %s', (name) => {
+    expect(() => usePluginStore.getState().addMarketplace(name, '/market')).toThrow();
+    expect(usePluginStore.getState().marketplaces).toEqual([]);
+  });
+
   it('rejects identity replacement and deduplicates an existing marketplace', () => {
     const { addMarketplace, removeMarketplace } = usePluginStore.getState();
 
@@ -429,7 +434,7 @@ describe('built-in marketplace', () => {
   });
 
   it('keeps the built-in first so it leads the market picker', () => {
-    usePluginStore.getState().addMarketplace('mine', '/tmp/mine');
+    usePluginStore.getState().addMarketplace('personal-market', '/market');
     usePluginStore.getState().ensureBuiltinMarketplace('/app/builtin-plugin-market');
     expect(usePluginStore.getState().marketplaces[0].name).toBe('abu-official');
   });

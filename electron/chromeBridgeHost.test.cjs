@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const { after, test } = require('node:test');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'abu chrome bridge host '));
@@ -29,6 +30,7 @@ const {
   retireStaleChromeBridge,
   resolveChromeBridgeRuntimeLaunch,
   verifiedBridgeProcess,
+  windowsBridgeProcessScript,
 } = require('./chromeBridgeHost.cjs');
 
 after(() => {
@@ -166,6 +168,21 @@ test('POSIX bridge verification requires same uid, approved command, and both po
     }),
     null,
   );
+});
+
+test('Windows bridge inspection parses with the real PowerShell parser', {
+  skip: process.platform !== 'win32',
+}, () => {
+  const result = execFileSync('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-Command',
+    '$tokens=$null; $errors=$null; ' +
+      '[void][System.Management.Automation.Language.Parser]::ParseInput($env:ABU_BRIDGE_INSPECTION_SCRIPT,[ref]$tokens,[ref]$errors); ' +
+      'if($errors.Count -gt 0){$errors | ForEach-Object {$_.ErrorId}; exit 1}',
+  ], {
+    encoding: 'utf8', windowsHide: true, timeout: 10_000,
+    env: { ...process.env, ABU_BRIDGE_INSPECTION_SCRIPT: windowsBridgeProcessScript(process.pid) },
+  });
+  assert.equal(result.trim(), '');
 });
 
 test('stale bridge takeover never signals an unverified process', async () => {

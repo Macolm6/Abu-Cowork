@@ -1,4 +1,5 @@
 import { finishPluginConfiguration, sweepPluginConfigurations } from '@/core/plugin/configuration';
+import { isPersonalAppMarketName } from '@/core/app/appIdentity';
 import { preparePluginSnapshot, releasePluginSnapshot } from '@/core/plugin/snapshotBridge';
 import { useChatStore } from './chatStore';
 import { pluginOwnerForSkill } from '@/core/plugin/activationPolicy';
@@ -257,6 +258,7 @@ export const usePluginStore = create<PluginStore>()(
       error: null,
 
       addMarketplace: (name, dir) => {
+        if (isPersonalAppMarketName(name)) throw new Error(getI18n().appMarket.reservedMarketName);
         // The enterprise market name is reserved for the organization-managed
         // catalog installed through the private module — a user-added market
         // must never be able to claim that identity.

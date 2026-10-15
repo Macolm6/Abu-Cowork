@@ -196,4 +196,4 @@ A weekly report app: one scene on the user's own team, one on a new expert, one 
 | App logo | `interface.logo`, `interface.logoDark` | PNG or SVG | 256×256, transparent background, one light and one dark |
 | Mode, scene and navigation icons | `icon` | PNG or SVG | 32×32, single-colour line art |
 
-Every image lives inside the draft folder and is referenced by a relative path. Do not generate image files unless the user provides them; an app without `interface.logo` shows its name instead.
+Every image lives inside the draft folder and is referenced by a relative path. Do not generate image files unless the user provides them; an app without `interface.logo` uses the neutral application icon.

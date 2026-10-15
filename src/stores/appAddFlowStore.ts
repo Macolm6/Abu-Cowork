@@ -4,6 +4,7 @@ import type { AppDefinition, LocalizedText } from '@/types/app';
 import { useAppStore } from '@/stores/appStore';
 import { reportAppFailure } from '@/core/app/appFailure';
 import {
+  cancelAddApp,
   AppAddError,
   cancelPluginSteps,
   confirmAddApp,
@@ -34,7 +35,7 @@ export type AppAddOperation = AppAddPurpose | 'repair';
 
 export type AppAddFlow =
   | { kind: 'closed' }
-  | { kind: 'planning'; name: LocalizedText }
+  | { kind: 'planning'; name: LocalizedText; purpose?: AppAddOperation }
   | { kind: 'ready'; purpose: AppAddPurpose; plan: AppAddPlan }
   | { kind: 'repair'; app: AppDefinition; steps: AppPluginStep[]; resume: () => void }
   /**
@@ -76,36 +77,51 @@ function startingPlace(): AppAddFlowPlace {
   return useAppStore.getState().appMarketOpen ? 'market' : 'page';
 }
 
+async function releaseFlow(flow: AppAddFlow): Promise<void> {
+  if (flow.kind === 'ready') await cancelAddApp(flow.plan);
+  if (flow.kind === 'repair') await cancelPluginSteps(flow.steps);
+}
+
 export const useAppAddFlowStore = create<AppAddFlowState & AppAddFlowActions>()((set, get) => ({
   flow: { kind: 'closed' },
   running: false,
   shownIn: 'page',
 
   start: async (source, name, purpose) => {
-    set({ flow: { kind: 'planning', name }, shownIn: startingPlace() });
+    if (get().running) return;
+    const previous = get().flow;
+    const planning: AppAddFlow = { kind: 'planning', name, purpose };
+    set({ flow: planning, shownIn: startingPlace() });
     let plan: AppAddPlan;
     try {
+      await releaseFlow(previous);
+      if (get().flow !== planning) return;
       plan = await planAddApp(source, await homeDir());
     } catch (error) {
-      set({ flow: failed(name, purpose, error) });
+      if (get().flow === planning) set({ flow: failed(name, purpose, error) });
       return;
     }
     // Cancelled while planning: the snapshots it prepared are not needed.
-    if (get().flow.kind !== 'planning') { await cancelPluginSteps(plan.steps); return; }
+    if (get().flow !== planning) { await cancelAddApp(plan); return; }
     set({ flow: { kind: 'ready', purpose, plan } });
     if (purpose !== 'preview' && !needsConfirmation(plan)) await get().confirm({});
   },
 
   repair: async (app, resume) => {
-    set({ flow: { kind: 'planning', name: app.name }, shownIn: startingPlace() });
+    if (get().running) return;
+    const previous = get().flow;
+    const planning: AppAddFlow = { kind: 'planning', name: app.name, purpose: 'repair' };
+    set({ flow: planning, shownIn: startingPlace() });
     let steps: AppPluginStep[];
     try {
+      await releaseFlow(previous);
+      if (get().flow !== planning) return;
       steps = await planPluginSteps(app, await homeDir());
     } catch (error) {
-      set({ flow: failed(app.name, 'repair', error) });
+      if (get().flow === planning) set({ flow: failed(app.name, 'repair', error) });
       return;
     }
-    if (get().flow.kind !== 'planning') { await cancelPluginSteps(steps); return; }
+    if (get().flow !== planning) { await cancelPluginSteps(steps); return; }
     if (steps.length === 0) {
       set({ flow: { kind: 'closed' } });
       resume();
@@ -134,7 +150,6 @@ export const useAppAddFlowStore = create<AppAddFlowState & AppAddFlowActions>()(
     const { flow, running } = get();
     if (running) return;
     set({ flow: { kind: 'closed' } });
-    if (flow.kind === 'ready') await cancelPluginSteps(flow.plan.steps);
-    if (flow.kind === 'repair') await cancelPluginSteps(flow.steps);
+    await releaseFlow(flow);
   },
 }));

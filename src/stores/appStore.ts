@@ -4,6 +4,7 @@ import { persist } from 'zustand/middleware';
 import type { AppDefinition, AppLocale } from '@/types/app';
 import { GENERAL_APP_ID } from '@/types/app';
 import { getApp, listApps } from '@/core/app/appRegistry';
+import { getEnterpriseAppPolicy } from '@/core/enterprise/appPolicy';
 import { getLocale, useI18n } from '@/i18n';
 import { useSettingsStore } from './settingsStore';
 import { useChatStore } from './chatStore';
@@ -105,7 +106,7 @@ export const useAppStore = create<AppStore>()(
   persist(
     (set, get) => {
       /** Show `appId` (or the general shell) without touching what the user chose to remember. */
-      const show = (appId: string) => {
+      const show = (appId: string, preserveConversation = false) => {
         set((state) => ({
           selectedAppId: appId,
           recentAppIds: appId === GENERAL_APP_ID ? state.recentAppIds : [appId, ...state.recentAppIds.filter((id) => id !== appId)].slice(0, MAX_RECENT_APPS),
@@ -113,7 +114,11 @@ export const useAppStore = create<AppStore>()(
           // Entering is what the market is for: the dialog closes onto the app.
           appMarketOpen: appId === GENERAL_APP_ID ? state.appMarketOpen : false,
         }));
-        landOnHome();
+        if (preserveConversation && useChatStore.getState().activeConversationId !== null) {
+          useSettingsStore.getState().setViewMode('chat');
+        } else {
+          landOnHome();
+        }
       };
 
       /**
@@ -129,6 +134,14 @@ export const useAppStore = create<AppStore>()(
        * the selection nor the recents forget it.
        */
       const reconcile = (suspendIfGone: boolean) => {
+        const page = get().activeAppPage;
+        if (page) {
+          const app = availableApps(get()).find((item) => item.appId === page.appId);
+          if (!app?.config.nav?.items.some((item) => item.id === page.navItemId && item.target.startsWith('url:'))) {
+            set({ activeAppPage: null });
+            useSettingsStore.getState().setViewMode('chat');
+          }
+        }
         const ids = new Set(availableApps(get()).map((app) => app.appId));
         const { pendingEnterAppId, suspendedManagedAppId, selectedAppId, seenAppIds } = get();
         const gone = (id: string) => seenAppIds[id] === true && !ids.has(id);
@@ -147,12 +160,14 @@ export const useAppStore = create<AppStore>()(
         }
         if (selectedAppId !== GENERAL_APP_ID && gone(selectedAppId)) {
           set({ suspendedManagedAppId: suspendIfGone ? selectedAppId : null });
-          show(GENERAL_APP_ID);
+          const policy = getEnterpriseAppPolicy();
+          const destination = !policy.allowExit && policy.defaultAppId && ids.has(policy.defaultAppId) ? policy.defaultAppId : GENERAL_APP_ID;
+          show(destination, true);
           return;
         }
         if (suspendedManagedAppId && selectedAppId === GENERAL_APP_ID && ids.has(suspendedManagedAppId)) {
           set({ suspendedManagedAppId: null });
-          show(suspendedManagedAppId);
+          show(suspendedManagedAppId, true);
         }
       };
 
