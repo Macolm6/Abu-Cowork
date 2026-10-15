@@ -36,7 +36,8 @@ export function isFetchedMarket(market: MarketplaceRef, home: string): boolean {
 
 /** Fetch `address` and return the market it provides. */
 export async function fetchMarket(address: string): Promise<{ name: string; dir: string }> {
-  return invoke<{ name: string; dir: string }>('market_source_add', { address: address.trim() });
+  const registered = usePluginStore.getState().marketplaces.map(({ name, dir }) => ({ name, dir }));
+  return invoke<{ name: string; dir: string }>('market_source_add', { address: address.trim(), registered });
 }
 
 /**

@@ -126,3 +126,55 @@ test('the dispatch carries the code on the message the renderer receives', async
     assert.equal(typeof marketSourceDispatch('something_else', {}, host), 'symbol');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('ignores Finder metadata outside the single market directory', async () => {
+  const root = scratch();
+  try {
+    const host = createMarketSourceHost({ marketsRoot: root, download: async () => marketZip('market', 'finder-market', {
+      '__MACOSX/._market': strToU8('metadata'), '.DS_Store': strToU8('metadata'),
+    }) });
+    await host.add('https://files.example.com/finder.zip');
+    assert.deepEqual(fs.readdirSync(root), ['finder-market']);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('preserves the original market when publishing its refresh fails', async () => {
+  const root = scratch();
+  try {
+    let rejectRename = false;
+    const disk = { ...fs, renameSync: (from, to) => {
+      if (rejectRename && path.basename(from).startsWith('.staging-') && !from.endsWith('-previous')) throw new Error('rename refused');
+      return fs.renameSync(from, to);
+    } };
+    const host = createMarketSourceHost({ marketsRoot: root, fs: disk, download: async () => marketZip('market', 'lawyer-market'), now: () => 1000 });
+    await host.add('https://files.example.com/market.zip');
+    rejectRename = true;
+    await assert.rejects(host.add('https://files.example.com/market.zip'), /rename refused/);
+    assert.deepEqual(fs.readdirSync(root), ['lawyer-market']);
+    assert.equal(host.readSource('lawyer-market').fetchedAt, 1000);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a renamed refresh publishes no new market and keeps the previous copy', async () => {
+  const root = scratch();
+  try {
+    let clock = 0;
+    let name = 'old-market';
+    const host = createMarketSourceHost({ marketsRoot: root, download: async () => marketZip('market', name), now: () => clock });
+    await host.add('https://files.example.com/market.zip');
+    clock = REFRESH_AFTER_MS;
+    name = 'new-market';
+    await assert.rejects(host.refresh('old-market'), error => error.code === 'not_a_market');
+    assert.deepEqual(fs.readdirSync(root), ['old-market']);
+    assert.equal(host.readSource('old-market').fetchedAt, 0);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('refuses a name registered from another folder before publishing downloaded files', async () => {
+  const root = scratch();
+  try {
+    const host = createMarketSourceHost({ marketsRoot: root, download: async () => marketZip('market', 'lawyer-market') });
+    await assert.rejects(host.add('https://files.example.com/market.zip', undefined, [{ name: 'lawyer-market', dir: path.join(root, 'local-market') }]), error => error.code === 'name_taken');
+    assert.deepEqual(fs.readdirSync(root), []);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

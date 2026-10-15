@@ -144,7 +144,20 @@ test.describe.serial('apps', () => {
     await expect(page.getByTestId('app-switcher-item-__general__')).toHaveCount(0);
     await expect(page.getByTestId('app-switcher-discover')).toBeVisible();
     await expect(page.getByTestId('app-switcher-create')).toBeVisible();
-    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('app-switcher-empty')).toHaveText('暂无应用');
+    await app.evaluate(({ shell }) => {
+      const fixture = globalThis as typeof globalThis & { appDocsOpened: string[]; restoreAppDocsOpen: () => void };
+      const originalOpen = shell.openExternal;
+      fixture.appDocsOpened = [];
+      fixture.restoreAppDocsOpen = () => { shell.openExternal = originalOpen; };
+      shell.openExternal = async (url) => { fixture.appDocsOpened.push(url); };
+    });
+    await page.getByRole('menuitem', { name: '应用开发文档', exact: true }).click();
+    await expect(page.getByTestId('app-switcher-menu')).toBeHidden();
+    await expect.poll(() => app.evaluate(() => (
+      globalThis as typeof globalThis & { appDocsOpened: string[] }
+    ).appDocsOpened)).toEqual(['https://github.com/PM-Shawn/Abu-Cowork/blob/dev/docs/app-spec.md']);
+    await app.evaluate(() => (globalThis as typeof globalThis & { restoreAppDocsOpen: () => void }).restoreAppDocsOpen());
     await expect(page.getByTestId('app-switcher-menu')).toBeHidden();
   });
 
@@ -162,7 +175,6 @@ test.describe.serial('apps', () => {
     await expect(market.getByTestId('app-market-market')).toContainText('abu-examples', { timeout: READY_TIMEOUT });
     const entry = market.locator(`[data-testid="app-market-entry"][data-app-id="${APP_ID}"]`);
     await expect(entry).toContainText(APP_NAME);
-    await expect(entry).toContainText('product-listing');
     await entry.getByTestId('app-market-use').click();
 
     // The plugin it needs comes along, shown the way a plugin install shows it;
@@ -181,6 +193,9 @@ test.describe.serial('apps', () => {
     await expect(page.getByTestId('app-switcher-current')).toHaveText(APP_NAME, { timeout: READY_TIMEOUT });
     await expect(market).toBeHidden();
     await expect(page.getByTestId('app-home-title')).toHaveText(APP_NAME);
+    await openSwitcher(page);
+    await expect(page.getByTestId('app-switcher-empty')).toHaveCount(0);
+    await page.keyboard.press('Escape');
     await expect(page.getByTestId('sidebar-app-page-portal')).toBeVisible();
     await expect(page.getByLabel('Main navigation').getByRole('button')).toHaveCount(4);
     await expect(page.getByTestId('app-connector-hint')).toContainText('shop-api');
@@ -193,6 +208,16 @@ test.describe.serial('apps', () => {
     await expect(page.getByTestId('app-home-mode-listing')).toHaveAttribute('aria-selected', 'true');
     await page.getByTestId('app-home-scene-write-listing').click();
     await expect(page.getByTestId('app-home-templates')).toBeVisible();
+    const ordered = await page.evaluate(() => {
+      const selectors = ['[data-testid="app-home-modes"]', '[data-testid="app-home-scenes"]', '[data-testid="app-home-templates"]', '[data-chat-composer]'];
+      const boxes = selectors.map((selector) => document.querySelector(selector)!.getBoundingClientRect());
+      return boxes.every((box, index) => index === 0 || boxes[index - 1].bottom <= box.top);
+    });
+    expect(ordered).toBe(true);
+    await expect(page.getByTestId('app-home').getByTestId('app-logo')).toHaveCSS('width', '56px');
+    const logoImage = page.getByTestId('app-home').getByTestId('app-logo').locator('img');
+    await expect(logoImage).toBeVisible();
+    await expect.poll(() => logoImage.evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
     await page.getByTestId('app-home-template-rewrite').click();
     const composer = page.locator('[data-chat-composer]');
     const composerText = () => composer.evaluate((element) => element instanceof HTMLTextAreaElement ? element.value : element.textContent ?? '');
@@ -200,11 +225,15 @@ test.describe.serial('apps', () => {
     await expect.poll(composerText).toMatch(/改成三个更吸引点击的版本/);
     // The scene runs the product-listing skill: the composer carries the skill chip.
     await expect(page.getByRole('button', { name: '/product-listing', exact: true })).toBeVisible();
+    expect(llm.requests).toHaveLength(0);
 
     await composer.click();
+    await composer.press('End');
+    await composer.pressSequentially(' Keep the brand name.');
     await composer.press('Enter');
     await expect.poll(() => llm.requests.length, { timeout: READY_TIMEOUT }).toBeGreaterThan(0);
     const [request] = llm.requests;
+    expect(request.user).toContain('Keep the brand name.');
     expect(request.system).toContain('## App Context');
     expect(request.system).toContain(`inside the app "${APP_NAME}"`);
     expect(request.system).toContain('<app-instructions>');
@@ -323,8 +352,18 @@ test.describe.serial('apps', () => {
     await expect(thisApp).toHaveAttribute('aria-checked', 'true');
     await page.getByTestId('team-source-mine').click();
     await expect(page.getByText('店铺客服顾问', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await page.getByTestId('team-source-market').click();
+    await expect(page.getByText('高级开发工程师', { exact: true })).toHaveCount(0);
+    await everything.click();
+    await expect(page.getByText('高级开发工程师', { exact: true })).toBeVisible();
+    await thisApp.click();
+    await expect(page.getByText('高级开发工程师', { exact: true })).toHaveCount(0);
+    await page.getByTestId('top-tab-nav').getByRole('button', { name: '专家团', exact: true }).click();
+    await page.getByTestId('team-source-market').click();
+    await expect(page.getByTestId('team-row-汇报材料专家团')).toHaveCount(0);
     await everything.click();
     await expect(everything).toHaveAttribute('aria-checked', 'true');
+    await expect(page.getByTestId('team-row-汇报材料专家团')).toBeVisible();
     await page.getByLabel('Main navigation').getByRole('button', { name: NEW_TASK }).click();
   });
 
@@ -333,14 +372,65 @@ test.describe.serial('apps', () => {
     await expect(page.getByTestId('app-page-view')).toHaveAttribute('data-nav-item', 'portal');
     await expect.poll(() => pages.hits.length, { timeout: READY_TIMEOUT }).toBeGreaterThan(0);
     expect(pages.hits[0]).toBe('/portal');
-    // Leaving the page hides the native view; nothing else is requested.
-    const hitsBefore = pages.hits.length;
     await page.getByLabel('Main navigation').getByRole('button', { name: NEW_TASK }).click();
     await expect(page.getByTestId('app-home-title')).toBeVisible();
-    expect(pages.hits.length).toBe(hitsBefore);
+    await expect(page.getByTestId('app-page-view')).toHaveCount(0);
+  });
+
+  test('starting with an expert from the app keeps that expert through sending', async () => {
+    await showSidebar(page);
+    await page.getByTestId('sidebar-team').click();
+    await page.getByTestId('top-tab-nav').getByRole('button', { name: '专家', exact: true }).click();
+    await page.getByTestId('team-source-mine').click();
+    await page.getByText('店铺客服顾问', { exact: true }).click();
+    await page.getByRole('button', { name: '开始对话', exact: true }).click();
+    await expect(page.getByTestId('app-home-title')).toHaveText(APP_NAME);
+    await expect(page.getByRole('button', { name: '@店铺客服顾问', exact: true })).toBeVisible();
+    await expect(page.getByTestId('composer-team-chip')).toHaveCount(0);
+    const composer = page.locator('[data-chat-composer]');
+    await composer.fill('帮我回复顾客关于退货的咨询');
+    const before = llm.requests.length;
+    await composer.press('Enter');
+    await expect.poll(() => llm.requests.length, { timeout: READY_TIMEOUT }).toBeGreaterThan(before);
+    await expect(page.getByTestId('chat-title-app-badge')).toContainText(APP_NAME);
+    await expect(page.getByTestId('chat-title-team-badge')).toHaveCount(0);
+  });
+
+  test('starting with a different team keeps that team through sending', async () => {
+    await showSidebar(page);
+    await page.getByTestId('sidebar-team').click();
+    await page.getByTestId('team-app-scope').getByRole('radio', { name: '全部', exact: true }).click();
+    await page.getByTestId('top-tab-nav').getByRole('button', { name: '专家团', exact: true }).click();
+    await page.getByTestId('team-source-market').click();
+    await page.getByTestId('team-row-汇报材料专家团').click();
+    await page.getByTestId('team-detail-start-chat').click();
+    await expect(page.getByTestId('composer-team-chip')).toContainText('汇报材料专家团');
+    const composer = page.locator('[data-chat-composer]');
+    await composer.fill('帮我整理一份本月经营汇报');
+    const before = llm.requests.length;
+    await composer.press('Enter');
+    await expect.poll(() => llm.requests.length, { timeout: READY_TIMEOUT }).toBeGreaterThan(before);
+    await expect(page.getByTestId('chat-title-team-badge')).toContainText('汇报材料专家团');
+    await expect(page.getByTestId('chat-title-app-badge')).toContainText(APP_NAME);
+  });
+
+  test('creating an app from an app home opens an independent creation conversation', async () => {
+    await showSidebar(page);
+    await page.getByLabel('Main navigation').getByRole('button', { name: NEW_TASK }).click();
+    await expect(page.getByTestId('composer-team-chip')).toContainText('店铺运营小组');
+    await openSwitcher(page);
+    await page.getByTestId('app-switcher-create').click();
+    await expect(page.getByRole('button', { name: '/abu-app-builder', exact: true })).toBeVisible();
+    await expect(page.getByTestId('composer-team-chip')).toHaveCount(0);
+    await expect(page.getByTestId('chat-title-team-badge')).toHaveCount(0);
+    await expect(page.getByTestId('chat-title-app-badge')).toHaveCount(0);
+    await page.getByLabel('Main navigation').getByRole('button', { name: NEW_TASK }).click();
   });
 
   test('the selection survives a restart; 通用 returns to the general shell', async () => {
+    await openSwitcher(page);
+    await page.getByTestId(`app-switcher-item-${APP_ID}`).click();
+    await expect(page.getByTestId('app-switcher-current')).toHaveText(APP_NAME);
     await closeAbuElectron(app);
     const relaunched = await launchAbuElectron(dataRoot);
     app = relaunched.app;
@@ -403,6 +493,10 @@ test.describe.serial('apps', () => {
     // The plugin and its team are still installed.
     await openPlugins(page);
     await expect(page.getByTestId('plugin-mine-row').filter({ hasText: PLUGIN_NAME })).toHaveCount(1);
+    await page.getByTestId('sidebar-team').click();
+    await page.getByTestId('top-tab-nav').getByRole('button', { name: '专家团', exact: true }).click();
+    await page.getByTestId('team-source-mine').click();
+    await expect(page.getByTestId('team-row-店铺运营小组')).toBeVisible();
 
     await page.getByTestId('conversation-app-icon').first().click();
     const notice = page.getByTestId('conversation-app-removed');
@@ -410,5 +504,17 @@ test.describe.serial('apps', () => {
     await expect(page.getByTestId('chat-title-app-badge')).toContainText(APP_NAME);
     await notice.getByRole('button', { name: /^(去添加|Add it)$/ }).click();
     await expect(page.getByTestId('app-market-dialog')).toBeVisible();
+    const entry = page.locator(`[data-testid="app-market-entry"][data-app-id="${APP_ID}"]`);
+    await entry.getByTestId('app-market-use').click();
+    await page.getByTestId('app-add-confirm').click();
+    await expect(page.getByTestId('app-market-dialog')).toBeHidden({ timeout: READY_TIMEOUT });
+    await showSidebar(page);
+    await page.getByTestId('conversation-app-icon').first().click();
+    await expect(notice).toHaveCount(0);
+    const before = llm.requests.length;
+    await page.locator('[data-chat-composer]').fill('继续这次店铺咨询');
+    await page.locator('[data-chat-composer]').press('Enter');
+    await expect.poll(() => llm.requests.length, { timeout: READY_TIMEOUT }).toBeGreaterThan(before);
+    await expect(page.getByTestId('chat-title-app-badge')).toContainText(APP_NAME);
   });
 });

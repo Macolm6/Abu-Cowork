@@ -77,7 +77,7 @@ function unpackSingleRootZip(zipBytes, destDir, fs = nodeFs) {
     if (error instanceof MarketSourceError) throw error;
     throw new MarketSourceError(`archive could not be unpacked: ${error.message}`, 'not_a_market');
   }
-  const names = Object.keys(entries);
+  const names = Object.keys(entries).filter(name => name.split('/')[0] !== '__MACOSX' && !name.split('/').includes('.DS_Store'));
   const roots = new Set(names.map((name) => name.split('/')[0]));
   if (names.length === 0 || roots.size !== 1) throw new MarketSourceError('archive must hold exactly one top folder', 'not_a_market');
   const prefix = `${[...roots][0]}/`;
@@ -166,23 +166,41 @@ function createMarketSourceHost({ marketsRoot, download = downloadArchiveHttps, 
    * fetched again replaces its copy; a different address naming a market
    * that is already there is refused.
    */
-  async function add(address) {
+  async function add(address, expectedName, registered = []) {
+    if (!Array.isArray(registered) || registered.some(item => !item || typeof item.name !== 'string' || typeof item.dir !== 'string')) {
+      throw new MarketSourceError('invalid registered markets', 'not_a_market');
+    }
     fs.mkdirSync(root, { recursive: true });
     const staging = path.join(root, `.staging-${crypto.randomBytes(8).toString('hex')}`);
+    const backup = `${staging}-previous`;
+    let previousDir;
+    let committed = false;
     try {
       await fetchInto(address, staging);
       const name = marketName(staging, fs);
+      if (expectedName !== undefined && name !== expectedName) throw new MarketSourceError(`the address of ${expectedName} now provides ${name}`, 'not_a_market');
       const dir = path.join(root, name);
+      const existingRegistration = registered.find(item => item.name === name);
+      if (existingRegistration && path.resolve(existingRegistration.dir) !== path.resolve(dir)) {
+        throw new MarketSourceError(`a market named ${name} is registered from another directory`, 'name_taken');
+      }
+      if (/^(mine|local|abu-official|enterprise)[. ]*$/i.test(name) || name.startsWith('author-')) {
+        throw new MarketSourceError(`reserved market name ${name}`, 'name_taken');
+      }
       if (fs.existsSync(dir)) {
         const existing = readSource(name);
         if (!existing || existing.address !== address) throw new MarketSourceError(`a market named ${name} already exists`, 'name_taken');
-        fs.rmSync(dir, { recursive: true, force: true });
+        fs.renameSync(dir, backup);
+        previousDir = dir;
       }
       fs.writeFileSync(path.join(staging, SOURCE_FILE), JSON.stringify({ address, fetchedAt: now() }));
       fs.renameSync(staging, dir);
+      committed = true;
       return { name, dir };
     } finally {
+      if (!committed && previousDir) fs.renameSync(backup, previousDir);
       fs.rmSync(staging, { recursive: true, force: true });
+      if (committed && previousDir) fs.rmSync(backup, { recursive: true, force: true });
     }
   }
 
@@ -191,8 +209,7 @@ function createMarketSourceHost({ marketsRoot, download = downloadArchiveHttps, 
     const source = readSource(name);
     if (!source || typeof source.address !== 'string') throw new MarketSourceError(`market ${name} was not added by address`, 'not_a_market');
     if (now() - source.fetchedAt < REFRESH_AFTER_MS) return { refreshed: false };
-    const result = await add(source.address);
-    if (result.name !== name) throw new MarketSourceError(`the address of ${name} now provides ${result.name}`, 'not_a_market');
+    await add(source.address, name);
     return { refreshed: true };
   }
 
@@ -215,7 +232,7 @@ function marketSourceDispatch(cmd, payload, host) {
   if (!['market_source_add', 'market_source_refresh', 'market_source_remove'].includes(cmd)) return MARKET_SOURCE_MISS;
   const args = (payload && payload.args) || {};
   const run = async () => {
-    if (cmd === 'market_source_add') return host.add(args.address);
+    if (cmd === 'market_source_add') return host.add(args.address, undefined, args.registered);
     if (typeof args.name !== 'string' || args.name.length === 0) throw new MarketSourceError('market name required', 'not_a_market');
     if (cmd === 'market_source_refresh') return host.refresh(args.name);
     return host.remove(args.name);

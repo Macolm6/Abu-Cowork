@@ -5,7 +5,7 @@ import { loadMarketplaceFromDir } from '@/core/plugin/loadMarketplace';
 import { resolveSourceDir } from '@/core/plugin/installer';
 import { APP_VERSION } from '@/utils/version';
 import { joinPath } from '@/utils/pathUtils';
-import { appRuns, splitRunTarget } from '../../../electron/shared/appSpec.mjs';
+import { appRuns } from '../../../electron/shared/appSpec.mjs';
 import { checkMinAbuVersion } from '../../../electron/shared/pluginSpec.mjs';
 import { reportAppFailure } from './appFailure';
 import { addedAppId, readAppFile } from './appRecords';
@@ -53,7 +53,7 @@ export function appUses(file: ParsedAppFile, market: string | undefined, catalog
       const value = (run as Record<string, string | undefined>)[kind];
       if (value === undefined) continue;
       const target = resolveTarget(app, kind, value, catalog);
-      names.add(target.status === 'ok' ? targetDisplayName(target) : splitRunTarget(kind, value)?.id ?? value);
+      if (target.status === 'ok' || target.status === 'needs-preparation') names.add(targetDisplayName(target));
     }
   }
   return [...names];
@@ -70,7 +70,7 @@ async function listing(market: MarketplaceRef, entry: AppMarketEntry, catalog: R
     market, entry, appId, name: entry.name, description: entry.description, version: entry.version,
     minAbuVersion: entry.minAbuVersion, uses: [], needsUpgrade: needsUpgrade(entry.minAbuVersion),
   };
-  if (entry.source.kind !== 'relative') return base;
+  if (entry.source.kind !== 'relative') return entry.source.sha ? base : { ...base, invalid: true };
   const dir = resolveSourceDir(entry.source, market.dir);
   let file: ParsedAppFile;
   try {

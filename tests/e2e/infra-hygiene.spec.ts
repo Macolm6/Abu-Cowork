@@ -598,11 +598,13 @@ test.describe.serial('Electron infra hygiene batch', () => {
   });
 
   test('lets a full trigger without a workspace write to an isolated temp path', async () => {
-    fixtureRoot = fs.mkdtempSync('/tmp/abu-infra-full-no-workspace-');
+    fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-infra-full-no-workspace-'));
     const triggerId = `trigger-full-no-workspace-${randomUUID()}`;
     const triggerName = `Full no-workspace trigger ${randomUUID().slice(0, 8)}`;
     const target = path.join(fixtureRoot, 'created-by-full-trigger.txt');
-    const command = `touch -- ${quoteShellArgument(target)}`;
+    const command = process.platform === 'win32'
+      ? `New-Item -ItemType File -Path '${target.replace(/'/g, "''")}' | Out-Null`
+      : `touch -- ${quoteShellArgument(target)}`;
 
     mock = await startOpenAiMock([
       {

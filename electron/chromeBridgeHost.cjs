@@ -112,13 +112,8 @@ function posixBridgeProcess(pid, options = {}) {
   }
 }
 
-function windowsBridgeProcess(pid, options = {}) {
-  const exec = options.execFileSync || execFileSync;
-  const powershell =
-    process.env.SystemRoot
-      ? path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-      : 'powershell.exe';
-  const script = [
+function windowsBridgeProcessScript(pid) {
+  return [
     `$p=Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"`,
     'if(-not $p){exit 3}',
     '$o=Invoke-CimMethod -InputObject $p -MethodName GetOwner',
@@ -126,7 +121,16 @@ function windowsBridgeProcess(pid, options = {}) {
     `  Where-Object {$_.OwningProcess -eq ${pid} -and ($_.LocalPort -eq ${DISCOVERY_PORT} -or $_.LocalPort -eq ${WS_PORT})} |`,
     '  Select-Object -ExpandProperty LocalPort)',
     '[pscustomobject]@{CommandLine=$p.CommandLine;User=$o.User;Ports=$ports}|ConvertTo-Json -Compress',
-  ].join(';');
+  ].join('\n');
+}
+
+function windowsBridgeProcess(pid, options = {}) {
+  const exec = options.execFileSync || execFileSync;
+  const powershell =
+    process.env.SystemRoot
+      ? path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+      : 'powershell.exe';
+  const script = windowsBridgeProcessScript(pid);
   try {
     const raw = exec(
       powershell,
@@ -276,4 +280,5 @@ module.exports = {
   retireStaleChromeBridge,
   resolveChromeBridgeRuntimeLaunch,
   verifiedBridgeProcess,
+  windowsBridgeProcessScript,
 };
