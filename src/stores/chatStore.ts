@@ -642,6 +642,8 @@ interface ChatState {
   /** Team picked in the composer before a conversation exists (welcome page);
    *  consumed by createConversation, mirrors pendingPermissionMode. */
   pendingTeamId: string | undefined;
+  /** Whether the welcome owner follows the app default or an explicit selection. */
+  pendingOwnerSource: 'app' | 'user' | undefined;
   /** The app (mode / scene) the welcome page is showing, captured onto the next
    *  conversation the way pendingTeamId is. Ephemeral, not persisted. */
   pendingAppBinding: ConversationAppBinding | undefined;
@@ -658,7 +660,7 @@ interface ChatActions {
   setConversationTeamId: (convId: string, teamId: string | undefined) => void;
   /** Goal mode: write the conversation's goal (undefined clears it). Callers go through goalService. */
   setConversationGoal: (convId: string, goal: GoalState | undefined) => void;
-  setPendingTeamId: (teamId: string | undefined) => void;
+  setPendingTeamId: (teamId: string | undefined, source?: 'app' | 'user') => void;
   setPendingAppBinding: (binding: ConversationAppBinding | undefined) => void;
   setConversationPermissionMode: (convId: string, mode: PermissionMode | undefined) => void;
   setPendingPermissionMode: (mode: PermissionMode | undefined) => void;
@@ -890,6 +892,7 @@ export const useChatStore = create<ChatStore>()(
       pendingAttachmentRequests: [],
       pendingPermissionMode: undefined,
       pendingTeamId: undefined,
+      pendingOwnerSource: undefined,
       pendingAppBinding: undefined,
 
       createConversation: (workspacePath, options) => {
@@ -960,6 +963,7 @@ export const useChatStore = create<ChatStore>()(
           if (consumePendingPicks) {
             state.pendingPermissionMode = undefined;
             state.pendingTeamId = undefined;
+            state.pendingOwnerSource = undefined;
             state.pendingAppBinding = undefined;
           }
         });
@@ -986,6 +990,7 @@ export const useChatStore = create<ChatStore>()(
           state.activeConversationId = null;
           state.pendingAgentName = null;
           state.pendingTeamId = undefined;
+          state.pendingOwnerSource = undefined;
           state.pendingAppBinding = undefined;
           state.pendingExpertContact = null;
         });
@@ -1133,9 +1138,10 @@ export const useChatStore = create<ChatStore>()(
 
       setPendingAppBinding: (binding) => set((state) => { state.pendingAppBinding = binding; }),
 
-      setPendingTeamId: (teamId) => {
+      setPendingTeamId: (teamId, source = 'user') => {
         set((state) => {
           state.pendingTeamId = teamId;
+          state.pendingOwnerSource = source;
           if (state.pendingExpertContact?.identity.key !== `team:${teamId}`) state.pendingExpertContact = null;
         });
       },
@@ -2481,6 +2487,7 @@ export const useChatStore = create<ChatStore>()(
       setPendingAgent: (agentName) => {
         set((state) => {
           state.pendingAgentName = agentName;
+          if (agentName !== null) state.pendingOwnerSource = 'user';
           if (state.pendingExpertContact?.identity.agentName !== agentName) state.pendingExpertContact = null;
         });
       },

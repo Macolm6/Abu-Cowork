@@ -39,6 +39,7 @@ vi.mock('@tauri-apps/api/path', () => ({
   appDataDir: vi.fn().mockResolvedValue('/Users/testuser/.abu'),
   tempDir: vi.fn().mockResolvedValue('/tmp'),
   resolve: vi.fn((...args: string[]) => Promise.resolve(args.join('/'))),
+  resolveResource: vi.fn((name: string) => Promise.resolve(`/resources/${name}`)),
   join: vi.fn((...args: string[]) => Promise.resolve(args.join('/'))),
 }));
 

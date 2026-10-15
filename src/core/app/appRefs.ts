@@ -12,6 +12,7 @@ import { isBuiltinAgent } from '@/core/team/roleIdentity';
 import { isPluginOwnedAgent } from '@/utils/agentSource';
 import { pluginTeamId } from '@/core/team/pluginTeams';
 import { appRuns, splitRunTarget, type RunTargetKind } from '../../../electron/shared/appSpec.mjs';
+import { getEnterpriseAppSkillState } from '@/core/enterprise/appRuntime';
 
 /**
  * Whether an app's references name something that exists on this computer
@@ -94,7 +95,7 @@ export type ResolvedTarget =
   /** The plugin it comes from is not installed, or its installed version does not bring it. */
   | { status: 'needs-plugin'; plugin: string; reason: 'missing' | 'outdated' }
   /** An organization expert (or a team member) whose organization skills or connectors are not set up yet. */
-  | { status: 'needs-preparation'; roleIds: string[]; label: string; agent?: SubagentDefinition }
+  | { status: 'needs-preparation'; roleIds: string[]; label: string; agent?: SubagentDefinition; skillName?: string }
   /** Gone and not coming back by installing anything: deleted, or its plugin switched off. */
   | { status: 'unavailable'; label: string };
 
@@ -173,8 +174,13 @@ export function resolveTarget(app: AppDefinition, kind: RunTargetKind, value: st
     if (target.origin === 'mine' && !isUsersOwnAgent(agent)) return { status: 'unavailable', label: target.id };
     return { status: 'ok', kind, agent };
   }
-  const names = target.origin === 'enterprise' ? catalog.enterpriseSkillNames : catalog.skillNames;
-  return names.has(target.id) ? { status: 'ok', kind, name: target.id } : { status: 'unavailable', label: target.id };
+  if (target.origin === 'enterprise') {
+    const skill = getEnterpriseAppSkillState(target.id);
+    if (skill.status === 'ready') return { status: 'ok', kind, name: skill.name };
+    if (skill.status === 'needs-preparation') return { status: 'needs-preparation', roleIds: [], skillName: target.id, label: skill.name };
+    return { status: 'unavailable', label: skill.name };
+  }
+  return catalog.skillNames.has(target.id) ? { status: 'ok', kind, name: target.id } : { status: 'unavailable', label: target.id };
 }
 
 /** The name a user knows a target by: a team's or an expert's display name, never an id. */

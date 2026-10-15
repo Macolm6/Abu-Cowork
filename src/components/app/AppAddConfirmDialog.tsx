@@ -122,8 +122,8 @@ export default function AppAddConfirmDialog({ within }: { within: AppAddFlowPlac
   const title = flow.kind === 'ready'
     ? format(flow.purpose === 'update' ? t.appMarket.confirmUpdateTitle : flow.purpose === 'preview' ? t.appMarket.previewTitle : t.appMarket.confirmAddTitle, { name: flow.plan.app.name })
     : flow.kind === 'repair' ? t.appMarket.needInstall
-      : flow.kind === 'error' ? t.appMarket.addFailed
-        : flow.kind === 'planning' ? format(t.appMarket.confirmAddTitle, { name: flow.name })
+      : flow.kind === 'error' ? (flow.purpose === 'update' ? t.appMarket.updateFailed : flow.purpose === 'repair' ? t.appMarket.repairFailed : t.appMarket.addFailed)
+        : flow.kind === 'planning' ? (flow.purpose === 'repair' ? t.appMarket.needInstall : format(flow.purpose === 'update' ? t.appMarket.confirmUpdateTitle : flow.purpose === 'preview' ? t.appMarket.previewTitle : t.appMarket.confirmAddTitle, { name: flow.name }))
           : '';
 
   const body = (() => {

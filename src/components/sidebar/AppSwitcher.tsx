@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
+import { APP_DEVELOPMENT_DOCS_URL } from '@/utils/helpDocs';
 import { GENERAL_APP_ID, type AppDefinition } from '@/types/app';
 import { useAppStore, useAvailableApps, useSelectedApp } from '@/stores/appStore';
 import { createAppDraft } from '@/core/app/appDraft';
@@ -67,7 +68,7 @@ export default function AppSwitcher({ className }: { className?: string }) {
     enterApp(appId);
   };
   const createApp = () => {
-    void createAppDraft().catch((error) => addToast({ type: 'error', title: t.appSwitcher.create, message: String(error) }));
+    void createAppDraft().catch((error) => { console.error('[app] Could not create draft', error); addToast({ type: 'error', title: t.appSwitcher.create, message: t.appSwitcher.fileAccessFailed }); });
   };
   // The app as the store holds it now: what a removal acts on.
   const addedNow = (appId: string) => useAppStore.getState().addedApps.find((app) => app.appId === appId);
@@ -89,7 +90,8 @@ export default function AppSwitcher({ className }: { className?: string }) {
       }
       await removeApp(appId);
     } catch (error) {
-      addToast({ type: 'error', title: t.appSwitcher.removeFailed, message: String(error) });
+      console.error('[app] Could not remove app', error);
+      addToast({ type: 'error', title: t.appSwitcher.removeFailed, message: t.appSwitcher.fileAccessFailed });
     } finally {
       removing.current.delete(appId);
     }
@@ -159,6 +161,7 @@ export default function AppSwitcher({ className }: { className?: string }) {
         <div data-testid="app-switcher-menu" className="w-60">
           {/* A long app list scrolls inside the menu instead of running off the window. */}
           <div className="max-h-96 overflow-y-auto">
+            {installed.length === 0 && <MenuLabel><span data-testid="app-switcher-empty">{t.appSwitcher.empty}</span></MenuLabel>}
             <MenuRadioGroup value={selected.appId} onValueChange={enter}>
               {!isGeneral && allowExit && row(apps[0], false)}
               {recent.length > 0 && (<><MenuLabel>{t.appSwitcher.recent}</MenuLabel>{recent.map((app) => row(app, app.appId === selected.appId))}</>)}
@@ -171,6 +174,9 @@ export default function AppSwitcher({ className }: { className?: string }) {
           </MenuItem>
           <MenuItem icon={AppIcons.createApp} onSelect={() => { afterMenuClose.current = createApp; }}>
             <span data-testid="app-switcher-create">{t.appSwitcher.create}</span>
+          </MenuItem>
+          <MenuItem icon={AppIcons.help} onSelect={() => { afterMenuClose.current = () => { window.open(APP_DEVELOPMENT_DOCS_URL, '_blank', 'noopener'); }; }}>
+            {t.appSwitcher.developmentDocs}
           </MenuItem>
           {removableApps.length > 0 && (
             <MenuSub icon={AppIcons.remove} label={<span data-testid="app-switcher-remove">{t.appSwitcher.remove}</span>}>

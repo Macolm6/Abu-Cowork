@@ -205,7 +205,7 @@ test.describe.serial('app market by address', () => {
     await expect(error).toContainText('这个地址需要登录才能访问', { timeout: READY_TIMEOUT });
     await page.getByTestId('plugin-marketplace-dir-input').fill(`${server.origin}/nothing.zip`);
     await page.getByTestId('plugin-marketplace-submit').click();
-    await expect(error).toContainText('这个地址里没有市场', { timeout: READY_TIMEOUT });
+    await expect(error).toContainText('无法读取这个地址中的市场，请确认地址正确且无需登录', { timeout: READY_TIMEOUT });
     await cancelAddMarket(page);
     await expect(page.getByTestId('app-market-markets')).toHaveCount(0);
   });

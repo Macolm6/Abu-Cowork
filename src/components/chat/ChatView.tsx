@@ -1571,6 +1571,8 @@ export default function ChatView({
               </div>
             )}
 
+            {appHome && <AppHomeScenes app={appHome} visible={guideVisible} />}
+
             {/* Main input */}
             <div>
               <ChatInput
@@ -1581,10 +1583,8 @@ export default function ChatView({
               />
             </div>
 
-            {/* Scenario Guide — the app's scenes inside an app, Abu's own otherwise */}
-            {appHome ? (
-              <AppHomeScenes app={appHome} visible={guideVisible} />
-            ) : pendingAgent || welcomeTeam ? (
+            {/* General-shell prompt suggestions */}
+            {!appHome && (pendingAgent || welcomeTeam ? (
               !!expertPrompts?.length && guideVisible && <div className={cn(PROMPT_GRID_CLASS, 'mt-4')} data-testid="expert-prompts">
                 {expertPrompts.map((prompt, index) => <Pressable key={index} className={PROMPT_ITEM_CLASS} onClick={() => handleSelectPrompt(prompt)}>{prompt}</Pressable>)}
               </div>
@@ -1592,7 +1592,7 @@ export default function ChatView({
               onSelectPrompt={handleSelectPrompt}
               onScenarioChange={handleScenarioChange}
               visible={guideVisible}
-            />}
+            />)}
           </div>
         </div>
       </div>

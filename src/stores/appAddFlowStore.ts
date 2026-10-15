@@ -3,6 +3,7 @@ import { homeDir } from '@tauri-apps/api/path';
 import type { AppDefinition } from '@/types/app';
 import { useAppStore } from '@/stores/appStore';
 import {
+  cancelAddApp,
   cancelPluginSteps,
   confirmAddApp,
   needsConfirmation,
@@ -29,10 +30,10 @@ export type AppAddPurpose = 'add' | 'update' | 'preview';
 
 export type AppAddFlow =
   | { kind: 'closed' }
-  | { kind: 'planning'; name: string }
+  | { kind: 'planning'; name: string; purpose?: AppAddPurpose | 'repair' }
   | { kind: 'ready'; purpose: AppAddPurpose; plan: AppAddPlan }
   | { kind: 'repair'; app: AppDefinition; steps: AppPluginStep[]; resume: () => void }
-  | { kind: 'error'; name: string; message: string };
+  | { kind: 'error'; name: string; message: string; purpose?: AppAddPurpose | 'repair' };
 
 /**
  * The confirmation is mounted in two places (`AppAddConfirmDialog`): inside
@@ -64,36 +65,51 @@ function startingPlace(): AppAddFlowPlace {
   return useAppStore.getState().appMarketOpen ? 'market' : 'page';
 }
 
+async function releaseFlow(flow: AppAddFlow): Promise<void> {
+  if (flow.kind === 'ready') await cancelAddApp(flow.plan);
+  if (flow.kind === 'repair') await cancelPluginSteps(flow.steps);
+}
+
 export const useAppAddFlowStore = create<AppAddFlowState & AppAddFlowActions>()((set, get) => ({
   flow: { kind: 'closed' },
   running: false,
   shownIn: 'page',
 
   start: async (source, name, purpose) => {
-    set({ flow: { kind: 'planning', name }, shownIn: startingPlace() });
+    if (get().running) return;
+    const previous = get().flow;
+    const planning: AppAddFlow = { kind: 'planning', name, purpose };
+    set({ flow: planning, shownIn: startingPlace() });
     let plan: AppAddPlan;
     try {
+      await releaseFlow(previous);
+      if (get().flow !== planning) return;
       plan = await planAddApp(source, await homeDir());
     } catch (error) {
-      set({ flow: { kind: 'error', name, message: message(error) } });
+      if (get().flow === planning) set({ flow: { kind: 'error', name, purpose, message: message(error) } });
       return;
     }
     // Cancelled while planning: the snapshots it prepared are not needed.
-    if (get().flow.kind !== 'planning') { await cancelPluginSteps(plan.steps); return; }
+    if (get().flow !== planning) { await cancelAddApp(plan); return; }
     set({ flow: { kind: 'ready', purpose, plan } });
     if (purpose !== 'preview' && !needsConfirmation(plan)) await get().confirm({});
   },
 
   repair: async (app, resume) => {
-    set({ flow: { kind: 'planning', name: app.name }, shownIn: startingPlace() });
+    if (get().running) return;
+    const previous = get().flow;
+    const planning: AppAddFlow = { kind: 'planning', name: app.name, purpose: 'repair' };
+    set({ flow: planning, shownIn: startingPlace() });
     let steps: AppPluginStep[];
     try {
+      await releaseFlow(previous);
+      if (get().flow !== planning) return;
       steps = await planPluginSteps(app, await homeDir());
     } catch (error) {
-      set({ flow: { kind: 'error', name: app.name, message: message(error) } });
+      if (get().flow === planning) set({ flow: { kind: 'error', name: app.name, purpose: 'repair', message: message(error) } });
       return;
     }
-    if (get().flow.kind !== 'planning') { await cancelPluginSteps(steps); return; }
+    if (get().flow !== planning) { await cancelPluginSteps(steps); return; }
     if (steps.length === 0) {
       set({ flow: { kind: 'closed' } });
       resume();
@@ -112,7 +128,7 @@ export const useAppAddFlowStore = create<AppAddFlowState & AppAddFlowActions>()(
       set({ flow: { kind: 'closed' } });
       if (flow.kind === 'repair') flow.resume();
     } catch (error) {
-      set({ flow: { kind: 'error', name: flow.kind === 'ready' ? flow.plan.app.name : flow.app.name, message: message(error) } });
+      set({ flow: { kind: 'error', name: flow.kind === 'ready' ? flow.plan.app.name : flow.app.name, purpose: flow.kind === 'ready' ? flow.purpose : 'repair', message: message(error) } });
     } finally {
       set({ running: false });
     }
@@ -122,7 +138,6 @@ export const useAppAddFlowStore = create<AppAddFlowState & AppAddFlowActions>()(
     const { flow, running } = get();
     if (running) return;
     set({ flow: { kind: 'closed' } });
-    if (flow.kind === 'ready') await cancelPluginSteps(flow.plan.steps);
-    if (flow.kind === 'repair') await cancelPluginSteps(flow.steps);
+    await releaseFlow(flow);
   },
 }));

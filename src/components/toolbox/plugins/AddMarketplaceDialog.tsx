@@ -71,7 +71,7 @@ export default function AddMarketplaceDialog({
       const picked = await openDialog({ directory: true, multiple: false });
       if (typeof picked === 'string') setInput(picked);
     } catch (err) {
-      setError(String(err));
+      setError(explain(err));
     }
   };
 
@@ -103,7 +103,10 @@ export default function AddMarketplaceDialog({
     if (failure === 'auth_required') return tb.pluginsMarketplaceAuthRequired;
     if (failure === 'name_taken') return tb.pluginsMarketplaceNameConflict;
     if (failure === 'not_a_market') return tb.pluginsMarketplaceNotFound;
-    return err instanceof Error ? err.message : String(err);
+    const message = err instanceof Error ? err.message : String(err);
+    if ([tb.pluginsMarketplaceNameConflict, tb.pluginsMarketplaceIdentityChanged, t.appMarket.reservedMarketName].includes(message)) return message;
+    console.error('[market] Could not add the selected market', err);
+    return tb.pluginsMarketplaceNotFound;
   };
 
   const handleSubmit = async () => {

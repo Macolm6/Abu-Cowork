@@ -49,20 +49,20 @@ describe('AppLogo', () => {
     });
   });
 
-  it('shows the first letter of the name, hidden from screen readers, when the package ships no image', () => {
+  it('shows a neutral application icon, hidden from screen readers, when the package ships no image', () => {
     render(<AppLogo name="  Shop desk" />);
     const logo = screen.getByTestId('app-logo');
-    expect(logo).toHaveAttribute('data-app-logo', 'letter');
+    expect(logo).toHaveAttribute('data-app-logo', 'default');
     expect(logo).toHaveAttribute('aria-hidden', 'true');
-    expect(logo).toHaveTextContent('S');
+    expect(logo.querySelector('svg')).not.toBeNull();
   });
 
-  it('draws the letter mark with design-system classes', () => {
+  it('draws the default icon with design-system classes', () => {
     render(<AppLogo name="Shop desk" />);
     const logo = screen.getByTestId('app-logo');
     expect(logo).toHaveClass('rounded-control');
     expect(logo).toHaveClass('bg-fill');
-    expect(logo).toHaveClass('text-label');
+    expect(logo).toHaveClass('text-label-tertiary');
     expect(logo).toHaveClass('font-medium');
   });
 
@@ -70,8 +70,8 @@ describe('AppLogo', () => {
     ['sm', 'h-5', 'text-caption'],
     ['md', 'h-7', 'text-ui-sm'],
     ['lg', 'h-10', 'text-title'],
-    ['xl', 'h-20', 'text-title-lg'],
-  ] as const)('size %s is %s with %s letters', (size, box, text) => {
+    ['xl', 'h-14', 'text-title-lg'],
+  ] as const)('size %s is %s with %s text', (size, box, text) => {
     render(<AppLogo name="Shop desk" size={size} />);
     expect(screen.getByTestId('app-logo')).toHaveClass(box);
     expect(screen.getByTestId('app-logo')).toHaveClass(text);
@@ -91,5 +91,18 @@ describe('AppLogo', () => {
     const logo = screen.getByTestId('app-logo');
     expect(logo).toHaveAttribute('data-app-logo', 'general');
     expect(logo.querySelector('img')).not.toBeNull();
+  });
+
+  it('uses theme colors for an app preset while retaining its glyph', () => {
+    render(<AppLogo name="Shop desk" icon="icon:users/coral" />);
+    const logo = screen.getByTestId('app-logo');
+    expect(logo).toHaveClass('bg-fill', 'text-label-tertiary');
+    expect(logo).not.toHaveAttribute('style');
+    expect(logo.querySelector('svg')).toHaveClass('lucide-users-round');
+  });
+
+  it('preserves an emoji avatar', () => {
+    render(<AppLogo name="Shop desk" icon="🛍️" />);
+    expect(screen.getByTestId('app-logo')).toHaveTextContent('🛍️');
   });
 });

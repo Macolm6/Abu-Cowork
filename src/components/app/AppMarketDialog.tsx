@@ -29,6 +29,7 @@ import { EmptyState } from '@/components/ds/empty-state';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
 import { InlineMessage } from '@/components/ds/inline-message';
+import { LoadError } from '@/components/ds/load-error';
 import { Spinner } from '@/components/ds/spinner';
 import { TextField } from '@/components/ds/text-field';
 import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
@@ -113,18 +114,36 @@ export default function AppMarketDialog() {
   const [addingMarket, setAddingMarket] = useState(false);
   // Bumped once markets added by address have been fetched again, so the list is read anew.
   const [fetchedAt, setFetchedAt] = useState(0);
+  const [readFailed, setReadFailed] = useState(false);
+  const [reading, setReading] = useState(false);
+  const [readAttempt, setReadAttempt] = useState(0);
+  const readingRef = useRef(false);
+  const retryFocus = useRef<Element | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
   const onClose = () => setOpen(false);
   // The window stays on the page while it fades out; nothing pressed there starts anything.
   const openRef = useRef(open);
   useLayoutEffect(() => { openRef.current = open; });
   const addMarketRef = useRef<HTMLButtonElement>(null);
 
+  useEffect(() => {
+    if (open) { setReadFailed(false); setQuery(''); }
+  }, [open]);
+  useLayoutEffect(() => {
+    if (readFailed || !retryFocus.current) return;
+    if (open && (!retryFocus.current.isConnected || focusIsOnWindow())) searchRef.current?.focus();
+    retryFocus.current = null;
+  }, [readFailed, open]);
+
   // The same bootstrap 扩展 → 插件 does on mount: the app market is often the
   // first market surface a user opens, and without it there is no market to
   // read and no plugin records to resolve an app's references against.
   useEffect(() => {
     if (!open) return;
-    setQuery('');
+    setFetchedAt(0);
+    setListing(null);
+    readingRef.current = true;
+    setReading(true);
     let cancelled = false;
     homeDir()
       .then(async (dir) => {
@@ -132,9 +151,18 @@ export default function AppMarketDialog() {
         setHome(dir);
         await refreshInstalled(dir);
         await refreshFetchedMarkets(dir);
-        if (!cancelled) setFetchedAt((value) => value + 1);
+        if (!cancelled) {
+          setReadFailed(false);
+          setFetchedAt((value) => value + 1);
+        }
       })
-      .catch((error) => console.error('[app-market] home directory unavailable', error));
+      .catch((error) => {
+        console.error('[app-market] application list unavailable', error);
+        if (!cancelled) setReadFailed(true);
+      })
+      .finally(() => {
+        if (!cancelled) { readingRef.current = false; setReading(false); }
+      });
     resolveBuiltinMarketDir()
       .then((marketDir) => {
         if (cancelled || !marketDir) return;
@@ -142,12 +170,12 @@ export default function AppMarketDialog() {
       })
       .catch((error) => console.error('[app-market] built-in market unavailable', error));
     return () => { cancelled = true; };
-  }, [open, refreshInstalled, ensureBuiltinMarketplace]);
+  }, [open, refreshInstalled, ensureBuiltinMarketplace, readAttempt]);
 
   // Re-read whenever the markets change, a flow finishes (an app was added or
   // updated), or what references resolve against changes.
   useEffect(() => {
-    if (!open || !flowClosed) return;
+    if (!open || !flowClosed || fetchedAt === 0) return;
     let cancelled = false;
     const markets = [...marketplaces].sort((a, b) => Number(Boolean(b.builtin)) - Number(Boolean(a.builtin)));
     void loadAppListings(markets, liveRefCatalog()).then((result) => { if (!cancelled) setListing(result); });
@@ -227,6 +255,7 @@ export default function AppMarketDialog() {
         <div className="relative w-56">
           <Icon icon={AppIcons.search} size="sm" className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-label-tertiary" />
           <TextField
+            ref={searchRef}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder={t.appMarket.searchPlaceholder}
@@ -274,11 +303,18 @@ export default function AppMarketDialog() {
         ))}
 
         <div className="min-h-0 flex-1 overflow-y-auto">
-          {listing === null ? (
+          {readFailed ? (
+            <LoadError reason={t.appSwitcher.fileAccessFailed} busy={reading} onRetry={() => {
+              if (!openRef.current || readingRef.current) return;
+              readingRef.current = true;
+              retryFocus.current = document.activeElement;
+              setReadAttempt((value) => value + 1);
+            }} />
+          ) : listing === null ? (
             <div className="py-8"><Spinner label={t.common.loading} /></div>
           ) : visible.length === 0 ? (
             <div data-testid="app-market-empty">
-              <EmptyState icon={AppIcons.appMarket} title={t.appMarket.emptyTitle} description={t.appMarket.emptyHint} />
+              <EmptyState icon={AppIcons.appMarket} title={listing.listings.length > 0 ? t.appMarket.noMatches : t.appMarket.emptyTitle} description={listing.listings.length > 0 ? undefined : t.appMarket.emptyHint} />
             </div>
           ) : (
             <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4" data-testid="app-market-list">

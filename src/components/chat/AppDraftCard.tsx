@@ -55,16 +55,16 @@ export default function AppDraftCard({ conversationId, toolCallId }: { conversat
     const catalog = liveRefCatalog();
     Promise.resolve().then(() => readAppDraft(draftFor(conversationId), catalog)).then(
       (preview) => { if (current) { setLoaded({ preview, catalog }); setError(null); } },
-      (reason: unknown) => { if (current) setError(String(reason)); },
+      (reason: unknown) => { console.error('[app] Could not read app draft', reason); if (current) setError(t.appDraft.fixDraftHint); },
     );
     return () => { current = false; };
-  }, [conversationId, toolCallId, addedAppId]);
+  }, [conversationId, toolCallId, addedAppId, t.appDraft.fixDraftHint]);
 
   if (addedAppId !== undefined) {
     const app = apps.find((item) => item.appId === addedAppId);
     return (
       <div data-testid="app-draft-card" className={cn(CARD, 'text-ui text-label-secondary')}>
-        {format(t.appDraft.added, { name: app?.name ?? addedAppId })}
+        {format(t.appDraft.added, { name: app?.name ?? draft?.appName ?? t.appDraft.title })}
       </div>
     );
   }
@@ -95,7 +95,7 @@ export default function AppDraftCard({ conversationId, toolCallId }: { conversat
     commitAppDraft(conversationId)
       // The app is entered and its home replaces this conversation: the message field takes the focus the button had.
       .then(() => focusComposerAfterPageChange())
-      .catch((reason: unknown) => addToast({ type: 'error', title: t.appDraft.failed, message: String(reason) }))
+      .catch((reason: unknown) => { console.error('[app] Could not add app draft', reason); addToast({ type: 'error', title: t.appDraft.failed, message: t.appDraft.fixDraftHint }); })
       .finally(() => {
         addingRef.current = false;
         setAdding(false);

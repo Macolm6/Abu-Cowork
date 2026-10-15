@@ -1,9 +1,14 @@
 import { exists, readTextFile, remove, rename } from '@tauri-apps/plugin-fs';
 import type { AddedAppOrigin, AppDefinition, ParsedAppFile } from '@/types/app';
-import { APP_FILE_PATH, parseAppFile } from '../../../electron/shared/appSpec.mjs';
+import { APP_FILE_PATH, appRuns, parseAppFile } from '../../../electron/shared/appSpec.mjs';
 import { atomicWrite } from '@/utils/atomicFs';
 import { joinPath } from '@/utils/pathUtils';
 import { copyPluginDir } from '@/core/plugin/fsOps';
+import { getI18n } from '@/i18n';
+import { appDirectoryKey, isPersonalAppMarketName } from './appIdentity';
+import { liveRefCatalog, resolveTarget, targetDisplayName } from './appRefs';
+
+const REFERENCE_NAMES_PATH = '.abu-app/reference-names.json';
 
 /**
  * Apps the user added on this computer (docs/app-spec.md): one record per app
@@ -88,9 +93,58 @@ async function writeAddedApps(home: string, records: AddedAppRecord[]): Promise<
   await atomicWrite(addedAppsPath(home), `${JSON.stringify(records, null, 2)}\n`);
 }
 
+/** Check the destination before an install starts and again before saving it. */
+export async function assertAppOriginAvailable(home: string, appId: string, origin: AddedAppOrigin): Promise<void> {
+  if (origin.kind === 'market' && isPersonalAppMarketName(origin.market)) {
+    throw new Error(getI18n().appMarket.reservedMarketName);
+  }
+  const records = await readAddedApps(home);
+  const hasConflict = records.some((item) => appDirectoryKey(item.appId) === appDirectoryKey(appId)
+    && (item.appId !== appId || item.origin.kind !== origin.kind));
+  if (hasConflict) {
+    throw new Error(getI18n().appMarket.originConflict);
+  }
+}
+
 /** Read and validate `.abu-app/app.json` inside `dir`. */
 export async function readAppFile(dir: string, source: 'package' | 'created'): Promise<ParsedAppFile> {
   return parseAppFile(JSON.parse(await readTextFile(joinPath(dir, APP_FILE_PATH))), { source });
+}
+
+const recordWriters = new Map<string, Promise<void>>();
+
+async function withRecordWriter<T>(home: string, action: () => Promise<T>): Promise<T> {
+  const key = appDirectoryKey(home);
+  const previous = recordWriters.get(key);
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => { release = resolve; });
+  recordWriters.set(key, current);
+  await previous;
+  try {
+    return await action();
+  } finally {
+    release();
+    if (recordWriters.get(key) === current) recordWriters.delete(key);
+  }
+}
+
+/** Copy before disclosure, then parse only the owned copy. */
+export async function prepareAppFiles(home: string, sourceDir: string, source: 'package' | 'created' = 'package'): Promise<string> {
+  const dir = joinPath(appsRoot(home), '.prepared', crypto.randomUUID());
+  let prepared = false;
+  try {
+    const copied = await copyPluginDir(sourceDir, dir);
+    if (copied.skippedSymlinks.length > 0) throw new Error(`App files must be regular files: ${copied.skippedSymlinks.join(', ')}`);
+    await readAppFile(dir, source);
+    prepared = true;
+    return dir;
+  } finally {
+    if (!prepared) await releaseAppFiles(dir);
+  }
+}
+
+export async function releaseAppFiles(dir: string): Promise<void> {
+  if (await exists(dir)) await remove(dir, { recursive: true });
 }
 
 /**
@@ -98,23 +152,63 @@ export async function readAppFile(dir: string, source: 'package' | 'created'): P
  * first and replace the current copy by rename, so a failed copy leaves the
  * app the user already had untouched.
  */
-export async function saveAddedApp(home: string, sourceDir: string, record: AddedAppRecord): Promise<void> {
-  const target = appDir(home, record.appId);
-  const staging = joinPath(appsRoot(home), '.staging', `${assertSafeAppId(record.appId)}-${Date.now().toString(36)}`);
-  await copyPluginDir(sourceDir, staging);
-  if (await exists(target)) await remove(target, { recursive: true });
-  await rename(staging, target);
-  const records = await readAddedApps(home);
-  await writeAddedApps(home, [...records.filter((item) => item.appId !== record.appId), record]);
+export async function saveAddedApp(home: string, sourceDir: string, record: AddedAppRecord, onCommitted?: () => void): Promise<void> {
+  parseRecord(record, 0);
+  await withRecordWriter(home, async () => {
+    await assertAppOriginAvailable(home, record.appId, record.origin);
+    const target = appDir(home, record.appId);
+    const staging = joinPath(appsRoot(home), '.staging', crypto.randomUUID());
+    const backup = `${staging}-previous`;
+    let replaced = false;
+    let published = false;
+    let committed = false;
+    try {
+      const copied = await copyPluginDir(sourceDir, staging);
+      if (copied.skippedSymlinks.length > 0) throw new Error(`App files must be regular files: ${copied.skippedSymlinks.join(', ')}`);
+      const file = await readAppFile(staging, record.origin.kind === 'created' ? 'created' : 'package');
+      if (file.name !== record.name || file.version !== record.version) throw new Error('App contents do not match the prepared record');
+      const app = { appId: record.appId, name: file.interface.displayName, config: file.config, version: file.version, plugins: file.plugins, origin: record.origin };
+      const catalog = liveRefCatalog();
+      const referenceNames: Record<string, string> = {};
+      for (const { run } of appRuns(file.config)) {
+        for (const kind of ['team', 'expert', 'skill'] as const) {
+          const value = (run as Record<string, string | undefined>)[kind];
+          if (value === undefined) continue;
+          const target = resolveTarget(app, kind, value, catalog);
+          if (target.status === 'ok' || target.status === 'needs-preparation') referenceNames[`${kind}:${value}`] = targetDisplayName(target);
+        }
+      }
+      await atomicWrite(joinPath(staging, REFERENCE_NAMES_PATH), JSON.stringify(referenceNames));
+      if (await exists(target)) {
+        await rename(target, backup);
+        replaced = true;
+      }
+      await rename(staging, target);
+      published = true;
+      const records = await readAddedApps(home);
+      await writeAddedApps(home, [...records.filter((item) => item.appId !== record.appId), record]);
+      committed = true;
+      onCommitted?.();
+    } finally {
+      if (!committed) {
+        if (published) await releaseAppFiles(target);
+        if (replaced) await rename(backup, target);
+      }
+      await releaseAppFiles(staging);
+      if (committed && replaced) await releaseAppFiles(backup);
+    }
+  });
 }
 
 /** Forget an app and delete its copied files. Plugins, experts, teams and skills stay. */
 export async function removeAddedApp(home: string, appId: string): Promise<void> {
-  const records = await readAddedApps(home);
-  if (!records.some((record) => record.appId === appId)) throw new Error(`app "${appId}" is not added`);
-  await writeAddedApps(home, records.filter((record) => record.appId !== appId));
-  const dir = appDir(home, appId);
-  if (await exists(dir)) await remove(dir, { recursive: true });
+  await withRecordWriter(home, async () => {
+    const records = await readAddedApps(home);
+    if (!records.some((record) => record.appId === appId)) throw new Error(`app "${appId}" is not added`);
+    await writeAddedApps(home, records.filter((record) => record.appId !== appId));
+    const dir = appDir(home, appId);
+    if (await exists(dir)) await remove(dir, { recursive: true });
+  });
 }
 
 /** The switcher's entry for an added app, read from its copied files. */
@@ -122,7 +216,12 @@ export async function loadAddedApp(home: string, record: AddedAppRecord): Promis
   const dir = appDir(home, record.appId);
   const file = await readAppFile(dir, record.origin.kind === 'created' ? 'created' : 'package');
   const asset = (path: string | undefined) => (path ? joinPath(dir, path) : undefined);
+  const namesPath = joinPath(dir, REFERENCE_NAMES_PATH);
+  const referenceNames: unknown = await exists(namesPath) ? JSON.parse(await readTextFile(namesPath)) : undefined;
+  if (referenceNames !== undefined && (referenceNames === null || typeof referenceNames !== 'object' || Array.isArray(referenceNames)
+    || Object.values(referenceNames).some((name) => typeof name !== 'string'))) throw new Error('Invalid app reference names');
   return {
+    referenceNames: referenceNames as Record<string, string> | undefined,
     appId: record.appId,
     name: file.interface.displayName,
     description: file.interface.shortDescription,

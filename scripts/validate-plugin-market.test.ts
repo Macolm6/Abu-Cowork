@@ -1,12 +1,29 @@
 import { describe, expect, it } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { checkMarket } from './validate-plugin-market.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const hostVersion = '0.51.0';
 
 describe('validate-plugin-market', () => {
+  it.each([
+    { plugins: [] },
+    { name: 'invalid', plugins: [{ name: 'tool', source: './tool', author: { email: 'a@example.com' } }] },
+    { name: 'invalid', apps: [{ name: 'app', source: './app', description: '' }] },
+  ])('refuses metadata that the client cannot load: %j', async (manifest) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'abu-market-metadata-'));
+    try {
+      mkdirSync(path.join(dir, '.abu-plugin'));
+      writeFileSync(path.join(dir, '.abu-plugin', 'marketplace.json'), JSON.stringify(manifest));
+      await expect(checkMarket(dir, { hostVersion })).rejects.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('passes the official market and the example market', async () => {
     const official = await checkMarket(path.join(repoRoot, 'builtin-plugin-market'), { hostVersion });
     expect(official.failures.map(String)).toEqual([]);

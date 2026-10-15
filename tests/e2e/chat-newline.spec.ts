@@ -178,7 +178,7 @@ test.describe.serial("Composer Enter behavior 'newline' — real Electron", () =
     await openComposer(page);
     await page.keyboard.type('你好');
 
-    // macOS runner → ⌘. The platform split itself is unit-tested.
-    await expect(page.getByLabel('发送（⌘ + Enter）· 换行（Enter）')).toBeVisible();
+    const modifier = process.platform === 'darwin' ? '⌘' : 'Ctrl';
+    await expect(page.getByLabel(`发送（${modifier} + Enter）· 换行（Enter）`)).toBeVisible();
   });
 });

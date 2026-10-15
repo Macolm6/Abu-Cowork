@@ -1,6 +1,6 @@
 {
   "name": "finance-reconciliation",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "minAbuVersion": "0.51.0",
   "interface": {
     "displayName": "财务对账",
@@ -9,8 +9,8 @@
     "developerName": "Abu",
     "category": "finance",
     "brandColor": "#0C447C",
-    "logo": "assets/logo.png",
-    "logoDark": "assets/logo-dark.png"
+    "logo": "assets/logo.svg",
+    "logoDark": "assets/logo-dark.svg"
   },
   "defaultRun": { "team": "builtin-team:finance-reconciliation" },
   "promptAppend": "The user does finance reconciliation. Work from the files they upload, show every difference you find with its source rows, and never invent a number that is not in the data.",

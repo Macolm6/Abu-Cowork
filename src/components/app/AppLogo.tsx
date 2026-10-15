@@ -3,19 +3,20 @@ import { cn } from '@/lib/utils';
 import { loadLocalImage } from '@/utils/pathUtils';
 import { useEffectiveThemeIsDark } from '@/hooks/useEffectiveThemeIsDark';
 import abuAvatar from '@/assets/abu-avatar.png';
-import TeamAvatar from '@/components/team/TeamAvatar';
-import type { AvatarSize } from '@/components/common/AgentAvatar';
+import { Icon, type IconSize } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { AVATAR_ICON_MAP, parseAvatarValue } from '@/core/team/avatarPresets';
 
-const SIZE = { sm: 'h-5 w-5 text-caption', md: 'h-7 w-7 text-ui-sm', lg: 'h-10 w-10 text-title', xl: 'h-20 w-20 text-title-lg' } as const;
-const ICON_SIZE: Record<keyof typeof SIZE, AvatarSize> = { sm: 'sm', md: 'md', lg: 'xl', xl: '2xl' };
+const SIZE = { sm: 'h-5 w-5 text-caption', md: 'h-7 w-7 text-ui-sm', lg: 'h-10 w-10 text-title', xl: 'h-14 w-14 text-title-lg' } as const;
+const ICON_SIZE: Record<keyof typeof SIZE, IconSize> = { sm: 'sm', md: 'md', lg: 'md', xl: 'lg' };
 
 /**
  * An app's logo: the package image (light or dark variant by theme) loaded
  * through the scoped file bridge, the icon an organization set for its app,
- * the app's first letter while an image loads or when there is none, and
+ * a neutral application mark while an image loads or when there is none, and
  * Abu's own avatar for the general shell.
  */
-export default function AppLogo({ name, logo, logoDark, icon, general = false, size = 'md', className }: {
+export default function AppLogo({ logo, logoDark, icon, general = false, size = 'md', className }: {
   name: string;
   logo?: string;
   logoDark?: string;
@@ -43,10 +44,13 @@ export default function AppLogo({ name, logo, logoDark, icon, general = false, s
       if (url) URL.revokeObjectURL(url);
     };
   }, [path]);
-  // The letter mark takes its size from SIZE; font-medium also overrides the weight a title size brings.
-  const box = cn('inline-flex shrink-0 items-center justify-center overflow-hidden rounded-control bg-fill font-medium text-label select-none', SIZE[size], className);
+  const box = cn('inline-flex shrink-0 items-center justify-center overflow-hidden rounded-control bg-fill font-medium text-label-tertiary select-none', SIZE[size], className);
   if (general) return <span className={box} data-testid="app-logo" data-app-logo="general"><img src={abuAvatar} alt="" className="h-full w-full object-cover" /></span>;
   if (src) return <span className={box} data-testid="app-logo" data-app-logo="image"><img src={src} alt="" className="h-full w-full object-cover" /></span>;
-  if (icon) return <TeamAvatar avatar={icon} size={ICON_SIZE[size]} className={cn(size === 'xl' && 'h-20 w-20', className)} />;
-  return <span className={box} data-testid="app-logo" data-app-logo="letter" aria-hidden="true">{name.trim().charAt(0)}</span>;
+  const parsed = parseAvatarValue(icon);
+  return (
+    <span className={box} data-testid="app-logo" data-app-logo={parsed.kind} aria-hidden="true">
+      {parsed.kind === 'emoji' ? parsed.emoji : <Icon icon={parsed.kind === 'icon' ? AVATAR_ICON_MAP[parsed.icon] : AppIcons.appMarket} size={ICON_SIZE[size]} />}
+    </span>
+  );
 }

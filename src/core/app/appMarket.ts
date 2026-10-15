@@ -5,10 +5,11 @@ import { loadMarketplaceFromDir } from '@/core/plugin/loadMarketplace';
 import { resolveSourceDir } from '@/core/plugin/installer';
 import { APP_VERSION } from '@/utils/version';
 import { joinPath } from '@/utils/pathUtils';
-import { appRuns, splitRunTarget } from '../../../electron/shared/appSpec.mjs';
+import { appRuns } from '../../../electron/shared/appSpec.mjs';
 import { checkMinAbuVersion } from '../../../electron/shared/pluginSpec.mjs';
 import { addedAppId, readAppFile } from './appRecords';
 import { resolveTarget, targetDisplayName, type RefCatalog } from './appRefs';
+import { format, getI18n } from '@/i18n';
 
 /**
  * What the app market lists (docs/app-spec.md): every app of every market
@@ -51,7 +52,7 @@ export function appUses(file: ParsedAppFile, market: string | undefined, catalog
       const value = (run as Record<string, string | undefined>)[kind];
       if (value === undefined) continue;
       const target = resolveTarget(app, kind, value, catalog);
-      names.add(target.status === 'ok' ? targetDisplayName(target) : splitRunTarget(kind, value)?.id ?? value);
+      if (target.status === 'ok' || target.status === 'needs-preparation') names.add(targetDisplayName(target));
     }
   }
   return [...names];
@@ -68,7 +69,7 @@ async function listing(market: MarketplaceRef, entry: AppMarketEntry, catalog: R
     market, entry, appId, name: entry.name, description: entry.description, version: entry.version,
     minAbuVersion: entry.minAbuVersion, uses: [], needsUpgrade: needsUpgrade(entry.minAbuVersion),
   };
-  if (entry.source.kind !== 'relative') return base;
+  if (entry.source.kind !== 'relative') return entry.source.sha ? base : { ...base, invalid: format(getI18n().appMarket.remoteNeedsSha, { name: base.name }) };
   const dir = resolveSourceDir(entry.source, market.dir);
   let file: ParsedAppFile;
   try {
@@ -99,7 +100,8 @@ export async function loadAppListings(markets: MarketplaceRef[], catalog: RefCat
     try {
       entries = (await loadMarketplaceFromDir(market.dir)).apps;
     } catch (error) {
-      failures.push({ market, message: error instanceof Error ? error.message : String(error) });
+      console.error(`[market] Could not read ${market.name}`, error);
+      failures.push({ market, message: getI18n().toolbox.pluginsMarketplaceNotFound });
       continue;
     }
     for (const entry of entries) listings.push(await listing(market, entry, catalog));

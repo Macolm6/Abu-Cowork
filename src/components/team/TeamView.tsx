@@ -933,6 +933,7 @@ function TeamView() {
               binding={enterpriseBinding}
               config={enterpriseConfig}
               searchQuery={search}
+              scopeRoleIds={members?.roleIds}
               onClose={closeTeam}
             />
           );

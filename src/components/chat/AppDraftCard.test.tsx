@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { exists, readDir, readTextFile } from '@tauri-apps/plugin-fs';
-import { initLanguage } from '@/i18n';
+import { getI18n, initLanguage } from '@/i18n';
 import { useAppStore } from '@/stores/appStore';
 import { useAppDraftStore } from '@/stores/appDraftStore';
 import { useChatStore } from '@/stores/chatStore';
@@ -78,7 +78,8 @@ describe('AppDraftCard', () => {
     writeDraft('mine:gone');
     render(<AppDraftCard conversationId="creator" toolCallId="call-1" />);
     expect(await screen.findByText('预览没能打开')).toBeInTheDocument();
-    expect(screen.getByTestId('app-draft-card')).toHaveTextContent('home.modes.items[0].scenes[1].run.team');
+    expect(screen.getByTestId('app-draft-card')).toHaveTextContent(getI18n().appDraft.fixDraftHint);
+    expect(screen.getByTestId('app-draft-card')).not.toHaveTextContent('home.modes.items[0].scenes[1].run.team');
     expect(screen.queryByTestId('app-draft-confirm')).not.toBeInTheDocument();
   });
 

@@ -132,7 +132,8 @@ describe('AddMarketplaceDialog', () => {
     type('/markets/demo');
     fireEvent.click(submit());
 
-    expect(await screen.findByText('No marketplace manifest in /real/markets/demo')).toBeInTheDocument();
+    expect(await screen.findByText(tb().pluginsMarketplaceNotFound)).toBeInTheDocument();
+    expect(screen.queryByText('No marketplace manifest in /real/markets/demo')).toBeNull();
     expect(screen.getByText(tb().pluginsMarketplaceReadFailed)).toBeInTheDocument();
     expect(onClose).not.toHaveBeenCalled();
     expect(onAdded).not.toHaveBeenCalled();
@@ -188,7 +189,7 @@ describe('AddMarketplaceDialog', () => {
     expect(screen.getByTestId('plugin-add-marketplace')).toBeInTheDocument();
 
     await act(async () => { reading.reject(new Error('unreadable')); });
-    await screen.findByText('unreadable');
+    await screen.findByText(tb().pluginsMarketplaceNotFound);
     expect(onClose).not.toHaveBeenCalled();
   });
 
@@ -217,13 +218,13 @@ describe('AddMarketplaceDialog', () => {
     render(<Owner />);
     type('/markets/demo');
     fireEvent.click(submit());
-    await screen.findByText('unreadable');
+    await screen.findByText(tb().pluginsMarketplaceNotFound);
 
     fireEvent.click(screen.getByText('Hide'));
     fireEvent.click(screen.getByText('Show'));
 
     expect(input().value).toBe('');
-    expect(screen.queryByText('unreadable')).toBeNull();
+    expect(screen.queryByText(tb().pluginsMarketplaceNotFound)).toBeNull();
   });
 
   it('is a named window whose failure is announced', async () => {
@@ -234,7 +235,7 @@ describe('AddMarketplaceDialog', () => {
     type('/markets/demo');
     fireEvent.click(submit());
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('unreadable');
+    expect(await screen.findByRole('alert')).toHaveTextContent(tb().pluginsMarketplaceNotFound);
   });
 
   it('keeps the focus on the pressed control while the directory is being read', async () => {
@@ -353,7 +354,7 @@ describe('AddMarketplaceDialog', () => {
 
       view.rerender(<Owner approval={false} />);
       expect(window).not.toHaveAttribute('hidden');
-      expect(screen.getByText('unreadable')).toBeInTheDocument();
+      expect(screen.getByText(tb().pluginsMarketplaceNotFound)).toBeInTheDocument();
       expect(input().value).toBe('/markets/demo');
       expect(onClose).not.toHaveBeenCalled();
     });

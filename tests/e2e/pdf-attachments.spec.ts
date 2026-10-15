@@ -41,7 +41,7 @@ function sse(delta: object, finishReason: string | null = null): string {
 for (const route of ['main', 'direct', 'delegate', 'batch'] as const) {
   test(`PDF picker → ${route} → actual read_file text extraction`, async () => {
     const dataRoot = createElectronDataRoot();
-    const filePath = path.join(dataRoot.rootDir, '季度 报告.PDF');
+    const filePath = path.join(dataRoot.rootDir, '季度 报告.PDF').replace(/\\/g, '/');
     fs.writeFileSync(filePath, fixturePdf());
     const requests: RequestBody[] = [];
     let delegated = false;

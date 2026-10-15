@@ -20,6 +20,7 @@ import {
   createElectronDataRoot,
   dismissFirstRunOverlays,
   launchAbuElectron,
+  pressWhenSettled,
   removeElectronDataRoot,
   type ElectronDataRoot,
 } from './electronHelpers';
@@ -182,4 +183,22 @@ test('创建应用 previews the draft in the conversation and confirming adds th
   expect(fs.readFileSync(expertFile, 'utf8')).toContain(`name: ${EXPERT}`);
   const added = JSON.parse(fs.readFileSync(path.join(dataRoot.appDataDir, 'Home', '.abu', 'apps', 'added.json'), 'utf8')) as Array<{ appId: string }>;
   expect(added.map((record) => record.appId)).toEqual(['weekly-report@mine']);
+
+  await page.getByTestId('app-home-scene-draft').click();
+  await page.getByTestId('app-home-template-notes').click();
+  await composer.press('Enter');
+  await expect(page.getByTestId('chat-title-app-badge')).toContainText('周报', { timeout: READY_TIMEOUT });
+  const showSidebar = page.getByRole('button', { name: /^(显示侧栏|Show sidebar)$/ });
+  if (await showSidebar.isVisible()) await showSidebar.click();
+  await page.getByTestId('app-switcher-trigger').click();
+  await page.getByTestId('app-switcher-remove').click();
+  await page.getByTestId('app-switcher-remove-weekly-report@mine').click();
+  const confirmation = page.getByRole('alertdialog');
+  await expect(confirmation).toContainText('这个应用是你自己做的，移除以后不能再添加回来');
+  await pressWhenSettled(confirmation.getByRole('button', { name: '移除', exact: true }));
+  await page.getByTestId('conversation-app-icon').first().click();
+  await expect(page.getByTestId('conversation-app-removed')).toContainText('周报', { timeout: READY_TIMEOUT });
+  await expect(page.getByTestId('conversation-app-removed').getByRole('button', { name: '去添加', exact: true })).toHaveCount(0);
+  expect(fs.existsSync(expertFile)).toBe(true);
+  expect(JSON.parse(fs.readFileSync(path.join(dataRoot.appDataDir, 'Home', '.abu', 'apps', 'added.json'), 'utf8'))).toEqual([]);
 });

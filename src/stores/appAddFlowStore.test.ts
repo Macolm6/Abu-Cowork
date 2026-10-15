@@ -165,7 +165,7 @@ describe('appAddFlowStore', () => {
       usePluginStore.setState({ install: vi.fn().mockRejectedValue(new Error('disk full')) });
       await useAppAddFlowStore.getState().start(source('contract-review'), '合同审阅', 'add');
       await useAppAddFlowStore.getState().confirm({});
-      expect(flow()).toEqual({ kind: 'error', name: '合同审阅', message: 'disk full' });
+      expect(flow()).toEqual({ kind: 'error', name: '合同审阅', purpose: 'add', message: 'disk full' });
       expect(await readAddedApps(root)).toEqual([]);
     });
 

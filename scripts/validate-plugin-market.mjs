@@ -29,6 +29,7 @@ import {
 import { APP_FILE_PATH, appRuns, parseAppFile, splitRunTarget } from '../electron/shared/appSpec.mjs';
 import { PluginManifestError } from '../electron/shared/pluginManifestError.mjs';
 import { packageFileExists, scanPluginPackageDir } from '../electron/shared/pluginPackageScan.mjs';
+import { parseMarketplace, parseSource } from '../src/core/plugin/marketplace.ts';
 
 const require = createRequire(import.meta.url);
 const { fetchRemoteSource, runGit } = require('../electron/pluginGitHost.cjs');
@@ -57,19 +58,13 @@ function readJson(file) {
 function readMarketplace(marketDir) {
   for (const candidate of MARKETPLACE_CANDIDATES) {
     const file = path.join(marketDir, candidate);
-    if (existsSync(file)) return { marketplace: readJson(file), file };
+    if (existsSync(file)) {
+      const marketplace = readJson(file);
+      parseMarketplace(marketplace);
+      return { marketplace, file };
+    }
   }
   throw new Error(`no marketplace.json found in ${marketDir} (looked for ${MARKETPLACE_CANDIDATES.join(', ')})`);
-}
-
-/** The subset of `parseSource` (src/core/plugin/marketplace.ts) this check needs. */
-function entrySource(raw) {
-  if (typeof raw === 'string') return { kind: 'relative', path: raw };
-  if (!raw || typeof raw !== 'object') throw new Error('source must be a string or an object');
-  if (raw.source === 'local') return { kind: 'relative', path: raw.path };
-  if (raw.source === 'url') return { kind: 'url', url: raw.url, sha: raw.sha };
-  if (raw.source === 'git-subdir') return { kind: 'git-subdir', url: raw.url, path: raw.path, ref: raw.ref, sha: raw.sha };
-  throw new Error(`unknown source kind ${JSON.stringify(raw.source)}`);
 }
 
 function insideDir(base, candidate) {
@@ -248,7 +243,7 @@ async function checkPlugins(marketDir, marketplace, { hostVersion, stagingRoot }
     names.add(label);
     let source;
     try {
-      source = entrySource(raw.source);
+      source = parseSource(raw.source);
     } catch (error) {
       failures.push(new MarketCheckFailure(label, error.message, 'source'));
       continue;
@@ -288,7 +283,7 @@ export async function checkMarket(marketDir, { hostVersion, stagingRoot = path.j
     appNames.add(label);
     let source;
     try {
-      source = entrySource(raw.source);
+      source = parseSource(raw.source);
     } catch (error) {
       failures.push(new MarketCheckFailure(`app ${label}`, error.message, 'source'));
       continue;

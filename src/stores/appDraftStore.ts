@@ -14,6 +14,7 @@ export interface AppDraft {
   createdAt: string;
   /** The app the draft was added as, once the user confirmed it. */
   appId?: string;
+  appName?: string;
 }
 
 interface AppDraftState {
@@ -22,7 +23,7 @@ interface AppDraftState {
 
 interface AppDraftActions {
   record: (conversationId: string, draft: AppDraft) => void;
-  markAdded: (conversationId: string, appId: string) => void;
+  markAdded: (conversationId: string, appId: string, appName?: string) => void;
 }
 
 export const useAppDraftStore = create<AppDraftState & AppDraftActions>()(
@@ -30,15 +31,16 @@ export const useAppDraftStore = create<AppDraftState & AppDraftActions>()(
     (set) => ({
       draftsByConversation: {},
       record: (conversationId, draft) => set((state) => ({ draftsByConversation: { ...state.draftsByConversation, [conversationId]: draft } })),
-      markAdded: (conversationId, appId) => set((state) => {
+      markAdded: (conversationId, appId, appName) => set((state) => {
         const draft = state.draftsByConversation[conversationId];
         if (!draft) throw new Error(`conversation ${conversationId} has no app draft`);
-        return { draftsByConversation: { ...state.draftsByConversation, [conversationId]: { ...draft, appId } } };
+        return { draftsByConversation: { ...state.draftsByConversation, [conversationId]: { ...draft, appId, appName } } };
       }),
     }),
     {
       name: 'abu-app-drafts',
-      version: 1,
+      version: 2,
+      migrate: (persisted) => persisted as AppDraftState,
       partialize: (state) => ({ draftsByConversation: state.draftsByConversation }),
     },
   ),
