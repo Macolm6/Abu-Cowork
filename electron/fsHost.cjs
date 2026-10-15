@@ -221,11 +221,13 @@ function writeAtomic(target, content) {
  *   - 'replace': `target` must be a regular file now that this process may
  *     write; the new file keeps its permission bits and takes its place by
  *     rename.
- *   - 'create': nothing may be at `target`; the temp file is hard-linked
- *     there, which fails with EEXIST when a file appeared meanwhile, and it
- *     gets the permissions a newly created file gets.
- * On any failure before that step the temp file is removed and `target` is
- * left as it was.
+ *   - 'create': nothing may be at `target`. Once the content is synced, the
+ *     name is taken with an exclusive create, which fails with EEXIST when a
+ *     file appeared meanwhile and works on every file system (a hard link
+ *     does not on FAT and exFAT), and the temp file is renamed over it. The
+ *     file gets the permissions a newly created file gets.
+ * On any failure before that step the temp file, and a name this call took,
+ * are removed and `target` is left as it was.
  * @param {string} target absolute, already scope-checked
  * @param {Buffer} content
  * @param {'replace' | 'create'} mode
@@ -242,14 +244,18 @@ function writeFileAtomic(target, content, mode) {
   }
   // 0o666 is the mode open() asks for a new file; the process umask applies to it.
   const tmp = openExclusiveSibling(parent, `.${path.basename(target)}.tmp.${process.pid}`, keptMode ?? 0o666);
+  let tookName = false;
   try {
     writeAll(tmp.fd, content);
     if (keptMode !== undefined) fs.fchmodSync(tmp.fd, keptMode);
     fs.fsyncSync(tmp.fd);
     fs.closeSync(tmp.fd);
     tmp.fd = undefined;
-    if (mode === 'replace') fs.renameSync(tmp.path, target);
-    else fs.linkSync(tmp.path, target);
+    if (mode === 'create') {
+      fs.closeSync(fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | noFollowFlag()));
+      tookName = true;
+    }
+    fs.renameSync(tmp.path, target);
   } catch (err) {
     if (tmp.fd !== undefined) {
       try {
@@ -263,10 +269,15 @@ function writeFileAtomic(target, content, mode) {
     } catch {
       /* temp may not exist */
     }
+    if (tookName) {
+      try {
+        fs.rmSync(target, { force: true });
+      } catch {
+        /* the empty file this call made stays; the error below is the one to report */
+      }
+    }
     throw err;
   }
-  // The target holds the content now; the temp name is only a second link to it.
-  if (mode === 'create') fs.rmSync(tmp.path, { force: true });
 }
 
 /**

@@ -313,6 +313,21 @@ test('write_file_atomic leaves the target as it was when the write fails before 
   assert.deepEqual(fs.readdirSync(dir), ['plan.md']);
 });
 
+test('write_file_atomic create removes the name it took when the content cannot be moved there', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'new.md');
+  const rename = fs.renameSync;
+  fs.renameSync = () => {
+    throw Object.assign(new Error('EIO: i/o error, rename'), { code: 'EIO' });
+  };
+  t.after(() => {
+    fs.renameSync = rename;
+  });
+  assert.throws(() => atomicWrite(file, bytesOf('n\n'), 'create'), { code: 'EIO' });
+  fs.renameSync = rename;
+  assert.deepEqual(fs.readdirSync(dir), []);
+});
+
 test('write_file_atomic still hits the dispatch-time scope guard', { skip: process.platform === 'win32' }, () => {
   const target = '/etc/abu-undo-should-not-exist.txt';
   assert.throws(() => atomicWrite(target, bytesOf('x'), 'create'), /outside the allowed scope/);
