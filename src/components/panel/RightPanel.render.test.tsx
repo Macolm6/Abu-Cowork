@@ -28,6 +28,9 @@ vi.mock('./workspace/TabStrip', () => ({
 vi.mock('./workspace/SummaryBody', () => ({
   default: () => <div>Summary body</div>,
 }));
+vi.mock('./workspace/FilesTab', () => ({
+  default: () => <div>Files body</div>,
+}));
 vi.mock('./workspace/TerminalTab', () => ({
   default: () => <div>Terminal</div>,
 }));
@@ -136,7 +139,7 @@ describe('RightPanel', () => {
       previewFilePath: null,
       chatWidth: null,
       reloadNonce: 0,
-      fileTreeMode: false,
+      emptyPanelShown: {},
       currentConversationId: null,
       lastActiveTabByConversation: {},
       panelStateByConversation: {},
@@ -148,6 +151,60 @@ describe('RightPanel', () => {
     cleanup();
     vi.restoreAllMocks();
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
+  });
+
+  describe('a conversation with no message yet', () => {
+    function startWithoutMessages(workspacePath: string | null) {
+      useChatStore.setState({
+        conversations: { [CONVERSATION_ID]: { ...conversation(), messages: [], status: 'idle', workspacePath } },
+        activeConversationId: CONVERSATION_ID,
+      });
+    }
+
+    it('stays off the page until the panel is asked for, then shows the launcher', async () => {
+      startWithoutMessages('/workspace/render-count');
+      await renderPanel();
+
+      expect(panel()).toHaveAttribute('hidden');
+      expect(panel().style.display).toBe('none');
+
+      act(() => usePreviewStore.getState().showEmptyPanel());
+
+      expect(panel()).not.toHaveAttribute('hidden');
+      expect(screen.getByText('Start from here')).toBeInTheDocument();
+      expect(usePreviewStore.getState().tabs).toEqual([]);
+    });
+
+    it('leaves the page again when the panel is collapsed', async () => {
+      startWithoutMessages('/workspace/render-count');
+      await renderPanel();
+      act(() => usePreviewStore.getState().showEmptyPanel());
+
+      act(() => useSettingsStore.getState().setRightPanelCollapsed(true));
+
+      expect(panel()).toHaveAttribute('hidden');
+    });
+
+    it('has nothing to show for a conversation without a workspace', async () => {
+      startWithoutMessages(null);
+      await renderPanel();
+
+      act(() => usePreviewStore.getState().showEmptyPanel());
+
+      expect(panel()).toHaveAttribute('hidden');
+    });
+
+    it('shows the file list opened from the launcher at the narrow width', async () => {
+      startWithoutMessages('/workspace/render-count');
+      await renderPanel();
+      act(() => usePreviewStore.getState().showEmptyPanel());
+
+      act(() => { usePreviewStore.getState().openFiles(); });
+
+      expect(panel()).not.toHaveAttribute('hidden');
+      expect(panel().style.width).toBe('320px');
+      expect(panel()).not.toHaveClass('flex-1');
+    });
   });
 
   describe('render count', () => {

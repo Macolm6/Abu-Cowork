@@ -13,12 +13,10 @@ import type { Notice } from './types';
 
 vi.mock('@/stores/chatStore', () => ({ useChatStore: { getState: vi.fn() } }));
 vi.mock('@/stores/settingsStore', () => ({ useSettingsStore: { getState: vi.fn() } }));
-vi.mock('@/stores/previewStore', () => ({ usePreviewStore: { getState: vi.fn() } }));
 vi.mock('@/stores/noticeBadgeStore', () => ({ useNoticeBadgeStore: { getState: vi.fn() } }));
 
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { usePreviewStore } from '@/stores/previewStore';
 import { useNoticeBadgeStore } from '@/stores/noticeBadgeStore';
 
 class FakeNotification {
@@ -35,7 +33,6 @@ class FakeNotification {
 const switchConversation = vi.fn().mockResolvedValue(undefined);
 const clearCompletedStatus = vi.fn();
 const setViewMode = vi.fn();
-const setFileTreeMode = vi.fn();
 const clearBadge = vi.fn();
 
 function makeNotice(payload: Record<string, unknown>): Notice {
@@ -69,9 +66,6 @@ describe('system_notification click-through', () => {
     vi.mocked(useSettingsStore.getState).mockReturnValue({
       setViewMode,
     } as unknown as ReturnType<typeof useSettingsStore.getState>);
-    vi.mocked(usePreviewStore.getState).mockReturnValue({
-      setFileTreeMode,
-    } as unknown as ReturnType<typeof usePreviewStore.getState>);
     vi.mocked(useNoticeBadgeStore.getState).mockReturnValue({
       clear: clearBadge,
     } as unknown as ReturnType<typeof useNoticeBadgeStore.getState>);
@@ -99,7 +93,6 @@ describe('system_notification click-through', () => {
     n.onclick?.();
     await vi.waitFor(() => expect(switchConversation).toHaveBeenCalledWith('conv-a'));
     expect(setViewMode).toHaveBeenCalledWith('chat');
-    expect(setFileTreeMode).toHaveBeenCalledWith(false);
     expect(clearBadge).toHaveBeenCalledWith('conv-a');
     expect(clearCompletedStatus).toHaveBeenCalledWith('conv-a');
   });
