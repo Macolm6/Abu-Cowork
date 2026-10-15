@@ -7,6 +7,7 @@ import { useAppStore, useSelectedApp } from '@/stores/appStore';
 import { GENERAL_APP_ID } from '@/types/app';
 import { appMembers, appsUsing } from '@/core/app/appScope';
 import { refCatalogFrom } from '@/core/app/appRefs';
+import { resolveLocalizedText } from '@/core/app/appBinding';
 import { pluginDisplayName } from '@/core/plugin/installedStore';
 import SourceBadge from '@/components/toolbox/SourceBadge';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
@@ -20,6 +21,7 @@ import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { agentRegistry } from '@/core/agent/registry';
 import { ensureRoleId, effectiveRoleId, resolveRoleId, roleIdAgentName } from '@/core/team/roleIdentity';
 import { isBuiltinTeam } from '@/core/team/builtinTeams';
+import { localizedTeam } from '@/core/team/localizedTeam';
 import { useI18n, format } from '@/i18n';
 import TopTabNav from '@/components/toolbox/TopTabNav';
 import SourceSubNav from '@/components/toolbox/SourceSubNav';
@@ -50,7 +52,7 @@ import { Switch } from '@/components/ds/switch';
 import { Tag } from '@/components/ds/tag';
 import { TextArea } from '@/components/ds/text-area';
 import { TextField } from '@/components/ds/text-field';
-import type { SubagentDefinition } from '@/types';
+import type { AgentLocale, SubagentDefinition } from '@/types';
 
 /**
  * 团队 view (R1: management surface — PRD docs/abu-team-prd-v2.md).
@@ -106,8 +108,14 @@ function roleLabel(agents: SubagentDefinition[], roleId: string, fallback: strin
   return agents.find((a) => effectiveRoleId(a) === roleId || a.roleId === roleId)?.name ?? fallback;
 }
 
-function memberOption(a: SubagentDefinition): ComboboxOption {
-  return { value: a.name, label: a.name, description: a.description || undefined, icon: <AgentAvatar agent={a} size="sm" /> };
+/** An expert's name and description as the interface shows them in `locale`. */
+function shownExpert(agent: SubagentDefinition, locale: AgentLocale): { name: string; description: string } {
+  return { name: agent.displayNames?.[locale] ?? agent.name, description: agent.descriptions?.[locale] ?? agent.description };
+}
+
+function memberOption(a: SubagentDefinition, locale: AgentLocale): ComboboxOption {
+  const shown = shownExpert(a, locale);
+  return { value: a.name, label: shown.name, description: shown.description || undefined, icon: <AgentAvatar agent={a} size="sm" /> };
 }
 
 /**
@@ -128,7 +136,7 @@ function InvalidMemberText({ label, reason }: { label: string; reason: string })
   return (
     <span className="min-w-0 flex-1">
       <span className="block truncate text-ui text-danger">{label}</span>
-      <span className="block truncate text-caption text-label-tertiary">{reason}</span>
+      <span className="block truncate text-caption text-label-secondary">{reason}</span>
     </span>
   );
 }
@@ -185,7 +193,7 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers, onSaved, onClo
   onSaved: (teamId: string) => void;
   onCloseAutoFocus: (event: Event) => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const addToast = useToastStore((s) => s.addToast);
   const refresh = useDiscoveryStore((s) => s.refresh);
   const createTeam = useTeamStore((s) => s.createTeam);
@@ -272,7 +280,7 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers, onSaved, onClo
 
   // The picker's options. Rows of the list are compared by the identity of their option, so the
   // same objects are handed over between renders.
-  const options = useMemo(() => agents.map(memberOption), [agents]);
+  const options = useMemo(() => agents.map((agent) => memberOption(agent, locale)), [agents, locale]);
   const memberOptions = useMemo(() => options.filter((option) => option.value !== leaderName), [options, leaderName]);
   const pickedMembers = memberNames.filter((n) => n !== leaderName);
 
@@ -459,7 +467,7 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers, onSaved, onClo
         <div className={`flex items-center justify-between gap-3 ${GROUP_BOX}`}>
           <div className="min-w-0">
             <div className="text-ui text-label">{t.team.fieldPlanApproval}</div>
-            <div className="text-caption text-label-tertiary">{t.team.fieldPlanApprovalHint}</div>
+            <div className="text-caption text-label-secondary">{t.team.fieldPlanApprovalHint}</div>
           </div>
           <Switch checked={requireApproval} onCheckedChange={setRequireApproval} aria-label={t.team.fieldPlanApproval} />
         </div>
@@ -500,8 +508,10 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers, onSaved, onClo
  * for every window it opens and every character typed in its search box, and
  * the cards do not render with it.
  */
-const TeamCard = memo(function TeamCard({ team, description, pluginName, onOpen }: {
+const TeamCard = memo(function TeamCard({ team, name, description, pluginName, onOpen }: {
   team: Team;
+  /** The team's name and card line in the interface language. */
+  name: string;
   description: string;
   /** The display name of the plugin that brought the team in, when one did. */
   pluginName: string | undefined;
@@ -513,7 +523,7 @@ const TeamCard = memo(function TeamCard({ team, description, pluginName, onOpen 
         item={{
           id: team.id,
           testId: `team-row-${team.name}`,
-          name: team.name,
+          name,
           description,
           avatar: <TeamAvatar avatar={team.avatar} size="xl" />,
           badge: pluginName !== undefined ? <SourceBadge source={{ kind: 'plugin', plugin: pluginName }} /> : undefined,
@@ -537,7 +547,8 @@ function TeamDetailBody({ team, pluginName, onStartChat }: {
   pluginName: string | undefined;
   onStartChat: (prompt: string) => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  const text = localizedTeam(team, locale);
   const memberIds = team.memberRoleIds.filter((id) => id !== team.leaderRoleId);
   // Same predicate the run uses (resolveRoleId), so the count here never
   // disagrees with the "队员 · N" the workspace tab shows mid-run.
@@ -556,12 +567,13 @@ function TeamDetailBody({ team, pluginName, onStartChat }: {
     .flatMap((a) => a?.skills ?? []))].sort();
   // A row names an expert and does nothing else, so it is a plain row.
   const row = (agent: SubagentDefinition | undefined, fallback: string) => {
+    const shown = agent ? shownExpert(agent, locale) : undefined;
     return (
       <div className="flex w-full items-center gap-2 rounded-control px-2 py-1">
         {agent ? <AgentAvatar agent={agent} size="sm" /> : <Icon icon={AppIcons.agent} className="text-label-tertiary" />}
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-ui text-label">{agent?.name ?? fallback}</span>
-          {agent?.description && <span className="block truncate text-caption text-label-tertiary">{agent.description}</span>}
+          <span className="block truncate text-ui text-label">{shown?.name ?? fallback}</span>
+          {shown?.description && <span className="block truncate text-caption text-label-tertiary">{shown.description}</span>}
         </span>
       </div>
     );
@@ -619,16 +631,16 @@ function TeamDetailBody({ team, pluginName, onStartChat }: {
         </div>
       </div>
       {team.leaderNote?.trim() && (
-        <div>
+        <div data-testid="team-detail-leader-note">
           <div className={`mb-1 ${SECTION_LABEL}`}>{t.team.detailLeaderNote}</div>
           <div className="whitespace-pre-wrap text-ui text-label-secondary">{team.leaderNote.trim()}</div>
         </div>
       )}
-      {!!team.expertise?.length && (
-        <div>
+      {!!text.expertise?.length && (
+        <div data-testid="team-detail-expertise">
           <div className={SECTION_LABEL}>{t.team.detailExpertise}</div>
           <ul className="mt-2 space-y-1">
-            {team.expertise.map((item, index) => (
+            {text.expertise.map((item, index) => (
               <li key={index} className="flex items-start gap-2 text-ui text-label">
                 <span className="flex h-5 shrink-0 items-center"><Icon icon={AppIcons.done} size="sm" className="text-label-tertiary" /></span>
                 <span>{item}</span>
@@ -637,11 +649,11 @@ function TeamDetailBody({ team, pluginName, onStartChat }: {
           </ul>
         </div>
       )}
-      {!!team.samplePrompts?.length && (
-        <div>
+      {!!text.samplePrompts?.length && (
+        <div data-testid="team-detail-sample-prompts">
           <div className={SECTION_LABEL}>{t.team.detailSamplePrompts}</div>
           <ul className="mt-2 space-y-2">
-            {team.samplePrompts.map((prompt, index) => (
+            {text.samplePrompts.map((prompt, index) => (
               <li key={index}>
                 <Pressable
                   onClick={() => onStartChat(prompt)}
@@ -680,7 +692,7 @@ function TeamView() {
   // A stale persisted value (e.g. the removed 'pipelines' tab) falls back to
   // the default tab instead of rendering an empty pane.
   const activeTeamTab: TeamTab = persistedTeamTab === 'teams' ? 'teams' : 'members';
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const confirm = useConfirm();
   // 市场 | 我的 per tab, remembered across restarts (shared with 扩展's store —
   // the two pages show the same pair over different rosters).
@@ -764,6 +776,7 @@ function TeamView() {
   const [held, setHeld] = useState<Team | null>(null);
   if (detailTeam && detailTeam !== held) setHeld(detailTeam);
   const shown = detailTeam ?? held;
+  const shownText = shown ? localizedTeam(shown, locale) : null;
   const shownOwner = shown ? pluginTeamOwner(shown) : undefined;
 
   const rootRef = useRef<HTMLDivElement>(null);
@@ -816,7 +829,8 @@ function TeamView() {
   const startChatWithTeam = (team: Team, prompt?: string) => {
     // The window stays on the page while it fades out; a key press there starts nothing.
     if (detailRef.current !== team.id) return;
-    prepareExpertEntry({ identity: teamIdentity(team), introduction: team.intro }, prompt);
+    const text = localizedTeam(team, locale);
+    prepareExpertEntry({ identity: teamIdentity(text), introduction: text.intro }, prompt);
     setDetailTeamId(null);
     closeTeam();
   };
@@ -833,7 +847,7 @@ function TeamView() {
       title: t.team.deleteTeamTitle,
       message: [
         format(t.team.deleteTeamMessage, { name: team.name }),
-        usedBy.length > 0 ? format(t.toolbox.usedByApps, { names: usedBy.map((app) => app.name).join('、') }) : '',
+        usedBy.length > 0 ? format(t.toolbox.usedByApps, { names: usedBy.map((app) => resolveLocalizedText(app.name, locale)).join('、') }) : '',
       ].join(''),
       confirmLabel: t.team.deleteTeamAction,
       tone: 'danger',
@@ -854,10 +868,14 @@ function TeamView() {
   // text, so the subscriptions aren't dead code from the compiler's point of view.
   // The card's leader slot is one segment of a ` · ` summary line, so it takes
   // the short label; the explanatory clause lives in the detail and the editor.
+  const leaderOf = (team: Team): string | undefined => {
+    const leader = resolveRoleId(team.leaderRoleId);
+    return leader ? shownExpert(leader, locale).name : undefined;
+  };
   const cardSummary = (team: Team, _agents: typeof discoveredAgents, _ready: boolean) => {
     const count = team.memberRoleIds.filter((id) => id !== team.leaderRoleId && resolveRoleId(id) !== null).length;
     return format(count === 1 ? t.team.teamRowSummaryOne : t.team.teamRowSummary, {
-      leader: resolveRoleId(team.leaderRoleId)?.name ?? t.team.memberInvalidShort,
+      leader: leaderOf(team) ?? t.team.memberInvalidShort,
       count: String(count),
     });
   };
@@ -956,17 +974,19 @@ function TeamView() {
             : activeTeams.filter(isBuiltinTeam);
         const card = (team: Team) => {
           const owner = pluginTeamOwner(team);
+          const text = localizedTeam(team, locale);
           return (
             <TeamCard
               key={team.id}
               team={team}
-              description={team.description || cardSummary(team, discoveredAgents, pluginRecordsReady)}
+              name={text.name}
+              description={text.description || cardSummary(team, discoveredAgents, pluginRecordsReady)}
               pluginName={owner ? pluginDisplayName(installedPlugins, owner) : undefined}
               onOpen={openDetail}
             />
           );
         };
-        const shown = list.filter((team) => matchesTeamSearch(team, search));
+        const shown = list.filter((team) => matchesTeamSearch(localizedTeam(team, locale), search));
         return (
           <div className="h-full overflow-y-scroll overlay-scroll px-8 pt-3 pb-6">
             {source === 'mine' && list.length === 0 ? (
@@ -1009,7 +1029,7 @@ function TeamView() {
         {inApp && (
           <span data-testid="team-app-scope" className="flex shrink-0">
             <SegmentedControl
-              label={selectedApp.name}
+              label={resolveLocalizedText(selectedApp.name, locale)}
               value={appScope}
               onValueChange={(next) => setAppScope(next === 'all' ? 'all' : 'app')}
               options={scopeOptions}
@@ -1029,13 +1049,13 @@ function TeamView() {
           which is why 团队 felt unlike every other list in the app. */}
       <ToolDetailModal
         open={!!detailTeam}
-        ariaLabel={shown?.name}
+        ariaLabel={shownText?.name}
         onClose={() => setDetailTeamId(null)}
         onCloseAutoFocus={afterWindowClosed}
         maxWidth="max-w-2xl"
         avatar={shown ? <TeamAvatar avatar={shown.avatar} size="2xl" /> : undefined}
-        title={shown?.name}
-        subtitle={shown?.description?.trim()}
+        title={shownText?.name}
+        subtitle={shownText?.description?.trim()}
         // Primary action in the footer — the same place and weight as on the
         // plugin and connector details. The header keeps only the 「…」 menu.
         footer={shown ? (

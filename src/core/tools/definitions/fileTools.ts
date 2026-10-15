@@ -2,7 +2,7 @@ import { readTextFile, readFile as readBinFile, writeTextFile, readDir, exists, 
 import { invoke } from '@tauri-apps/api/core';
 import type { ToolDefinition, ToolResultContent } from '../../../types';
 import { isWindows } from '../../../utils/platform';
-import { ensureParentDir } from '../../../utils/pathUtils';
+import { ensureParentDir, normalizeSeparators } from '../../../utils/pathUtils';
 import { isSandboxEnabled, isNetworkIsolationEnabled } from '../../sandbox/config';
 import { isCatastrophicDeleteTarget } from '../pathSafety';
 import {
@@ -21,9 +21,33 @@ import { invokeTaskCommand, isTaskCommandAbortedError } from '../helpers/scopedC
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
 import { bindWorkspaceFromWrite } from '../../agent/defaultWorkspace';
-import { snapshotBeforeAiEdit } from '@/utils/aiEditSnapshots';
+import { captureTurnFileBefore, snapshotBeforeAiEdit } from '@/utils/aiEditSnapshots';
 import { formatFileSize } from '@/utils/formatFileSize';
 import { fuzzyFindAndReplace } from '../../skill/fuzzyPatch';
+import { computeFileChange, MAX_COMPARABLE_TEXT_BYTES, type FileChange } from '@/core/files/fileChange';
+
+/** What a path held before a write, as far as the reported file change needs it. */
+type TextBefore =
+  | { state: 'absent' }
+  | { state: 'text'; text: string }
+  /** The path exists; it is no regular file or its text is over the comparable size. */
+  | { state: 'unread' };
+
+/** Reads the text a write is about to replace. */
+async function readTextBefore(path: string): Promise<TextBefore> {
+  if (!(await exists(path))) return { state: 'absent' };
+  const info = await stat(path);
+  if (!info.isFile || info.size > MAX_COMPARABLE_TEXT_BYTES) return { state: 'unread' };
+  return { state: 'text', text: await readTextFile(path) };
+}
+
+function fileChangeAfterWrite(path: string, before: TextBefore | null, after: string | null): FileChange | null {
+  if (before === null) return null;
+  if (before.state === 'unread') {
+    return { path: normalizeSeparators(path), kind: after === null ? 'delete' : 'modify' };
+  }
+  return computeFileChange({ path, before: before.state === 'text' ? before.text : null, after });
+}
 
 /**
  * Simple pessimistic file lock for concurrent agent safety.
@@ -254,6 +278,7 @@ export const writeFileTool: ToolDefinition = {
       } else if (ext === '.html' || ext === '.htm') {
         finalContent = ensureHtmlCharset(content);
       }
+      const before = context?.reportMetadata ? await readTextBefore(path) : null;
       // Pre-edit snapshot: capture the on-disk "before" state so this AI turn
       // shows up in the preview panel's version history. Fail-open — the
       // helper never throws and must not delay-fail the write.
@@ -262,6 +287,8 @@ export const writeFileTool: ToolDefinition = {
         conversationId: context?.conversationId,
       });
       await writeTextFile(path, finalContent);
+      const fileChange = fileChangeAfterWrite(path, before, finalContent);
+      if (fileChange) context?.reportMetadata?.({ fileChange });
       // Lazily bind a managed default workspace only for a shell-confirmed
       // foreground turn. Background IM/schedule/trigger runs carry scoped,
       // per-run grants; persisting one here would silently widen that temporary
@@ -361,6 +388,9 @@ export const editFileTool: ToolDefinition = {
             knownContent: content,
           });
           await writeTextFile(path, fuzzy.newContent);
+          context?.reportMetadata?.({
+            fileChange: computeFileChange({ path, before: content, after: fuzzy.newContent }),
+          });
           const oldLines = oldContent.split('\n').length;
           const newLines = newContent.split('\n').length;
           return `Successfully edited ${path}: replaced ${oldLines} line(s) with ${newLines} line(s) ` +
@@ -409,6 +439,9 @@ export const editFileTool: ToolDefinition = {
       // search), silently corrupting any content containing a literal `$`.
       const updated = content.replace(oldContent, () => newContent);
       await writeTextFile(path, updated);
+      context?.reportMetadata?.({
+        fileChange: computeFileChange({ path, before: content, after: updated }),
+      });
 
       const oldLines = oldContent.split('\n').length;
       const newLines = newContent.split('\n').length;
@@ -438,7 +471,7 @@ export const deleteFileTool: ToolDefinition = {
     },
     required: ['path'],
   },
-  execute: async (input) => {
+  execute: async (input, context) => {
     const path = input.path as string;
     // Hard block — enforced regardless of permission mode. checkWritePath alone only
     // returns needsPermission:true for the filesystem root / home dir, which resolves
@@ -446,8 +479,12 @@ export const deleteFileTool: ToolDefinition = {
     if (await isCatastrophicDeleteTarget(path)) {
       return format(getI18n().toolResult.file.deleteRefusedCatastrophic, { path });
     }
+    const before = context?.reportMetadata ? await readTextBefore(path) : null;
+    await captureTurnFileBefore(path, context?.loopId);
     try {
       await invoke('move_to_trash', { path });
+      const fileChange = fileChangeAfterWrite(path, before, null);
+      if (fileChange) context?.reportMetadata?.({ fileChange });
       return format(getI18n().toolResult.file.movedToTrash, { path });
     } catch (err) {
       // Fail-closed: never fall back to a permanent delete.

@@ -17,8 +17,11 @@ import { agentRegistry } from '@/core/agent/registry';
 import { prepareEnterpriseAppSkill, useEnterpriseAppSkillRevision } from '@/core/enterprise/appRuntime';
 import { prepareExpertEntry } from '@/core/team/expertEntry';
 import { expertIdentity, teamIdentity } from '@/core/team/expertContact';
+import { localizedTeam } from '@/core/team/localizedTeam';
 import { appHomeTitle } from '@/core/app/appRegistry';
 import { buildAppBinding, effectiveRun, pickMode, resolveText } from '@/core/app/appBinding';
+import { reportAppFailure } from '@/core/app/appFailure';
+import { resolvedTeamId } from '@/core/app/appHomePicks';
 import { liveRefCatalog, refCatalogFrom, resolveRun, runTargets, targetDisplayName, type ResolvedRun } from '@/core/app/appRefs';
 import { describeSceneRun } from '@/components/app/runLabel';
 import AppLogo from '@/components/app/AppLogo';
@@ -69,12 +72,6 @@ function useResolvedRuns(app: AppDefinition): (scene: AppScene | undefined) => R
   };
 }
 
-/** The team a run resolves to, for pinning the composer to it. */
-function resolvedTeamId(resolved: ResolvedRun | undefined): string | undefined {
-  const owner = resolved?.owner;
-  return owner?.status === 'ok' && owner.kind === 'team' ? owner.team.id : undefined;
-}
-
 export default function AppHome({ app, onPlaceholderChange }: {
   app: AppDefinition;
   onPlaceholderChange: (placeholder: string | null) => void;
@@ -90,6 +87,10 @@ export default function AppHome({ app, onPlaceholderChange }: {
   const defaultTeamId = resolvedTeamId(resolved(undefined));
   const pendingAppBinding = useChatStore((s) => s.pendingAppBinding);
   const binding = useMemo(() => buildAppBinding(app, mode, expandedScene), [app, mode, expandedScene]);
+  // The home shows with no conversation and nothing holds a binding for the next one: a new
+  // task was started with the home already in view (the sidebar's 新任务, the title bar's, a
+  // project that was just created), which clears what the store held ready.
+  const picksCleared = useChatStore((s) => s.activeConversationId === null && s.pendingAppBinding === undefined);
 
   useEffect(() => {
     const placeholder = expandedScene?.placeholder ?? app.config.composer?.placeholder;
@@ -110,7 +111,7 @@ export default function AppHome({ app, onPlaceholderChange }: {
     if (sameContext ? chat.pendingOwnerSource === 'app' : previous || !hasExplicitOwner) {
       chat.setPendingTeamId(defaultTeamId, 'app');
     }
-  }, [binding, defaultTeamId, pendingAppBinding]);
+  }, [binding, defaultTeamId, pendingAppBinding, picksCleared]);
 
   // `requiredConnectors` names `<plugin>/<connector>`; the connector the user
   // sees is the one that plugin's install registered under that name.
@@ -123,7 +124,7 @@ export default function AppHome({ app, onPlaceholderChange }: {
   return (
     <div data-testid="app-home" data-app-id={app.appId} className="w-full">
       <div className="text-center mb-6">
-        <AppLogo name={app.name} logo={app.logo} logoDark={app.logoDark} icon={app.icon} size="xl" className="mx-auto mb-4 rounded-panel" />
+        <AppLogo name={resolveText(app.name)} logo={app.logo} logoDark={app.logoDark} icon={app.icon} size="xl" className="mx-auto mb-4 rounded-panel" />
         <h1 className="mb-2 text-title-lg text-label" data-testid="app-home-title">{appHomeTitle(app, locale)}</h1>
         {app.config.home.header?.slogan && <p className="text-ui text-label-secondary">{resolveText(app.config.home.header.slogan)}</p>}
       </div>
@@ -150,7 +151,7 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
   const setExpandedScene = useAppStore((s) => s.setExpandedScene);
   const resolvedRun = useResolvedRuns(app);
   // A scene whose organization expert is being set up, or could not be.
-  const [preparation, setPreparation] = useState<Record<string, { state: 'busy' | 'failed'; name: string; reason?: string }>>({});
+  const [preparation, setPreparation] = useState<Record<string, { state: 'busy' | 'failed'; name: string }>>({});
   // The scenes whose template is being handed over: one start per scene at a time.
   const startingRef = useRef(new Set<string>());
   const contextRevision = useRef(0);
@@ -164,11 +165,11 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
     const { label, unavailable } = describeSceneRun(app, scene, resolved, t, format, locale);
     const owner = resolved?.owner;
     const avatar = !resolved
-      ? <AppLogo name={app.name} logo={app.logo} logoDark={app.logoDark} icon={app.icon} size="sm" />
+      ? <AppLogo name={resolveText(app.name)} logo={app.logo} logoDark={app.logoDark} icon={app.icon} size="sm" />
       : owner?.status === 'ok' && owner.kind === 'team' ? <TeamAvatar avatar={owner.team.avatar} size="xs" round />
         : owner?.status === 'ok' && owner.kind === 'expert' ? <AgentAvatar agent={owner.agent} size="sm" />
           : owner ? <TeamAvatar size="xs" round />
-            : <span className="inline-flex h-4 w-4 items-center justify-center rounded-control bg-fill text-caption text-label-tertiary">/</span>;
+            : <span className="inline-flex h-4 w-4 items-center justify-center rounded-control bg-fill text-caption text-label-secondary">/</span>;
     return { label, avatar, unavailable };
   };
 
@@ -199,7 +200,8 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
         if (unprepared.skillName) await prepareEnterpriseAppSkill(unprepared.skillName);
       } catch (error) {
         if (!isCurrent()) return;
-        setPreparation((current) => ({ ...current, [scene.id]: { state: 'failed', name, reason: error instanceof Error ? error.message : String(error) } }));
+        reportAppFailure('prepare scene', error);
+        setPreparation((current) => ({ ...current, [scene.id]: { state: 'failed', name } }));
         return;
       }
       if (!isCurrent()) return;
@@ -217,7 +219,7 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
     const skill = resolved?.skill?.status === 'ok' && resolved.skill.kind === 'skill' ? resolved.skill.name : undefined;
     const draftKey = () => getComposerDraftKey(null, getComposerDraftScopeForEnterpriseMode(useEnterpriseStore.getState().mode));
     if (owner?.status === 'ok' && owner.kind === 'team') {
-      prepareExpertEntry({ identity: teamIdentity(owner.team) }, prompt);
+      prepareExpertEntry({ identity: teamIdentity(localizedTeam(owner.team, locale)) }, prompt);
     } else if (owner?.status === 'ok' && owner.kind === 'expert') {
       prepareExpertEntry({ identity: expertIdentity(owner.agent, locale) }, prompt);
     } else if (skill) {
@@ -258,6 +260,10 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
   };
 
   if (!visible) return null;
+  // The expanded scene: whether its owner is gone, and whether its organization expert is being set up.
+  const expandedUnavailable = expandedScene ? describeRun(expandedScene).unavailable : false;
+  const preparing = expandedScene ? preparation[expandedScene.id] : undefined;
+  const working = preparing?.state === 'busy';
   return (
     <div className="mb-4 w-full">
       {app.config.home.modes.items.length > 1 && (
@@ -300,39 +306,33 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
           );
         })}
       </div>
-      {expandedScene && (() => {
-        const unavailable = describeRun(expandedScene).unavailable;
-        const preparing = preparation[expandedScene.id];
-        const working = preparing?.state === 'busy';
-        return (
-          <div className="mt-4" data-testid="app-home-templates">
-            <p className="mb-2 text-center text-caption text-label-tertiary">{t.appHome.templates}</p>
-            {preparing && (
-              <p data-testid="app-home-preparing" data-state={preparing.state} role="status" className={cn('mb-2 flex items-center justify-center gap-2 text-caption', preparing.state === 'failed' ? 'text-danger' : 'text-label-tertiary')}>
-                {working && <span data-ds-spinner className="inline-flex animate-spin"><Icon icon={AppIcons.loading} size="sm" /></span>}
-                {format(working ? t.appHome.scenePreparing : t.appHome.scenePrepareFailed, { name: preparing.name })}
-                {preparing.reason && <span className="text-label-tertiary">{preparing.reason}</span>}
-              </p>
-            )}
-            <div className={PROMPT_GRID_CLASS}>
-              {expandedScene.templates.map((template) => (
-                // A template whose scene is being set up keeps the focus it was pressed with.
-                <Pressable
-                  key={template.id}
-                  data-testid={`app-home-template-${template.id}`}
-                  className={cn(PROMPT_ITEM_CLASS, 'not-aria-disabled:hover:bg-fill-hover', BUSY)}
-                  title={resolveText(template.prompt)}
-                  disabled={unavailable}
-                  aria-disabled={working || undefined}
-                  onClick={() => start(expandedScene, resolveText(template.prompt))}
-                >
-                  {resolveText(template.title)}
-                </Pressable>
-              ))}
-            </div>
+      {expandedScene && (
+        <div className="mt-4" data-testid="app-home-templates">
+          <p className="mb-2 text-center text-caption text-label-tertiary">{t.appHome.templates}</p>
+          {preparing && (
+            <p data-testid="app-home-preparing" data-state={preparing.state} role="status" className={cn('mb-2 flex items-center justify-center gap-2 text-caption', preparing.state === 'failed' ? 'text-danger' : 'text-label-tertiary')}>
+              {working && <span data-ds-spinner className="inline-flex animate-spin"><Icon icon={AppIcons.loading} size="sm" /></span>}
+              {format(working ? t.appHome.scenePreparing : t.appHome.scenePrepareFailed, { name: preparing.name })}
+            </p>
+          )}
+          <div className={PROMPT_GRID_CLASS}>
+            {expandedScene.templates.map((template) => (
+              // A template whose scene is being set up keeps the focus it was pressed with.
+              <Pressable
+                key={template.id}
+                data-testid={`app-home-template-${template.id}`}
+                className={cn(PROMPT_ITEM_CLASS, 'not-aria-disabled:hover:bg-fill-hover', BUSY)}
+                title={resolveText(template.prompt)}
+                disabled={expandedUnavailable}
+                aria-disabled={working || undefined}
+                onClick={() => start(expandedScene, resolveText(template.prompt))}
+              >
+                {resolveText(template.title)}
+              </Pressable>
+            ))}
           </div>
-        );
-      })()}
+        </div>
+      )}
     </div>
   );
 }

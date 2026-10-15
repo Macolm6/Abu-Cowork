@@ -472,6 +472,18 @@ describe('saving, loading and removing', () => {
     expect((await loadAddedApps(root)).map((item) => item.appId)).toEqual(['contract-review@lawyer-market']);
   });
 
+  it('loads a name and description given per locale as the file gives them', async () => {
+    const displayName = { 'zh-CN': '合同审阅', 'en-US': 'Contract Review' };
+    const shortDescription = { 'zh-CN': '按律所的做法审合同', 'en-US': 'Review contracts the way the firm does' };
+    writeApp(source, { interface: { displayName, shortDescription, logo: 'assets/logo.png' } });
+    await saveAddedApp(root, source, record());
+    const [app] = await loadAddedApps(root);
+    expect(app.name).toEqual(displayName);
+    expect(app.description).toEqual(shortDescription);
+    // The record names the app by its `name`, never by display text.
+    expect(await readAddedApps(root)).toEqual([record()]);
+  });
+
   it('replaces the app when the same app is added again', async () => {
     await saveAddedApp(root, source, record());
     writeApp(source, { version: '1.1.0' });

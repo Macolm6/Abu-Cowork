@@ -3,9 +3,12 @@
   "version": "1.0.1",
   "minAbuVersion": "0.51.0",
   "interface": {
-    "displayName": "内容创作",
-    "shortDescription": "从选题到成稿、配图和发布物料",
-    "longDescription": "给内容运营准备的应用：选题与成稿、配图、发布物料三组场景，由随阿布附带的内容创作专家团负责——公众号编辑带队，行业调研专家找素材，网页设计师出图。",
+    "displayName": { "zh-CN": "内容创作", "en-US": "Content Creation" },
+    "shortDescription": { "zh-CN": "从选题到成稿、配图和发布物料", "en-US": "From topic to finished draft, visuals and a publishing kit" },
+    "longDescription": {
+      "zh-CN": "给内容运营准备的应用：选题与成稿、配图、发布物料三组场景，由随阿布附带的内容创作专家团负责——公众号编辑带队，行业调研专家找素材，网页设计师出图。",
+      "en-US": "An app for content teams: three groups of scenes — topics and drafts, visuals, and the publishing kit — handled by the Content Creation Team that ships with Abu. The editor leads, the industry researcher finds material, and the web designer makes the visuals."
+    },
     "developerName": "Abu",
     "category": "content",
     "brandColor": "#3C3489",

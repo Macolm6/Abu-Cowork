@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { loadLocalImage } from '@/utils/pathUtils';
+import { reportAppFailure } from '@/core/app/appFailure';
 import { useEffectiveThemeIsDark } from '@/hooks/useEffectiveThemeIsDark';
 import abuAvatar from '@/assets/abu-avatar.png';
 import { Icon, type IconSize } from '@/components/ds/icon';
@@ -13,7 +14,7 @@ const ICON_SIZE: Record<keyof typeof SIZE, IconSize> = { sm: 'sm', md: 'md', lg:
 /**
  * An app's logo: the package image (light or dark variant by theme) loaded
  * through the scoped file bridge, the icon an organization set for its app,
- * a neutral application mark while an image loads or when there is none, and
+ * a neutral application mark while an image loads or cannot be shown, and
  * Abu's own avatar for the general shell.
  */
 export default function AppLogo({ logo, logoDark, icon, general = false, size = 'md', className }: {
@@ -38,15 +39,20 @@ export default function AppLogo({ logo, logoDark, icon, general = false, size = 
       if (cancelled) { URL.revokeObjectURL(loaded); return; }
       url = loaded;
       setSrc(loaded);
+    }, (error: unknown) => {
+      if (cancelled) return;
+      // A conversation can retain an image path after its app was removed.
+      setSrc(null);
+      reportAppFailure('logo image', error);
     });
     return () => {
       cancelled = true;
       if (url) URL.revokeObjectURL(url);
     };
   }, [path]);
-  const box = cn('inline-flex shrink-0 items-center justify-center overflow-hidden rounded-control bg-fill font-medium text-label-tertiary select-none', SIZE[size], className);
+  const box = cn('inline-flex shrink-0 items-center justify-center overflow-hidden rounded-control bg-fill font-medium text-label-secondary select-none', SIZE[size], className);
   if (general) return <span className={box} data-testid="app-logo" data-app-logo="general"><img src={abuAvatar} alt="" className="h-full w-full object-cover" /></span>;
-  if (src) return <span className={box} data-testid="app-logo" data-app-logo="image"><img src={src} alt="" className="h-full w-full object-cover" /></span>;
+  if (src) return <span className={box} data-testid="app-logo" data-app-logo="image"><img src={src} alt="" className="h-full w-full object-cover" onError={() => setSrc(null)} /></span>;
   const parsed = parseAvatarValue(icon);
   return (
     <span className={box} data-testid="app-logo" data-app-logo={parsed.kind} aria-hidden="true">

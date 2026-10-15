@@ -10,6 +10,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useNativeViewOcclusion } from '@/hooks/useNativeViewOcclusion';
 import { APP_PAGE_STATE_EVENT, hideAppPages, reloadAppPage, setAppPageBounds, showAppPage, type AppPageStateEvent } from '@/core/app/appPageBridge';
 import { resolveText } from '@/core/app/appBinding';
+import { reportAppFailure } from '@/core/app/appFailure';
 
 /**
  * The main-area host for an app's `url:` page. It owns a placeholder that
@@ -37,7 +38,10 @@ export default function AppPageView() {
     let unlisten: UnlistenFn | undefined;
     let disposed = false;
     void listen<AppPageStateEvent>(APP_PAGE_STATE_EVENT, (event) => {
-      if (event.payload.appId === appId && event.payload.navItemId === navItemId) setState(event.payload);
+      if (event.payload.appId !== appId || event.payload.navItemId !== navItemId) return;
+      // The page says a sentence of its own; what the host gave as the reason goes to the console.
+      if (event.payload.state === 'failed') reportAppFailure('page load', event.payload.errorDescription ?? 'the host gave no reason');
+      setState(event.payload);
     }).then((stop) => { if (disposed) stop(); else unlisten = stop; });
     return () => { disposed = true; unlisten?.(); };
   }, [appId, navItemId]);
@@ -78,7 +82,7 @@ export default function AppPageView() {
       {/* h-11: the native page's rectangle starts right under this row. */}
       <div className="flex h-11 shrink-0 items-center gap-2 border-b border-separator px-4">
         <span className="min-w-0 flex-1 truncate text-ui font-medium text-label">
-          {navItem?.title === undefined ? app.name : resolveText(navItem.title)}
+          {resolveText(navItem?.title === undefined ? app.name : navItem.title)}
         </span>
         {state?.state === 'loading' && <Spinner size="sm" label={t.common.loading} labelHidden />}
         {appId && navItemId && (
@@ -91,9 +95,9 @@ export default function AppPageView() {
         {state?.state === 'failed' && (
           <div data-testid="app-page-failed" className="absolute inset-0 flex flex-col items-center justify-center">
             {appId && navItemId
-              ? <LoadError reason={state.errorDescription} onRetry={() => { void reloadAppPage(appId, navItemId); }} />
-              // No page is selected any more: the reason stays, with nothing to retry.
-              : <p role="alert" className="max-w-96 px-6 text-center text-ui text-label">{state.errorDescription}</p>}
+              ? <LoadError reason={t.appHome.pageLoadFailed} onRetry={() => { void reloadAppPage(appId, navItemId); }} />
+              // No page is selected any more: the sentence stays, with nothing to retry.
+              : <p role="alert" className="max-w-96 px-6 text-center text-ui text-label">{t.appHome.pageLoadFailed}</p>}
           </div>
         )}
       </div>

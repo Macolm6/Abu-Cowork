@@ -174,6 +174,30 @@ describe('conversationRunMirror', () => {
       expect(tc?.isExecuting).toBe(false);
     });
 
+    it('mirrors the file change of a result and of a metadata checkpoint', () => {
+      const conv = makeConversation({
+        messages: [makeMessage({
+          id: 'm1',
+          toolCalls: [
+            { id: 'tc1', name: 'edit_file', input: {}, isExecuting: true },
+            { id: 'tc2', name: 'write_file', input: {}, isExecuting: true },
+          ],
+        })],
+      });
+      const mirror = createConversationRunMirror('conv-1', { conversation: conv });
+      const edited = { path: '/w/plan.md', kind: 'modify' as const, added: 1, deleted: 1 };
+      const created = { path: '/w/outline.md', kind: 'create' as const, added: 2, deleted: 0 };
+
+      mirror.applyChatDeltaWrite('updateToolCall', [
+        'conv-1', 'm1', 'tc1', 'Successfully edited', undefined, false, undefined, { fileChange: edited },
+      ]);
+      mirror.applyChatDeltaWrite('checkpointToolCallMetadata', ['conv-1', 'm1', 'tc2', { fileChange: created }]);
+
+      const toolCalls = mirror.reader.getConversation('conv-1')?.messages[0].toolCalls;
+      expect(toolCalls?.[0].fileChange).toEqual(edited);
+      expect(toolCalls?.[1].fileChange).toEqual(created);
+    });
+
     it('accepts trusted recovery metadata only for run_command', () => {
       const conv = makeConversation({
         messages: [makeMessage({

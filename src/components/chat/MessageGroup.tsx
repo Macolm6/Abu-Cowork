@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
-import type { BatchIdentity, Message, MessageContent, ToolCall } from '@/types';
+import type { BatchIdentity, FileChange, Message, MessageContent, ToolCall } from '@/types';
 import { makeBatchKey } from '@/types';
 import { TOOL_NAMES, isDisplayHiddenStepBackedTool } from '@/core/tools/toolNames';
 import type { ExecutionStep } from '@/types/execution';
@@ -20,6 +20,7 @@ import SmoothHeight from './SmoothHeight';
 import BatchProgress from './BatchProgress';
 import MarkdownRenderer from './MarkdownRenderer';
 import FileAttachment, { ImagePreviewCard, ImageThumbnail, isImageFile } from './FileAttachment';
+import ChangedFilesCard from './ChangedFilesCard';
 import SourcesSection from './SourcesSection';
 import { getConversationAgentState, useChatStore, useActiveConversation } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
@@ -27,17 +28,17 @@ import { useAppDraftStore } from '@/stores/appDraftStore';
 import { useMCPStore } from '@/stores/mcpStore';
 import { useI18n, format } from '@/i18n';
 import { MessageErrorBoundary } from '@/components/common/ErrorBoundary';
-import { computeRewindImpact } from '@/utils/rewindImpact';
 import { useRewindQuestion } from './rewindQuestion';
+import { retryTurn } from './retryTurn';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { useBatchProgressStore } from '@/stores/batchProgressStore';
 import { makeWorkProcessFoldKey, useWorkProcessFoldStore } from '@/stores/workProcessFoldStore';
 import { extractWorkflowSteps, extractFileOutputs, extractFilePathsFromText, parsePlanSteps } from '@/utils/workflowExtractor';
+import { collectPresentedFiles } from '@/utils/presentedFiles';
+import { collectTurnFilePaths, resolveFileMention } from '@/utils/turnFileMentions';
+import { usePresentFilesOnDisk } from '@/hooks/usePresentFilesOnDisk';
 import { parseSearchResults, stripSourcesBlock, parseSourcesFromText } from '@/utils/searchParser';
 import { backfillDetailBlockImages, snapshotToExecutionSteps } from '@/core/agent/executionSnapshot';
-import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
-import { ensureConversationModelUsable } from './sendModelGuard';
-import { announceChatTurnScrollIntent } from './chatTurnScrollIntent';
 import { allWorkingDirectories } from '@/core/permissions/workingDirs';
 import { homeDir } from '@tauri-apps/api/path';
 import { cn } from '@/lib/utils';
@@ -48,7 +49,6 @@ import { ThinkingStatusLine, AssistantRowAvatar } from './ThinkingStatusLine';
 import { useConversationTeamLeader } from '@/components/team/useConversationTeamLeader';
 import AgentAvatar from '@/components/common/AgentAvatar';
 import { GROUP_CONTENT_GAP } from './chatSpacing';
-import { rebuildImageAttachments } from './imageAttachmentRebuild';
 import {
   rollupBatchRows,
   compactBatchRollupSummary,
@@ -64,6 +64,10 @@ interface MessageGroupProps {
   conversationId: string;
   messages: Message[];
   isLastGroup?: boolean;
+  // Whether this is the last group of its loopId. A loop spans two groups when
+  // a compaction marker falls inside it; the changed-files card belongs to the
+  // last one.
+  isLastGroupOfLoop?: boolean;
   // When set and this group contains that message, briefly ring-highlight the
   // group (search-hit jump target). Cleared by the parent after a timeout.
   highlightMessageId?: string | null;
@@ -223,13 +227,18 @@ function stripMarkdownImages(text: string): string {
   return text.replace(/!\[[^\]]*\]\([^)]+\)\n?/g, '').trim();
 }
 
+// File cards a declared-mode group shows before its "all files" button is pressed.
+const MAX_FILE_CARDS_SHOWN = 4;
+
 const LEGACY_STOP_MARKER = /\s*\*\[已停止\]\*\s*$/;
 
 /** Backward compatibility for transcripts written before runState terminals. */
 // eslint-disable-next-line react-refresh/only-export-components
 export function hasPersistedStopState(messages: Message[]): boolean {
   return messages.some((message) =>
-    (message.role === 'user' && message.runState === 'interrupted')
+    // A turn the application closed on says so under the user's message
+    // (`MessageBubble`); 「已停止」 is for a turn the user stopped.
+    (message.role === 'user' && message.runState === 'interrupted' && message.runInterruptCause !== 'app_exit')
     || (message.role === 'assistant' && message.stopReason === 'user')
     || (message.role === 'assistant'
       && typeof message.content === 'string'
@@ -531,7 +540,7 @@ export function streamingTurnHasRenderableContent(msg: Message | undefined): boo
  * User messages render standalone, assistant messages share one avatar.
  * Renders text → merged tool steps, with consecutive tool-only turns combined.
  */
-export default function MessageGroup({ conversationId, messages, isLastGroup: isLastGroupProp = false, highlightMessageId = null }: MessageGroupProps) {
+export default function MessageGroup({ conversationId, messages, isLastGroup: isLastGroupProp = false, isLastGroupOfLoop = false, highlightMessageId = null }: MessageGroupProps) {
   const { t } = useI18n();
   // Separate user and assistant messages
   const userMsg = messages.find((m) => m.role === 'user');
@@ -601,6 +610,14 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     () => assistantMsgs.flatMap((m) => m.toolCalls || []),
     [assistantMsgs]
   );
+  // File changes of this turn's own file-tool calls, for the steps that show them.
+  const fileChanges = useMemo(() => {
+    const byToolCallId = new Map<string, FileChange>();
+    for (const toolCall of allToolCalls) {
+      if (toolCall.fileChange && !toolCall.fromSubagent) byToolCallId.set(toolCall.id, toolCall.fileChange);
+    }
+    return byToolCallId;
+  }, [allToolCalls]);
   const legacyWorkflowToolCalls = useMemo<ToolCall[]>(() => {
     const seenBatchKeys = new Set<string>();
     return assistantMsgs.flatMap((message) => (message.toolCalls || []).filter((toolCall) => {
@@ -682,7 +699,12 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
   // text — fallback for paths the LLM announces in prose ("已保存到 X") but
   // never appear in toolCall.input.path (e.g. python subprocess writing files
   // not visible to the agent loop).
+  //
+  // Groups whose assistant messages carry `fileCards: 'declared'` take their
+  // cards from what the agent presented (declaredFiles below) and infer nothing.
+  const declaredMode = assistantMsgs.some((m) => m.fileCards === 'declared');
   const fileOutputs = useMemo(() => {
+    if (declaredMode) return [];
     const files = extractFileOutputs(allToolCalls, {
       mode: 'deliverables',
       // Drop cards for files cp/mv'd outside the workspace boundary — those are
@@ -716,7 +738,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
       }
     }
     return files;
-  }, [allToolCalls, assistantMsgs, home]);
+  }, [allToolCalls, assistantMsgs, home, declaredMode]);
 
   /**
    * Which MCP servers are connected right now, as one stable string.
@@ -815,55 +837,72 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
           const chat = useChatStore.getState();
           if (r.status === 'available' && ownerId && chat.conversations[ownerId]
             && chat.activeConversationId === ownerId
-            && usePreviewStore.getState().currentConversationId === ownerId) openPreview(r.path);
+            && usePreviewStore.getState().currentConversationId === ownerId) {
+            if (r.isFromSnapshot) openPreview(r.path, { keptCopyOf: previewableFile.path });
+            else openPreview(r.path);
+          }
         }).catch(() => {});
       }).catch(() => {});
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- isLastGroupProp omitted: adding it would re-trigger preview when a new group demotes this one
   }, [isAgentDone, fileOutputs, openPreview, activeConv?.id, conversationId]);
 
-  // handleRetry's deleteMessagesFrom truncates from this loop's first assistant
-  // message onward, discarding anything after — so when this isn't the
-  // conversation's last loop it asks first. See computeRewindImpact for the
-  // "later turns exist" check.
+  // Declared mode: the cards are the presented files that are on disk. The
+  // check starts once the group is done, so no card shows before it answers.
+  const workspacePath = useChatStore((s) => s.conversations[conversationId]?.workspacePath ?? null);
+  const declaredFiles = useMemo(
+    () => (declaredMode ? collectPresentedFiles(allToolCalls) : []),
+    [declaredMode, allToolCalls],
+  );
+  const onDiskFiles = usePresentFilesOnDisk(declaredFiles, declaredMode && isGroupDone);
+  const [allFilesShown, setAllFilesShown] = useState(false);
+
+  // Declared mode: file names and paths in the reply text that name a file this
+  // turn wrote or presented open it in the side preview. The serialized list
+  // keeps the resolver stable across renders, which MarkdownRenderer requires.
+  const turnFilePathsKey = useMemo(
+    () => JSON.stringify(declaredMode ? collectTurnFilePaths(allToolCalls, workspacePath) : []),
+    [declaredMode, allToolCalls, workspacePath],
+  );
+  const resolveTurnFileMention = useMemo(() => {
+    const turnFilePaths = JSON.parse(turnFilePathsKey) as string[];
+    return turnFilePaths.length > 0
+      ? (text: string) => resolveFileMention(text, turnFilePaths)
+      : undefined;
+  }, [turnFilePathsKey]);
+
+  // Declared-mode auto-preview: decided once per mount, for the last group, by
+  // the first answer of the disk check after a run this mount watched has
+  // ended. It opens the last presented non-image file, or the last image when
+  // every file is an image; an empty answer opens nothing, also when a file
+  // reaches the disk later.
+  const sawRunInProgressRef = useRef(false);
+  const declaredPreviewDecidedRef = useRef(false);
+  useEffect(() => {
+    if (!declaredMode || !isLastGroupProp) return;
+    if (!isAgentDone) {
+      sawRunInProgressRef.current = true;
+      return;
+    }
+    if (!sawRunInProgressRef.current || declaredPreviewDecidedRef.current) return;
+    if (onDiskFiles === null) return;
+    declaredPreviewDecidedRef.current = true;
+    if (onDiskFiles.length === 0) return;
+    const nonImageFiles = onDiskFiles.filter((file) => !isImageFile(file.path));
+    const target = nonImageFiles[nonImageFiles.length - 1] ?? onDiskFiles[onDiskFiles.length - 1];
+    const chat = useChatStore.getState();
+    if (chat.conversations[conversationId]
+      && chat.activeConversationId === conversationId
+      && usePreviewStore.getState().currentConversationId === conversationId) openPreview(target.path);
+  }, [declaredMode, isLastGroupProp, isAgentDone, onDiskFiles, conversationId, openPreview]);
+
+  // The retry of a failed step runs the turn again from its user message and
+  // deletes what follows, so it asks first when later turns exist (retryTurn).
   const askBeforeRewind = useRewindQuestion();
 
-  // Handle retry
   const handleRetry = async () => {
     if (!userMsg || !activeConv?.id) return;
-    if (!ensureConversationModelUsable(activeConv, t.chat)) return;
-    const convId = activeConv.id;
-    const userContent = getTextContent(userMsg.content);
-
-    const retryImages = rebuildImageAttachments(userMsg.content, 'retry');
-
-    const firstAssistantInLoop = assistantMsgs[0];
-
-    const proceed = async () => {
-      // Re-check: the provider may have been removed while the confirm was open.
-      if (!ensureConversationModelUsable(useChatStore.getState().conversations[convId], t.chat)) return;
-      if (firstAssistantInLoop) {
-        useChatStore.getState().deleteMessagesFrom(convId, firstAssistantInLoop.id);
-      }
-      announceChatTurnScrollIntent({ conversationId: convId, source: 'run-retry' });
-      // A retry is a human clicking a button, like MessageBubble's own
-      // retry/regenerate/edit-resend — the run is attended even when the
-      // conversation record carries a scheduler/trigger marker.
-      await runAgentLoopDispatched(convId, userContent, {
-        initiatedBy: 'user',
-        ...(retryImages ? { images: retryImages } : {}),
-      });
-    };
-
-    const impact = computeRewindImpact(activeConv.messages, loopId, userMsg.id);
-    if (impact.hasLaterTurns && !(await askBeforeRewind({
-      conversationId: convId,
-      laterTurnsCount: impact.laterTurnsCount,
-      loopId,
-      fallbackMessageId: userMsg.id,
-      messageIds: firstAssistantInLoop ? [userMsg.id, firstAssistantInLoop.id] : [userMsg.id],
-    }))) return;
-    await proceed();
+    await retryTurn({ conversation: activeConv, userMessage: userMsg, askBeforeRewind, chatText: t.chat });
   };
 
   // Tool execution steps for this loop. Thinking is rebuilt per-message inside
@@ -1018,7 +1057,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
       // have unique timestamped names. Non-output images (web URLs, pre-existing
       // files) still render as thumbnails.
       const baseOf = (p: string) => (p.split(/[/\\]/).pop() || p).trim();
-      const outputBasenames = new Set(fileOutputs.map((f) => baseOf(f.path)));
+      const outputBasenames = new Set((declaredMode ? onDiskFiles ?? [] : fileOutputs).map((f) => baseOf(f.path)));
       const mdImages = allMdImages.filter((src) => !outputBasenames.has(baseOf(src)));
       // Always strip ALL markdown images from the rendered text (MarkdownRenderer
       // drops <img> anyway); the ones we keep are shown as ImageThumbnail below.
@@ -1046,6 +1085,8 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
                 content={cleanedText}
                 searchResults={searchResults.length > 0 ? searchResults : undefined}
                 onCitationClick={searchResults.length > 0 ? handleCitationClick : undefined}
+                resolveFileMention={resolveTurnFileMention}
+                streaming={seg.message.isStreaming}
               />
             </div>
           )}
@@ -1144,6 +1185,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
             isActive={execIsActive}
             isStopped={isStopped}
             onRetry={seg.isLastGroup && hasError && !isStreaming ? handleRetry : undefined}
+            fileChanges={fileChanges}
           />
         ) : hasLegacySteps && (
           <TaskBlock
@@ -1151,6 +1193,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
             isActive={legacyIsActive}
             isStopped={isStopped}
             onRetry={seg.isLastGroup && hasError && !isStreaming ? handleRetry : undefined}
+            fileChanges={fileChanges}
           />
         )}
         {segSettledUQCards.map((tc) => (
@@ -1392,6 +1435,34 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
                 </>
               );
             })()}
+
+            {/* Presented files that are on disk, in the order they were presented:
+                the first four, and the rest behind one button. */}
+            {declaredMode && onDiskFiles !== null && onDiskFiles.length > 0 && (
+              <>
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {(allFilesShown ? onDiskFiles : onDiskFiles.slice(0, MAX_FILE_CARDS_SHOWN)).map((file) => (
+                    isImageFile(file.path)
+                      ? <ImagePreviewCard key={file.path} filePath={file.path} />
+                      : <FileAttachment key={file.path} filePath={file.path} description={file.description} declared />
+                  ))}
+                </div>
+                {onDiskFiles.length > MAX_FILE_CARDS_SHOWN && (
+                  <Pressable
+                    aria-expanded={allFilesShown}
+                    onClick={() => setAllFilesShown((shown) => !shown)}
+                    className="mt-2 flex items-center gap-1 rounded-control text-ui text-label-secondary transition-colors duration-fast hover:text-label"
+                  >
+                    {allFilesShown ? t.chat.collapseFiles : format(t.chat.allFilesCount, { count: onDiskFiles.length })}
+                  </Pressable>
+                )}
+              </>
+            )}
+
+            {/* What the turn changed on disk, once per loop and once the run has ended. */}
+            {isLastGroupOfLoop && isGroupDone && loopId && (
+              <ChangedFilesCard conversationId={conversationId} loopId={loopId} />
+            )}
 
             {/* Sources section - below file attachments */}
             {searchResults.length > 0 && !isStreaming && (

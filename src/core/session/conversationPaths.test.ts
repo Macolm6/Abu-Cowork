@@ -100,9 +100,10 @@ describe('conversation paths outside the ledger', () => {
     expect(paths.outputsDir('conv-1')).toBe('/Users/testuser/.abu/conversations/conv-1/outputs');
     expect(paths.resultsDir('conv-1')).toBe('/Users/testuser/.abu/conversations/conv-1/results');
     expect(paths.checkpointPath('conv-1')).toBe('/Users/testuser/.abu/conversations/conv-1/checkpoint.json');
+    expect(paths.changesDir('conv-1')).toBe('/Users/testuser/.abu/conversations/conv-1/changes');
   });
   it.each(['../x', 'a/b', '', 'CON', 'abc.', 'index.json'])('refuses %j before building', (bad) => {
-    for (const build of [paths.outputsDir, paths.resultsDir, paths.checkpointPath]) {
+    for (const build of [paths.outputsDir, paths.resultsDir, paths.checkpointPath, paths.changesDir]) {
       expect(() => build(bad)).toThrow(ConversationIdError);
     }
   });

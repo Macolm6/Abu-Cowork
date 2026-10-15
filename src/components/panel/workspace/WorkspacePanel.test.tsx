@@ -18,7 +18,9 @@ import type { BatchIdentity } from '@/types';
 import WorkspacePanel from './WorkspacePanel';
 
 vi.mock('../PreviewPanel', () => ({
-  default: ({ filePath }: { filePath: string }) => <div>Preview {filePath}</div>,
+  default: ({ filePath, line, lineRequest, keptCopy }: { filePath: string; line?: number; lineRequest?: number; keptCopy?: boolean }) => (
+    <div data-line={line} data-line-request={lineRequest} data-kept-copy={keptCopy}>Preview {filePath}</div>
+  ),
 }));
 vi.mock('./TerminalTab', () => ({
   default: ({ tabId }: { tabId: string }) => <div>Terminal {tabId}</div>,
@@ -28,6 +30,14 @@ vi.mock('./BrowserTab', () => ({
 }));
 vi.mock('./SummaryBody', () => ({
   default: () => <div>Summary body</div>,
+}));
+vi.mock('./FilesTab', () => ({
+  default: () => <div>Files body</div>,
+}));
+vi.mock('./ChangesTab', () => ({
+  default: (props: { tabId: string; conversationId: string; loopId: string; fileIndex: number }) => (
+    <div>Changes tab {props.tabId} {props.conversationId} {props.loopId} {props.fileIndex}</div>
+  ),
 }));
 
 const identity: BatchIdentity = { conversationId: 'conv-workspace-panel', batchToolCallId: 'batch-1' };
@@ -49,7 +59,7 @@ function resetStores() {
     previewFilePath: null,
     chatWidth: null,
     reloadNonce: 0,
-    fileTreeMode: false,
+    emptyPanelShown: {},
   });
   useBatchProgressStore.setState({
     batches: {},
@@ -102,6 +112,67 @@ describe('WorkspacePanel', () => {
     expect(screen.getByText('Preview /tmp/a.md')).toBeInTheDocument();
   });
 
+  it('hands a preview tab its requested line and the count of the requests', () => {
+    usePreviewStore.setState({
+      tabs: [
+        { id: 'with-line', kind: 'preview', filePath: '/tmp/a.ts', line: 24, lineRequest: 2 },
+        { id: 'without-line', kind: 'preview', filePath: '/tmp/b.ts' },
+      ],
+      activeTabId: 'with-line',
+      previewFilePath: '/tmp/a.ts',
+    });
+
+    renderPanel();
+
+    expect(screen.getByText('Preview /tmp/a.ts')).toHaveAttribute('data-line', '24');
+    expect(screen.getByText('Preview /tmp/a.ts')).toHaveAttribute('data-line-request', '2');
+    expect(screen.getByText('Preview /tmp/b.ts')).not.toHaveAttribute('data-line');
+    expect(screen.getByText('Preview /tmp/b.ts')).not.toHaveAttribute('data-line-request');
+  });
+
+  it('tells the preview of a kept copy that it shows one, and no other preview', () => {
+    usePreviewStore.setState({
+      tabs: [
+        { id: 'copy', kind: 'preview', filePath: '/data/outputs/files/ab12/a.md', keptCopyOf: '/work/a.md' },
+        { id: 'own-path', kind: 'preview', filePath: '/work/b.md' },
+      ],
+      activeTabId: 'copy',
+      previewFilePath: '/data/outputs/files/ab12/a.md',
+    });
+
+    renderPanel();
+
+    expect(screen.getByText('Preview /data/outputs/files/ab12/a.md')).toHaveAttribute('data-kept-copy', 'true');
+    expect(screen.getByText('Preview /work/b.md')).toHaveAttribute('data-kept-copy', 'false');
+  });
+
+  it('renders the changes tab of a turn with the conversation, loop and file it names', () => {
+    usePreviewStore.setState({
+      tabs: [{ id: 'changes:conv-a:loop-1', kind: 'changes', conversationId: 'conv-a', loopId: 'loop-1', fileIndex: 2, title: 'Changes: plan.md' }],
+      activeTabId: 'changes:conv-a:loop-1',
+    });
+
+    renderPanel();
+
+    const panel = screen.getByRole('tabpanel', { name: /Changes: plan\.md/ });
+    expect(panel).toHaveTextContent('Changes tab changes:conv-a:loop-1 conv-a loop-1 2');
+  });
+
+  it('mounts no changes tab body for a tab another conversation owns', () => {
+    usePreviewStore.setState({
+      tabs: [{
+        id: 'changes:conv-b:loop-1', kind: 'changes', conversationId: 'conv-b', loopId: 'loop-1', fileIndex: 0,
+        title: 'Changes: plan.md', ownerConversationId: 'conv-b',
+      }],
+      currentConversationId: 'conv-a',
+      activeTabId: null,
+    });
+
+    renderPanel();
+
+    expect(screen.queryByText(/Changes tab/)).toBeNull();
+  });
+
   it('renders a subagent workspace panel from explicit identity and task index', () => {
     const store = useBatchProgressStore.getState();
     store.initBatch(identity, ['Worker']);
@@ -125,20 +196,69 @@ describe('WorkspacePanel', () => {
     expect(screen.getByText('Running')).toBeInTheDocument();
   });
 
-  it('offers the three things the panel can open when every tab is closed', () => {
+  it('offers the four things the panel can open when every tab is closed', () => {
     renderPanel();
 
     expect(screen.getByText('Start from here')).toBeInTheDocument();
     expect(screen.queryByRole('tabpanel')).toBeNull();
-    const launchers = ['Task Summary', 'Browser', 'Terminal'].map((name) => (
+    const launchers = ['Task Summary', 'Workspace Files', 'Browser', 'Terminal'].map((name) => (
       screen.getByRole('button', { name: new RegExp(`^${name}`) })
     ));
-    expect(launchers).toHaveLength(3);
+    expect(launchers).toHaveLength(4);
+    // In the order the page lists them.
+    const buttons = screen.getAllByRole('button');
+    expect(launchers.map((launcher) => buttons.indexOf(launcher))).toEqual(
+      launchers.map((launcher) => buttons.indexOf(launcher)).sort((a, b) => a - b),
+    );
 
-    fireEvent.click(launchers[2]);
+    fireEvent.click(launchers[3]);
 
     expect(usePreviewStore.getState().tabs.map((tab) => tab.kind)).toEqual(['terminal']);
     expect(screen.queryByText('Start from here')).toBeNull();
     expect(screen.getByText(/^Terminal /)).toBeInTheDocument();
+  });
+
+  it('opens the workspace file list from the launcher, in a tab named after it', () => {
+    renderPanel();
+
+    fireEvent.click(screen.getByRole('button', { name: /^Workspace Files/ }));
+
+    expect(usePreviewStore.getState().tabs.map((tab) => tab.kind)).toEqual(['files']);
+    expect(screen.queryByText('Start from here')).toBeNull();
+    expect(screen.getByRole('tab', { name: 'Workspace Files' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tabpanel', { name: 'Workspace Files' })).toHaveTextContent('Files body');
+  });
+
+  it('keeps the file list mounted behind the preview of a file opened from it', () => {
+    usePreviewStore.setState({
+      tabs: [
+        { id: 'files-tab', kind: 'files' },
+        { id: 'preview-tab', kind: 'preview', filePath: '/work/a.md' },
+      ],
+      activeTabId: 'preview-tab',
+      previewFilePath: '/work/a.md',
+    });
+
+    const { container } = renderPanel();
+
+    const filesPanel = container.querySelector(`#${workspaceTabPanelId('files-tab')}`);
+    expect(filesPanel).toHaveAttribute('hidden');
+    expect(filesPanel).toHaveTextContent('Files body');
+  });
+
+  it('mounts no file list body for a tab another conversation owns', () => {
+    usePreviewStore.setState({
+      currentConversationId: 'conversation-in-view',
+      tabs: [
+        { id: 'files-other', kind: 'files', ownerConversationId: 'another-conversation' },
+        { id: 'files-own', kind: 'files', ownerConversationId: 'conversation-in-view' },
+      ],
+      activeTabId: 'files-own',
+    });
+
+    renderPanel();
+
+    expect(screen.getAllByText('Files body')).toHaveLength(1);
+    expect(screen.getAllByRole('tab')).toHaveLength(1);
   });
 });

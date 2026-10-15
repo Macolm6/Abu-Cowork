@@ -5,6 +5,7 @@ import { useToastStore } from '@/stores/toastStore';
 import { useI18n, format } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { loadLocalImage, getBaseName, isLocalFilePath } from '@/utils/pathUtils';
+import { isRunByDefault } from '@/utils/runByDefault';
 import { resolveFileSource, type ResolvedSource } from '@/core/session/outputSnapshots';
 import { Button, IconButton } from '@/components/ds/button';
 import { Pressable } from '@/components/ds/pressable';
@@ -94,13 +95,17 @@ export { IMAGE_EXTENSIONS, isImageFile };
 interface FileAttachmentProps {
   filePath: string;
   operation?: 'read' | 'write' | 'create';
+  /** One sentence shown under the file name in place of the type label. */
+  description?: string;
+  /** The file was presented by the agent and checked on disk: the card reads `filePath` itself. */
+  declared?: boolean;
 }
 
 // Flat card shared by every file card state.
 const FILE_CARD = 'flex w-full items-center gap-3 rounded-panel border border-separator bg-surface px-4 py-3';
 const FILE_ICON_BOX = 'flex h-10 w-10 shrink-0 items-center justify-center rounded-control bg-fill';
 
-export default function FileAttachment({ filePath }: FileAttachmentProps) {
+export default function FileAttachment({ filePath, description, declared = false }: FileAttachmentProps) {
   const openPreview = usePreviewStore((s) => s.openPreview);
   // Read conversationId directly from store rather than threading via props through
   // MessageGroup → MessageBubble → ToolCallView → FileAttachment.
@@ -121,11 +126,15 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
   const showThumbnail = isImageFile(filePath);
   const { label: openWithLabel, icon: openWithIcon } = getOpenWithInfo(filePath, { preview: t.chat.openWithPreview, browser: t.chat.openWithBrowser });
   const [thumbUrl, setThumbUrl] = useState<string | null>(null);
-  const [resolved, setResolved] = useState<ResolvedSource | null>(null);
+  const [snapshotResolved, setResolved] = useState<ResolvedSource | null>(null);
+  const resolved: ResolvedSource | null = declared
+    ? { status: 'available', path: filePath, isFromSnapshot: false }
+    : snapshotResolved;
 
   // Resolve where to actually load the file from: live original > snapshot > skipped/missing.
   // Re-runs when outputsRev bumps so async share-import writes become visible.
   useEffect(() => {
+    if (declared) return;
     let cancelled = false;
     resolveFileSource(conversationId, filePath, workspacePath)
       .then((r) => { if (!cancelled) setResolved(r); })
@@ -133,11 +142,16 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
         if (!cancelled) setResolved({ status: 'missing', basename: getBaseName(filePath), originalPath: filePath });
       });
     return () => { cancelled = true; };
-  }, [filePath, conversationId, outputsRev, workspacePath]);
+  }, [declared, filePath, conversationId, outputsRev, workspacePath]);
 
   // Effective path: where to actually read bytes from for thumbnail / preview / open-with.
   // null when the file is not loadable (skipped/missing/loading).
   const effectivePath = resolved && resolved.status === 'available' ? resolved.path : null;
+
+  // A file the system would run is shown in the file manager and never opened: by its name,
+  // or once the main process has refused to open it (a link to such a file, for one).
+  const [refusedPath, setRefusedPath] = useState<string | null>(null);
+  const revealOnly = effectivePath !== null && (isRunByDefault(effectivePath) || refusedPath === effectivePath);
 
   // Load image thumbnail via Tauri readFile (uses effective path so snapshots work)
   useEffect(() => {
@@ -157,7 +171,9 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
   }, [effectivePath, showThumbnail]);
 
   const handleClick = () => {
-    if (effectivePath) openPreview(effectivePath);
+    if (resolved?.status !== 'available') return;
+    if (resolved.isFromSnapshot) openPreview(resolved.path, { keptCopyOf: filePath });
+    else openPreview(resolved.path);
   };
 
   const handleOpenWithDefaultApp = async (e: React.MouseEvent) => {
@@ -170,17 +186,48 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
       });
       return;
     }
+    const { openWithDefaultApp, isRunByDefaultRefusal } = await import('@/utils/openWithDefaultApp');
     try {
-      const { openWithDefaultApp } = await import('@/utils/openWithDefaultApp');
       await openWithDefaultApp(effectivePath);
     } catch (err) {
       console.error('[FileAttachment] Failed to open with default app:', err);
+      if (isRunByDefaultRefusal(err)) {
+        setRefusedPath(effectivePath);
+        useToastStore.getState().addToast({
+          type: 'error',
+          title: t.chat.openFailed,
+          message: t.panel.openInAppFailed,
+        });
+        return;
+      }
       useToastStore.getState().addToast({
         type: 'error',
         title: t.chat.openFailed,
         message: err instanceof Error ? err.message : String(err),
       });
     }
+  };
+
+  const handleRevealInFileManager = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!effectivePath) return;
+    try {
+      const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
+      await revealItemInDir(effectivePath);
+    } catch (err) {
+      console.error('[FileAttachment] Failed to reveal in file manager:', err);
+      useToastStore.getState().addToast({
+        type: 'error',
+        title: t.chat.openFailed,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  const handleShowInFolder = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
+    await revealItemInDir(filePath);
   };
 
   // Loading placeholder — match the standard card shape so the layout doesn't jump
@@ -277,16 +324,39 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
           <span className="truncate text-ui font-medium text-label" title={fileName}>
             {fileName.replace(/\.[^/.]+$/, '') || fileName}
           </span>
-          <span className="text-caption text-label-tertiary">
-            {category} · {label}
-          </span>
+          {description ? (
+            <span className="truncate text-caption text-label-tertiary" title={description}>
+              {description}
+            </span>
+          ) : (
+            <span className="text-caption text-label-tertiary">
+              {category} · {label}
+            </span>
+          )}
         </span>
       </Pressable>
 
-      {/* Open with default app button */}
-      <Button variant="secondary" size="sm" icon={openWithIcon} onClick={handleOpenWithDefaultApp} className="whitespace-nowrap">
-        {openWithLabel ? format(t.chat.openWith, { label: openWithLabel }) : t.chat.openWithDefaultApp}
-      </Button>
+      {revealOnly ? (
+        <Button variant="secondary" size="sm" icon={AppIcons.folderOpen} onClick={handleRevealInFileManager} className="whitespace-nowrap">
+          {t.chat.openInFinder}
+        </Button>
+      ) : (
+        <>
+          {/* Open with default app button */}
+          <Button variant="secondary" size="sm" icon={openWithIcon} onClick={handleOpenWithDefaultApp} className="whitespace-nowrap">
+            {openWithLabel ? format(t.chat.openWith, { label: openWithLabel }) : t.chat.openWithDefaultApp}
+          </Button>
+          {declared && (
+            <IconButton
+              icon={AppIcons.folderOpen}
+              label={t.browserRunReport.artifactReveal}
+              variant="secondary"
+              size="sm"
+              onClick={handleShowInFolder}
+            />
+          )}
+        </>
+      )}
     </div>
   );
 }

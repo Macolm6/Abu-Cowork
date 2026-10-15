@@ -39,6 +39,19 @@ describe('validate-plugin-market', () => {
     expect(examples.checked.map(entry => `${entry.kind} ${entry.name}`)).toEqual(['plugin shop-assistant', 'app shop-ops']);
   });
 
+  it('identifies an unsupported description locale before scanning packages', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'abu-market-locale-'));
+    try {
+      mkdirSync(path.join(dir, '.abu-plugin'));
+      writeFileSync(path.join(dir, '.abu-plugin', 'marketplace.json'), JSON.stringify({
+        name: 'invalid-locale', apps: [{ name: 'app', source: './app', description: { 'fr-FR': 'Description' } }],
+      }));
+      await expect(checkMarket(dir, { hostVersion })).rejects.toThrow('apps[0].description.fr-FR');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('names the failing field for every broken fixture entry', async () => {
     const result = await checkMarket(path.join(repoRoot, 'tests', 'fixtures', 'plugin-market-broken'), { hostVersion });
     const byEntry = new Map<string, string[]>();

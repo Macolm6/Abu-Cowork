@@ -3,6 +3,8 @@ import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useExtensionsSearchQuery, useSettingsStore } from '@/stores/settingsStore';
 import { prepareExpertEntry } from '@/core/team/expertEntry';
 import { expertIdentity } from '@/core/team/expertContact';
+import { localizedTeam } from '@/core/team/localizedTeam';
+import { resolveLocalizedText } from '@/core/app/appBinding';
 import { useI18n, format } from '@/i18n';
 import { agentRegistry } from '@/core/agent/registry';
 import AgentEditor from './AgentEditor';
@@ -191,8 +193,8 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
     if (!roleId) return { teams: [], leads: [] };
     const referencing = teams.filter((team) => team.memberRoleIds.includes(roleId));
     return {
-      teams: referencing.map((team) => team.name),
-      leads: referencing.filter((team) => team.leaderRoleId === roleId).map((team) => team.name),
+      teams: referencing.map((team) => localizedTeam(team, locale).name),
+      leads: referencing.filter((team) => team.leaderRoleId === roleId).map((team) => localizedTeam(team, locale).name),
     };
   };
   const knownToolNames = getAllTools().map((tool) => tool.name);
@@ -391,7 +393,7 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
     if (selectedRef.current !== agent.name || deleting.current) return;
     const stillThatExpert = () => agentRegistry.getAgent(agent.name, { includeDisabledPlugins: true })?.filePath === agent.filePath;
     const using = teamsReferencing(agent);
-    const apps = appsUsing(useAppStore.getState().addedApps, { kind: 'expert', name: agent.name }).map((app) => app.name);
+    const apps = appsUsing(useAppStore.getState().addedApps, { kind: 'expert', name: agent.name }).map((app) => resolveLocalizedText(app.name, locale));
     const confirmed = await confirm(using.teams.length > 0 || apps.length > 0 ? {
       title: format(t.toolbox.agentDeleteInTeamsTitle, { name: agent.name }),
       message: [

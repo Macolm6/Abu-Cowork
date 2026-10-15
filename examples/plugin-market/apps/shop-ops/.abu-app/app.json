@@ -3,8 +3,8 @@
   "version": "1.0.1",
   "minAbuVersion": "0.51.0",
   "interface": {
-    "displayName": "店铺运营",
-    "shortDescription": "选品、详情页、评价回复，一个首页全做完",
+    "displayName": { "zh-CN": "店铺运营", "en-US": "Shop Operations" },
+    "shortDescription": { "zh-CN": "选品、详情页、评价回复，一个首页全做完", "en-US": "Product picks, listing pages and review replies from one home page" },
     "longDescription": "给电商运营准备的应用：选品分析交给店铺运营专家团，详情页由详情页技能负责，差评回复交给客服顾问。用到的专家、专家团、技能和连接器都来自插件「店铺助手」。",
     "developerName": "Abu",
     "category": "ecommerce",

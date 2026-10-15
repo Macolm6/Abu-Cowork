@@ -4,11 +4,14 @@ import { cn } from '@/lib/utils';
 import { APP_DEVELOPMENT_DOCS_URL } from '@/utils/helpDocs';
 import { GENERAL_APP_ID, type AppDefinition } from '@/types/app';
 import { useAppStore, useAvailableApps, useSelectedApp } from '@/stores/appStore';
+import { resolveLocalizedText } from '@/core/app/appBinding';
 import { createAppDraft } from '@/core/app/appDraft';
+import { reportAppFailure } from '@/core/app/appFailure';
 import { useToastStore } from '@/stores/toastStore';
 import { useEnterpriseAppPolicy } from '@/core/enterprise/appPolicy';
 import { removeApp } from '@/core/app/appSync';
 import AppLogo from '@/components/app/AppLogo';
+import { focusComposerAfterPageChange } from '@/components/chat/composerFocus';
 import { Button } from '@/components/ds/button';
 import { useConfirm } from '@/components/ds/confirm-context';
 import { Icon } from '@/components/ds/icon';
@@ -36,7 +39,7 @@ import { Menu, MenuItem, MenuLabel, MenuRadioGroup, MenuRadioItem, MenuSeparator
 const removable = (app: AppDefinition) => app.origin !== null && app.origin.kind !== 'enterprise';
 
 export default function AppSwitcher({ className }: { className?: string }) {
-  const { t, format } = useI18n();
+  const { t, format, locale } = useI18n();
   const apps = useAvailableApps();
   const selected = useSelectedApp();
   const { allowExit } = useEnterpriseAppPolicy();
@@ -67,8 +70,15 @@ export default function AppSwitcher({ className }: { className?: string }) {
     if (appId === selected.appId) return;
     enterApp(appId);
   };
+  // Creating an app happens in the general shell: the shell leaves the app, unless the
+  // organization keeps the employee in it, and the creation conversation replaces the page in view.
   const createApp = () => {
-    void createAppDraft().catch((error) => { console.error('[app] Could not create draft', error); addToast({ type: 'error', title: t.appSwitcher.create, message: t.appSwitcher.fileAccessFailed }); });
+    void createAppDraft({ leaveApp: allowExit })
+      .then(() => focusComposerAfterPageChange())
+      .catch((error) => {
+        reportAppFailure('create app', error);
+        addToast({ type: 'error', title: t.appSwitcher.createFailed, message: t.appSwitcher.createFailedHint });
+      });
   };
   // The app as the store holds it now: what a removal acts on.
   const addedNow = (appId: string) => useAppStore.getState().addedApps.find((app) => app.appId === appId);
@@ -80,7 +90,7 @@ export default function AppSwitcher({ className }: { className?: string }) {
       if (!app) return;
       if (app.origin?.kind === 'created') {
         const confirmed = await confirm({
-          title: format(t.appSwitcher.removeCreatedTitle, { name: app.name }),
+          title: format(t.appSwitcher.removeCreatedTitle, { name: resolveLocalizedText(app.name, locale) }),
           message: t.appSwitcher.removeCreatedMessage,
           confirmLabel: t.appSwitcher.remove,
           tone: 'danger',
@@ -90,8 +100,8 @@ export default function AppSwitcher({ className }: { className?: string }) {
       }
       await removeApp(appId);
     } catch (error) {
-      console.error('[app] Could not remove app', error);
-      addToast({ type: 'error', title: t.appSwitcher.removeFailed, message: t.appSwitcher.fileAccessFailed });
+      reportAppFailure('remove app', error);
+      addToast({ type: 'error', title: t.appSwitcher.removeFailed, message: t.appSwitcher.removeFailedHint });
     } finally {
       removing.current.delete(appId);
     }
@@ -103,10 +113,10 @@ export default function AppSwitcher({ className }: { className?: string }) {
   const row = (app: AppDefinition, current: boolean) => (
     <MenuRadioItem key={app.appId} value={app.appId}>
       <span data-testid={`app-switcher-item-${app.appId}`} className="flex items-center gap-2">
-        <AppLogo name={app.name} logo={app.logo} logoDark={app.logoDark} icon={app.icon} general={app.appId === GENERAL_APP_ID} size="sm" />
+        <AppLogo name={resolveLocalizedText(app.name, locale)} logo={app.logo} logoDark={app.logoDark} icon={app.icon} general={app.appId === GENERAL_APP_ID} size="sm" />
         <span className="min-w-0 flex-1 truncate">
-          {app.name}
-          {app.description && <span className="ml-2 text-ui-sm text-label-tertiary">{app.description}</span>}
+          {resolveLocalizedText(app.name, locale)}
+          {app.description && <span className="ml-2 text-ui-sm text-label-tertiary">{resolveLocalizedText(app.description, locale)}</span>}
         </span>
         {!current && (
           <span
@@ -122,7 +132,8 @@ export default function AppSwitcher({ className }: { className?: string }) {
   );
 
   return (
-    <div className={cn('relative', className)} data-testid="app-switcher">
+    // A flex box as high as the pill: the brand row keeps one height whatever the pill shows.
+    <div className={cn('relative flex h-6 items-center', className)} data-testid="app-switcher">
       <Menu
         open={open}
         // A menu opened again while it fades never ran its close hook for the earlier choice: opening forgets it.
@@ -143,16 +154,18 @@ export default function AppSwitcher({ className }: { className?: string }) {
             size="sm"
             data-testid="app-switcher-trigger"
             aria-label={t.appSwitcher.openLabel}
-            className="w-full justify-start"
+            // A small pill beside Abu's name, as wide as its words and never wider than the room
+            // the brand row leaves it: quiet text, so the navigation under it is read first.
+            className="max-w-full rounded-full font-normal text-label-secondary aria-expanded:bg-fill-selected"
           >
             {isGeneral
               ? <Icon icon={AppIcons.discoverApps} size="sm" className="text-label-secondary" />
-              : <AppLogo name={selected.name} logo={selected.logo} logoDark={selected.logoDark} icon={selected.icon} size="sm" />}
+              : <AppLogo name={resolveLocalizedText(selected.name, locale)} logo={selected.logo} logoDark={selected.logoDark} icon={selected.icon} size="sm" className="h-4 w-4" />}
             <span
               className={cn('min-w-0 flex-1 text-left', isGeneral ? 'whitespace-nowrap' : 'truncate')}
               data-testid="app-switcher-current"
             >
-              {isGeneral ? t.appSwitcher.discover : selected.name}
+              {isGeneral ? t.appSwitcher.discover : resolveLocalizedText(selected.name, locale)}
             </span>
             <Icon icon={AppIcons.expand} size="sm" className="text-label-tertiary" />
           </Button>
@@ -187,7 +200,7 @@ export default function AppSwitcher({ className }: { className?: string }) {
                   testId={`app-switcher-remove-${app.appId}`}
                   onSelect={() => { afterMenuClose.current = () => { void remove(app.appId); }; }}
                 >
-                  {app.name}
+                  {resolveLocalizedText(app.name, locale)}
                 </MenuItem>
               ))}
             </MenuSub>

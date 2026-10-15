@@ -5,6 +5,7 @@ import { atomicWrite } from '@/utils/atomicFs';
 import { joinPath } from '@/utils/pathUtils';
 import { copyPluginDir } from '@/core/plugin/fsOps';
 import { getI18n } from '@/i18n';
+import { AppAddError } from './appAddError';
 import { appDirectoryKey, isPersonalAppMarketName } from './appIdentity';
 import { liveRefCatalog, resolveTarget, targetDisplayName } from './appRefs';
 
@@ -96,13 +97,13 @@ async function writeAddedApps(home: string, records: AddedAppRecord[]): Promise<
 /** Check the destination before an install starts and again before saving it. */
 export async function assertAppOriginAvailable(home: string, appId: string, origin: AddedAppOrigin): Promise<void> {
   if (origin.kind === 'market' && isPersonalAppMarketName(origin.market)) {
-    throw new Error(getI18n().appMarket.reservedMarketName);
+    throw new AppAddError(getI18n().appMarket.reservedMarketName);
   }
   const records = await readAddedApps(home);
   const hasConflict = records.some((item) => appDirectoryKey(item.appId) === appDirectoryKey(appId)
     && (item.appId !== appId || item.origin.kind !== origin.kind));
   if (hasConflict) {
-    throw new Error(getI18n().appMarket.originConflict);
+    throw new AppAddError(getI18n().appMarket.originConflict);
   }
 }
 

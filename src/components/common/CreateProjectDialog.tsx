@@ -15,7 +15,6 @@ import { TextField } from '@/components/ds/text-field';
 import { focusIsOnWindow } from '@/components/toolbox/cardFocus';
 import { useI18n } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
-import { usePreviewStore } from '@/stores/previewStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
@@ -249,7 +248,6 @@ export default function CreateProjectDialog({
       useChatStore.getState().startNewConversation();
       useWorkspaceStore.getState().setWorkspace(finalFolder);
       useSettingsStore.getState().setViewMode('chat');
-      usePreviewStore.getState().setFileTreeMode(true);
       created.current = true;
       onClose();
     } finally {
@@ -349,7 +347,7 @@ export default function CreateProjectDialog({
           </div>
 
           {/* Project location (read-only) */}
-          <div className="flex items-center gap-2 rounded-control bg-fill px-3 py-2 text-ui-sm text-label-tertiary">
+          <div className="flex items-center gap-2 rounded-control bg-fill px-3 py-2 text-ui-sm text-label-secondary">
             <Icon icon={AppIcons.folderOpen} size="sm" />
             <span className="truncate">
               {projectName.trim()

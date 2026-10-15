@@ -1,4 +1,4 @@
-import type { ParsedAppFile } from '@/types/app';
+import type { LocalizedText, ParsedAppFile } from '@/types/app';
 import type { AppMarketEntry } from '@/core/plugin/marketplace';
 import type { MarketplaceRef } from '@/stores/pluginStore';
 import { loadMarketplaceFromDir } from '@/core/plugin/loadMarketplace';
@@ -7,9 +7,9 @@ import { APP_VERSION } from '@/utils/version';
 import { joinPath } from '@/utils/pathUtils';
 import { appRuns } from '../../../electron/shared/appSpec.mjs';
 import { checkMinAbuVersion } from '../../../electron/shared/pluginSpec.mjs';
+import { reportAppFailure } from './appFailure';
 import { addedAppId, readAppFile } from './appRecords';
 import { resolveTarget, targetDisplayName, type RefCatalog } from './appRefs';
-import { format, getI18n } from '@/i18n';
 
 /**
  * What the app market lists (docs/app-spec.md): every app of every market
@@ -23,8 +23,9 @@ export interface AppListing {
   entry: AppMarketEntry;
   /** The id it has once added from this market. */
   appId: string;
-  name: string;
-  description?: string;
+  /** The app's display name (its `name` while only the market entry is known) and one-line description. */
+  name: LocalizedText;
+  description?: LocalizedText;
   version?: string;
   minAbuVersion?: string;
   logo?: string;
@@ -33,14 +34,14 @@ export interface AppListing {
   uses: string[];
   /** This Abu is older than the app needs. */
   needsUpgrade: boolean;
-  /** The app's own files do not read; the listing says so instead of offering 「使用」. */
-  invalid?: string;
+  /** The app's own files do not read; the listing says so and offers no 「使用」. Why goes to the console. */
+  invalid?: true;
 }
 
 export interface AppMarketListing {
   listings: AppListing[];
-  /** Markets whose `marketplace.json` could not be read, with the reason. */
-  failures: Array<{ market: MarketplaceRef; message: string }>;
+  /** Markets whose `marketplace.json` could not be read. Why goes to the console. */
+  failures: Array<{ market: MarketplaceRef }>;
 }
 
 /** The names an app hands work to, as the user knows them. */
@@ -69,13 +70,14 @@ async function listing(market: MarketplaceRef, entry: AppMarketEntry, catalog: R
     market, entry, appId, name: entry.name, description: entry.description, version: entry.version,
     minAbuVersion: entry.minAbuVersion, uses: [], needsUpgrade: needsUpgrade(entry.minAbuVersion),
   };
-  if (entry.source.kind !== 'relative') return entry.source.sha ? base : { ...base, invalid: format(getI18n().appMarket.remoteNeedsSha, { name: base.name }) };
+  if (entry.source.kind !== 'relative') return entry.source.sha ? base : { ...base, invalid: true };
   const dir = resolveSourceDir(entry.source, market.dir);
   let file: ParsedAppFile;
   try {
     file = await readAppFile(dir, 'package');
   } catch (error) {
-    return { ...base, invalid: error instanceof Error ? error.message : String(error) };
+    reportAppFailure(`read app "${entry.name}" of market "${market.name}"`, error);
+    return { ...base, invalid: true };
   }
   const asset = (path: string | undefined) => (path ? joinPath(dir, path) : undefined);
   return {
@@ -100,8 +102,8 @@ export async function loadAppListings(markets: MarketplaceRef[], catalog: RefCat
     try {
       entries = (await loadMarketplaceFromDir(market.dir)).apps;
     } catch (error) {
-      console.error(`[market] Could not read ${market.name}`, error);
-      failures.push({ market, message: getI18n().toolbox.pluginsMarketplaceNotFound });
+      reportAppFailure(`read market "${market.name}"`, error);
+      failures.push({ market });
       continue;
     }
     for (const entry of entries) listings.push(await listing(market, entry, catalog));

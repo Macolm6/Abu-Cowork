@@ -18,6 +18,9 @@ import { checkMinAbuVersion } from '../../../electron/shared/pluginSpec.mjs';
 import { addedAppId, assertAppOriginAvailable, prepareAppFiles, readAppFile, releaseAppFiles, saveAddedApp } from './appRecords';
 import { liveRefCatalog, resolveAppRefs, type RefCatalog } from './appRefs';
 import { refreshAddedApps } from './appSync';
+import { AppAddError } from './appAddError';
+
+export { AppAddError } from './appAddError';
 
 /**
  * Adding and updating an app (docs/app-spec.md, 「使用」 and 「更新」 in the app
@@ -60,14 +63,6 @@ export interface AppAddPlan {
   sites: string[];
   /** An app with this id is already added: confirming replaces it. */
   replacing: boolean;
-}
-
-/** A refusal the user reads as it is: the add stops and nothing is written. */
-export class AppAddError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'AppAddError';
-  }
 }
 
 function i18n() {
@@ -150,7 +145,7 @@ function assertStepsCover(app: AppDefinition, steps: AppPluginStep[]): void {
       if (!brings) {
         if (app.origin?.kind === 'market') {
           const scene = app.config.home.modes.items.flatMap((mode) => mode.scenes).find((item) => item.run === run);
-          throw new AppAddError(format(i18n().sceneDependencyMissing, { scene: scene ? resolveLocalizedText(scene.title, getLocale()) : app.name,
+          throw new AppAddError(format(i18n().sceneDependencyMissing, { scene: resolveLocalizedText(scene ? scene.title : app.name, getLocale()),
             plugin: step.entry.displayName ?? step.entry.name }));
         }
         throw new PluginManifestError(`${field}.${kind}: ${format(i18n().pluginLacksReference, { plugin: target.plugin, name: target.id })}`, `${field}.${kind}`, 'unknown-reference');

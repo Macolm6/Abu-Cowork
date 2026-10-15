@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
-import { writeTextFile, readTextFile, exists } from '@tauri-apps/plugin-fs';
+import { writeTextFile, readTextFile, exists, stat } from '@tauri-apps/plugin-fs';
 import { readFileTool, writeFileTool, deleteFileTool, editFileTool, searchFilesTool, findFilesTool, checkOpenDocumentTool } from './fileTools';
 import { registerBuiltinTools } from '../builtins';
 import { toolRegistry } from '../registry';
@@ -9,7 +9,9 @@ import { initPlatform } from '../../../utils/platform';
 import { TOOL_NAMES } from '../toolNames';
 
 const snapshotBeforeAiEditMock = vi.fn().mockResolvedValue(undefined);
+const captureTurnFileBeforeMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('@/utils/aiEditSnapshots', () => ({
+  captureTurnFileBefore: (...args: unknown[]) => captureTurnFileBeforeMock(...args),
   snapshotBeforeAiEdit: (...args: unknown[]) => snapshotBeforeAiEditMock(...args),
 }));
 
@@ -398,6 +400,25 @@ describe('deleteFileTool \u2014 move to trash (safe delete)', () => {
     expect(cmd).toBe('move_to_trash');
     // Locale-robust: the failure message always interpolates {error}.
     expect(result).toContain('trash boom');
+  });
+
+  it('captures the file for the turn, with the loop of the tool context, before moving it to the trash', async () => {
+    captureTurnFileBeforeMock.mockClear();
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+
+    await deleteFileTool.execute({ path: '/Users/x/old.md' }, { loopId: 'loop-7' } as never);
+
+    expect(captureTurnFileBeforeMock).toHaveBeenCalledWith('/Users/x/old.md', 'loop-7');
+    expect(captureTurnFileBeforeMock.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(invoke).mock.invocationCallOrder[0],
+    );
+  });
+
+  it('captures nothing for a target it refuses to delete', async () => {
+    captureTurnFileBeforeMock.mockClear();
+    await deleteFileTool.execute({ path: '/' }, { loopId: 'loop-7' } as never);
+    expect(captureTurnFileBeforeMock).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
   });
 });
 
@@ -797,5 +818,260 @@ describe('the locked-file message points at the check, on Windows', () => {
     const result = String(await writeFileTool.execute({ path: '/tmp/table.csv', content: 'x' }));
 
     expect(result).not.toMatch(/check_open_document/);
+  });
+});
+
+describe('file change reporting', () => {
+  const reportMetadata = vi.fn();
+
+  function setDiskDefaults() {
+    vi.mocked(exists).mockReset().mockResolvedValue(false);
+    vi.mocked(stat).mockReset().mockResolvedValue({ isFile: true, size: 0 } as never);
+    vi.mocked(readTextFile).mockReset().mockResolvedValue('');
+    vi.mocked(writeTextFile).mockReset().mockResolvedValue(undefined);
+    vi.mocked(invoke).mockReset();
+  }
+
+  beforeEach(() => {
+    reportMetadata.mockReset();
+    setDiskDefaults();
+  });
+
+  afterEach(setDiskDefaults);
+
+  describe('write_file', () => {
+    it('reports a new file as created, with every line added', async () => {
+      const result = await writeFileTool.execute(
+        { path: '/w/outline.md', content: '# Title\nBody\n' },
+        { reportMetadata },
+      );
+
+      expect(result).toBe('Successfully wrote 13 characters to /w/outline.md');
+      expect(reportMetadata).toHaveBeenCalledTimes(1);
+      expect(reportMetadata).toHaveBeenCalledWith({
+        fileChange: {
+          path: '/w/outline.md',
+          kind: 'create',
+          added: 2,
+          deleted: 0,
+          hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 2, lines: ['+# Title', '+Body'] }],
+        },
+      });
+      expect(readTextFile).not.toHaveBeenCalled();
+    });
+
+    it('reads the existing text before writing and reports the difference', async () => {
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(stat).mockResolvedValue({ isFile: true, size: 8 } as never);
+      vi.mocked(readTextFile).mockResolvedValue('one\ntwo\n');
+
+      await writeFileTool.execute({ path: '/w/a.txt', content: 'one\n2\n' }, { reportMetadata });
+
+      expect(vi.mocked(readTextFile).mock.invocationCallOrder[0])
+        .toBeLessThan(vi.mocked(writeTextFile).mock.invocationCallOrder[0]);
+      expect(reportMetadata.mock.invocationCallOrder[0])
+        .toBeGreaterThan(vi.mocked(writeTextFile).mock.invocationCallOrder[0]);
+      expect(reportMetadata).toHaveBeenCalledWith({
+        fileChange: {
+          path: '/w/a.txt',
+          kind: 'modify',
+          added: 1,
+          deleted: 1,
+          hunks: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, lines: [' one', '-two', '+2'] }],
+        },
+      });
+    });
+
+    it('compares the text that reached the disk, not the content argument', async () => {
+      await writeFileTool.execute({ path: '/w/table.csv', content: 'a,b\n' }, { reportMetadata });
+
+      const written = vi.mocked(writeTextFile).mock.calls[0][1] as string;
+      expect(written).toBe('﻿a,b\n');
+      expect(reportMetadata.mock.calls[0][0].fileChange.hunks[0].lines).toEqual(['+﻿a,b']);
+    });
+
+    it('reports path and kind only when the existing file is over the size limit', async () => {
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(stat).mockResolvedValue({ isFile: true, size: 2 * 1024 * 1024 + 1 } as never);
+
+      const result = await writeFileTool.execute({ path: '/w/big.log', content: 'x' }, { reportMetadata });
+
+      expect(result).toContain('Successfully wrote');
+      expect(readTextFile).not.toHaveBeenCalled();
+      expect(reportMetadata).toHaveBeenCalledWith({ fileChange: { path: '/w/big.log', kind: 'modify' } });
+    });
+
+    it('fails the write when the existing text cannot be read', async () => {
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockRejectedValue(new Error('EACCES: permission denied'));
+
+      const result = await writeFileTool.execute({ path: '/w/a.txt', content: 'x' }, { reportMetadata });
+
+      expect(result).toContain('Error writing file');
+      expect(result).toContain('EACCES');
+      expect(writeTextFile).not.toHaveBeenCalled();
+      expect(reportMetadata).not.toHaveBeenCalled();
+    });
+
+    it('fails the write when it cannot tell whether the file exists', async () => {
+      vi.mocked(exists).mockRejectedValue(new Error('transport closed'));
+
+      const result = await writeFileTool.execute({ path: '/w/a.txt', content: 'x' }, { reportMetadata });
+
+      expect(result).toContain('Error writing file');
+      expect(writeTextFile).not.toHaveBeenCalled();
+      expect(reportMetadata).not.toHaveBeenCalled();
+    });
+
+    it('reports path and kind only for an existing path that is no regular file', async () => {
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(stat).mockResolvedValue({ isFile: false, size: 0 } as never);
+
+      await writeFileTool.execute({ path: '/w/a.txt', content: 'x' }, { reportMetadata });
+
+      expect(readTextFile).not.toHaveBeenCalled();
+      expect(reportMetadata).toHaveBeenCalledWith({ fileChange: { path: '/w/a.txt', kind: 'modify' } });
+    });
+
+    it('reports nothing when the write fails', async () => {
+      vi.mocked(writeTextFile).mockRejectedValue(new Error('ENOSPC: no space left on device'));
+
+      const result = await writeFileTool.execute({ path: '/w/a.txt', content: 'x' }, { reportMetadata });
+
+      expect(result).toContain('Error writing file');
+      expect(reportMetadata).not.toHaveBeenCalled();
+    });
+
+    it('does not read the existing file for a caller that takes no metadata', async () => {
+      vi.mocked(exists).mockResolvedValue(true);
+
+      await writeFileTool.execute({ path: '/w/a.txt', content: 'x' }, {});
+
+      expect(stat).not.toHaveBeenCalled();
+      expect(readTextFile).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('edit_file', () => {
+    beforeEach(() => {
+      vi.mocked(exists).mockResolvedValue(true);
+    });
+
+    it('reports the changed lines with their context', async () => {
+      vi.mocked(readTextFile).mockResolvedValue('a\nb\nc\nd\ne\n');
+
+      const result = await editFileTool.execute(
+        { path: '/w/plan.md', old_content: 'c', new_content: 'C' },
+        { reportMetadata },
+      );
+
+      expect(result).toBe('Successfully edited /w/plan.md: replaced 1 line(s) with 1 line(s)');
+      expect(reportMetadata).toHaveBeenCalledTimes(1);
+      expect(reportMetadata).toHaveBeenCalledWith({
+        fileChange: {
+          path: '/w/plan.md',
+          kind: 'modify',
+          added: 1,
+          deleted: 1,
+          hunks: [{
+            oldStart: 1,
+            oldLines: 5,
+            newStart: 1,
+            newLines: 5,
+            lines: [' a', ' b', '-c', '+C', ' d', ' e'],
+          }],
+        },
+      });
+      expect(reportMetadata.mock.invocationCallOrder[0])
+        .toBeGreaterThan(vi.mocked(writeTextFile).mock.invocationCallOrder[0]);
+    });
+
+    it('reports the text actually replaced by the whitespace-tolerant match', async () => {
+      vi.mocked(readTextFile).mockResolvedValue('if (x) {\n\treturn 1;   \n}\n');
+
+      const result = await editFileTool.execute(
+        { path: '/w/a.ts', old_content: '  return 1;', new_content: '  return 2;' },
+        { reportMetadata },
+      );
+
+      expect(String(result)).toContain('whitespace-tolerant fallback');
+      const change = reportMetadata.mock.calls[0][0].fileChange;
+      expect(change.kind).toBe('modify');
+      expect(change.added).toBe(1);
+      expect(change.deleted).toBe(1);
+      expect(change.hunks[0].lines).toContain('-\treturn 1;   ');
+    });
+
+    it('reports nothing when old_content is not found', async () => {
+      vi.mocked(readTextFile).mockResolvedValue('nothing matches');
+
+      await editFileTool.execute({ path: '/w/a.txt', old_content: 'absent', new_content: 'x' }, { reportMetadata });
+
+      expect(reportMetadata).not.toHaveBeenCalled();
+    });
+
+    it('reports nothing when the write fails', async () => {
+      vi.mocked(readTextFile).mockResolvedValue('old');
+      vi.mocked(writeTextFile).mockRejectedValue(new Error('EACCES: permission denied'));
+
+      await editFileTool.execute({ path: '/w/a.txt', old_content: 'old', new_content: 'new' }, { reportMetadata });
+
+      expect(reportMetadata).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('delete_file', () => {
+    const target = '/Users/testuser/Projects/app/draft.md';
+
+    it('reads the text before moving the file to Trash and reports it as deleted lines', async () => {
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(stat).mockResolvedValue({ isFile: true, size: 8 } as never);
+      vi.mocked(readTextFile).mockResolvedValue('one\ntwo\n');
+      vi.mocked(invoke).mockResolvedValue(undefined);
+
+      const result = await deleteFileTool.execute({ path: target }, { reportMetadata });
+
+      expect(result).toContain(target);
+      expect(vi.mocked(readTextFile).mock.invocationCallOrder[0])
+        .toBeLessThan(vi.mocked(invoke).mock.invocationCallOrder[0]);
+      expect(reportMetadata).toHaveBeenCalledWith({
+        fileChange: {
+          path: target,
+          kind: 'delete',
+          added: 0,
+          deleted: 2,
+          hunks: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 0, lines: ['-one', '-two'] }],
+        },
+      });
+    });
+
+    it('reports path and kind only for a target that is a folder', async () => {
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(stat).mockResolvedValue({ isFile: false, size: 0 } as never);
+      vi.mocked(invoke).mockResolvedValue(undefined);
+
+      const result = await deleteFileTool.execute({ path: target }, { reportMetadata });
+
+      expect(result).toContain(target);
+      expect(reportMetadata).toHaveBeenCalledWith({ fileChange: { path: target, kind: 'delete' } });
+    });
+
+    it('reports nothing when the move to Trash fails', async () => {
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockResolvedValue('one\n');
+      vi.mocked(invoke).mockRejectedValue(new Error('trash boom'));
+
+      const result = await deleteFileTool.execute({ path: target }, { reportMetadata });
+
+      expect(result).toContain('trash boom');
+      expect(reportMetadata).not.toHaveBeenCalled();
+    });
+
+    it('reads nothing for a refused target', async () => {
+      await deleteFileTool.execute({ path: '/' }, { reportMetadata });
+
+      expect(exists).not.toHaveBeenCalled();
+      expect(reportMetadata).not.toHaveBeenCalled();
+    });
   });
 });

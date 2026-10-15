@@ -1,6 +1,9 @@
 ---
 name: abu-plugin-builder
 description: Create or edit a local Abu plugin in its dedicated creation conversation. Generate the package, then validate with plugin_prepare for user-reviewed installation.
+display-description:
+  zh-CN: 在创建插件的对话里生成或修改本地插件，检查后由你确认安装
+  en-US: Create or edit a local Abu plugin and check it before you install it
 ---
 
 First clarify the workflow and the smallest useful set of skills, connectors, agents or teams. Creating a plugin does not require a marketplace.

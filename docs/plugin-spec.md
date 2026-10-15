@@ -1,5 +1,7 @@
 # Abu 插件 · 开发者规范
 
+[English](plugin-spec.en.md) | **中文**
+
 > 适用版本：Abu 0.51.0 起。标为「0.50.0」的内容在 0.50.0 就已支持；标为「0.51.0」的内容从 0.51.0 开始支持。
 > 相关：[应用规范](app-spec.md)；[使用指南](User-Guide.zh-CN.md)。
 
@@ -99,6 +101,7 @@ Abu 不认识的顶层字段会原样保留，不会导致清单被拒绝。
 |---|---|---|---|
 | `name` | 是 | string | 技能名称，同时是它的目录名。必须是一个单独的路径片段：不能含 `/`、`\`、控制字符，不能只由 `.` 组成 |
 | `description` | 否 | string | 写清楚用途。模型根据它判断什么时候使用这个技能 |
+| `display-description` | 否 | 按语言给出的文字 | 界面上显示的简介，可以写 `zh-CN`、`en-US` 两种语言，也可以只写其中一种。技能页的卡片、详情和输入框的 `/` 列表显示当前界面语言的那一条；这种语言没有写时显示 `description`。模型看到的始终是 `description`。从 0.51.0 开始支持，更早的 Abu 会忽略这个字段 |
 | `trigger` | 否 | string | 什么情况下应该使用 |
 | `do-not-trigger` | 否 | string | 什么情况下不应该使用 |
 | `argument-hint` | 否 | string | 用户用 `/技能名` 调用时的参数提示 |
@@ -112,6 +115,15 @@ Abu 不认识的顶层字段会原样保留，不会导致清单被拒绝。
 | `skills` | 否 | string[] | 预先加载的其他技能 |
 | `tags`、`chain` | 否 | string[] | 标签；后续串接的技能 |
 | `license`、`compatibility`、`metadata` | 否 | — | Agent Skills 规范的兼容字段 |
+
+`description` 写给模型，`display-description` 写给用户，两者可以同时存在：
+
+```yaml
+description: 自动分析告警信息，按SOP排查问题并生成处理报告
+display-description:
+  zh-CN: 自动分析告警信息，按 SOP 排查问题并生成处理报告
+  en-US: Analyze an alert, investigate it by the SOP and write a handling report
+```
 
 正文里可以使用的变量：
 
@@ -301,6 +313,7 @@ JSON 文件的内容可以直接是 server 的映射，也可以包在 `{ "mcpSe
 | 第 3–5、7 节标为 0.50.0 的全部内容 | 0.50.0 |
 | `minAbuVersion` | 0.51.0 |
 | `teams/` | 0.51.0 |
+| 技能的 `display-description` | 0.51.0 |
 | 市场条目的 `displayName`、`minAbuVersion` | 0.51.0 |
 | 市场的 `apps`（见[应用规范](app-spec.md)） | 0.51.0 |
 

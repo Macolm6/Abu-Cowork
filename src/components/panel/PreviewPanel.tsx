@@ -1,5 +1,5 @@
 import { memo, useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react';
-import { readTextFile, exists } from '@tauri-apps/plugin-fs';
+import { readFile, readTextFile, exists } from '@tauri-apps/plugin-fs';
 import { save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
@@ -7,6 +7,7 @@ import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
 import { buildPreviewUrl } from '@/utils/previewUrl';
 import { atomicWrite } from '@/utils/atomicFs';
 import { reconcileEditorContent } from '@/utils/editorReconcile';
+import { redactFailureText } from '@/core/diagnostic/scrub';
 import { snapshotVersion, revertToVersion } from '@/utils/canvasVersions';
 import { usePreviewStore } from '@/stores/previewStore';
 import { usePreviewFileWatch } from '@/hooks/usePreviewFileWatch';
@@ -29,8 +30,8 @@ import { VersionHistoryMenu } from './VersionHistoryMenu';
 import { DocSelectionLayer } from '@/features/reference/DocSelectionLayer';
 import { cn } from '@/lib/utils';
 import { isMacOS, isWindows } from '@/utils/platform';
-import { getToolbarButtons } from './previewToolbarConfig';
-import { openWithDefaultApp } from '@/utils/openWithDefaultApp';
+import { getToolbarButtons, offersOpenInApp } from './previewToolbarConfig';
+import { isRunByDefaultRefusal, openWithDefaultApp } from '@/utils/openWithDefaultApp';
 import { createDomElementReference, type BrowserElementPayload } from '@/types/chatReference';
 import { isValidInspectSelection, resolveReferencePath } from '@/utils/inspectMessage';
 import { generateId } from '@/lib/utils';
@@ -46,7 +47,7 @@ const PptxPreview = lazy(() => import('@/components/preview/PptxPreview'));
 
 export type RendererType = 'markdown' | 'code' | 'image' | 'text' | 'html' | 'pdf' | 'docx' | 'pptx' | 'xlsx' | 'csv' | 'unsupported';
 
-/** Binary types that handle their own file reading */
+/** Types whose preview component draws the file's bytes */
 const BINARY_TYPES = new Set<RendererType>(['pdf', 'docx', 'pptx', 'xlsx']);
 
 /**
@@ -68,6 +69,9 @@ function isDataUrl(path: string): boolean {
   return path.startsWith('data:');
 }
 
+/** Workbook formats the spreadsheet preview reads. */
+const SPREADSHEET_EXTENSIONS = ['xlsx', 'xls', 'xlsm', 'xlsb', 'ods', 'fods'];
+
 function getRendererType(filePath: string): RendererType {
   if (isDataUrl(filePath) && filePath.startsWith('data:image/')) return 'image';
   const ext = filePath.split('.').pop()?.toLowerCase() || '';
@@ -76,8 +80,8 @@ function getRendererType(filePath: string): RendererType {
   if (ext === 'pdf') return 'pdf';
   if (ext === 'docx') return 'docx';
   if (ext === 'pptx' || ext === 'ppt') return 'pptx';
-  if (ext === 'xlsx' || ext === 'xls') return 'xlsx';
-  if (ext === 'csv') return 'csv';
+  if (SPREADSHEET_EXTENSIONS.includes(ext)) return 'xlsx';
+  if (ext === 'csv' || ext === 'tsv') return 'csv';
   if ([
     'ts', 'tsx', 'js', 'jsx', 'py', 'rs', 'go', 'java', 'cpp', 'c', 'h',
     'json', 'yaml', 'yml', 'toml', 'xml', 'css', 'scss', 'less',
@@ -98,7 +102,7 @@ function getFileIcon(filePath: string) {
   if (['ts', 'tsx', 'js', 'jsx', 'py', 'html', 'css', 'json'].includes(ext)) return AppIcons.fileCode;
   if (['md', 'txt', 'log'].includes(ext)) return AppIcons.file;
   if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)) return AppIcons.fileImage;
-  if (['xlsx', 'xls', 'csv'].includes(ext)) return AppIcons.fileSheet;
+  if (SPREADSHEET_EXTENSIONS.includes(ext) || ext === 'csv' || ext === 'tsv') return AppIcons.fileSheet;
   if (ext === 'pdf') return AppIcons.filePdf;
   if (ext === 'docx') return AppIcons.fileDocument;
   if (ext === 'pptx' || ext === 'ppt') return AppIcons.fileSlides;
@@ -151,6 +155,7 @@ const PreviewToolbar = memo(function PreviewToolbar({
   fileName,
   rendererType,
   fileTypeLabel,
+  readOnly,
   saveState,
   viewMode,
   onViewModeChange,
@@ -159,6 +164,7 @@ const PreviewToolbar = memo(function PreviewToolbar({
   onRevertVersion,
   onReload,
   onOpenInApp,
+  openRefused,
   onReveal,
   onCopyPath,
   onSaveAs,
@@ -171,6 +177,8 @@ const PreviewToolbar = memo(function PreviewToolbar({
   fileName: string;
   rendererType: RendererType;
   fileTypeLabel: string;
+  /** The file is shown and never written: no version history is offered. */
+  readOnly: boolean;
   /** null when the file is not editable or failed to load: no save state is shown. */
   saveState: SaveState | null;
   viewMode: 'preview' | 'source';
@@ -180,6 +188,8 @@ const PreviewToolbar = memo(function PreviewToolbar({
   onRevertVersion: (id: string) => Promise<void>;
   onReload: () => void;
   onOpenInApp: () => void;
+  /** The main process refused to open this file: only the file manager is offered for it. */
+  openRefused: boolean;
   onReveal: () => void;
   onCopyPath: () => void;
   onSaveAs: () => void;
@@ -191,7 +201,7 @@ const PreviewToolbar = memo(function PreviewToolbar({
   const { t } = useI18n();
   const dataUrl = isDataUrl(filePath);
   const fileIcon = dataUrl ? AppIcons.fileImage : getFileIcon(filePath);
-  const toolbarButtons = getToolbarButtons(rendererType);
+  const toolbarButtons = getToolbarButtons(rendererType, filePath, { readOnly });
 
   return (
     <div className={cn(
@@ -259,7 +269,7 @@ const PreviewToolbar = memo(function PreviewToolbar({
             onRevert={onRevertVersion}
           />
         )}
-        {toolbarButtons.openInApp && (
+        {toolbarButtons.openInApp && !openRefused && (
           <IconButton size="sm" tooltipSide="bottom" icon={AppIcons.openIn} label={t.panel.openInApp} onClick={onOpenInApp} />
         )}
         {!dataUrl && (
@@ -294,7 +304,24 @@ export default function PreviewPanel({
   filePath: filePathProp,
   tabId,
   embedded = false,
-}: { filePath?: string; tabId?: string; embedded?: boolean } = {}) {
+  line,
+  lineRequest,
+  keptCopy = false,
+}: {
+  filePath?: string;
+  tabId?: string;
+  embedded?: boolean;
+  /** 1-based line the source view shows once the file is loaded. */
+  line?: number;
+  /** Count of the requests for a line; each one shows the source view at `line`. */
+  lineRequest?: number;
+  /**
+   * The file is the copy Abu kept of a file that is no longer at its own path. It is
+   * shown read-only under a line that says so: nothing is saved to it and no version
+   * of it is recorded.
+   */
+  keptCopy?: boolean;
+} = {}) {
   // Back-compat: without a `filePath` prop (older call sites, before
   // workspace tabs existed), fall back to the store's single previewFilePath.
   const storePreviewFilePath = usePreviewStore((s) => s.previewFilePath);
@@ -313,19 +340,25 @@ export default function PreviewPanel({
   const { t } = useI18n();
   const [content, setContent] = useState<string | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [binaryData, setBinaryData] = useState<Uint8Array<ArrayBuffer> | null>(null);
+  // The file path whose document, or whose no-preview message, is on screen. A
+  // reload for this same path keeps it shown until the file is checked and read.
+  const shownPathRef = useRef<string | null>(null);
   const [htmlPreviewUrl, setHtmlPreviewUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Preview/source toggle — applies to html (iframe vs editable source) and
   // markdown (rendered vs editable source). code/text have no rendered form
   // and are always shown via the editable source view regardless of this.
-  const [viewMode, setViewMode] = useState<'preview' | 'source'>('preview');
+  const [viewMode, setViewMode] = useState<'preview' | 'source'>(line === undefined ? 'preview' : 'source');
   // Version history (P4) menu — controlled here so a file switch closes it.
   const [showVersionHistory, setShowVersionHistory] = useState(false);
   // App-fullscreen toggle (Task 6) — expands the panel to a fixed overlay
   // covering the whole window instead of just its column in RightPanel.
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>('saved');
+  // The file the main process refused to open with its default application.
+  const [refusedOpenPath, setRefusedOpenPath] = useState<string | null>(null);
 
   // "Select element" inspect mode (see docs/2026-07-19-preview-element-select-design.md).
   // The iframe is cross-origin (loopback http://127.0.0.1 vs the app shell),
@@ -375,6 +408,8 @@ export default function PreviewPanel({
     if (!previewFilePath) {
       setContent(null);
       setImageUrl(null);
+      setBinaryData(null);
+      shownPathRef.current = null;
       setHtmlPreviewUrl(null);
       setDraft('');
       lastSavedRef.current = '';
@@ -387,11 +422,15 @@ export default function PreviewPanel({
     let cancelled = false;
     let blobUrl: string | null = null;
     const isEditableType = EDITABLE_TYPES.has(rendererType);
+    const isBinaryType = BINARY_TYPES.has(rendererType);
     // A reload (reloadNonce bump) of a file we've already established an
     // editable baseline for — most commonly our own autosave's fs-watch
     // echo. Skip the full loading/reset cycle so the editor never flashes
-    // a spinner or drops focus while the user is typing.
-    const isQuietReload = isEditableType && establishedEditablePathRef.current === previewFilePath;
+    // a spinner or drops focus while the user is typing. A reload of a
+    // document whose bytes are on screen, or of a file with no preview,
+    // keeps what is shown the same way.
+    const isQuietReload = (isEditableType && establishedEditablePathRef.current === previewFilePath)
+      || ((isBinaryType || rendererType === 'unsupported') && shownPathRef.current === previewFilePath);
 
     const loadFile = async () => {
       if (!isQuietReload) {
@@ -399,6 +438,8 @@ export default function PreviewPanel({
         setError(null);
         setContent(null);
         setImageUrl(null);
+        setBinaryData(null);
+        shownPathRef.current = null;
         setHtmlPreviewUrl(null);
         setDraft('');
         lastSavedRef.current = '';
@@ -408,15 +449,9 @@ export default function PreviewPanel({
       }
 
       try {
-        // Binary types and unsupported types don't need text reading from parent
-        if (rendererType === 'unsupported' || BINARY_TYPES.has(rendererType)) {
-          setLoading(false);
-          return;
-        }
-
-        // Data URL: use directly
+        // Data URL: an image is used directly, anything else has no preview
         if (isDataUrl(previewFilePath)) {
-          setImageUrl(previewFilePath);
+          if (rendererType === 'image') setImageUrl(previewFilePath);
           setLoading(false);
           return;
         }
@@ -425,12 +460,26 @@ export default function PreviewPanel({
         const fileExists = await exists(previewFilePath);
         if (cancelled) return;
         if (!fileExists) {
+          // No editable baseline holds for a file that is not there: the next
+          // reload for this path goes through the full reset, which clears
+          // this error once the file is back.
+          establishedEditablePathRef.current = null;
+          shownPathRef.current = null;
+          setBinaryData(null);
           setError(`${t.panel.fileNotFound}: ${getBaseName(previewFilePath)}`);
           setLoading(false);
           return;
         }
 
-        if (rendererType === 'image') {
+        if (rendererType === 'unsupported') {
+          // Nothing to read: the file is there, and the content area offers to open it elsewhere.
+          shownPathRef.current = previewFilePath;
+        } else if (isBinaryType) {
+          const bytes = await readFile(previewFilePath);
+          if (cancelled) return;
+          setBinaryData(bytes);
+          shownPathRef.current = previewFilePath;
+        } else if (rendererType === 'image') {
           blobUrl = await loadLocalImage(previewFilePath);
           if (cancelled) { URL.revokeObjectURL(blobUrl); blobUrl = null; return; }
           setImageUrl(blobUrl);
@@ -448,7 +497,13 @@ export default function PreviewPanel({
             setHtmlPreviewUrl(url);
           }
 
-          if (isEditableType) {
+          if (isEditableType && keptCopy) {
+            // The buffer follows the copy on disk and is never edited, so every
+            // load adopts the text as read.
+            lastSavedRef.current = text;
+            setDraft(text);
+            establishedEditablePathRef.current = previewFilePath;
+          } else if (isEditableType) {
             if (!isQuietReload) {
               // Fresh load of this file: disk content becomes both the
               // editor buffer and the reconcile baseline.
@@ -510,9 +565,15 @@ export default function PreviewPanel({
         // attempt — the next reload for this path should go through the
         // full (non-quiet) reset rather than reconciling against stale refs.
         establishedEditablePathRef.current = null;
-        console.error('[PreviewPanel] Failed to read file:', previewFilePath, err);
-        const message = err instanceof Error ? err.message : String(err);
-        setError(message || t.panel.failedToReadFile);
+        shownPathRef.current = null;
+        setBinaryData(null);
+        // The host's text can carry the channel name and an absolute path, so
+        // it goes to the log only, as redacted text.
+        console.error(
+          '[PreviewPanel] Failed to read file:',
+          redactFailureText(err instanceof Error ? err.message : String(err)),
+        );
+        setError(t.panel.failedToReadFile);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -523,13 +584,19 @@ export default function PreviewPanel({
   // reloadNonce is a fs-watch/manual refresh signal: re-run to re-read content
   // (and, for images, re-fetch the blob) when the file changes on disk.
   // eslint-disable-next-line react-hooks/exhaustive-deps -- t is stable from i18n singleton
-  }, [previewFilePath, rendererType, reloadNonce]);
+  }, [previewFilePath, rendererType, reloadNonce, keptCopy]);
 
   // Reset to rendered-preview mode on each file switch so a document never
   // inherits the previously-viewed file's source/edit mode (F4). Keyed on
   // previewFilePath only — a same-file watch reload (reloadNonce) must not
   // flip the user out of source mode while they're editing.
   useEffect(() => { setViewMode('preview'); }, [previewFilePath]);
+
+  // A request for a line shows the source view, where lines exist. It sits
+  // after the reset above so that a file opened at a line starts in source.
+  useEffect(() => {
+    if (line !== undefined) setViewMode('source');
+  }, [previewFilePath, line, lineRequest]);
 
   // Close the version history dropdown on file switch — it's scoped to
   // whatever file was previously open, not the newly selected one.
@@ -654,7 +721,7 @@ export default function PreviewPanel({
   // reload it triggers (handled above) can recognize its own echo instead of
   // treating it as an external change and re-adopting/conflicting on it.
   useEffect(() => {
-    if (!previewFilePath || !EDITABLE_TYPES.has(rendererType)) return;
+    if (!previewFilePath || !EDITABLE_TYPES.has(rendererType) || keptCopy) return;
     if (draft === lastSavedRef.current) {
       setSaveState('saved');
       return;
@@ -776,6 +843,7 @@ export default function PreviewPanel({
       await openWithDefaultApp(previewFilePath);
     } catch (err) {
       console.error('[PreviewPanel] open in app failed:', err);
+      if (isRunByDefaultRefusal(err)) setRefusedOpenPath(previewFilePath);
       useToastStore.getState().addToast({
         type: 'error',
         title: t.chat.openFailed,
@@ -850,7 +918,8 @@ export default function PreviewPanel({
         fileName={fileName}
         rendererType={rendererType}
         fileTypeLabel={fileTypeLabel}
-        saveState={EDITABLE_TYPES.has(rendererType) && !error ? saveState : null}
+        readOnly={keptCopy}
+        saveState={EDITABLE_TYPES.has(rendererType) && !keptCopy && !error ? saveState : null}
         viewMode={viewMode}
         onViewModeChange={setViewMode}
         showVersionHistory={showVersionHistory}
@@ -858,6 +927,7 @@ export default function PreviewPanel({
         onRevertVersion={handleRevertVersion}
         onReload={handleReload}
         onOpenInApp={handleOpenInApp}
+        openRefused={refusedOpenPath === previewFilePath}
         onReveal={handleOpenInFinder}
         onCopyPath={handleCopyPath}
         onSaveAs={handleSaveAs}
@@ -888,6 +958,12 @@ export default function PreviewPanel({
         </div>
       )}
 
+      {keptCopy && (
+        <div className="shrink-0 px-3 pt-2">
+          <InlineMessage tone="info">{t.panel.keptCopyNotice}</InlineMessage>
+        </div>
+      )}
+
       {/* Content */}
       <div className="flex-1 min-h-0 overflow-hidden">
         {loading ? (
@@ -898,16 +974,20 @@ export default function PreviewPanel({
           <div className="flex h-full items-center justify-center p-4">
             <InlineMessage tone="danger">{error}</InlineMessage>
           </div>
-        ) : rendererType === 'pdf' || rendererType === 'docx' || rendererType === 'pptx' || rendererType === 'xlsx' || (rendererType === 'csv' && content !== null) ? (
+        ) : (BINARY_TYPES.has(rendererType) && binaryData !== null) || (rendererType === 'csv' && content !== null) ? (
           <DocSelectionLayer filePath={previewFilePath} active={!embedded || tabId === activeTabId}>
             <Suspense fallback={<LazyFallback />}>
-              {rendererType === 'pdf' && <PdfPreview filePath={previewFilePath} />}
-              {rendererType === 'docx' && <DocxPreview filePath={previewFilePath} />}
-              {rendererType === 'pptx' && <PptxPreview filePath={previewFilePath} />}
-              {rendererType === 'xlsx' && <XlsxPreview filePath={previewFilePath} />}
-              {rendererType === 'csv' && content !== null && <CsvPreview content={content} />}
+              {rendererType === 'pdf' && binaryData !== null && <PdfPreview filePath={previewFilePath} data={binaryData} />}
+              {rendererType === 'docx' && binaryData !== null && <DocxPreview data={binaryData} />}
+              {rendererType === 'pptx' && binaryData !== null && <PptxPreview filePath={previewFilePath} data={binaryData} />}
+              {rendererType === 'xlsx' && binaryData !== null && <XlsxPreview data={binaryData} />}
+              {rendererType === 'csv' && content !== null && (
+                <CsvPreview content={content} delimiter={getFileExtension(previewFilePath) === 'tsv' ? '\t' : ','} />
+              )}
             </Suspense>
           </DocSelectionLayer>
+        ) : BINARY_TYPES.has(rendererType) ? (
+          <LazyFallback />
         ) : rendererType === 'image' && imageUrl ? (
           <ImagePreview src={imageUrl} alt={fileName} />
         ) : rendererType === 'markdown' && content !== null ? (
@@ -924,7 +1004,7 @@ export default function PreviewPanel({
               </DocSelectionLayer>
             </ScrollArea>
           ) : (
-            <CodeMirrorEditor value={draft} language="md" onChange={setDraft} />
+            <CodeMirrorEditor value={draft} language="md" onChange={setDraft} readOnly={keptCopy} line={line} lineRequest={lineRequest} />
           )
         ) : rendererType === 'html' ? (
           viewMode === 'preview' ? (
@@ -948,20 +1028,27 @@ export default function PreviewPanel({
               <LazyFallback />
             )
           ) : content !== null ? (
-            <CodeMirrorEditor value={draft} language="html" onChange={setDraft} />
+            <CodeMirrorEditor value={draft} language="html" onChange={setDraft} readOnly={keptCopy} line={line} lineRequest={lineRequest} />
           ) : (
             <LazyFallback />
           )
         ) : rendererType === 'code' && content !== null ? (
-          <CodeMirrorEditor value={draft} language={getFileExtension(previewFilePath)} onChange={setDraft} />
+          <CodeMirrorEditor value={draft} language={getFileExtension(previewFilePath)} onChange={setDraft} readOnly={keptCopy} line={line} lineRequest={lineRequest} />
         ) : rendererType === 'text' && content !== null ? (
-          <CodeMirrorEditor value={draft} language={getFileExtension(previewFilePath)} onChange={setDraft} />
+          <CodeMirrorEditor value={draft} language={getFileExtension(previewFilePath)} onChange={setDraft} readOnly={keptCopy} line={line} lineRequest={lineRequest} />
         ) : (
           <div className="flex h-full items-center justify-center">
             <EmptyState
               icon={AppIcons.fileGeneric}
               title={t.panel.unsupportedFileType}
-              action={<Button variant="secondary" icon={AppIcons.folderOpen} onClick={handleOpenInFinder}>{t.panel.showInFinder}</Button>}
+              action={(
+                <div className="flex items-center gap-2">
+                  {offersOpenInApp(rendererType, previewFilePath) && refusedOpenPath !== previewFilePath && (
+                    <Button variant="secondary" icon={AppIcons.openIn} onClick={handleOpenInApp}>{t.panel.openInApp}</Button>
+                  )}
+                  <Button variant="secondary" icon={AppIcons.folderOpen} onClick={handleOpenInFinder}>{t.panel.showInFinder}</Button>
+                </div>
+              )}
             />
           </div>
         )}

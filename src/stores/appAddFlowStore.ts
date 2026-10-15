@@ -1,9 +1,11 @@
 import { create } from 'zustand';
 import { homeDir } from '@tauri-apps/api/path';
-import type { AppDefinition } from '@/types/app';
+import type { AppDefinition, LocalizedText } from '@/types/app';
 import { useAppStore } from '@/stores/appStore';
+import { reportAppFailure } from '@/core/app/appFailure';
 import {
   cancelAddApp,
+  AppAddError,
   cancelPluginSteps,
   confirmAddApp,
   needsConfirmation,
@@ -28,12 +30,20 @@ import {
  */
 export type AppAddPurpose = 'add' | 'update' | 'preview';
 
+/** What a flow was doing when it failed. */
+export type AppAddOperation = AppAddPurpose | 'repair';
+
 export type AppAddFlow =
   | { kind: 'closed' }
-  | { kind: 'planning'; name: string; purpose?: AppAddPurpose | 'repair' }
+  | { kind: 'planning'; name: LocalizedText; purpose?: AppAddOperation }
   | { kind: 'ready'; purpose: AppAddPurpose; plan: AppAddPlan }
   | { kind: 'repair'; app: AppDefinition; steps: AppPluginStep[]; resume: () => void }
-  | { kind: 'error'; name: string; message: string; purpose?: AppAddPurpose | 'repair' };
+  /**
+   * `refusal` is a sentence the installer words for the user (`AppAddError`).
+   * A failure without one shows the sentence of its operation, and its reason
+   * goes to the console (`reportAppFailure`).
+   */
+  | { kind: 'error'; name: LocalizedText; operation: AppAddOperation; refusal?: string };
 
 /**
  * The confirmation is mounted in two places (`AppAddConfirmDialog`): inside
@@ -50,14 +60,16 @@ interface AppAddFlowState {
 }
 
 interface AppAddFlowActions {
-  start: (source: AppAddSource, name: string, purpose: AppAddPurpose) => Promise<void>;
+  start: (source: AppAddSource, name: LocalizedText, purpose: AppAddPurpose) => Promise<void>;
   repair: (app: AppDefinition, resume: () => void) => Promise<void>;
   confirm: (configuration: Record<string, Record<string, string>>) => Promise<void>;
   cancel: () => Promise<void>;
 }
 
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function failed(name: LocalizedText, operation: AppAddOperation, error: unknown): AppAddFlow {
+  if (error instanceof AppAddError) return { kind: 'error', name, operation, refusal: error.message };
+  reportAppFailure(operation, error);
+  return { kind: 'error', name, operation };
 }
 
 /** Where a flow that starts now is shown: in the app market while it is open. */
@@ -86,7 +98,7 @@ export const useAppAddFlowStore = create<AppAddFlowState & AppAddFlowActions>()(
       if (get().flow !== planning) return;
       plan = await planAddApp(source, await homeDir());
     } catch (error) {
-      if (get().flow === planning) set({ flow: { kind: 'error', name, purpose, message: message(error) } });
+      if (get().flow === planning) set({ flow: failed(name, purpose, error) });
       return;
     }
     // Cancelled while planning: the snapshots it prepared are not needed.
@@ -106,7 +118,7 @@ export const useAppAddFlowStore = create<AppAddFlowState & AppAddFlowActions>()(
       if (get().flow !== planning) return;
       steps = await planPluginSteps(app, await homeDir());
     } catch (error) {
-      if (get().flow === planning) set({ flow: { kind: 'error', name: app.name, purpose: 'repair', message: message(error) } });
+      if (get().flow === planning) set({ flow: failed(app.name, 'repair', error) });
       return;
     }
     if (get().flow !== planning) { await cancelPluginSteps(steps); return; }
@@ -128,7 +140,7 @@ export const useAppAddFlowStore = create<AppAddFlowState & AppAddFlowActions>()(
       set({ flow: { kind: 'closed' } });
       if (flow.kind === 'repair') flow.resume();
     } catch (error) {
-      set({ flow: { kind: 'error', name: flow.kind === 'ready' ? flow.plan.app.name : flow.app.name, purpose: flow.kind === 'ready' ? flow.purpose : 'repair', message: message(error) } });
+      set({ flow: flow.kind === 'ready' ? failed(flow.plan.app.name, flow.purpose, error) : failed(flow.app.name, 'repair', error) });
     } finally {
       set({ running: false });
     }

@@ -9,6 +9,7 @@ import { useChatStore } from '@/stores/chatStore';
 import { useToastStore } from '@/stores/toastStore';
 import { commitAppDraft, draftFor, draftRunLabel, readAppDraft, type AppDraftPreview } from '@/core/app/appDraft';
 import { effectiveRun, resolveText } from '@/core/app/appBinding';
+import { reportAppFailure } from '@/core/app/appFailure';
 import { liveRefCatalog, resolveRun, type RefCatalog } from '@/core/app/appRefs';
 import { appHomeTitle } from '@/core/app/appRegistry';
 import { describeSceneRun } from '@/components/app/runLabel';
@@ -43,7 +44,8 @@ export default function AppDraftCard({ conversationId, toolCallId }: { conversat
   const apps = useAvailableApps();
   const addToast = useToastStore((s) => s.addToast);
   const [loaded, setLoaded] = useState<{ preview: AppDraftPreview; catalog: RefCatalog } | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // The draft could not be read; why goes to the console.
+  const [unreadable, setUnreadable] = useState(false);
   const [adding, setAdding] = useState(false);
   // One add per draft at a time; `adding` only shows it.
   const addingRef = useRef(false);
@@ -54,26 +56,30 @@ export default function AppDraftCard({ conversationId, toolCallId }: { conversat
     let current = true;
     const catalog = liveRefCatalog();
     Promise.resolve().then(() => readAppDraft(draftFor(conversationId), catalog)).then(
-      (preview) => { if (current) { setLoaded({ preview, catalog }); setError(null); } },
-      (reason: unknown) => { console.error('[app] Could not read app draft', reason); if (current) setError(t.appDraft.fixDraftHint); },
+      (preview) => { if (current) { setLoaded({ preview, catalog }); setUnreadable(false); } },
+      (reason: unknown) => {
+        if (!current) return;
+        reportAppFailure('draft preview', reason);
+        setUnreadable(true);
+      },
     );
     return () => { current = false; };
-  }, [conversationId, toolCallId, addedAppId, t.appDraft.fixDraftHint]);
+  }, [conversationId, toolCallId, addedAppId]);
 
   if (addedAppId !== undefined) {
     const app = apps.find((item) => item.appId === addedAppId);
     return (
       <div data-testid="app-draft-card" className={cn(CARD, 'text-ui text-label-secondary')}>
-        {format(t.appDraft.added, { name: app?.name ?? draft?.appName ?? t.appDraft.title })}
+        {format(t.appDraft.added, { name: app ? resolveText(app.name) : draft?.appName ?? t.appDraft.title })}
       </div>
     );
   }
-  if (error !== null) {
+  if (unreadable) {
     return (
       <div data-testid="app-draft-card" className="my-2">
         <InlineMessage tone="danger">
           <p className="font-medium">{t.appDraft.previewFailed}</p>
-          <p className="break-words text-ui-sm text-label-secondary">{error}</p>
+          <p className="break-words text-ui-sm text-label-secondary">{t.appDraft.previewFailedHint}</p>
         </InlineMessage>
       </div>
     );
@@ -95,7 +101,10 @@ export default function AppDraftCard({ conversationId, toolCallId }: { conversat
     commitAppDraft(conversationId)
       // The app is entered and its home replaces this conversation: the message field takes the focus the button had.
       .then(() => focusComposerAfterPageChange())
-      .catch((reason: unknown) => { console.error('[app] Could not add app draft', reason); addToast({ type: 'error', title: t.appDraft.failed, message: t.appDraft.fixDraftHint }); })
+      .catch((reason: unknown) => {
+        reportAppFailure('add created app', reason);
+        addToast({ type: 'error', title: t.appDraft.failed, message: t.appDraft.failedHint });
+      })
       .finally(() => {
         addingRef.current = false;
         setAdding(false);
@@ -107,10 +116,10 @@ export default function AppDraftCard({ conversationId, toolCallId }: { conversat
     <div data-testid="app-draft-card" className={CARD}>
       <div className="text-caption font-medium text-label-tertiary">{t.appDraft.title}</div>
       <div className="mt-2 flex items-start gap-3">
-        <AppLogo name={preview.app.name} size="md" />
+        <AppLogo name={resolveText(preview.app.name)} size="md" />
         <div className="min-w-0 flex-1">
-          <h4 className="truncate text-ui font-medium text-label">{preview.app.name}</h4>
-          <p className="text-ui-sm text-label-secondary">{preview.app.description}</p>
+          <h4 className="truncate text-ui font-medium text-label">{resolveText(preview.app.name)}</h4>
+          <p className="text-ui-sm text-label-secondary">{resolveText(preview.app.description)}</p>
         </div>
       </div>
 

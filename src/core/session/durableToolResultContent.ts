@@ -1,4 +1,5 @@
 import type { Message, ToolCall, ToolResultContent } from '@/types';
+import { fileChangeWithoutHunks } from '@/core/files/fileChangeBudget';
 
 /**
  * Durable tool results need a storage budget of their own. Request-time image
@@ -361,6 +362,7 @@ function essentialToolCall(toolCall: ToolCall): ToolCall {
   if (toolCall.fromSubagent !== undefined) result.fromSubagent = toolCall.fromSubagent;
   if (toolCall.subagentStopReason !== undefined) result.subagentStopReason = toolCall.subagentStopReason;
   if (toolCall.batchTerminalSummary !== undefined) result.batchTerminalSummary = toolCall.batchTerminalSummary;
+  if (toolCall.fileChange !== undefined) result.fileChange = fileChangeWithoutHunks(toolCall.fileChange);
   return result;
 }
 

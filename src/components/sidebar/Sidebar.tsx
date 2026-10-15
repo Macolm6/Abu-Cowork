@@ -32,14 +32,12 @@ import { cn } from '@/lib/utils';
 import { getPlatformShortLabel } from '@/core/im/platformLabels';
 import type { ConversationStatus } from '@/types';
 import ProjectsSection from '@/components/sidebar/ProjectsSection';
-import WorkspaceFileTree from '@/components/panel/WorkspaceFileTree';
-import { usePreviewStore } from '@/stores/previewStore';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { readTextFile } from '@tauri-apps/plugin-fs';
 import ShareExportDialog from '@/components/share/ShareExportDialog';
 import ImportedBadge from './ImportedBadge';
 import { RowMenus } from './RowMenus';
-import { conversationRowProps, useConversationRowFocus } from './conversationRowFocus';
+import { conversationRowElement, conversationRowProps, useConversationRowFocus } from './conversationRowFocus';
 import { opensOnKey } from './rowKeys';
 import { useDeleteConversation } from './useDeleteConversation';
 import { isMacOS, isWindows } from '@/utils/platform';
@@ -124,15 +122,6 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   const [shareConvId, setShareConvId] = useState<string | null>(null);
   const projectsMap = useProjectStore((s) => s.projects);
   const [recentsCollapsed, setRecentsCollapsed] = useState(false);
-  // File-tree mode: the sidebar swaps its conversation list for the active
-  // conversation's project file tree (TRAE-style), entered from a per-row
-  // folder icon and exited via "back". Clicking a file opens it in the right
-  // PreviewPanel — which is a separate column, so the tree stays visible
-  // (left tree + right editor), unlike when the tree lived in the swapping
-  // right panel.
-  const showFileTree = usePreviewStore((s) => s.fileTreeMode);
-  const setShowFileTree = usePreviewStore((s) => s.setFileTreeMode);
-
   // Inline rename state
   const [editingId, setEditingId] = useState<string | null>(null);
   const renameAfterClose = useRef<string | null>(null);
@@ -197,6 +186,19 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   const handleClearCompletedStatus = useCallback((convId: string) => {
     clearCompletedStatus(convId);
   }, [clearCompletedStatus]);
+
+  // A recent task opened from the search: a collapsed list opens for it, and its row scrolls
+  // into view and clears the request. A project's task is brought into view by its project row.
+  const revealConversationId = useProjectStore((s) => s.revealConversationId);
+  const revealsRecent = revealConversationId !== null && sortedConvs.some((c) => c.id === revealConversationId);
+  if (revealsRecent && recentsCollapsed) setRecentsCollapsed(false);
+  useEffect(() => {
+    if (!revealsRecent || !revealConversationId) return;
+    const row = conversationRowElement(revealConversationId);
+    if (!row) return;
+    row.scrollIntoView({ block: 'nearest' });
+    useProjectStore.getState().clearRevealConversation();
+  }, [revealsRecent, revealConversationId, recentsCollapsed]);
 
   const handleExport = async (convId: string) => {
     // Ensure the conversation is loaded before the dialog reads from it;
@@ -316,12 +318,12 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
           data-abu-windows-sidebar-header
           className="flex h-[52px] shrink-0 items-center gap-2 px-4 pt-2 pr-[76px]"
         >
-          {/* Abu's name only: the version lives in the account menu, and the
-              row's width belongs to the switcher beside it. */}
+          {/* Abu's name only: the version lives in the account menu. The switcher
+              is a small pill at the row's far end, as wide as its words. */}
           <span className="shrink-0 whitespace-nowrap text-ui font-semibold text-label">
             {t.common.appName}
           </span>
-          <AppSwitcher className="min-w-0 flex-1" />
+          <AppSwitcher className="ml-auto min-w-0" />
         </div>
       ) : (
         <>
@@ -334,8 +336,13 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                   : 'h-8 shrink-0'
             }
           />
-          <div className="px-4 pb-1">
-            <AppSwitcher />
+          {/* The brand row: Abu's name in line with the navigation icons under it,
+              and the switcher as a small pill at the far end. */}
+          <div className="flex items-center gap-2 pb-2 pl-6 pr-4">
+            <span className="shrink-0 whitespace-nowrap text-ui font-semibold text-label">
+              {t.common.appName}
+            </span>
+            <AppSwitcher className="ml-auto min-w-0" />
           </div>
         </>
       )}
@@ -352,7 +359,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                 icon={AppIcons.add}
                 label={navTitle(item, t.sidebar.newTask)}
                 selected={activeConversationId === null && viewMode === 'chat'}
-                onClick={() => { startNewConversation(); setViewMode('chat'); setShowFileTree(false); }}
+                onClick={() => { startNewConversation(); setViewMode('chat'); }}
               />
             );
           }
@@ -380,7 +387,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                 icon={AppIcons.team}
                 label={navTitle(item, t.sidebar.team)}
                 selected={viewMode === 'team'}
-                onClick={() => { openTeam(); setShowFileTree(false); }}
+                onClick={() => openTeam()}
               />
             );
           }
@@ -394,7 +401,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                 trailing={pluginUpdateCount > 0
                   ? <span className="flex"><PluginUpdateBadge testId="extensions-update-badge" /></span>
                   : undefined}
-                onClick={() => { openExtensions(); setShowFileTree(false); }}
+                onClick={() => openExtensions()}
               />
             );
           }
@@ -405,7 +412,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                 icon={AppIcons.automation}
                 label={navTitle(item, t.sidebar.automation)}
                 selected={viewMode === 'automation'}
-                onClick={() => { openAutomation(); setShowFileTree(false); }}
+                onClick={() => openAutomation()}
               />
             );
           }
@@ -417,34 +424,13 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
               icon={AppIcons.webPage}
               label={navTitle(item, item.id)}
               selected={viewMode === 'app-page' && activeAppPage?.navItemId === item.id}
-              onClick={() => { openAppPage(item.id); setShowFileTree(false); }}
+              onClick={() => openAppPage(item.id)}
             />
           );
         })}
       </nav>
 
-      {/* File-tree mode swaps the whole conversation list for the active
-          conversation's project file tree (TRAE-style). Files open in the
-          right PreviewPanel, so the tree (here in the sidebar) stays put. */}
-      {showFileTree ? (
-        <div className="flex-1 min-h-0 flex flex-col">
-          <div className="shrink-0 px-4 py-1">
-            <Button
-              variant="plain"
-              size="sm"
-              icon={AppIcons.back}
-              onClick={() => setShowFileTree(false)}
-              className="text-label-tertiary hover:text-label"
-            >
-              {t.sidebar.backToConversations}
-            </Button>
-          </div>
-          <div className="flex-1 min-h-0 px-4">
-            <WorkspaceFileTree />
-          </div>
-        </div>
-      ) : (
-      /* Scrollable middle section: projects + scheduled + triggers + recents */
+      {/* Scrollable middle section: projects + scheduled + triggers + recents */}
       <ScrollArea className="flex-1 min-h-0">
         {/* Projects Section */}
         <ProjectsSection onCreateProject={() => setCreateProjectOpen(true)} />
@@ -522,8 +508,8 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                   <ImportedBadge importedAt={conv.importedFrom.importedAt} />
                 )}
                 {conv.appBinding && (
-                  <span title={conv.appBinding.appName} data-testid="conversation-app-icon">
-                    <AppLogo name={conv.appBinding.appName} logo={conv.appBinding.appLogo} logoDark={conv.appBinding.appLogoDark} icon={conv.appBinding.appIcon} size="sm" className="rounded-control" />
+                  <span title={resolveText(conv.appBinding.appName)} data-testid="conversation-app-icon">
+                    <AppLogo name={resolveText(conv.appBinding.appName)} logo={conv.appBinding.appLogo} logoDark={conv.appBinding.appLogoDark} icon={conv.appBinding.appIcon} size="sm" className="rounded-control" />
                   </span>
                 )}
                 {editing ? (
@@ -550,22 +536,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                   status={convStatus}
                   onComplete={() => handleClearCompletedStatus(conv.id)}
                 />
-                {/* Row actions step aside while renaming so the field gets the row's width. */}
-                {!editing && conv.workspacePath && (
-                  <IconButton
-                    icon={AppIcons.fileTree}
-                    label={t.sidebar.projectFiles}
-                    size="sm"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      switchConversation(conv.id);
-                      setViewMode('chat');
-                      clearBadge(conv.id);
-                      setShowFileTree(true);
-                    }}
-                    className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-                  />
-                )}
+                {/* The row action steps aside while renaming so the field gets the row's width. */}
                 {!editing && (
                   <IconButton
                     icon={AppIcons.more}
@@ -586,7 +557,6 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
         </div>
         )}
       </ScrollArea>
-      )}
 
       {/* User Section — single avatar trigger opening the account popover */}
       <div className="px-3 py-3 shrink-0">

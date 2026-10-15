@@ -1,13 +1,17 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { redactFailureText } from '@/core/diagnostic/scrub';
 import AppLogo from './AppLogo';
 
 vi.mock('@/utils/pathUtils', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/utils/pathUtils')>()),
-  loadLocalImage: async (filePath: string) => `blob:${filePath}`,
+  loadLocalImage: async (filePath: string) => {
+    if (filePath.includes('/removed/')) throw new Error(`ENOENT: no such file or directory, open '${filePath}?token=abc123secret'`);
+    return `blob:${filePath}`;
+  },
 }));
 
 describe('AppLogo', () => {
@@ -57,12 +61,45 @@ describe('AppLogo', () => {
     expect(logo.querySelector('svg')).not.toBeNull();
   });
 
+  describe('an image that cannot be shown', () => {
+    const logo = () => screen.getByTestId('app-logo');
+
+    it('shows the default application mark when the file is gone, and sends the reason to the console only', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      render(<AppLogo name="Shop desk" logo="/apps/removed/logo.png" />);
+      await waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
+      const reason = redactFailureText("ENOENT: no such file or directory, open '/apps/removed/logo.png?token=abc123secret'");
+      expect(reason).not.toContain('abc123secret');
+      expect(warn).toHaveBeenCalledWith('[app] logo image failed:', reason);
+      expect(logo()).toHaveAttribute('data-app-logo', 'default');
+      expect(logo().querySelector('svg')).not.toBeNull();
+      expect(logo().outerHTML).not.toContain('ENOENT');
+      warn.mockRestore();
+    });
+
+    it('replaces the image it showed with the default application mark when the next file is gone', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { rerender } = render(<AppLogo name="Shop desk" logo="/pkg/light.png" />);
+      await waitFor(() => expect(logo()).toHaveAttribute('data-app-logo', 'image'));
+      rerender(<AppLogo name="Shop desk" logo="/apps/removed/logo.png" />);
+      await waitFor(() => expect(logo()).toHaveAttribute('data-app-logo', 'default'));
+      warn.mockRestore();
+    });
+
+    it('shows the default application mark when the file is no picture the page can draw', async () => {
+      render(<AppLogo name="Shop desk" logo="/pkg/light.png" />);
+      await waitFor(() => expect(logo()).toHaveAttribute('data-app-logo', 'image'));
+      fireEvent.error(logo().querySelector('img')!);
+      expect(logo()).toHaveAttribute('data-app-logo', 'default');
+    });
+  });
+
   it('draws the default icon with design-system classes', () => {
     render(<AppLogo name="Shop desk" />);
     const logo = screen.getByTestId('app-logo');
     expect(logo).toHaveClass('rounded-control');
     expect(logo).toHaveClass('bg-fill');
-    expect(logo).toHaveClass('text-label-tertiary');
+    expect(logo).toHaveClass('text-label-secondary');
     expect(logo).toHaveClass('font-medium');
   });
 
@@ -96,7 +133,7 @@ describe('AppLogo', () => {
   it('uses theme colors for an app preset while retaining its glyph', () => {
     render(<AppLogo name="Shop desk" icon="icon:users/coral" />);
     const logo = screen.getByTestId('app-logo');
-    expect(logo).toHaveClass('bg-fill', 'text-label-tertiary');
+    expect(logo).toHaveClass('bg-fill', 'text-label-secondary');
     expect(logo).not.toHaveAttribute('style');
     expect(logo.querySelector('svg')).toHaveClass('lucide-users-round');
   });

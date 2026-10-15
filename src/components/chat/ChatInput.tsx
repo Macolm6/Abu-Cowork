@@ -29,6 +29,7 @@ import { getBaseName, IMAGE_MIME_MAP } from '@/utils/pathUtils';
 import { isPluginOwnedAgent } from '@/utils/agentSource';
 import { isImageFile } from '@/components/chat/FileAttachment';
 import { noteComposerDraft, noteComposerKey } from '@/components/chat/composerActivity';
+import { focusComposerFromWindow } from '@/components/chat/composerFocus';
 import { isImeComposing, resolveEnterAction } from '@/components/chat/composerKeys';
 import { isMacOS } from '@/utils/platform';
 import { enqueueUserInput } from '@/core/agent/userInputQueue';
@@ -51,6 +52,8 @@ import { useToastStore } from '@/stores/toastStore';
 import { getModelUnavailableReason, getModelDisplayLabel } from '@/utils/settingsSelectors';
 import { describeModelUnavailable } from '@/utils/modelUnavailableCopy';
 import { useVisibleTeams } from '@/core/team/useVisibleTeams';
+import { localizedTeam } from '@/core/team/localizedTeam';
+import { localizedSkillDescription } from '@/core/skill/displayDescription';
 import { Button as DsButton, IconButton } from '@/components/ds/button';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
@@ -896,7 +899,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const recentPaths = useWorkspaceStore((s) => s.recentPaths);
   const grantPermission = usePermissionStore((s) => s.grantPermission);
   const hasPermission = usePermissionStore((s) => s.hasPermission);
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [draftRuntimeState, setDraftRuntimeState] = useState<ComposerDraftRuntimeState>(
     () => getComposerDraftRuntimeState(draftKey),
   );
@@ -1081,7 +1084,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const setConversationTeamId = useChatStore((s) => s.setConversationTeamId);
   const setPendingTeamId = useChatStore((s) => s.setPendingTeamId);
   const pinnedTeamId = activeConvId ? activeConv?.teamId : pendingTeamId;
-  const pinnedTeam = pinnedTeamId ? activeTeams.find((team) => team.id === pinnedTeamId) ?? null : null;
+  const storedPinnedTeam = pinnedTeamId ? activeTeams.find((team) => team.id === pinnedTeamId) ?? null : null;
+  const pinnedTeam = storedPinnedTeam ? localizedTeam(storedPinnedTeam, locale) : null;
   const pinTeam = useCallback((teamId: string | undefined) => {
     if (teamId) {
       setSelectedAgent(null);
@@ -1448,9 +1452,11 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     // badge so 用户 can tell 团队 from 单个队员 at a glance (feedback 2026-08-31).
     if (suggestionType === 'agent') {
       const query = menuPicker?.query.toLowerCase() ?? agentMentionTarget?.query ?? '';
+      // A team is listed under its name in the interface language and found by that name or its stored one.
       const teamItems: SuggestionItem[] = activeTeams
-        .filter((team) => !query || team.name.toLowerCase().includes(query))
-        .map((team) => ({ name: team.name, description: t.team.suggestionTeamHint, team: true, teamId: team.id, avatar: team.avatar }));
+        .map((team) => ({ team, shownName: localizedTeam(team, locale).name }))
+        .filter(({ team, shownName }) => !query || team.name.toLowerCase().includes(query) || shownName.toLowerCase().includes(query))
+        .map(({ team, shownName }) => ({ name: shownName, description: t.team.suggestionTeamHint, team: true, teamId: team.id, avatar: team.avatar }));
       return [
         ...teamItems,
         ...agents
@@ -1479,16 +1485,17 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
           const tagStr = (s.tags ?? []).join(' ').toLowerCase();
           return s.name.toLowerCase().includes(query) ||
             s.description.toLowerCase().includes(query) ||
+            localizedSkillDescription(s, locale).toLowerCase().includes(query) ||
             tagStr.includes(query);
         })
         .map((s) => ({
           name: s.name,
-          description: s.description,
+          description: localizedSkillDescription(s, locale),
           trigger: s.trigger,
         }));
     }
     return [];
-  }, [skills, agents, activeTeams, suggestionType, agentMentionTarget, disabledSkillSet, t.team.suggestionTeamHint, menuPicker, skillTarget]);
+  }, [skills, agents, activeTeams, suggestionType, agentMentionTarget, disabledSkillSet, t.team.suggestionTeamHint, menuPicker, skillTarget, locale]);
 
   const suggestionKey = useMemo(() => {
     if (menuPicker) return `menu:${menuPicker.type}:${menuPicker.query}`;
@@ -1739,7 +1746,9 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     setReferences(nextDraft.references);
     setSelectedSkill(nextDraft.selectedSkill);
     setSelectedAgent(nextDraft.selectedAgent);
-    textareaRef.current?.focus();
+    // What refused the send may have opened a layer (the model picker, the settings window),
+    // and the user may have moved on to another control while the answer was on its way.
+    focusComposerFromWindow();
   };
 
   const handleSend = () => {

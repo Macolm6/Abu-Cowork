@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { platform } from 'node:process';
 import { RpcError } from './protocol';
-import { fsReadTextFile, fsReadFile, fsWriteTextFile, fsReadDir, fsExists, fsStat } from './fsHost';
+import { fsReadTextFile, fsReadFile, fsWriteTextFile, fsReadDir, fsExists, fsStat, fsListWorkspaceFiles } from './fsHost';
 
 // Real node:fs against a real temp dir — no mocking. fsHost.ts's whole job is
 // to faithfully wrap node:fs/promises, so exercising the real filesystem is
@@ -207,6 +207,86 @@ describe('fsHost', () => {
     it('rejects with RpcError -32001 and ENOENT data for a missing directory', async () => {
       const missing = path.join(tmpDir, 'no-such-dir');
       await expect(fsReadDir({ path: missing })).rejects.toMatchObject({
+        code: -32001,
+        data: { code: 'ENOENT', path: missing },
+      });
+    });
+  });
+
+  describe('listWorkspaceFiles', () => {
+    it('lists the regular files under the root with relative path, size and whole-millisecond mtime', async () => {
+      await fs.writeFile(path.join(tmpDir, 'plan.md'), 'hello');
+      await fs.mkdir(path.join(tmpDir, 'docs'));
+      await fs.writeFile(path.join(tmpDir, 'docs', 'notes.md'), 'abc');
+      const planStat = await fs.stat(path.join(tmpDir, 'plan.md'));
+
+      const result = await fsListWorkspaceFiles({ path: tmpDir });
+
+      expect(result).toEqual({
+        exceeded: false,
+        files: [
+          { path: 'docs/notes.md', size: 3, mtimeMs: expect.any(Number) },
+          { path: 'plan.md', size: 5, mtimeMs: Math.floor(planStat.mtimeMs) },
+        ],
+      });
+    });
+
+    it('does not enter skipped directories', async () => {
+      await fs.writeFile(path.join(tmpDir, 'keep.md'), 'x');
+      for (const name of ['.git', 'node_modules', '.hidden', 'dist']) {
+        await fs.mkdir(path.join(tmpDir, name));
+        await fs.writeFile(path.join(tmpDir, name, 'inside.md'), 'x');
+      }
+
+      const result = await fsListWorkspaceFiles({ path: tmpDir });
+
+      expect(result).toMatchObject({ exceeded: false, files: [{ path: 'keep.md' }] });
+    });
+
+    it('neither lists nor follows symbolic links', async () => {
+      if (platform === 'win32') return; // symlinks need elevated perms on Windows CI runners
+      const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'abu-fshost-outside-'));
+      try {
+        await fs.writeFile(path.join(outside, 'secret.md'), 'x');
+        await fs.writeFile(path.join(tmpDir, 'real.md'), 'x');
+        await fs.symlink(path.join(tmpDir, 'real.md'), path.join(tmpDir, 'link.md'));
+        await fs.symlink(outside, path.join(tmpDir, 'linked-dir'));
+
+        const result = await fsListWorkspaceFiles({ path: tmpDir });
+
+        expect(result).toMatchObject({ exceeded: false, files: [{ path: 'real.md' }] });
+      } finally {
+        await fs.rm(outside, { recursive: true, force: true });
+      }
+    });
+
+    it('stops entering directories at maxDepth', async () => {
+      await fs.mkdir(path.join(tmpDir, 'a', 'b'), { recursive: true });
+      await fs.writeFile(path.join(tmpDir, 'a', 'one.md'), 'x');
+      await fs.writeFile(path.join(tmpDir, 'a', 'b', 'two.md'), 'x');
+
+      const result = await fsListWorkspaceFiles({ path: tmpDir, limits: { maxDepth: 1 } });
+
+      expect(result).toMatchObject({ exceeded: false, files: [{ path: 'a/one.md' }] });
+    });
+
+    it('reports exceeded when the folder holds more files than maxEntries', async () => {
+      for (const name of ['a.md', 'b.md', 'c.md']) await fs.writeFile(path.join(tmpDir, name), 'x');
+
+      await expect(fsListWorkspaceFiles({ path: tmpDir, limits: { maxEntries: 2 } })).resolves.toEqual({ exceeded: true });
+      await expect(fsListWorkspaceFiles({ path: tmpDir, limits: { maxEntries: 3 } })).resolves.toMatchObject({ exceeded: false });
+    });
+
+    it('rejects a missing or empty path and limits outside the allowed range with RpcError -32602', async () => {
+      await expect(fsListWorkspaceFiles(42)).rejects.toMatchObject({ code: -32602 });
+      await expect(fsListWorkspaceFiles({ path: '' })).rejects.toMatchObject({ code: -32602 });
+      await expect(fsListWorkspaceFiles({ path: tmpDir, limits: { maxEntries: 20001 } })).rejects.toMatchObject({ code: -32602 });
+      await expect(fsListWorkspaceFiles({ path: tmpDir, limits: { maxDepth: 0 } })).rejects.toMatchObject({ code: -32602 });
+    });
+
+    it('rejects with RpcError -32001 and ENOENT data for a missing root', async () => {
+      const missing = path.join(tmpDir, 'no-such-dir');
+      await expect(fsListWorkspaceFiles({ path: missing })).rejects.toMatchObject({
         code: -32001,
         data: { code: 'ENOENT', path: missing },
       });

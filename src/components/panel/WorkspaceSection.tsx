@@ -1,11 +1,10 @@
 import { useWorkspaceStore, getFolderName } from '@/stores/workspaceStore';
-import { useChatStore } from '@/stores/chatStore';
 import { useProjectStore } from '@/stores/projectStore';
-import { usePermissionStore, type PermissionDuration } from '@/stores/permissionStore';
+import { usePreviewStore } from '@/stores/previewStore';
 import { useI18n } from '@/i18n';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
-import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { exists } from '@tauri-apps/plugin-fs';
+import { useSelectWorkspace } from './useSelectWorkspace';
 import { scanMemoryFiles } from '@/core/memdir/scan';
 import { Button, IconButton } from '@/components/ds/button';
 import { Icon } from '@/components/ds/icon';
@@ -27,23 +26,10 @@ type FolderMenuAction = { kind: 'recent'; path: string } | { kind: 'browse' };
 export default function WorkspaceSection() {
   const currentPath = useWorkspaceStore((s) => s.currentPath);
   const recentPaths = useWorkspaceStore((s) => s.recentPaths);
-  const setWorkspaceGlobal = useWorkspaceStore((s) => s.setWorkspace);
-  const activeConversationId = useChatStore((s) => s.activeConversationId);
-  const setConversationWorkspace = useChatStore((s) => s.setConversationWorkspace);
-
-  // Wrapper: update both global workspace and active conversation
-  const setWorkspace = (path: string | null) => {
-    setWorkspaceGlobal(path);
-    if (activeConversationId) {
-      setConversationWorkspace(activeConversationId, path);
-    }
-  };
-
-  const grantPermission = usePermissionStore((s) => s.grantPermission);
-  const hasPermission = usePermissionStore((s) => s.hasPermission);
+  const openFiles = usePreviewStore((s) => s.openFiles);
+  const { pendingFolder, selectWorkspace, switchTo, needsAccess, allow, deny } = useSelectWorkspace();
   const [hasInstructions, setHasInstructions] = useState(false);
   const [hasMemory, setHasMemory] = useState(false);
-  const [pendingFolder, setPendingFolder] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(true);  // Main section expand/collapse
   const [showInstructionsModal, setShowInstructionsModal] = useState(false);
   const [showMemoryModal, setShowMemoryModal] = useState(false);
@@ -84,27 +70,6 @@ export default function WorkspaceSection() {
     }
   };
 
-  const handleSelectWorkspace = async () => {
-    try {
-      const selected = await openDialog({
-        directory: true,
-        multiple: false,
-        title: t.panel.selectWorkspace,
-      });
-      if (selected) {
-        const folderPath = selected as string;
-        // Check if already has permission
-        if (hasPermission(folderPath, 'read')) {
-          setWorkspace(folderPath);
-        } else {
-          setPendingFolder(folderPath);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to select workspace:', err);
-    }
-  };
-
   // Reopening the menu during its exit animation keeps it mounted, so the close hook
   // never runs for the earlier choice. Drop it here, or the next Escape would carry it out.
   const handleFolderMenuOpenChange = (open: boolean) => {
@@ -119,28 +84,16 @@ export default function WorkspaceSection() {
     const action = pendingActionRef.current;
     pendingActionRef.current = null;
     if (!action) return;
-    if (action.kind === 'recent' && hasPermission(action.path, 'read')) {
-      setWorkspace(action.path);
+    if (action.kind === 'recent' && !needsAccess(action.path)) {
+      switchTo(action.path);
       return;
     }
     event.preventDefault();
     if (action.kind === 'recent') {
-      setPendingFolder(action.path);
+      switchTo(action.path);
     } else {
-      handleSelectWorkspace();
+      void selectWorkspace();
     }
-  };
-
-  const handleAllowPermission = (duration: PermissionDuration) => {
-    if (pendingFolder) {
-      grantPermission(pendingFolder, ['read', 'write', 'execute'], duration);
-      setWorkspace(pendingFolder);
-      setPendingFolder(null);
-    }
-  };
-
-  const handleDenyPermission = () => {
-    setPendingFolder(null);
   };
 
   const folderName = currentPath ? getFolderName(currentPath) : null;
@@ -155,8 +108,8 @@ export default function WorkspaceSection() {
       {pendingFolder && (
         <PermissionDialog
           request={{ type: 'workspace', path: pendingFolder }}
-          onAllow={handleAllowPermission}
-          onDeny={handleDenyPermission}
+          onAllow={allow}
+          onDeny={deny}
         />
       )}
 
@@ -273,12 +226,21 @@ export default function WorkspaceSection() {
                   </MenuItem>
                 </Menu>
 
+                {/* File list entry: opens the workspace files tab */}
+                <Pressable
+                  onClick={() => openFiles()}
+                  className="flex w-full items-center gap-2 rounded-control bg-fill px-2 py-1 text-left text-ui-sm text-label hover:bg-fill-hover"
+                >
+                  <Icon icon={AppIcons.fileTree} size="sm" />
+                  {t.panel.viewFiles}
+                </Pressable>
+
                 {/* Instructions entry */}
                 <Pressable
                   onClick={() => setShowInstructionsModal(true)}
                   className={cn(
                     'flex w-full items-center gap-2 rounded-control bg-fill px-2 py-1 text-left text-ui-sm hover:bg-fill-hover',
-                    hasInstructions ? 'text-label' : 'text-label-tertiary'
+                    hasInstructions ? 'text-label' : 'text-label-secondary'
                   )}
                 >
                   <Icon icon={AppIcons.file} size="sm" />
@@ -290,7 +252,7 @@ export default function WorkspaceSection() {
                   onClick={() => setShowMemoryModal(true)}
                   className={cn(
                     'flex w-full items-center gap-2 rounded-control bg-fill px-2 py-1 text-left text-ui-sm hover:bg-fill-hover',
-                    hasMemory ? 'text-label' : 'text-label-tertiary'
+                    hasMemory ? 'text-label' : 'text-label-secondary'
                   )}
                 >
                   <Icon icon={AppIcons.thinking} size="sm" />
@@ -300,7 +262,7 @@ export default function WorkspaceSection() {
             ) : (
               // Empty state - clickable to select workspace
               <div className="mt-3">
-                <Button variant="plain" size="sm" onClick={handleSelectWorkspace}>
+                <Button variant="plain" size="sm" onClick={() => { void selectWorkspace(); }}>
                   {t.panel.selectWorkspace}
                 </Button>
               </div>

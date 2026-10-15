@@ -6,24 +6,28 @@ import { usePreviewStore, useVisibleTabs, isTabVisibleFor, workspaceTabButtonId,
 import { useI18n } from '@/i18n';
 import TabStrip from './TabStrip';
 import SummaryBody from './SummaryBody';
+import FilesTab from './FilesTab';
 import PreviewPanel from '../PreviewPanel';
 import TerminalTab from './TerminalTab';
 import BrowserTab from './BrowserTab';
 import SubagentTab from './SubagentTab';
 import TeamTab from './TeamTab';
+import ChangesTab from './ChangesTab';
 
 /**
  * Empty state shown when every tab is closed (TRAE "从这里开始"): a launcher
- * listing the three things the panel can open.
+ * listing the things the panel can open.
  */
 function WorkspaceEmptyState() {
   const { t } = useI18n();
   const openSummary = usePreviewStore((s) => s.openSummary);
+  const openFiles = usePreviewStore((s) => s.openFiles);
   const openBrowser = usePreviewStore((s) => s.openBrowser);
   const openTerminal = usePreviewStore((s) => s.openTerminal);
 
   const rows = [
     { key: 'summary', icon: AppIcons.plan, label: t.workspace.summaryTitle, desc: t.workspace.summaryDesc, onClick: () => openSummary() },
+    { key: 'files', icon: AppIcons.fileTree, label: t.workspace.filesTitle, desc: t.workspace.filesDesc, onClick: () => openFiles() },
     { key: 'browser', icon: AppIcons.webPage, label: t.workspace.browserTitle, desc: t.workspace.browserDesc, onClick: () => openBrowser() },
     { key: 'terminal', icon: AppIcons.terminal, label: t.workspace.terminalTitle, desc: t.workspace.terminalDesc, onClick: () => openTerminal() },
   ];
@@ -89,14 +93,29 @@ function WorkspacePanelImpl() {
             >
               {tab.kind === 'summary' ? (
                 isTabVisibleFor(tab, conversationId) ? <SummaryBody /> : null
+              ) : tab.kind === 'files' ? (
+                // The tree reads the workspace of the conversation in view, so only that
+                // conversation's own file list has a body.
+                isTabVisibleFor(tab, conversationId) ? <FilesTab /> : null
               ) : tab.kind === 'preview' ? (
-                <PreviewPanel filePath={tab.filePath} tabId={tab.id} embedded />
+                <PreviewPanel
+                  filePath={tab.filePath}
+                  tabId={tab.id}
+                  embedded
+                  line={tab.line}
+                  lineRequest={tab.lineRequest}
+                  keptCopy={tab.keptCopyOf !== undefined}
+                />
               ) : tab.kind === 'terminal' ? (
                 <TerminalTab tabId={tab.id} />
               ) : tab.kind === 'browser' ? (
                 <BrowserTab tabId={tab.id} url={tab.url} />
               ) : tab.kind === 'team' ? (
                 <TeamTab conversationId={tab.conversationId} />
+              ) : tab.kind === 'changes' ? (
+                isTabVisibleFor(tab, conversationId)
+                  ? <ChangesTab tabId={tab.id} conversationId={tab.conversationId} loopId={tab.loopId} fileIndex={tab.fileIndex} />
+                  : null
               ) : (
                 <SubagentTab identity={tab.identity} taskIndex={tab.taskIndex} title={tab.title} />
               )}

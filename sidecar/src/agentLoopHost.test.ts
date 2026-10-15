@@ -1430,6 +1430,72 @@ describe('agentLoopHost', () => {
       expect(reportMetadata).toHaveBeenCalledWith({ subagentStopReason: 'max_turns' });
     });
 
+    it('replays a validated file change metadata envelope into the original tool context', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      const fileChange = {
+        path: '/w/plan.md',
+        kind: 'modify',
+        added: 1,
+        deleted: 1,
+        hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b'] }],
+      };
+      mockSendRequest({
+        toolInvokeResult: {
+          result: 'Successfully edited /w/plan.md: replaced 1 line(s) with 1 line(s)',
+          metadata: { fileChange: { ...fileChange, unknownField: 'dropped' } },
+        },
+      });
+      const reportMetadata = vi.fn();
+
+      const result = await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool(
+          'edit_file',
+          { path: '/w/plan.md', old_content: 'a', new_content: 'b' },
+          undefined,
+          undefined,
+          { reportMetadata },
+        ),
+      );
+
+      expect(result).toBe('Successfully edited /w/plan.md: replaced 1 line(s) with 1 line(s)');
+      expect(reportMetadata).toHaveBeenCalledWith({ fileChange });
+    });
+
+    it.each([
+      ['a wrong field type', { path: '/w/plan.md', kind: 'modify', added: '1' }],
+      ['an unknown kind', { path: '/w/plan.md', kind: 'rename' }],
+      ['more hunk lines than the saved budget', {
+        path: '/w/plan.md',
+        kind: 'create',
+        hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 401, lines: Array.from({ length: 401 }, () => '+x') }],
+      }],
+      ['a hunk line over the character budget', {
+        path: '/w/plan.md',
+        kind: 'create',
+        hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 1, lines: [`+${'x'.repeat(501)}`] }],
+      }],
+      ['a serialization over the byte budget', {
+        path: '/w/plan.md',
+        kind: 'create',
+        hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 400, lines: Array.from({ length: 400 }, () => `+${'文'.repeat(500)}`) }],
+      }],
+    ])('rejects a file change metadata envelope with %s', async (_label, fileChange) => {
+      hasLocalToolMock.mockReturnValue(false);
+      mockSendRequest({ toolInvokeResult: { result: 'Successfully edited', metadata: { fileChange } } });
+      const reportMetadata = vi.fn();
+
+      await expect(withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool(
+          'edit_file',
+          { path: '/w/plan.md', old_content: 'a', new_content: 'b' },
+          undefined,
+          undefined,
+          { reportMetadata },
+        ),
+      )).rejects.toThrow('Invalid tool.invoke file change envelope');
+      expect(reportMetadata).not.toHaveBeenCalled();
+    });
+
     it('replays a validated batch terminal summary metadata envelope into the original tool context', async () => {
       hasLocalToolMock.mockReturnValue(false);
       const summary = {
@@ -1767,7 +1833,7 @@ describe('agentLoopHost', () => {
       expect(handleAgentGetState({ runId: 'ledger-ok' }).state).toBe('accepted');
       const seen = await messagesSeenByTheLoop(params) as { id: string; runState?: string }[];
       expect(seen.map((m) => [m.id, m.runState ?? null])).toEqual([
-        ['u0', 'failed'],
+        ['u0', 'interrupted'],
         ['a0', null],
         ['msg-ledger-ok', 'pending'],
       ]);
@@ -1928,7 +1994,6 @@ describe('agentLoopHost', () => {
             ? testCase.expected
             : [...testCase.expected, { ...currentRow(runId), isStreaming: false }];
           expect(await messagesSeenByTheLoop(params)).toEqual(expectedForText(expected, {
-            runRecoveredAfterRestart: enUS.chat.runRecoveredAfterRestart,
             errorEmptyBody: enUS.chat.errorEmptyBody,
           }));
         });

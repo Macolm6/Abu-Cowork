@@ -68,16 +68,36 @@ function expandRightPanel(): void {
  */
 export type WorkspaceTab = (
   | { id: string; kind: 'summary' }
-  | { id: string; kind: 'preview'; filePath: string }
+  // The file list of the conversation's workspace folder; one per conversation.
+  | { id: string; kind: 'files' }
+  // `line` is the 1-based line the latest open request asked the source view to show;
+  // `lineRequest` counts the requests that named a line, so the same line asked for
+  // again is a new request.
+  // `keptCopyOf` is set when `filePath` is the copy Abu kept of a file that is no longer at
+  // its own path, and names that path; the preview of such a tab is read-only.
+  | { id: string; kind: 'preview'; filePath: string; line?: number; lineRequest?: number; keptCopyOf?: string }
   // Agent views carry main's ownerKey; user-created tabs inherit the current conversation.
   | { id: string; kind: 'browser'; url: string }
   | { id: string; kind: 'terminal' }
   | { id: string; kind: 'subagent'; identity: BatchIdentity; taskIndex: number; title: string }
   | { id: string; kind: 'team'; conversationId: string }
+  // The files one turn changed, compared one at a time; `fileIndex` is the file in view.
+  | { id: string; kind: 'changes'; conversationId: string; loopId: string; fileIndex: number; title: string }
 ) & { ownerConversationId?: string };
 
 export function teamTabId(conversationId: string): string {
   return `team:${conversationId}`;
+}
+
+export function turnChangesTabId(conversationId: string, loopId: string): string {
+  return `changes:${conversationId}:${loopId}`;
+}
+
+export interface TurnChangesTarget {
+  conversationId: string;
+  loopId: string;
+  fileIndex: number;
+  title: string;
 }
 
 /**
@@ -91,6 +111,15 @@ export function teamTabId(conversationId: string): string {
 export function isTabVisibleFor(tab: WorkspaceTab, conversationId: string | null): boolean {
   if (!tab.ownerConversationId) return true;
   return tab.ownerConversationId === conversationId;
+}
+
+/**
+ * Whether `tab` asks for the wide panel. The task summary and the workspace
+ * file list are columns of details and keep the narrow, resizable width; every
+ * other tab shows content that fills the space the chat leaves.
+ */
+export function isWideTab(tab: WorkspaceTab): boolean {
+  return tab.kind !== 'summary' && tab.kind !== 'files';
 }
 
 export function visibleTabsFor(tabs: WorkspaceTab[], conversationId: string | null): WorkspaceTab[] {
@@ -185,12 +214,11 @@ interface PreviewState {
   // Resizable chat-column width (px) while the workspace is open; null = use default.
   // The workspace column flex-fills whatever the chat leaves.
   chatWidth: number | null;
-  // True while the left sidebar is showing the active conversation's project
-  // file tree (TRAE-style file mode). Lives here (not local Sidebar state) so
-  // RightPanel can read it and skip its "collapse the sidebar when a preview
-  // opens" behavior — otherwise clicking a file in the tree would collapse the
-  // very sidebar that hosts the tree. Ephemeral (no persist).
-  fileTreeMode: boolean;
+  // The conversations whose panel the user opened before they had a message or
+  // a tab. Such a panel has nothing of its own to show and stays off the page
+  // until asked for; then it shows the launcher. Kept per conversation, like
+  // the rest of the panel's layout. Ephemeral.
+  emptyPanelShown: Record<string, true>;
   // Back-compat derived read for the many call sites that only care about
   // "the currently previewed file": active tab's filePath if it's a preview
   // tab, else null. Kept as a plain field (not a getter) so it stays
@@ -207,9 +235,20 @@ interface PreviewState {
   // default right-panel tab (progress / workspace files / context). Created at
   // the FRONT so it stays leftmost.
   openSummary: () => void;
+  // Open (or activate an existing) the workspace file list of this conversation.
+  openFiles: () => string;
+  // Show the panel of the current conversation although it has no message and
+  // no tab yet. No-op without a current conversation.
+  showEmptyPanel: () => void;
   // Open (or activate an existing) preview tab for `filePath`. Call sites
   // (~11 across the app) are unchanged from the pre-tabs single-preview API.
-  openPreview: (filePath: string) => void;
+  // `options.line` asks the source view to show that line; the tab keeps the
+  // line of the latest request, so a request without one clears it.
+  // `options.focusTab` asks the strip to focus the tab's button: for a caller
+  // whose own control leaves the page when the preview tab takes its place.
+  // `options.keptCopyOf` says that `filePath` is the kept copy of the file that was at
+  // that path; the tab keeps it for as long as it is open.
+  openPreview: (filePath: string, options?: { line?: number; focusTab?: boolean; keptCopyOf?: string }) => void;
   // Open (or activate an existing) browser tab for `url` (default ''). Main
   // may supply an id when adopting an agent-created Electron browser view, plus
   // the conversation that view belongs to (omitted for the legacy shared pool).
@@ -219,6 +258,11 @@ interface PreviewState {
   openSubagent: (identity: BatchIdentity, taskIndex: number, title: string) => string;
   // Open (or activate) the singleton team overview tab of a team-pinned conversation.
   openTeam: (conversationId: string, options?: { activate?: boolean }) => string;
+  // Open the changes tab of a turn, or return to the one already open for that
+  // turn, on the file `target.fileIndex` names.
+  openTurnChanges: (target: TurnChangesTarget) => string;
+  // Show another file in a changes tab. No-op for any other tab.
+  selectTurnChangesFile: (id: string, fileIndex: number) => void;
   // Make an existing tab the active one. No-op if the id doesn't exist.
   activateTab: (id: string) => void;
   consumeFocusTabRequest: (id: string) => void;
@@ -265,8 +309,6 @@ interface PreviewState {
   // Force a refresh of whatever is displayed. Legacy/back-compat only — see
   // `reloadNonce` above.
   refreshPreview: () => void;
-  // Toggle the sidebar file-tree mode.
-  setFileTreeMode: (on: boolean) => void;
   // Mark a workspace popover as open/closed (so the native browser webview can
   // hide while it's up).
   setMenuOpen: (open: boolean) => void;
@@ -371,7 +413,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
   appModalOpen: false,
   dsModalOpen: false,
   chatWidth: null,
-  fileTreeMode: false,
+  emptyPanelShown: {},
   previewFilePath: null,
   reloadNonce: 0,
 
@@ -388,17 +430,57 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
     commitTabs(nextTabs, id);
   },
 
-  openPreview: (filePath) => {
+  openFiles: () => {
     const { tabs } = get();
-    const existing = visibleNow().find((t) => t.kind === 'preview' && t.filePath === filePath);
+    const existing = visibleNow().find((t) => t.kind === 'files');
     if (existing) {
       commitTabs(tabs, existing.id);
+      expandRightPanel();
+      return existing.id;
+    }
+    const id = genId();
+    commitTabs([...tabs, { id, kind: 'files', ...ownerScope() }], id);
+    expandRightPanel();
+    return id;
+  },
+
+  showEmptyPanel: () => {
+    const id = get().currentConversationId;
+    if (!id) return;
+    set((state) => ({ emptyPanelShown: { ...state.emptyPanelShown, [id]: true } }));
+    expandRightPanel();
+  },
+
+  openPreview: (filePath, options) => {
+    const { tabs } = get();
+    const line = options?.line;
+    const focus = (id: string) => (options?.focusTab ? { focusTabId: id } : {});
+    const keptCopyOf = options?.keptCopyOf;
+    const existing = visibleNow().find((t) => t.kind === 'preview' && t.filePath === filePath);
+    if (existing) {
+      let nextTabs = tabs;
+      if (existing.kind === 'preview') {
+        let next: WorkspaceTab = existing;
+        if (line !== undefined) next = { ...next, line, lineRequest: (existing.lineRequest ?? 0) + 1 };
+        else if (existing.line !== undefined) next = { ...next, line: undefined };
+        if (keptCopyOf !== undefined && existing.keptCopyOf !== keptCopyOf) next = { ...next, keptCopyOf };
+        if (next !== existing) nextTabs = tabs.map((t) => (t.id === existing.id ? next : t));
+      }
+      commitTabs(nextTabs, existing.id, focus(existing.id));
       expandRightPanel();
       return;
     }
     const id = genId();
-    const nextTabs: WorkspaceTab[] = [...tabs, { id, kind: 'preview', filePath, ...ownerScope() }];
-    commitTabs(nextTabs, id);
+    const nextTabs: WorkspaceTab[] = [
+      ...tabs,
+      {
+        id, kind: 'preview', filePath,
+        ...(line !== undefined ? { line, lineRequest: 1 } : {}),
+        ...(keptCopyOf !== undefined ? { keptCopyOf } : {}),
+        ...ownerScope(),
+      },
+    ];
+    commitTabs(nextTabs, id, focus(id));
     expandRightPanel();
   },
 
@@ -491,6 +573,25 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
     commitTabs(nextTabs, activate ? id : activeTabId ?? id, activate ? { focusTabId: id } : {});
     if (activate) expandRightPanel();
     return id;
+  },
+
+  openTurnChanges: ({ conversationId, loopId, fileIndex, title }) => {
+    const { tabs } = get();
+    const id = turnChangesTabId(conversationId, loopId);
+    const next: WorkspaceTab = { id, kind: 'changes', conversationId, loopId, fileIndex, title, ...ownerScope() };
+    const nextTabs = tabs.some((tab) => tab.id === id)
+      ? tabs.map((tab) => (tab.id === id ? next : tab))
+      : [...tabs, next];
+    commitTabs(nextTabs, id);
+    expandRightPanel();
+    return id;
+  },
+
+  selectTurnChangesFile: (id, fileIndex) => {
+    const { tabs, activeTabId } = get();
+    const tab = tabs.find((candidate) => candidate.id === id);
+    if (!tab || tab.kind !== 'changes' || tab.fileIndex === fileIndex) return;
+    commitTabs(tabs.map((candidate) => (candidate.id === id ? { ...tab, fileIndex } : candidate)), activeTabId);
   },
 
   openSubagent: (identity, taskIndex, title) => {
@@ -596,7 +697,9 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
       const lastActiveTabByConversation = { ...state.lastActiveTabByConversation };
       delete panelStateByConversation[conversationId];
       delete lastActiveTabByConversation[conversationId];
-      return { panelStateByConversation, lastActiveTabByConversation,
+      const emptyPanelShown = { ...state.emptyPanelShown };
+      delete emptyPanelShown[conversationId];
+      return { panelStateByConversation, lastActiveTabByConversation, emptyPanelShown,
         ...(state.currentConversationId === conversationId ? { currentConversationId: null } : {}),
       };
     });
@@ -672,10 +775,6 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
 
   refreshPreview: () => {
     set((s) => ({ reloadNonce: s.reloadNonce + 1 }));
-  },
-
-  setFileTreeMode: (on) => {
-    set({ fileTreeMode: on });
   },
 
   setMenuOpen: (open) => {

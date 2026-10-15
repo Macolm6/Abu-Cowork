@@ -18,9 +18,13 @@ import { useAppAddFlowStore } from '@/stores/appAddFlowStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { useTeamStore } from '@/stores/teamStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
+import { useToastStore } from '@/stores/toastStore';
+import { reportAppFailure } from '@/core/app/appFailure';
 import { resolveBuiltinMarketDir } from '@/core/plugin/builtinMarket';
 import { refreshFetchedMarkets, removeMarket } from '@/core/plugin/marketSource';
 import { loadAppListings, type AppListing, type AppMarketListing } from '@/core/app/appMarket';
+import { resolveLocalizedText } from '@/core/app/appBinding';
+import type { AppLocale } from '@/types/app';
 import { liveRefCatalog } from '@/core/app/appRefs';
 import { getBaseName } from '@/utils/pathUtils';
 import { Button, IconButton } from '@/components/ds/button';
@@ -38,9 +42,9 @@ import { focusIsOnWindow } from '@/components/toolbox/cardFocus';
 import AppAddConfirmDialog from './AppAddConfirmDialog';
 import AppLogo from './AppLogo';
 
-function matches(listing: AppListing, query: string): boolean {
+function matches(listing: AppListing, query: string, locale: AppLocale): boolean {
   if (!query) return true;
-  return [listing.name, listing.description ?? '', ...listing.uses].join(' ').toLowerCase().includes(query);
+  return [resolveLocalizedText(listing.name, locale), resolveLocalizedText(listing.description, locale), ...listing.uses].join(' ').toLowerCase().includes(query);
 }
 
 /**
@@ -56,21 +60,22 @@ const AppCard = memo(function AppCard({ item, addedVersion, onAdd, onUpdate, onE
   onUpdate: (item: AppListing) => void;
   onEnter: (appId: string) => void;
 }) {
-  const { t, format } = useI18n();
+  const { t, format, locale } = useI18n();
   const added = addedVersion !== undefined;
   const canUpdate = added && item.version !== undefined && addedVersion !== item.version && !item.needsUpgrade;
+  const name = resolveLocalizedText(item.name, locale);
   return (
     <div data-testid="app-market-entry" data-app-id={item.appId} className="flex h-full flex-col gap-2 rounded-panel border border-separator bg-surface p-3">
       <div className="flex items-start gap-3">
-        <AppLogo name={item.name} logo={item.logo} logoDark={item.logoDark} size="lg" />
+        <AppLogo name={name} logo={item.logo} logoDark={item.logoDark} size="lg" />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-ui font-medium text-label">{item.name}</p>
-          {item.description && <p className="line-clamp-2 text-ui-sm text-label-secondary">{item.description}</p>}
+          <p className="truncate text-ui font-medium text-label">{name}</p>
+          {item.description && <p className="line-clamp-2 text-ui-sm text-label-secondary">{resolveLocalizedText(item.description, locale)}</p>}
         </div>
       </div>
       {item.uses.length > 0 && <p className="line-clamp-2 text-caption text-label-tertiary">{format(t.appMarket.uses, { names: item.uses.join('、') })}</p>}
       <div className="mt-auto flex items-center justify-end gap-2">
-        {item.invalid && <span className="text-caption text-danger" title={item.invalid}>{t.appMarket.invalidApp}</span>}
+        {item.invalid && <span className="text-caption text-danger">{t.appMarket.invalidApp}</span>}
         {!item.invalid && item.needsUpgrade && <span data-testid="app-market-needs-upgrade" className="text-caption text-warning">{t.appMarket.needsUpgrade}</span>}
         {added ? (
           <>
@@ -94,7 +99,7 @@ const AppCard = memo(function AppCard({ item, addedVersion, onAdd, onUpdate, onE
 });
 
 export default function AppMarketDialog() {
-  const { t, format } = useI18n();
+  const { t, format, locale } = useI18n();
   const open = useAppStore((s) => s.appMarketOpen);
   const setOpen = useAppStore((s) => s.setAppMarketOpen);
   const addedApps = useAppStore((s) => s.addedApps);
@@ -108,6 +113,7 @@ export default function AppMarketDialog() {
   const teams = useTeamStore((s) => s.teams);
   const agents = useDiscoveryStore((s) => s.agents);
   const confirm = useConfirm();
+  const addToast = useToastStore((s) => s.addToast);
   const [home, setHome] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [listing, setListing] = useState<AppMarketListing | null>(null);
@@ -173,16 +179,17 @@ export default function AppMarketDialog() {
   }, [open, refreshInstalled, ensureBuiltinMarketplace, readAttempt]);
 
   // Re-read whenever the markets change, a flow finishes (an app was added or
-  // updated), or what references resolve against changes.
+  // updated), what references resolve against changes, or the interface
+  // language does (a listing names who it hands work to in that language).
   useEffect(() => {
     if (!open || !flowClosed || fetchedAt === 0) return;
     let cancelled = false;
     const markets = [...marketplaces].sort((a, b) => Number(Boolean(b.builtin)) - Number(Boolean(a.builtin)));
     void loadAppListings(markets, liveRefCatalog()).then((result) => { if (!cancelled) setListing(result); });
     return () => { cancelled = true; };
-  }, [open, marketplaces, installed, teams, agents, flowClosed, fetchedAt]);
+  }, [open, marketplaces, installed, teams, agents, flowClosed, fetchedAt, locale]);
 
-  const visible = useMemo(() => (listing?.listings ?? []).filter((item) => matches(item, query.trim().toLowerCase())), [listing, query]);
+  const visible = useMemo(() => (listing?.listings ?? []).filter((item) => matches(item, query.trim().toLowerCase(), locale)), [listing, query, locale]);
   const addedVersionById = useMemo(() => new Map(addedApps.map((app) => [app.appId, app.version])), [addedApps]);
   const userMarkets = marketplaces.filter((market) => !market.builtin);
 
@@ -215,6 +222,8 @@ export default function AppMarketDialog() {
     removedMarket.current = false;
     if (focusIsOnWindow() || !document.activeElement?.isConnected) addMarketRef.current?.focus();
   }, [marketplaces]);
+  // The markets being removed: one removal per market at a time.
+  const removingMarkets = useRef(new Set<string>());
   // Removing a market is asked first, by name. The answer acts on what is in the list at that
   // moment: a market that has gone meanwhile is not removed again.
   const askToRemoveMarket = async (name: string) => {
@@ -226,10 +235,23 @@ export default function AppMarketDialog() {
       tone: 'danger',
     });
     if (!confirmed || !openRef.current) return;
-    if (!usePluginStore.getState().marketplaces.some((market) => market.name === name && !market.builtin)) return;
+    const listed = () => usePluginStore.getState().marketplaces.some((market) => market.name === name && !market.builtin);
+    if (!listed() || removingMarkets.current.has(name)) return;
+    removingMarkets.current.add(name);
     removedMarket.current = true;
-    // The market leaves the list at once; a copy fetched by address is deleted after it.
-    void removeMarket(name, home);
+    try {
+      // A copy fetched by address is deleted first; the market then leaves the list.
+      await removeMarket(name, home);
+    } catch (error) {
+      reportAppFailure('remove market', error);
+      // The list follows the disk: a market that is still listed was not removed, and the user is told.
+      if (listed()) {
+        removedMarket.current = false;
+        addToast({ type: 'error', title: format(t.toolbox.pluginsRemoveMarketplaceFailed, { name }) });
+      }
+    } finally {
+      removingMarkets.current.delete(name);
+    }
   };
 
   return (
@@ -296,9 +318,9 @@ export default function AppMarketDialog() {
           </div>
         )}
 
-        {listing?.failures.map(({ market, message }) => (
+        {listing?.failures.map(({ market }) => (
           <div key={market.name} className="shrink-0">
-            <InlineMessage tone="danger"><span className="break-words">{market.name}: {message}</span></InlineMessage>
+            <InlineMessage tone="danger"><span className="break-words">{format(t.appMarket.marketUnreadable, { name: market.name })}</span></InlineMessage>
           </div>
         ))}
 
