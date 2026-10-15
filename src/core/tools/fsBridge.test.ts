@@ -35,7 +35,7 @@ const tauriMocks = vi.hoisted(() => ({
 vi.mock('@tauri-apps/plugin-fs', () => tauriMocks);
 
 import { SidecarRpcError } from '../sidecar/sidecarManager';
-import { readTextFile, readFile, writeTextFile, readDir, exists, stat } from './fsBridge';
+import { readTextFile, readFile, writeTextFile, readDir, exists, stat, listWorkspaceFiles } from './fsBridge';
 
 describe('fsBridge', () => {
   beforeEach(() => {
@@ -264,6 +264,72 @@ describe('fsBridge', () => {
 
       await expect(writeTextFile('/protected.txt', 'x')).rejects.toThrow('EACCES: permission denied');
       expect(tauriMocks.writeTextFile).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('listWorkspaceFiles', () => {
+    const limits = { maxEntries: 20000, maxDepth: 12 };
+
+    it('asks the sidecar for the list when it is running', async () => {
+      getSidecarStatusMock.mockReturnValue('running');
+      requestMock.mockResolvedValue({ exceeded: false, files: [{ path: 'a.md', size: 3, mtimeMs: 10 }] });
+
+      const result = await listWorkspaceFiles('/ws', limits);
+
+      expect(result).toEqual({ exceeded: false, files: [{ path: 'a.md', size: 3, mtimeMs: 10 }] });
+      expect(requestMock).toHaveBeenCalledWith('fs.listWorkspaceFiles', { path: '/ws', limits }, 30_000);
+      expect(tauriMocks.readDir).not.toHaveBeenCalled();
+    });
+
+    it('passes an exceeded answer through', async () => {
+      getSidecarStatusMock.mockReturnValue('running');
+      requestMock.mockResolvedValue({ exceeded: true });
+      await expect(listWorkspaceFiles('/ws', limits)).resolves.toEqual({ exceeded: true });
+    });
+
+    it('walks the folder through plugin-fs when the sidecar is not running', async () => {
+      getSidecarStatusMock.mockReturnValue('stopped');
+      tauriMocks.readDir.mockImplementation(async (path: string) => {
+        if (path === '/ws') {
+          return [
+            { name: 'a.md', isDirectory: false, isFile: true, isSymlink: false },
+            { name: 'link.md', isDirectory: false, isFile: false, isSymlink: true },
+            { name: 'node_modules', isDirectory: true, isFile: false, isSymlink: false },
+            { name: 'docs', isDirectory: true, isFile: false, isSymlink: false },
+          ];
+        }
+        if (path === '/ws/docs') return [{ name: 'b.md', isDirectory: false, isFile: true, isSymlink: false }];
+        throw new Error(`unexpected readDir ${path}`);
+      });
+      tauriMocks.stat.mockImplementation(async (path: string) => ({
+        size: path.endsWith('a.md') ? 3 : 4,
+        mtime: path.endsWith('a.md') ? new Date(1000) : null,
+      }));
+
+      const result = await listWorkspaceFiles('/ws', limits);
+
+      expect(result).toEqual({
+        exceeded: false,
+        files: [
+          { path: 'a.md', size: 3, mtimeMs: 1000 },
+          { path: 'docs/b.md', size: 4, mtimeMs: null },
+        ],
+      });
+      expect(requestMock).not.toHaveBeenCalled();
+    });
+
+    it('surfaces a real fs error from the sidecar without walking locally', async () => {
+      getSidecarStatusMock.mockReturnValue('running');
+      requestMock.mockRejectedValue(
+        new SidecarRpcError(-32001, 'ENOENT: no such file or directory', {
+          code: 'ENOENT',
+          message: 'ENOENT: no such file or directory',
+          path: '/ws',
+        }),
+      );
+
+      await expect(listWorkspaceFiles('/ws', limits)).rejects.toThrow('ENOENT: no such file or directory');
+      expect(tauriMocks.readDir).not.toHaveBeenCalled();
     });
   });
 });

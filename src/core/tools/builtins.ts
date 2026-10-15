@@ -1,5 +1,6 @@
 // Path safety checks are now handled centrally in registry.ts executeAnyTool
 import { preparePluginTool } from './definitions/pluginTools';
+import { prepareAppTool } from './definitions/appTools';
 import { toolRegistry } from './registry';
 
 // --- File tools ---
@@ -34,6 +35,7 @@ import { webSearchTool, httpFetchTool } from './definitions/webTools';
 
 // --- Memory tools ---
 import { reportPlanTool, updateMemoryTool, logTaskCompletionTool } from './definitions/memoryTools';
+import { manageGoalTool } from './definitions/goalTools';
 import { recallTool, readMemoryTool } from './definitions/recallTool';
 import { updateSoulTool } from './definitions/updateSoulTool';
 
@@ -63,8 +65,12 @@ export { setComputerUseBatchMode, setSkipAutoScreenshot } from './definitions/co
 // --- IM outbound tools ---
 import { sendFileTool } from './definitions/imTools';
 
+// --- Deliverable tools ---
+import { presentFilesTool } from './definitions/presentTools';
+
 export function registerBuiltinTools(): void {
   toolRegistry.register(preparePluginTool);
+  toolRegistry.register(prepareAppTool);
   toolRegistry.register(getSystemInfoTool);
   toolRegistry.register(readFileTool);
   toolRegistry.register(writeFileTool);
@@ -82,6 +88,7 @@ export function registerBuiltinTools(): void {
   toolRegistry.register(useSkillTool);
   toolRegistry.register(readSkillFileTool);
   toolRegistry.register(reportPlanTool);
+  toolRegistry.register(manageGoalTool);
   toolRegistry.register(generateImageTool);
   toolRegistry.register(processImageTool);
   toolRegistry.register(showWidgetTool);
@@ -104,6 +111,7 @@ export function registerBuiltinTools(): void {
   toolRegistry.register(clipboardWriteTool);
   toolRegistry.register(systemNotifyTool);
   toolRegistry.register(sendFileTool);
+  toolRegistry.register(presentFilesTool);
   toolRegistry.register(computerTool);
   toolRegistry.register(requestWorkspaceTool);
   toolRegistry.register(askUserQuestionTool);

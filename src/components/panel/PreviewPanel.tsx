@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react';
-import { readTextFile, exists } from '@tauri-apps/plugin-fs';
+import { memo, useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react';
+import { readFile, readTextFile, exists } from '@tauri-apps/plugin-fs';
 import { save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
@@ -7,23 +7,31 @@ import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
 import { buildPreviewUrl } from '@/utils/previewUrl';
 import { atomicWrite } from '@/utils/atomicFs';
 import { reconcileEditorContent } from '@/utils/editorReconcile';
+import { redactFailureText } from '@/core/diagnostic/scrub';
 import { snapshotVersion, revertToVersion } from '@/utils/canvasVersions';
 import { usePreviewStore } from '@/stores/previewStore';
 import { usePreviewFileWatch } from '@/hooks/usePreviewFileWatch';
 import { useToastStore } from '@/stores/toastStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useI18n, getI18n } from '@/i18n';
-import { ScrollArea } from '@/components/ui/scroll-area';
+import { Button, IconButton } from '@/components/ds/button';
+import { EmptyState } from '@/components/ds/empty-state';
+import { FullscreenSurface } from '@/components/ds/fullscreen';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { ScrollArea } from '@/components/ds/scroll-area';
+import { Spinner } from '@/components/ds/spinner';
+import { StatusIcon } from '@/components/ds/status-icon';
+import { Tag } from '@/components/ds/tag';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
 import CodeMirrorEditor from './CodeMirrorEditor';
 import { VersionHistoryMenu } from './VersionHistoryMenu';
-import { Check, Loader2, X, FolderOpen, Code, Eye, SquareArrowOutUpRight, History, FileCode, FileText, FileImage, FileSpreadsheet, FileType, File, Maximize2, Minimize2, RotateCw, Globe, SquareDashedMousePointer } from 'lucide-react';
-import { Button } from '@/components/ui/button';
 import { DocSelectionLayer } from '@/features/reference/DocSelectionLayer';
 import { cn } from '@/lib/utils';
 import { isMacOS, isWindows } from '@/utils/platform';
-import { getToolbarButtons } from './previewToolbarConfig';
-import { openWithDefaultApp } from '@/utils/openWithDefaultApp';
+import { getToolbarButtons, offersOpenInApp } from './previewToolbarConfig';
+import { isRunByDefaultRefusal, openWithDefaultApp } from '@/utils/openWithDefaultApp';
 import { createDomElementReference, type BrowserElementPayload } from '@/types/chatReference';
 import { isValidInspectSelection, resolveReferencePath } from '@/utils/inspectMessage';
 import { generateId } from '@/lib/utils';
@@ -39,7 +47,7 @@ const PptxPreview = lazy(() => import('@/components/preview/PptxPreview'));
 
 export type RendererType = 'markdown' | 'code' | 'image' | 'text' | 'html' | 'pdf' | 'docx' | 'pptx' | 'xlsx' | 'csv' | 'unsupported';
 
-/** Binary types that handle their own file reading */
+/** Types whose preview component draws the file's bytes */
 const BINARY_TYPES = new Set<RendererType>(['pdf', 'docx', 'pptx', 'xlsx']);
 
 /**
@@ -49,9 +57,20 @@ const BINARY_TYPES = new Set<RendererType>(['pdf', 'docx', 'pptx', 'xlsx']);
  */
 const EDITABLE_TYPES = new Set<RendererType>(['code', 'text', 'html', 'markdown']);
 
+// Window Controls Overlay stays native and always paints above the renderer. Keep "fullscreen"
+// as a content-area maximize on Windows, matching the shell layout and leaving caption controls
+// unobstructed. The 36px fallback matches WindowTitleBar's legacy Windows toolbar; WCO-capable
+// builds resolve the real 30px height from the env value.
+const WINDOWS_FULLSCREEN_STYLE = {
+  top: 'calc(env(titlebar-area-y, 0px) + env(titlebar-area-height, 36px))',
+} as const;
+
 function isDataUrl(path: string): boolean {
   return path.startsWith('data:');
 }
+
+/** Workbook formats the spreadsheet preview reads. */
+const SPREADSHEET_EXTENSIONS = ['xlsx', 'xls', 'xlsm', 'xlsb', 'ods', 'fods'];
 
 function getRendererType(filePath: string): RendererType {
   if (isDataUrl(filePath) && filePath.startsWith('data:image/')) return 'image';
@@ -61,8 +80,8 @@ function getRendererType(filePath: string): RendererType {
   if (ext === 'pdf') return 'pdf';
   if (ext === 'docx') return 'docx';
   if (ext === 'pptx' || ext === 'ppt') return 'pptx';
-  if (ext === 'xlsx' || ext === 'xls') return 'xlsx';
-  if (ext === 'csv') return 'csv';
+  if (SPREADSHEET_EXTENSIONS.includes(ext)) return 'xlsx';
+  if (ext === 'csv' || ext === 'tsv') return 'csv';
   if ([
     'ts', 'tsx', 'js', 'jsx', 'py', 'rs', 'go', 'java', 'cpp', 'c', 'h',
     'json', 'yaml', 'yml', 'toml', 'xml', 'css', 'scss', 'less',
@@ -80,12 +99,14 @@ function getFileExtension(filePath: string): string {
 
 function getFileIcon(filePath: string) {
   const ext = filePath.split('.').pop()?.toLowerCase() || '';
-  if (['ts', 'tsx', 'js', 'jsx', 'py', 'html', 'css', 'json'].includes(ext)) return FileCode;
-  if (['md', 'txt', 'log'].includes(ext)) return FileText;
-  if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)) return FileImage;
-  if (['xlsx', 'xls', 'csv'].includes(ext)) return FileSpreadsheet;
-  if (ext === 'pdf' || ext === 'docx' || ext === 'pptx' || ext === 'ppt') return FileType;
-  return File;
+  if (['ts', 'tsx', 'js', 'jsx', 'py', 'html', 'css', 'json'].includes(ext)) return AppIcons.fileCode;
+  if (['md', 'txt', 'log'].includes(ext)) return AppIcons.file;
+  if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)) return AppIcons.fileImage;
+  if (SPREADSHEET_EXTENSIONS.includes(ext) || ext === 'csv' || ext === 'tsv') return AppIcons.fileSheet;
+  if (ext === 'pdf') return AppIcons.filePdf;
+  if (ext === 'docx') return AppIcons.fileDocument;
+  if (ext === 'pptx' || ext === 'ppt') return AppIcons.fileSlides;
+  return AppIcons.fileGeneric;
 }
 
 /**
@@ -101,29 +122,206 @@ function getFileIcon(filePath: string) {
 function resolveInspectTheme() {
   const cs = getComputedStyle(document.documentElement);
   const read = (name: string) => cs.getPropertyValue(name).trim();
+  // The field names are the protocol with the injected script; the values are the
+  // floating-layer tokens the in-app selection toolbar uses.
   return {
-    bgBase: read('--abu-bg-base'),
-    bgHover: read('--abu-bg-hover'),
-    borderSubtle: read('--abu-border-subtle'),
-    textPrimary: read('--abu-text-primary'),
-    textTertiary: read('--abu-text-tertiary'),
-    danger: read('--abu-danger'),
+    bgBase: read('--ds-raised'),
+    bgHover: read('--ds-fill-hover'),
+    borderSubtle: read('--ds-separator'),
+    textPrimary: read('--ds-label'),
+    textTertiary: read('--ds-label-tertiary'),
+    danger: read('--ds-danger'),
   };
 }
 
 function LazyFallback() {
+  const { t } = useI18n();
   return (
-    <div className="flex items-center justify-center h-full">
-      <Loader2 className="w-5 h-5 text-[var(--abu-clay)] animate-spin" />
+    <div className="flex h-full items-center justify-center">
+      <Spinner label={t.panel.loadingDocument} />
     </div>
   );
 }
+
+type SaveState = 'saved' | 'saving' | 'error';
+
+/**
+ * The preview header. PreviewPanel re-renders on every keystroke in the source
+ * editor; this is a memo with primitive and stable props so its tooltips and
+ * menus do not re-render with each character.
+ */
+const PreviewToolbar = memo(function PreviewToolbar({
+  filePath,
+  fileName,
+  rendererType,
+  fileTypeLabel,
+  readOnly,
+  saveState,
+  viewMode,
+  onViewModeChange,
+  showVersionHistory,
+  onShowVersionHistoryChange,
+  onRevertVersion,
+  onReload,
+  onOpenInApp,
+  openRefused,
+  onReveal,
+  onCopyPath,
+  onSaveAs,
+  isFullscreen,
+  onToggleFullscreen,
+  showClose,
+  onClose,
+}: {
+  filePath: string;
+  fileName: string;
+  rendererType: RendererType;
+  fileTypeLabel: string;
+  /** The file is shown and never written: no version history is offered. */
+  readOnly: boolean;
+  /** null when the file is not editable or failed to load: no save state is shown. */
+  saveState: SaveState | null;
+  viewMode: 'preview' | 'source';
+  onViewModeChange: (mode: 'preview' | 'source') => void;
+  showVersionHistory: boolean;
+  onShowVersionHistoryChange: (open: boolean) => void;
+  onRevertVersion: (id: string) => Promise<void>;
+  onReload: () => void;
+  onOpenInApp: () => void;
+  /** The main process refused to open this file: only the file manager is offered for it. */
+  openRefused: boolean;
+  onReveal: () => void;
+  onCopyPath: () => void;
+  onSaveAs: () => void;
+  isFullscreen: boolean;
+  onToggleFullscreen: () => void;
+  showClose: boolean;
+  onClose: () => void;
+}) {
+  const { t } = useI18n();
+  const dataUrl = isDataUrl(filePath);
+  const fileIcon = dataUrl ? AppIcons.fileImage : getFileIcon(filePath);
+  const toolbarButtons = getToolbarButtons(rendererType, filePath, { readOnly });
+
+  return (
+    <div className={cn(
+      'flex min-h-11 shrink-0 items-center gap-2 border-b border-separator px-3 py-1',
+      isFullscreen && isMacOS() && 'pl-20',
+    )}>
+      <div className="flex min-w-0 flex-1 items-center gap-2" title={filePath}>
+        <div className="flex size-7 shrink-0 items-center justify-center rounded-control bg-fill text-label-secondary">
+          <Icon icon={fileIcon} size="sm" />
+        </div>
+        <span className="truncate text-ui font-medium text-label">
+          {fileName}
+        </span>
+        {fileTypeLabel && (
+          <span className="hidden shrink-0 min-[1100px]:inline-flex">
+            <Tag>{fileTypeLabel}</Tag>
+          </span>
+        )}
+        {saveState && (
+          <span className={cn(
+            'hidden shrink-0 items-center gap-2 text-ui min-[1300px]:inline-flex',
+            saveState === 'error' ? 'text-danger' : 'text-label-secondary',
+          )}>
+            {saveState === 'saving' ? (
+              <Spinner size="sm" labelSize="ui" label={t.panel.saving} />
+            ) : (
+              <>
+                <StatusIcon tone={saveState === 'saved' ? 'success' : 'danger'} size="sm" />
+                {saveState === 'saved' ? t.panel.saved : t.panel.saveError}
+              </>
+            )}
+          </span>
+        )}
+      </div>
+
+      {/* The tab strip sits right above this row, so these tooltips open below their buttons. */}
+      <div className="flex shrink-0 items-center gap-1">
+        <IconButton size="sm" tooltipSide="bottom" icon={AppIcons.reload} label={t.panel.reloadPreview} onClick={onReload} />
+        {toolbarButtons.viewToggle && (
+          <div className="mx-1 flex items-center gap-1 rounded-control bg-fill p-0.5">
+            <IconButton
+              size="sm"
+              tooltipSide="bottom"
+              icon={AppIcons.viewSource}
+              label={t.panel.sourceMode}
+              aria-pressed={viewMode === 'source'}
+              onClick={() => onViewModeChange('source')}
+            />
+            <IconButton
+              size="sm"
+              tooltipSide="bottom"
+              icon={AppIcons.preview}
+              label={t.panel.previewMode}
+              aria-pressed={viewMode === 'preview'}
+              onClick={() => onViewModeChange('preview')}
+            />
+          </div>
+        )}
+        {toolbarButtons.versionHistory && (
+          <VersionHistoryMenu
+            filePath={filePath}
+            open={showVersionHistory}
+            onOpenChange={onShowVersionHistoryChange}
+            trigger={<IconButton size="sm" tooltipSide="bottom" icon={AppIcons.history} label={t.panel.versionHistory} />}
+            onRevert={onRevertVersion}
+          />
+        )}
+        {toolbarButtons.openInApp && !openRefused && (
+          <IconButton size="sm" tooltipSide="bottom" icon={AppIcons.openIn} label={t.panel.openInApp} onClick={onOpenInApp} />
+        )}
+        {!dataUrl && (
+          <PreviewActionsMenu
+            label={t.panel.moreActions}
+            revealLabel={t.panel.showInFinder}
+            copyPathLabel={t.panel.copyPath}
+            saveAsLabel={t.panel.saveAs}
+            onReveal={onReveal}
+            onCopyPath={onCopyPath}
+            onSaveAs={onSaveAs}
+          />
+        )}
+        {toolbarButtons.fullscreen && (
+          <IconButton
+            size="sm"
+            tooltipSide="bottom"
+            icon={isFullscreen ? AppIcons.exitFullscreen : AppIcons.enlarge}
+            label={isFullscreen ? t.panel.exitFullscreen : t.panel.fullscreen}
+            onClick={onToggleFullscreen}
+          />
+        )}
+        {showClose && (
+          <IconButton size="sm" tooltipSide="bottom" icon={AppIcons.close} label={t.panel.closePreview} onClick={onClose} />
+        )}
+      </div>
+    </div>
+  );
+});
 
 export default function PreviewPanel({
   filePath: filePathProp,
   tabId,
   embedded = false,
-}: { filePath?: string; tabId?: string; embedded?: boolean } = {}) {
+  line,
+  lineRequest,
+  keptCopy = false,
+}: {
+  filePath?: string;
+  tabId?: string;
+  embedded?: boolean;
+  /** 1-based line the source view shows once the file is loaded. */
+  line?: number;
+  /** Count of the requests for a line; each one shows the source view at `line`. */
+  lineRequest?: number;
+  /**
+   * The file is the copy Abu kept of a file that is no longer at its own path. It is
+   * shown read-only under a line that says so: nothing is saved to it and no version
+   * of it is recorded.
+   */
+  keptCopy?: boolean;
+} = {}) {
   // Back-compat: without a `filePath` prop (older call sites, before
   // workspace tabs existed), fall back to the store's single previewFilePath.
   const storePreviewFilePath = usePreviewStore((s) => s.previewFilePath);
@@ -142,22 +340,25 @@ export default function PreviewPanel({
   const { t } = useI18n();
   const [content, setContent] = useState<string | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [binaryData, setBinaryData] = useState<Uint8Array<ArrayBuffer> | null>(null);
+  // The file path whose document, or whose no-preview message, is on screen. A
+  // reload for this same path keeps it shown until the file is checked and read.
+  const shownPathRef = useRef<string | null>(null);
   const [htmlPreviewUrl, setHtmlPreviewUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Preview/source toggle — applies to html (iframe vs editable source) and
   // markdown (rendered vs editable source). code/text have no rendered form
   // and are always shown via the editable source view regardless of this.
-  const [viewMode, setViewMode] = useState<'preview' | 'source'>('preview');
-  // Version history (P4) dropdown — trigger button + panel share this ref
-  // for outside-click detection (see ModelSelector's modelPickerRef for the
-  // same pattern).
+  const [viewMode, setViewMode] = useState<'preview' | 'source'>(line === undefined ? 'preview' : 'source');
+  // Version history (P4) menu — controlled here so a file switch closes it.
   const [showVersionHistory, setShowVersionHistory] = useState(false);
-  const versionHistoryRef = useRef<HTMLDivElement>(null);
   // App-fullscreen toggle (Task 6) — expands the panel to a fixed overlay
   // covering the whole window instead of just its column in RightPanel.
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [saveState, setSaveState] = useState<'saved' | 'saving' | 'error'>('saved');
+  const [saveState, setSaveState] = useState<SaveState>('saved');
+  // The file the main process refused to open with its default application.
+  const [refusedOpenPath, setRefusedOpenPath] = useState<string | null>(null);
 
   // "Select element" inspect mode (see docs/2026-07-19-preview-element-select-design.md).
   // The iframe is cross-origin (loopback http://127.0.0.1 vs the app shell),
@@ -198,8 +399,6 @@ export default function PreviewPanel({
 
   const rendererType = previewFilePath ? getRendererType(previewFilePath) : 'unsupported';
   const fileName = previewFilePath && isDataUrl(previewFilePath) ? t.panel.imagePreview : (previewFilePath ? getBaseName(previewFilePath) : '');
-  const Icon = previewFilePath ? (isDataUrl(previewFilePath) ? FileImage : getFileIcon(previewFilePath)) : File;
-  const toolbarButtons = getToolbarButtons(rendererType);
   const canUseFileActions = !isDataUrl(previewFilePath ?? '');
   const fileTypeLabel = isDataUrl(previewFilePath ?? '')
     ? t.panel.imageType
@@ -209,6 +408,8 @@ export default function PreviewPanel({
     if (!previewFilePath) {
       setContent(null);
       setImageUrl(null);
+      setBinaryData(null);
+      shownPathRef.current = null;
       setHtmlPreviewUrl(null);
       setDraft('');
       lastSavedRef.current = '';
@@ -221,11 +422,15 @@ export default function PreviewPanel({
     let cancelled = false;
     let blobUrl: string | null = null;
     const isEditableType = EDITABLE_TYPES.has(rendererType);
+    const isBinaryType = BINARY_TYPES.has(rendererType);
     // A reload (reloadNonce bump) of a file we've already established an
     // editable baseline for — most commonly our own autosave's fs-watch
     // echo. Skip the full loading/reset cycle so the editor never flashes
-    // a spinner or drops focus while the user is typing.
-    const isQuietReload = isEditableType && establishedEditablePathRef.current === previewFilePath;
+    // a spinner or drops focus while the user is typing. A reload of a
+    // document whose bytes are on screen, or of a file with no preview,
+    // keeps what is shown the same way.
+    const isQuietReload = (isEditableType && establishedEditablePathRef.current === previewFilePath)
+      || ((isBinaryType || rendererType === 'unsupported') && shownPathRef.current === previewFilePath);
 
     const loadFile = async () => {
       if (!isQuietReload) {
@@ -233,6 +438,8 @@ export default function PreviewPanel({
         setError(null);
         setContent(null);
         setImageUrl(null);
+        setBinaryData(null);
+        shownPathRef.current = null;
         setHtmlPreviewUrl(null);
         setDraft('');
         lastSavedRef.current = '';
@@ -242,15 +449,9 @@ export default function PreviewPanel({
       }
 
       try {
-        // Binary types and unsupported types don't need text reading from parent
-        if (rendererType === 'unsupported' || BINARY_TYPES.has(rendererType)) {
-          setLoading(false);
-          return;
-        }
-
-        // Data URL: use directly
+        // Data URL: an image is used directly, anything else has no preview
         if (isDataUrl(previewFilePath)) {
-          setImageUrl(previewFilePath);
+          if (rendererType === 'image') setImageUrl(previewFilePath);
           setLoading(false);
           return;
         }
@@ -259,12 +460,26 @@ export default function PreviewPanel({
         const fileExists = await exists(previewFilePath);
         if (cancelled) return;
         if (!fileExists) {
+          // No editable baseline holds for a file that is not there: the next
+          // reload for this path goes through the full reset, which clears
+          // this error once the file is back.
+          establishedEditablePathRef.current = null;
+          shownPathRef.current = null;
+          setBinaryData(null);
           setError(`${t.panel.fileNotFound}: ${getBaseName(previewFilePath)}`);
           setLoading(false);
           return;
         }
 
-        if (rendererType === 'image') {
+        if (rendererType === 'unsupported') {
+          // Nothing to read: the file is there, and the content area offers to open it elsewhere.
+          shownPathRef.current = previewFilePath;
+        } else if (isBinaryType) {
+          const bytes = await readFile(previewFilePath);
+          if (cancelled) return;
+          setBinaryData(bytes);
+          shownPathRef.current = previewFilePath;
+        } else if (rendererType === 'image') {
           blobUrl = await loadLocalImage(previewFilePath);
           if (cancelled) { URL.revokeObjectURL(blobUrl); blobUrl = null; return; }
           setImageUrl(blobUrl);
@@ -282,7 +497,13 @@ export default function PreviewPanel({
             setHtmlPreviewUrl(url);
           }
 
-          if (isEditableType) {
+          if (isEditableType && keptCopy) {
+            // The buffer follows the copy on disk and is never edited, so every
+            // load adopts the text as read.
+            lastSavedRef.current = text;
+            setDraft(text);
+            establishedEditablePathRef.current = previewFilePath;
+          } else if (isEditableType) {
             if (!isQuietReload) {
               // Fresh load of this file: disk content becomes both the
               // editor buffer and the reconcile baseline.
@@ -344,9 +565,15 @@ export default function PreviewPanel({
         // attempt — the next reload for this path should go through the
         // full (non-quiet) reset rather than reconciling against stale refs.
         establishedEditablePathRef.current = null;
-        console.error('[PreviewPanel] Failed to read file:', previewFilePath, err);
-        const message = err instanceof Error ? err.message : String(err);
-        setError(message || t.panel.failedToReadFile);
+        shownPathRef.current = null;
+        setBinaryData(null);
+        // The host's text can carry the channel name and an absolute path, so
+        // it goes to the log only, as redacted text.
+        console.error(
+          '[PreviewPanel] Failed to read file:',
+          redactFailureText(err instanceof Error ? err.message : String(err)),
+        );
+        setError(t.panel.failedToReadFile);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -357,7 +584,7 @@ export default function PreviewPanel({
   // reloadNonce is a fs-watch/manual refresh signal: re-run to re-read content
   // (and, for images, re-fetch the blob) when the file changes on disk.
   // eslint-disable-next-line react-hooks/exhaustive-deps -- t is stable from i18n singleton
-  }, [previewFilePath, rendererType, reloadNonce]);
+  }, [previewFilePath, rendererType, reloadNonce, keptCopy]);
 
   // Reset to rendered-preview mode on each file switch so a document never
   // inherits the previously-viewed file's source/edit mode (F4). Keyed on
@@ -365,17 +592,15 @@ export default function PreviewPanel({
   // flip the user out of source mode while they're editing.
   useEffect(() => { setViewMode('preview'); }, [previewFilePath]);
 
+  // A request for a line shows the source view, where lines exist. It sits
+  // after the reset above so that a file opened at a line starts in source.
+  useEffect(() => {
+    if (line !== undefined) setViewMode('source');
+  }, [previewFilePath, line, lineRequest]);
+
   // Close the version history dropdown on file switch — it's scoped to
   // whatever file was previously open, not the newly selected one.
   useEffect(() => { setShowVersionHistory(false); }, [previewFilePath]);
-
-  // Esc exits app-fullscreen — only listen while fullscreen is active.
-  useEffect(() => {
-    if (!isFullscreen) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setIsFullscreen(false); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [isFullscreen]);
 
   // Disarm inspect mode: tell the page-side picker to go idle and clear the
   // nonce. Safe to call when already disarmed (no-op postMessage) — every
@@ -496,7 +721,7 @@ export default function PreviewPanel({
   // reload it triggers (handled above) can recognize its own echo instead of
   // treating it as an external change and re-adopting/conflicting on it.
   useEffect(() => {
-    if (!previewFilePath || !EDITABLE_TYPES.has(rendererType)) return;
+    if (!previewFilePath || !EDITABLE_TYPES.has(rendererType) || keptCopy) return;
     if (draft === lastSavedRef.current) {
       setSaveState('saved');
       return;
@@ -580,7 +805,8 @@ export default function PreviewPanel({
   // on disk diverged. Cancelling the pending autosave also stops it from
   // clobbering the just-reverted file (R1/R2). selfEchoRef makes the revert
   // write's own fs-watch echo recognizable as self, not an external change.
-  const handleRevertVersion = async (id: string) => {
+  // The handlers below are stable so the memoized toolbar keeps its props while the user types.
+  const handleRevertVersion = useCallback(async (id: string) => {
     if (!previewFilePath) return;
     // Cancel the pending debounced autosave BEFORE awaiting revertToVersion,
     // not after. revertToVersion does its own read + pre-revert safety
@@ -599,9 +825,9 @@ export default function PreviewPanel({
     lastSavedRef.current = content;
     setDraft(content);
     setSaveState('saved');
-  };
+  }, [previewFilePath]);
 
-  const handleOpenInFinder = async () => {
+  const handleOpenInFinder = useCallback(async () => {
     if (previewFilePath) {
       try {
         await revealItemInDir(previewFilePath);
@@ -609,23 +835,24 @@ export default function PreviewPanel({
         console.error('Failed to open folder:', err);
       }
     }
-  };
+  }, [previewFilePath]);
 
-  const handleOpenInApp = async () => {
+  const handleOpenInApp = useCallback(async () => {
     if (!previewFilePath) return;
     try {
       await openWithDefaultApp(previewFilePath);
     } catch (err) {
       console.error('[PreviewPanel] open in app failed:', err);
+      if (isRunByDefaultRefusal(err)) setRefusedOpenPath(previewFilePath);
       useToastStore.getState().addToast({
         type: 'error',
         title: t.chat.openFailed,
         message: t.panel.openInAppFailed,
       });
     }
-  };
+  }, [previewFilePath, t]);
 
-  const handleCopyPath = async () => {
+  const handleCopyPath = useCallback(async () => {
     if (!previewFilePath || !canUseFileActions) return;
     try {
       await writeText(previewFilePath);
@@ -634,9 +861,9 @@ export default function PreviewPanel({
       console.error('[PreviewPanel] copy path failed:', err);
       useToastStore.getState().addToast({ type: 'error', title: t.panel.copyPathFailed });
     }
-  };
+  }, [previewFilePath, canUseFileActions, t]);
 
-  const handleSaveAs = async () => {
+  const handleSaveAs = useCallback(async () => {
     if (!previewFilePath || !canUseFileActions) return;
     try {
       const destination = await saveDialog({ defaultPath: previewFilePath });
@@ -659,213 +886,108 @@ export default function PreviewPanel({
         message: err instanceof Error ? err.message : String(err),
       });
     }
-  };
+  }, [previewFilePath, canUseFileActions, rendererType, t]);
+
+  const handleReload = useCallback(() => setReloadNonce((n) => n + 1), []);
+  const handleToggleFullscreen = useCallback(() => setIsFullscreen((v) => !v), []);
+  const exitFullscreen = useCallback(() => setIsFullscreen(false), []);
+  const handleClose = useCallback(() => {
+    if (tabId) closeTab(tabId);
+    else closePreview();
+  }, [tabId, closeTab, closePreview]);
 
   if (!previewFilePath) return null;
 
   return (
-    <div
-      data-electron-no-drag
-      style={isFullscreen && isWindows() ? {
-        // Window Controls Overlay stays native and always paints above the
-        // renderer. Keep "fullscreen" as a content-area maximize on Windows,
-        // matching the shell layout and leaving caption controls unobstructed.
-        // The 36px fallback matches WindowTitleBar's legacy Windows toolbar;
-        // WCO-capable builds resolve the real 30px height from the env value.
-        top: 'calc(env(titlebar-area-y, 0px) + env(titlebar-area-height, 36px))',
-      } : undefined}
-      className={cn(
-        'flex flex-col',
-        isFullscreen ? 'fixed inset-0 z-50 bg-[var(--abu-bg-base)]' : 'h-full',
-      )}
+    // Fullscreen is a layout state of the panel, no dialog: the surface covers the window, the
+    // title-bar controls included, on the level the design system gives it, under the panel's
+    // own menus. Escape leaves it unless the key was pressed inside a menu or a window, or
+    // closed one. Out of fullscreen the surface makes no box.
+    <FullscreenSurface
+      open={isFullscreen}
+      onExit={exitFullscreen}
+      label={fileName}
+      className="bg-surface"
+      style={isWindows() ? WINDOWS_FULLSCREEN_STYLE : undefined}
     >
+    <div data-electron-no-drag className="flex h-full flex-col">
       {/* Content-first preview toolbar: identity stays anchored on the left,
           common reading/AI actions on the right, filesystem actions in More. */}
-      <div className={cn(
-        'shrink-0 min-h-11 px-2.5 py-1.5 border-b border-[var(--abu-border-subtle)] flex items-center gap-2 bg-[var(--abu-bg-base)]',
-        isFullscreen && isMacOS() && 'pl-20',
-      )}>
-        <div className="flex min-w-0 flex-1 items-center gap-2" title={previewFilePath}>
-          <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)]">
-            <Icon className="size-3.5" strokeWidth={1.5} />
-          </div>
-          <span className="truncate text-minor font-medium text-[var(--abu-text-primary)]">
-            {fileName}
-          </span>
-          {fileTypeLabel && (
-            <span className="hidden shrink-0 rounded-md border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-subtle)] px-1.5 text-caption font-medium tracking-[0.04em] text-[var(--abu-text-muted)] min-[1100px]:inline-flex">
-              {fileTypeLabel}
-            </span>
-          )}
-          {EDITABLE_TYPES.has(rendererType) && !error && (
-            <span className={cn(
-              'hidden shrink-0 items-center gap-1 text-caption min-[1300px]:inline-flex',
-              saveState === 'error' ? 'text-[var(--abu-danger)]' : 'text-[var(--abu-text-muted)]',
-            )}>
-              {saveState === 'saving' ? (
-                <Loader2 className="size-3 animate-spin" strokeWidth={1.6} />
-              ) : saveState === 'saved' ? (
-                <Check className="size-3 text-[var(--abu-success)]" strokeWidth={1.8} />
-              ) : (
-                <span className="size-1.5 rounded-full bg-[var(--abu-danger)]" />
-              )}
-              {saveState === 'saving' ? t.panel.saving : saveState === 'saved' ? t.panel.saved : t.panel.saveError}
-            </span>
-          )}
-        </div>
-
-        <div className="flex shrink-0 items-center gap-0.5">
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            onClick={() => setReloadNonce((n) => n + 1)}
-            className="text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)]"
-            title={t.panel.reloadPreview}
-          >
-            <RotateCw className={cn('size-3.5', loading && 'animate-spin')} strokeWidth={1.5} />
-          </Button>
-        {toolbarButtons.viewToggle && (
-          <div className="mx-1 flex items-center rounded-lg bg-[var(--abu-bg-muted)] p-0.5">
-            <button
-              type="button"
-              onClick={() => setViewMode('source')}
-              aria-pressed={viewMode === 'source'}
-              className={cn(
-                'rounded-md p-1 text-caption text-[var(--abu-text-tertiary)] transition-colors',
-                viewMode === 'source' && 'bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)] shadow-sm',
-              )}
-              title={t.panel.sourceMode}
-            >
-              <Code className="size-3" strokeWidth={1.5} />
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewMode('preview')}
-              aria-pressed={viewMode === 'preview'}
-              className={cn(
-                'rounded-md p-1 text-caption text-[var(--abu-text-tertiary)] transition-colors',
-                viewMode === 'preview' && 'bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)] shadow-sm',
-              )}
-              title={t.panel.previewMode}
-            >
-              <Eye className="size-3" strokeWidth={1.5} />
-            </button>
-          </div>
-        )}
-        {toolbarButtons.versionHistory && (
-          <div className="relative" ref={versionHistoryRef}>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={() => setShowVersionHistory((v) => !v)}
-              className="text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)]"
-              title={t.panel.versionHistory}
-            >
-              <History className="h-3.5 w-3.5" strokeWidth={1.5} />
-            </Button>
-            <VersionHistoryMenu
-              filePath={previewFilePath}
-              open={showVersionHistory}
-              onClose={() => setShowVersionHistory(false)}
-              anchorRef={versionHistoryRef}
-              onRevert={handleRevertVersion}
-            />
-          </div>
-        )}
-        {toolbarButtons.openInApp && (
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            onClick={handleOpenInApp}
-            className="text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)]"
-            title={t.panel.openInApp}
-          >
-            <SquareArrowOutUpRight className="h-3.5 w-3.5" strokeWidth={1.5} />
-          </Button>
-        )}
-        {canUseFileActions && (
-          <PreviewActionsMenu
-            label={t.panel.moreActions}
-            revealLabel={t.panel.showInFinder}
-            copyPathLabel={t.panel.copyPath}
-            saveAsLabel={t.panel.saveAs}
-            onReveal={() => void handleOpenInFinder()}
-            onCopyPath={() => void handleCopyPath()}
-            onSaveAs={() => void handleSaveAs()}
-          />
-        )}
-        {toolbarButtons.fullscreen && (
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            onClick={() => setIsFullscreen((v) => !v)}
-            className="text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)]"
-            title={isFullscreen ? t.panel.exitFullscreen : t.panel.fullscreen}
-          >
-            {isFullscreen ? <Minimize2 className="h-3.5 w-3.5" strokeWidth={1.5} /> : <Maximize2 className="h-3.5 w-3.5" strokeWidth={1.5} />}
-          </Button>
-        )}
-        {(!embedded || isFullscreen) && (
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            onClick={() => (tabId ? closeTab(tabId) : closePreview())}
-            className="text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)]"
-            title={t.panel.closePreview}
-          >
-            <X className="h-3.5 w-3.5" strokeWidth={1.5} />
-          </Button>
-        )}
-        </div>
-      </div>
+      <PreviewToolbar
+        filePath={previewFilePath}
+        fileName={fileName}
+        rendererType={rendererType}
+        fileTypeLabel={fileTypeLabel}
+        readOnly={keptCopy}
+        saveState={EDITABLE_TYPES.has(rendererType) && !keptCopy && !error ? saveState : null}
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
+        showVersionHistory={showVersionHistory}
+        onShowVersionHistoryChange={setShowVersionHistory}
+        onRevertVersion={handleRevertVersion}
+        onReload={handleReload}
+        onOpenInApp={handleOpenInApp}
+        openRefused={refusedOpenPath === previewFilePath}
+        onReveal={handleOpenInFinder}
+        onCopyPath={handleCopyPath}
+        onSaveAs={handleSaveAs}
+        isFullscreen={isFullscreen}
+        onToggleFullscreen={handleToggleFullscreen}
+        showClose={!embedded || isFullscreen}
+        onClose={handleClose}
+      />
 
       {/* Browser-style location strip for HTML preview. Real
           back/forward + a CDP console panel are Electron-only (the loopback
           iframe is cross-origin, so its navigation history isn't observable) —
           documented as out of scope; use the browser tab for free navigation. */}
       {rendererType === 'html' && viewMode === 'preview' && (
-        <div className="shrink-0 flex items-center gap-1.5 px-2 py-1.5 border-b border-[var(--abu-border-subtle)] bg-[var(--abu-bg-subtle)]">
-          <div className="flex-1 min-w-0 flex items-center gap-1.5 h-6 px-2 rounded-lg bg-[var(--abu-bg-base)] border border-[var(--abu-border-subtle)]">
-            <Globe className="w-3 h-3 text-[var(--abu-text-tertiary)] shrink-0" strokeWidth={1.5} />
-            <span className="truncate text-caption text-[var(--abu-text-secondary)]">{previewFilePath}</span>
+        <div className="flex shrink-0 items-center gap-2 border-b border-separator px-2 py-1">
+          <div className="flex h-6 min-w-0 flex-1 items-center gap-2 rounded-control bg-fill px-2">
+            <Icon icon={AppIcons.webPage} size="sm" className="text-label-tertiary" />
+            <span className="truncate text-caption text-label-secondary">{previewFilePath}</span>
           </div>
-          <Button
-            variant="ghost"
-            size="icon-xs"
+          <IconButton
+            size="sm"
+            icon={AppIcons.selectElement}
+            label={t.panel.selectElement}
+            aria-pressed={inspecting}
             disabled={!iframeLoaded}
             onClick={toggleInspect}
-            className={cn(
-              inspecting
-                ? 'text-[var(--abu-clay)] bg-[var(--abu-clay-bg)] hover:text-[var(--abu-clay)] hover:bg-[var(--abu-clay-bg)]'
-                : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)]',
-            )}
-            title={t.panel.selectElement}
-          >
-            <SquareDashedMousePointer className="w-3.5 h-3.5" strokeWidth={1.5} />
-          </Button>
+          />
+        </div>
+      )}
+
+      {keptCopy && (
+        <div className="shrink-0 px-3 pt-2">
+          <InlineMessage tone="info">{t.panel.keptCopyNotice}</InlineMessage>
         </div>
       )}
 
       {/* Content */}
       <div className="flex-1 min-h-0 overflow-hidden">
         {loading ? (
-          <div className="flex items-center justify-center h-full">
-            <Loader2 className="w-5 h-5 text-[var(--abu-clay)] animate-spin" />
+          <div className="flex h-full items-center justify-center">
+            <Spinner label={t.panel.loadingDocument} />
           </div>
         ) : error ? (
-          <div className="flex flex-col items-center justify-center h-full p-4 text-center">
-            <p className="text-body text-[var(--abu-danger)]">{error}</p>
+          <div className="flex h-full items-center justify-center p-4">
+            <InlineMessage tone="danger">{error}</InlineMessage>
           </div>
-        ) : rendererType === 'pdf' || rendererType === 'docx' || rendererType === 'pptx' || rendererType === 'xlsx' || (rendererType === 'csv' && content !== null) ? (
+        ) : (BINARY_TYPES.has(rendererType) && binaryData !== null) || (rendererType === 'csv' && content !== null) ? (
           <DocSelectionLayer filePath={previewFilePath} active={!embedded || tabId === activeTabId}>
             <Suspense fallback={<LazyFallback />}>
-              {rendererType === 'pdf' && <PdfPreview filePath={previewFilePath} />}
-              {rendererType === 'docx' && <DocxPreview filePath={previewFilePath} />}
-              {rendererType === 'pptx' && <PptxPreview filePath={previewFilePath} />}
-              {rendererType === 'xlsx' && <XlsxPreview filePath={previewFilePath} />}
-              {rendererType === 'csv' && content !== null && <CsvPreview content={content} />}
+              {rendererType === 'pdf' && binaryData !== null && <PdfPreview filePath={previewFilePath} data={binaryData} />}
+              {rendererType === 'docx' && binaryData !== null && <DocxPreview data={binaryData} />}
+              {rendererType === 'pptx' && binaryData !== null && <PptxPreview filePath={previewFilePath} data={binaryData} />}
+              {rendererType === 'xlsx' && binaryData !== null && <XlsxPreview data={binaryData} />}
+              {rendererType === 'csv' && content !== null && (
+                <CsvPreview content={content} delimiter={getFileExtension(previewFilePath) === 'tsv' ? '\t' : ','} />
+              )}
             </Suspense>
           </DocSelectionLayer>
+        ) : BINARY_TYPES.has(rendererType) ? (
+          <LazyFallback />
         ) : rendererType === 'image' && imageUrl ? (
           <ImagePreview src={imageUrl} alt={fileName} />
         ) : rendererType === 'markdown' && content !== null ? (
@@ -882,7 +1004,7 @@ export default function PreviewPanel({
               </DocSelectionLayer>
             </ScrollArea>
           ) : (
-            <CodeMirrorEditor value={draft} language="md" onChange={setDraft} />
+            <CodeMirrorEditor value={draft} language="md" onChange={setDraft} readOnly={keptCopy} line={line} lineRequest={lineRequest} />
           )
         ) : rendererType === 'html' ? (
           viewMode === 'preview' ? (
@@ -899,31 +1021,39 @@ export default function PreviewPanel({
                 src={`${htmlPreviewUrl}?v=${reloadNonce}`}
                 title={fileName}
                 sandbox="allow-scripts allow-same-origin"
-                className="w-full h-full border-0 bg-white"
+                className="h-full w-full border-0 bg-page-canvas"
                 onLoad={() => setIframeLoaded(true)}
               />
             ) : (
               <LazyFallback />
             )
           ) : content !== null ? (
-            <CodeMirrorEditor value={draft} language="html" onChange={setDraft} />
+            <CodeMirrorEditor value={draft} language="html" onChange={setDraft} readOnly={keptCopy} line={line} lineRequest={lineRequest} />
           ) : (
             <LazyFallback />
           )
         ) : rendererType === 'code' && content !== null ? (
-          <CodeMirrorEditor value={draft} language={getFileExtension(previewFilePath)} onChange={setDraft} />
+          <CodeMirrorEditor value={draft} language={getFileExtension(previewFilePath)} onChange={setDraft} readOnly={keptCopy} line={line} lineRequest={lineRequest} />
         ) : rendererType === 'text' && content !== null ? (
-          <CodeMirrorEditor value={draft} language={getFileExtension(previewFilePath)} onChange={setDraft} />
+          <CodeMirrorEditor value={draft} language={getFileExtension(previewFilePath)} onChange={setDraft} readOnly={keptCopy} line={line} lineRequest={lineRequest} />
         ) : (
-          <div className="flex flex-col items-center justify-center h-full p-4 text-center">
-            <p className="text-body text-[var(--abu-text-tertiary)]">{t.panel.unsupportedFileType}</p>
-            <Button variant="outline" size="sm" onClick={handleOpenInFinder} className="mt-3">
-              <FolderOpen className="w-3.5 h-3.5 mr-1.5" />
-              {t.panel.showInFinder}
-            </Button>
+          <div className="flex h-full items-center justify-center">
+            <EmptyState
+              icon={AppIcons.fileGeneric}
+              title={t.panel.unsupportedFileType}
+              action={(
+                <div className="flex items-center gap-2">
+                  {offersOpenInApp(rendererType, previewFilePath) && refusedOpenPath !== previewFilePath && (
+                    <Button variant="secondary" icon={AppIcons.openIn} onClick={handleOpenInApp}>{t.panel.openInApp}</Button>
+                  )}
+                  <Button variant="secondary" icon={AppIcons.folderOpen} onClick={handleOpenInFinder}>{t.panel.showInFinder}</Button>
+                </div>
+              )}
+            />
           </div>
         )}
       </div>
     </div>
+    </FullscreenSurface>
   );
 }

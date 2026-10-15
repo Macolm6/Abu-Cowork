@@ -36,7 +36,8 @@ import { taskIdFor, useTeamConfirmationStore } from '@/stores/teamConfirmationSt
  */
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
 import { checkToolApproval, type ToolApprovalDecision } from '../tools/registry';
-import type { ToolExecutionContext, Conversation, Message, MessageContent, ToolExecutionMetadata, UpstreamErrorDetails } from '../../types';
+import type { ToolExecutionContext, Conversation, ConversationStatus, Message, MessageContent, ToolExecutionMetadata, UpstreamErrorDetails } from '../../types';
+import type { GoalState } from '../goal/goalTypes';
 import type { ComputerUseModelTier } from '../llm/modelCapabilities';
 import {
   onSidecarNotification,
@@ -53,6 +54,7 @@ import { CAPABILITY_AGENT_START_HISTORY_FROM_LEDGER } from '../sidecar/sidecarPr
 import { takeLedgerHistoryPoint } from '../session/ledgerHistoryPoint';
 import { parseHistoryUnavailableError, type HistoryUnavailableData } from '../ipc/historyUnavailable';
 import { applyDeltaFrames, type PortFrame } from './frameApplier';
+import { ACTIVE_RUN_STATES } from '../session/loadedMessageSanitizer';
 import { getExecutionPort } from './ports/executionPort';
 import { getChatDelta } from './ports/chatDelta';
 import { getConversationReader } from './ports/conversationReader';
@@ -142,7 +144,8 @@ import {
 } from './userInputQueue';
 import { registerSidecarRunPredicate } from './sidecarRunPredicate';
 import { bindWorkspaceFromWrite } from './defaultWorkspace';
-import { snapshotBeforeAiEdit } from '../../utils/aiEditSnapshots';
+import { captureTurnFileBefore, snapshotVersionBeforeAiEdit } from '../../utils/aiEditSnapshots';
+import { beginTurn as beginTurnChanges, endTurn as endTurnChanges } from '../session/turnChanges';
 import { getAuthorizedWritablePaths } from '../tools/pathSafety';
 import { deriveRunInteractionMode, type RunInitiator } from './runInteractionMode';
 import {
@@ -423,6 +426,24 @@ export interface RunSession {
    * race each other and the final response can resolve before disk frames.
    */
   frameApplyTail?: Promise<void>;
+  /**
+   * The status the sidecar's loop gave the conversation when it ended, held
+   * back until this run's terminal state is in the ledger. The conversation
+   * stays `running` in between, so a composer that shows Send means the turn
+   * is saved: a quit at that moment loses nothing. Released by the
+   * dispatcher's teardown; a failed or stopped run sets its own status and
+   * drops this one.
+   */
+  heldFinalStatus?: ConversationStatus;
+  /** Armed by a Stop pressed while `heldFinalStatus` is held; see `onShellAbort`. */
+  heldStopTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * The application is leaving and this run's user row says so
+   * (`closeRunningRunsForExit`). An active state reported after that no
+   * longer reaches the row; a terminal state still does, so a run that ends
+   * while the last writes go out is recorded as it ended.
+   */
+  closedOnExit?: boolean;
   /** Dedicated cancellation for the long-lived `agent.run` transport. The
    * UI AbortController must not cancel it immediately: we first wait for the
    * sidecar's ordered abort ACK, then fence frames and end the transport. */
@@ -684,6 +705,38 @@ export function summarizeFramesForLog(
   });
 }
 
+const CONVERSATION_STATUSES: ReadonlySet<unknown> = new Set<ConversationStatus>([
+  'idle', 'running', 'completed', 'error',
+]);
+
+/**
+ * Take the frame that ends the run's `running` status out of a batch and keep
+ * its status on the session (`RunSession.heldFinalStatus`). A later `running`
+ * frame of the same run means the loop went on: it is applied and the held
+ * status dropped.
+ */
+function holdFinalStatusFrames(session: RunSession, frames: PortFrame[]): PortFrame[] {
+  return frames.filter((frame) => {
+    if (frame.p !== 'chat' || frame.m !== 'setConversationStatus') return true;
+    if (frame.a[0] !== session.conversationId || !CONVERSATION_STATUSES.has(frame.a[1])) return true;
+    const status = frame.a[1] as ConversationStatus;
+    if (status === 'running') {
+      session.heldFinalStatus = undefined;
+      return true;
+    }
+    session.heldFinalStatus = status;
+    return false;
+  });
+}
+
+/** Give the conversation the status its loop ended on, once, after the run's terminal state is saved. */
+function releaseHeldFinalStatus(session: RunSession): void {
+  const status = session.heldFinalStatus;
+  if (status === undefined) return;
+  session.heldFinalStatus = undefined;
+  getChatDelta().setConversationStatus(session.conversationId, status);
+}
+
 /** `agent.delta` (NOTIFICATION) → {runId, frames} → applyDeltaFrames. Unknown runId → silent drop (3a discipline, matches handleSubagentAbort's unknown-runId no-op). */
 function handleAgentDelta(rawParams: unknown): void {
   const params = rawParams as { runId?: unknown; frames?: unknown } | null;
@@ -718,13 +771,15 @@ function handleAgentDelta(rawParams: unknown): void {
       });
     }
   }
+  const framesToApply = holdFinalStatusFrames(session, frames);
+  if (framesToApply.length === 0) return;
   const previous = session.frameApplyTail ?? Promise.resolve();
   // P3: degrade, don't drop. A batch that trips the raw-media guard used to
   // be dropped wholesale, which stranded the settle frames it carried (a
   // dispatch stuck at "executing" forever). Now each offending frame is
   // redacted in place and its tool call settled as a transport failure,
   // while every clean frame in the same batch applies untouched.
-  const { frames: safeFrames, degradedIndexes } = degradeDeltaFramesForMediaFailure(frames);
+  const { frames: safeFrames, degradedIndexes } = degradeDeltaFramesForMediaFailure(framesToApply);
   if (degradedIndexes.length > 0) {
     logger.warn('agent.delta degraded unsafe media payload', {
       runId: params.runId,
@@ -825,6 +880,7 @@ function updateSessionMessageState(
   errorDetails?: UpstreamErrorDetails,
 ): void {
   if (!session.userMessageId) return;
+  if (session.closedOnExit && ACTIVE_RUN_STATES.has(state)) return;
   useChatStore.getState().updateUserMessageRun(
     session.conversationId,
     session.userMessageId,
@@ -834,6 +890,24 @@ function updateSessionMessageState(
       ...(errorDetails ? { errorDetails } : {}),
     },
   );
+}
+
+/**
+ * The application is about to leave: every run that has not reached its
+ * terminal gets `interrupted` with the cause `app_exit` on its user row, so
+ * the next start shows what happened to it. Frames keep applying until the
+ * process is gone.
+ */
+export function closeRunningRunsForExit(): void {
+  for (const session of sessions.values()) {
+    if (session.terminal || session.closedOnExit || !session.userMessageId) continue;
+    session.closedOnExit = true;
+    useChatStore.getState().updateUserMessageRun(
+      session.conversationId,
+      session.userMessageId,
+      { state: 'interrupted', interruptCause: 'app_exit' },
+    );
+  }
 }
 
 async function finalizePreDispatchInterruptedRun(
@@ -1006,6 +1080,7 @@ async function finalizeFailedRun(
 
   session.failureFinalizationPromise = (async () => {
     session.dropFrames = true;
+    session.heldFinalStatus = undefined;
     updateSessionMessageState(session, state, displayMessage, errorDetails);
     await (session.frameApplyTail ?? Promise.resolve());
     try {
@@ -1047,6 +1122,7 @@ async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog
   session.abortFinalizationPromise = (async () => {
     try {
       session.dropFrames = true;
+      session.heldFinalStatus = undefined;
       updateSessionMessageState(session, 'interrupted');
       if (session.abortWatchdog) {
         clearTimeout(session.abortWatchdog);
@@ -1979,10 +2055,13 @@ function handleWorkspaceBindFromWrite(rawParams: unknown): void {
  * to settle first, matching the real function's own "capture the 'before'
  * state before the write lands" contract.
  *
- * Calls the REAL `snapshotBeforeAiEdit` (`utils/aiEditSnapshots.ts`,
- * unmoved) — the exact same function a shell-executed write/edit would call
- * directly — so a locally-executed write/edit leaves the identical
- * revertable "before" state in `canvasVersions` version history.
+ * Runs the two steps a shell-executed write/edit runs through
+ * `snapshotBeforeAiEdit` (`utils/aiEditSnapshots.ts`): the turn capture
+ * (`captureTurnFileBefore`, under this session's loop id) and the version
+ * snapshot (`snapshotVersionBeforeAiEdit`), so a locally-executed write/edit
+ * leaves the identical revertable "before" state in `canvasVersions` version
+ * history. A request with `opts.captureOnly` (`delete_file`) runs the capture
+ * alone.
  *
  * Session lookup mirrors `handleApprovalCheck`'s discipline (unknown runId
  * or a since-deleted conversation → throw, refusing to answer) — but unlike
@@ -2008,11 +2087,18 @@ async function handleSnapshotBeforeAiEdit(rawParams: unknown): Promise<null> {
   }
 
   const rawOpts = (params.opts && typeof params.opts === 'object' ? params.opts : {}) as Record<string, unknown>;
-  await session.resourceSettlement!.run(() => snapshotBeforeAiEdit(path, {
-    loopId: typeof rawOpts.loopId === 'string' ? rawOpts.loopId : undefined,
-    conversationId: typeof rawOpts.conversationId === 'string' ? rawOpts.conversationId : undefined,
-    knownContent: typeof rawOpts.knownContent === 'string' ? rawOpts.knownContent : undefined,
-  }));
+  await session.resourceSettlement!.run(async () => {
+    // The turn's change record names a directory after the loop id, so the
+    // capture takes the id this renderer registered for the run, never the
+    // one in the request.
+    await captureTurnFileBefore(path, session.loopId);
+    if (rawOpts.captureOnly === true) return;
+    await snapshotVersionBeforeAiEdit(path, {
+      loopId: typeof rawOpts.loopId === 'string' ? rawOpts.loopId : undefined,
+      conversationId: typeof rawOpts.conversationId === 'string' ? rawOpts.conversationId : undefined,
+      knownContent: typeof rawOpts.knownContent === 'string' ? rawOpts.knownContent : undefined,
+    });
+  });
   return null;
 }
 
@@ -2198,12 +2284,14 @@ function pushSettingsNow(): void {
   });
 }
 
-/** The 4 scalar fields diffed per-conversation for `state.convPatch` — see design doc §5's emitter bullet. */
+/** The fields diffed per-conversation for `state.convPatch` — see design doc §5's emitter bullet. */
 interface ConvPatchSnapshot {
   workspacePath?: string | null;
   title?: string;
   activeSkills?: string[];
   model?: { providerId: string; modelId: string };
+  /** Goal mode: written shell-side by the goal tool / UI mid-run; `null` on the wire = cleared. */
+  goal?: GoalState | null;
 }
 
 let chatUnsub: (() => void) | undefined;
@@ -2219,6 +2307,7 @@ function snapshotConv(conversationId: string): ConvPatchSnapshot | undefined {
     title: conv.title,
     activeSkills: conv.activeSkills,
     model: state.conversationIndex[conversationId]?.model,
+    goal: conv.goal ?? null,
   };
 }
 
@@ -2246,6 +2335,11 @@ function diffConvSnapshot(prev: ConvPatchSnapshot | undefined, next: ConvPatchSn
   }
   if (!prev || prev.model?.providerId !== next.model?.providerId || prev.model?.modelId !== next.model?.modelId) {
     patch.model = next.model;
+    changed = true;
+  }
+  // Every goal write bumps `revision`, so id + revision identify its content.
+  if (!prev || prev.goal?.id !== next.goal?.id || prev.goal?.revision !== next.goal?.revision) {
+    patch.goal = next.goal ?? null;
     changed = true;
   }
   return changed ? patch : undefined;
@@ -3271,12 +3365,36 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     browserDenialStreaksByTask.delete(teamTask.retiredTaskId);
   }
   useTeamConfirmationStore.getState().beginRetry(conversationId, ownedLoopId, options.teamConfirmationRetryId);
+  // The record of what this turn changes on disk is a side write, handled like
+  // the output snapshots in toolExecutor.ts: a failure is logged and never
+  // decides whether or how the turn runs. Each venue awaits it once its run is
+  // registered and before the run can write, so the workspace is listed first
+  // and nothing is awaited between the concurrency guard and the registration.
+  const turnChangesScopeId = options.authorizationScopeId;
+  const beginTurnRecord = (): Promise<void> => beginTurnChanges(
+    conversationId,
+    ownedLoopId,
+    entryConversation?.workspacePath ?? null,
+    {
+      scopeId: turnChangesScopeId,
+      isConversationPresent: () => Boolean(useChatStore.getState().conversations[conversationId]),
+    },
+  ).catch((error: unknown) => {
+    logger.warn('turn changes: begin failed', {
+      conversationId,
+      runId: ownedLoopId,
+      errorType: runtimeErrorType(error),
+    });
+  });
   try {
   if (inProcessEnvironment) {
     // Environment choice (web preview / unit tests): there is no desktop
     // process bridge, so the loop runs in this renderer. Not a failure
     // fallback — Electron never reaches this branch (#549).
     await ensureBuiltinBrowserRuntime();
+    // The loop registers its own run, so this venue begins the record last
+    // before handing over to it.
+    await beginTurnRecord();
     let localUserMessageId: string | undefined;
     try {
       const result = await runAgentLoop(
@@ -3368,6 +3486,9 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     content: userMessage,
     timestamp: runtimeStartedAt,
     loopId: runId,
+    // Goal mode: an automatic round opens with an internal row, rendered as a
+    // round marker rather than a user bubble (see AgentLoopOptions.goalRound).
+    ...(options?.goalRound ? { isSystem: true, goalRound: options.goalRound } : {}),
   });
   ownership.messageTaken = true;
   // The documented onMessageTaken contract ("invoked once the initial user
@@ -3375,6 +3496,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
   // the shell row was just added above.
   options?.onMessageTaken?.(clientMessageId);
   shellChatDelta.setConversationStatus(conversationId, 'running');
+  await beginTurnRecord();
   try {
     await waitForConversationPersistence(conversationId);
   } catch (error) {
@@ -3595,6 +3717,17 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     // A click racing with renderer cleanup must not rewrite that first-wins
     // outcome from completed to aborted.
     if (session.terminal) return;
+    // The loop has given the conversation its final status and Stop is on
+    // screen only until the turn is saved: the terminal is due at once, and a
+    // click has no run left to stop. A sidecar that still has not sent it
+    // after the abort grace period is stopped like any other.
+    if (session.heldFinalStatus !== undefined) {
+      session.heldStopTimer = setTimeout(() => {
+        session.heldStopTimer = undefined;
+        if (!session.terminal) void requestSidecarRunAbort(session);
+      }, AGENT_ABORT_FORCE_FINALIZE_MS);
+      return;
+    }
     void requestSidecarRunAbort(session);
   };
   session.onShellAbort = onShellAbort;
@@ -4010,6 +4143,10 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         : {}),
     };
   } finally {
+    // Every return above has awaited the ledger write of the run's terminal
+    // state; only now does the conversation leave `running`.
+    releaseHeldFinalStatus(session);
+    if (session.heldStopTimer) clearTimeout(session.heldStopTimer);
     if (session.firstFrameStallTimer) clearTimeout(session.firstFrameStallTimer);
     // From here the dispatcher, not the UI, owns teardown. Remove the Stop
     // forwarder before aborting a scoped controller for normal resource
@@ -4084,6 +4221,18 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     // A team task's bounds outlive this run and are retired when the next
     // task starts; only a run outside a task owns its own entry.
     if (!teamTask) clearRunBounds(ownedLoopId);
+    // Every way a dispatched run ends — finished, failed, round limit, Stop,
+    // in this renderer or in the sidecar — leaves through here. Not awaited:
+    // the conversation's next turn waits for this settle inside beginTurn.
+    void endTurnChanges(ownedLoopId, {
+      workspacePath: getConversationReader().getConversation(conversationId)?.workspacePath ?? null,
+    }).catch((error: unknown) => {
+      logger.warn('turn changes: settle failed', {
+        conversationId,
+        runId: ownedLoopId,
+        errorType: runtimeErrorType(error),
+      });
+    });
   }
 }
 
@@ -4157,6 +4306,35 @@ export async function runAgentLoopDispatched(
   }
 }
 
+/**
+ * Called once per dispatch, after the initial run AND every queued user
+ * follow-up it handed off to have finished — i.e. when the conversation has
+ * nothing left to run. `result` is the LAST run's result (what the
+ * conversation is left with). Goal mode's round driver hangs off this seam;
+ * registration keeps this module free of a static dependency on it.
+ */
+export type DispatchSettledListener = (conversationId: string, result: AgentLoopDispatchResult) => void;
+
+const dispatchSettledListeners = new Set<DispatchSettledListener>();
+
+export function onDispatchSettled(listener: DispatchSettledListener): () => void {
+  dispatchSettledListeners.add(listener);
+  return () => { dispatchSettledListeners.delete(listener); };
+}
+
+function notifyDispatchSettled(conversationId: string, result: AgentLoopDispatchResult): void {
+  for (const listener of dispatchSettledListeners) {
+    try {
+      listener(conversationId, result);
+    } catch (error) {
+      logger.warn('dispatch-settled listener failed', {
+        conversationId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
 async function runDispatchedTurns(
   conversationId: string,
   userMessage: string,
@@ -4209,6 +4387,11 @@ async function runDispatchedTurns(
       pauseUserInputQueue(conversationId);
     }
   } catch (error) {
+    notifyDispatchSettled(conversationId, {
+      reason: 'error',
+      error: error instanceof Error ? error.message : String(error),
+      messageTaken: error instanceof AgentLoopDispatchError ? error.messageTaken : initialMessageTaken,
+    });
     if (queuedInputInFlight) {
       if (!(error instanceof AgentLoopDispatchError) || !error.messageTaken) {
         restoreDequeuedUserInput(conversationId, queuedInputInFlight);
@@ -4225,5 +4408,6 @@ async function runDispatchedTurns(
     throw wrapAgentLoopDispatchError(error, true);
   }
 
+  notifyDispatchSettled(conversationId, previousResult);
   return initialResult;
 }

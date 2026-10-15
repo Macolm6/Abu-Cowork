@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initLanguage } from '@/i18n';
@@ -75,8 +75,20 @@ describe('ManagedProviderOfflineBar', () => {
     expect(screen.getByRole('status')).toHaveTextContent('暂时连不上 MAZG 的模型服务');
     await userEvent.click(screen.getByRole('button', { name: '用我自己的模型' }));
 
-    expect(setConversationModel).toHaveBeenCalledWith('conv-1', { providerId: 'mine', modelId: 'mine-b' });
+    expect(setConversationModel).toHaveBeenCalledWith('conv-1', { providerId: 'mine', modelId: 'mine-b' }, { durable: true });
     expect(useSettingsStore.getState().activeModel).toEqual({ providerId: 'org-models', modelId: 'org-model' });
+  });
+
+  it('is a warning message that carries its one action inside it', () => {
+    fallback = { providerId: 'mine', modelId: 'mine-a' };
+    renderBar([managed, own('mine', ['mine-a'])]);
+
+    const notice = screen.getByRole('status');
+    expect(notice).toHaveClass('bg-warning-soft');
+    expect(notice.querySelector('svg.text-warning')).not.toBeNull();
+    const button = within(notice).getByRole('button', { name: '用我自己的模型' });
+    expect(button).toHaveClass('bg-fill');
+    expect(button).not.toHaveClass('bg-emphasis');
   });
 
   it('changes the default for new conversations when there is no conversation', async () => {
@@ -95,7 +107,7 @@ describe('ManagedProviderOfflineBar', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '用我自己的模型' }));
 
-    expect(setConversationModel).toHaveBeenCalledWith('conv-1', { providerId: 'other', modelId: 'other-a' });
+    expect(setConversationModel).toHaveBeenCalledWith('conv-1', { providerId: 'other', modelId: 'other-a' }, { durable: true });
   });
 
   it('shows the notice without a button when the user has no model of their own', () => {

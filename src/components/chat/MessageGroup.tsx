@@ -1,6 +1,5 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
-import { Sparkles, ChevronDown, ChevronRight } from 'lucide-react';
-import type { BatchIdentity, Message, MessageContent, ToolCall } from '@/types';
+import type { BatchIdentity, FileChange, Message, MessageContent, ToolCall } from '@/types';
 import { makeBatchKey } from '@/types';
 import { TOOL_NAMES, isDisplayHiddenStepBackedTool } from '@/core/tools/toolNames';
 import type { ExecutionStep } from '@/types/execution';
@@ -8,6 +7,8 @@ import type { WorkflowStep } from '@/utils/workflowExtractor';
 import MessageBubble from './MessageBubble';
 import SkillProposalCard from './SkillProposalCard';
 import SandboxRecoveryCard from './SandboxRecoveryCard';
+import AppDraftCard from './AppDraftCard';
+import { latestAppPreviewCallId } from './appPreviewCall';
 import ComputerUseRunReportCard from './ComputerUseRunReportCard';
 import UserQuestionCard from './UserQuestionCard';
 import PlanStepsCard from './PlanStepsCard';
@@ -19,31 +20,35 @@ import SmoothHeight from './SmoothHeight';
 import BatchProgress from './BatchProgress';
 import MarkdownRenderer from './MarkdownRenderer';
 import FileAttachment, { ImagePreviewCard, ImageThumbnail, isImageFile } from './FileAttachment';
+import ChangedFilesCard from './ChangedFilesCard';
 import SourcesSection from './SourcesSection';
 import { getConversationAgentState, useChatStore, useActiveConversation } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
+import { useAppDraftStore } from '@/stores/appDraftStore';
 import { useMCPStore } from '@/stores/mcpStore';
 import { useI18n, format } from '@/i18n';
 import { MessageErrorBoundary } from '@/components/common/ErrorBoundary';
-import ConfirmDialog from '@/components/common/ConfirmDialog';
-import { computeRewindImpact } from '@/utils/rewindImpact';
+import { useRewindQuestion } from './rewindQuestion';
+import { retryTurn } from './retryTurn';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { useBatchProgressStore } from '@/stores/batchProgressStore';
 import { makeWorkProcessFoldKey, useWorkProcessFoldStore } from '@/stores/workProcessFoldStore';
 import { extractWorkflowSteps, extractFileOutputs, extractFilePathsFromText, parsePlanSteps } from '@/utils/workflowExtractor';
+import { collectPresentedFiles } from '@/utils/presentedFiles';
+import { collectTurnFilePaths, resolveFileMention } from '@/utils/turnFileMentions';
+import { usePresentFilesOnDisk } from '@/hooks/usePresentFilesOnDisk';
 import { parseSearchResults, stripSourcesBlock, parseSourcesFromText } from '@/utils/searchParser';
 import { backfillDetailBlockImages, snapshotToExecutionSteps } from '@/core/agent/executionSnapshot';
-import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
-import { ensureConversationModelUsable } from './sendModelGuard';
-import { announceChatTurnScrollIntent } from './chatTurnScrollIntent';
 import { allWorkingDirectories } from '@/core/permissions/workingDirs';
 import { homeDir } from '@tauri-apps/api/path';
 import { cn } from '@/lib/utils';
+import { Pressable } from '@/components/ds/pressable';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
 import { ThinkingStatusLine, AssistantRowAvatar } from './ThinkingStatusLine';
 import { useConversationTeamLeader } from '@/components/team/useConversationTeamLeader';
 import AgentAvatar from '@/components/common/AgentAvatar';
 import { GROUP_CONTENT_GAP } from './chatSpacing';
-import { rebuildImageAttachments } from './imageAttachmentRebuild';
 import {
   rollupBatchRows,
   compactBatchRollupSummary,
@@ -59,6 +64,10 @@ interface MessageGroupProps {
   conversationId: string;
   messages: Message[];
   isLastGroup?: boolean;
+  // Whether this is the last group of its loopId. A loop spans two groups when
+  // a compaction marker falls inside it; the changed-files card belongs to the
+  // last one.
+  isLastGroupOfLoop?: boolean;
   // When set and this group contains that message, briefly ring-highlight the
   // group (search-hit jump target). Cleared by the parent after a timeout.
   highlightMessageId?: string | null;
@@ -83,28 +92,26 @@ function SkillPatchSummaryRow({ skillName, calls }: { skillName: string; calls: 
   const [expanded, setExpanded] = useState(false);
   return (
     <div className="my-1">
-      <button
+      <Pressable
+        aria-expanded={expanded}
         onClick={() => setExpanded((v) => !v)}
-        className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] text-minor text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-elevated)] transition-colors"
+        className="flex w-full items-center gap-2 rounded-panel border border-separator bg-surface px-3 py-2 text-ui-sm text-label-secondary transition-colors duration-fast hover:bg-fill-hover"
       >
-        <Sparkles className="h-3.5 w-3.5 text-[var(--abu-clay)] flex-shrink-0" />
+        <Icon icon={AppIcons.sparkles} size="sm" className="text-label-secondary" />
         <span className="flex-1 text-left">
           {t.toolbox.skillPatchGroupLabel}{' '}
-          <span className="font-medium text-[var(--abu-text-primary)]">{skillName}</span>
-          <span className="text-[var(--abu-text-muted)]">{format(t.toolbox.skillPatchGroupCount, { count: calls.length })}</span>
+          <span className="font-medium text-label">{skillName}</span>
+          <span className="text-label-tertiary">{format(t.toolbox.skillPatchGroupCount, { count: calls.length })}</span>
         </span>
-        {expanded
-          ? <ChevronDown className="h-3 w-3 flex-shrink-0" />
-          : <ChevronRight className="h-3 w-3 flex-shrink-0" />
-        }
-      </button>
+        <Icon icon={expanded ? AppIcons.expand : AppIcons.disclose} size="sm" />
+      </Pressable>
       {expanded && (
-        <div className="mt-0.5 ml-5 space-y-0.5">
+        <div className="ml-5 mt-1 space-y-1">
           {calls.map((tc) => {
             let msg = '';
             try { msg = (JSON.parse(tc.result ?? '{}') as { message?: string }).message ?? ''; } catch { /* empty */ }
             return msg ? (
-              <div key={tc.id} className="text-caption text-[var(--abu-text-muted)] px-2 py-0.5">
+              <div key={tc.id} className="px-2 py-1 text-caption text-label-tertiary">
                 {msg}
               </div>
             ) : null;
@@ -148,7 +155,7 @@ function useRunElapsedMs(startMs: number | undefined, active: boolean): number {
 function RunStatusDivider({ label }: { label: string }) {
   return (
     <div className="block-expand block-expand-open block-expand-enter">
-      <div className="mb-2 text-body text-[var(--abu-text-muted)] tabular-nums">
+      <div className="mb-2 text-ui text-label-secondary tabular-nums">
         {label}
       </div>
     </div>
@@ -220,13 +227,18 @@ function stripMarkdownImages(text: string): string {
   return text.replace(/!\[[^\]]*\]\([^)]+\)\n?/g, '').trim();
 }
 
+// File cards a declared-mode group shows before its "all files" button is pressed.
+const MAX_FILE_CARDS_SHOWN = 4;
+
 const LEGACY_STOP_MARKER = /\s*\*\[已停止\]\*\s*$/;
 
 /** Backward compatibility for transcripts written before runState terminals. */
 // eslint-disable-next-line react-refresh/only-export-components
 export function hasPersistedStopState(messages: Message[]): boolean {
   return messages.some((message) =>
-    (message.role === 'user' && message.runState === 'interrupted')
+    // A turn the application closed on says so under the user's message
+    // (`MessageBubble`); 「已停止」 is for a turn the user stopped.
+    (message.role === 'user' && message.runState === 'interrupted' && message.runInterruptCause !== 'app_exit')
     || (message.role === 'assistant' && message.stopReason === 'user')
     || (message.role === 'assistant'
       && typeof message.content === 'string'
@@ -528,7 +540,7 @@ export function streamingTurnHasRenderableContent(msg: Message | undefined): boo
  * User messages render standalone, assistant messages share one avatar.
  * Renders text → merged tool steps, with consecutive tool-only turns combined.
  */
-export default function MessageGroup({ conversationId, messages, isLastGroup: isLastGroupProp = false, highlightMessageId = null }: MessageGroupProps) {
+export default function MessageGroup({ conversationId, messages, isLastGroup: isLastGroupProp = false, isLastGroupOfLoop = false, highlightMessageId = null }: MessageGroupProps) {
   const { t } = useI18n();
   // Separate user and assistant messages
   const userMsg = messages.find((m) => m.role === 'user');
@@ -538,6 +550,8 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
   const teamLeader = useConversationTeamLeader(conversationId);
   const agentStatus = useChatStore((s) => getConversationAgentState(s.agentStates, activeConversationId).status);
   const home = useHomeDir();
+  const isAppDraftConversation = useAppDraftStore((s) => s.draftsByConversation[conversationId] !== undefined);
+  const appPreviewCallId = useChatStore((s) => (isAppDraftConversation ? latestAppPreviewCallId(s.conversations[conversationId]?.messages) : undefined));
 
   // Get loopId from messages (all messages in group share same loopId)
   const loopId = messages[0]?.loopId;
@@ -596,6 +610,14 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     () => assistantMsgs.flatMap((m) => m.toolCalls || []),
     [assistantMsgs]
   );
+  // File changes of this turn's own file-tool calls, for the steps that show them.
+  const fileChanges = useMemo(() => {
+    const byToolCallId = new Map<string, FileChange>();
+    for (const toolCall of allToolCalls) {
+      if (toolCall.fileChange && !toolCall.fromSubagent) byToolCallId.set(toolCall.id, toolCall.fileChange);
+    }
+    return byToolCallId;
+  }, [allToolCalls]);
   const legacyWorkflowToolCalls = useMemo<ToolCall[]>(() => {
     const seenBatchKeys = new Set<string>();
     return assistantMsgs.flatMap((message) => (message.toolCalls || []).filter((toolCall) => {
@@ -677,7 +699,12 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
   // text — fallback for paths the LLM announces in prose ("已保存到 X") but
   // never appear in toolCall.input.path (e.g. python subprocess writing files
   // not visible to the agent loop).
+  //
+  // Groups whose assistant messages carry `fileCards: 'declared'` take their
+  // cards from what the agent presented (declaredFiles below) and infer nothing.
+  const declaredMode = assistantMsgs.some((m) => m.fileCards === 'declared');
   const fileOutputs = useMemo(() => {
+    if (declaredMode) return [];
     const files = extractFileOutputs(allToolCalls, {
       mode: 'deliverables',
       // Drop cards for files cp/mv'd outside the workspace boundary — those are
@@ -711,7 +738,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
       }
     }
     return files;
-  }, [allToolCalls, assistantMsgs, home]);
+  }, [allToolCalls, assistantMsgs, home, declaredMode]);
 
   /**
    * Which MCP servers are connected right now, as one stable string.
@@ -810,52 +837,72 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
           const chat = useChatStore.getState();
           if (r.status === 'available' && ownerId && chat.conversations[ownerId]
             && chat.activeConversationId === ownerId
-            && usePreviewStore.getState().currentConversationId === ownerId) openPreview(r.path);
+            && usePreviewStore.getState().currentConversationId === ownerId) {
+            if (r.isFromSnapshot) openPreview(r.path, { keptCopyOf: previewableFile.path });
+            else openPreview(r.path);
+          }
         }).catch(() => {});
       }).catch(() => {});
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- isLastGroupProp omitted: adding it would re-trigger preview when a new group demotes this one
   }, [isAgentDone, fileOutputs, openPreview, activeConv?.id, conversationId]);
 
-  // Rewind confirm state: handleRetry's deleteMessagesFrom truncates from
-  // this loop's first assistant message onward, discarding anything after —
-  // silently, if this isn't the conversation's last loop. See
-  // computeRewindImpact for the "later turns exist" check.
-  const [pendingRewind, setPendingRewind] = useState<{ laterTurnsCount: number; run: () => void } | null>(null);
+  // Declared mode: the cards are the presented files that are on disk. The
+  // check starts once the group is done, so no card shows before it answers.
+  const workspacePath = useChatStore((s) => s.conversations[conversationId]?.workspacePath ?? null);
+  const declaredFiles = useMemo(
+    () => (declaredMode ? collectPresentedFiles(allToolCalls) : []),
+    [declaredMode, allToolCalls],
+  );
+  const onDiskFiles = usePresentFilesOnDisk(declaredFiles, declaredMode && isGroupDone);
+  const [allFilesShown, setAllFilesShown] = useState(false);
 
-  // Handle retry
-  const handleRetry = async () => {
-    if (!userMsg || !activeConv?.id) return;
-    if (!ensureConversationModelUsable(activeConv, t.chat)) return;
-    const convId = activeConv.id;
-    const userContent = getTextContent(userMsg.content);
+  // Declared mode: file names and paths in the reply text that name a file this
+  // turn wrote or presented open it in the side preview. The serialized list
+  // keeps the resolver stable across renders, which MarkdownRenderer requires.
+  const turnFilePathsKey = useMemo(
+    () => JSON.stringify(declaredMode ? collectTurnFilePaths(allToolCalls, workspacePath) : []),
+    [declaredMode, allToolCalls, workspacePath],
+  );
+  const resolveTurnFileMention = useMemo(() => {
+    const turnFilePaths = JSON.parse(turnFilePathsKey) as string[];
+    return turnFilePaths.length > 0
+      ? (text: string) => resolveFileMention(text, turnFilePaths)
+      : undefined;
+  }, [turnFilePathsKey]);
 
-    const retryImages = rebuildImageAttachments(userMsg.content, 'retry');
-
-    const firstAssistantInLoop = assistantMsgs[0];
-
-    const proceed = async () => {
-      // Re-check: the provider may have been removed while the confirm was open.
-      if (!ensureConversationModelUsable(useChatStore.getState().conversations[convId], t.chat)) return;
-      if (firstAssistantInLoop) {
-        useChatStore.getState().deleteMessagesFrom(convId, firstAssistantInLoop.id);
-      }
-      announceChatTurnScrollIntent({ conversationId: convId, source: 'run-retry' });
-      // A retry is a human clicking a button, like MessageBubble's own
-      // retry/regenerate/edit-resend — the run is attended even when the
-      // conversation record carries a scheduler/trigger marker.
-      await runAgentLoopDispatched(convId, userContent, {
-        initiatedBy: 'user',
-        ...(retryImages ? { images: retryImages } : {}),
-      });
-    };
-
-    const impact = computeRewindImpact(activeConv.messages, loopId, userMsg.id);
-    if (impact.hasLaterTurns) {
-      setPendingRewind({ laterTurnsCount: impact.laterTurnsCount, run: proceed });
+  // Declared-mode auto-preview: decided once per mount, for the last group, by
+  // the first answer of the disk check after a run this mount watched has
+  // ended. It opens the last presented non-image file, or the last image when
+  // every file is an image; an empty answer opens nothing, also when a file
+  // reaches the disk later.
+  const sawRunInProgressRef = useRef(false);
+  const declaredPreviewDecidedRef = useRef(false);
+  useEffect(() => {
+    if (!declaredMode || !isLastGroupProp) return;
+    if (!isAgentDone) {
+      sawRunInProgressRef.current = true;
       return;
     }
-    await proceed();
+    if (!sawRunInProgressRef.current || declaredPreviewDecidedRef.current) return;
+    if (onDiskFiles === null) return;
+    declaredPreviewDecidedRef.current = true;
+    if (onDiskFiles.length === 0) return;
+    const nonImageFiles = onDiskFiles.filter((file) => !isImageFile(file.path));
+    const target = nonImageFiles[nonImageFiles.length - 1] ?? onDiskFiles[onDiskFiles.length - 1];
+    const chat = useChatStore.getState();
+    if (chat.conversations[conversationId]
+      && chat.activeConversationId === conversationId
+      && usePreviewStore.getState().currentConversationId === conversationId) openPreview(target.path);
+  }, [declaredMode, isLastGroupProp, isAgentDone, onDiskFiles, conversationId, openPreview]);
+
+  // The retry of a failed step runs the turn again from its user message and
+  // deletes what follows, so it asks first when later turns exist (retryTurn).
+  const askBeforeRewind = useRewindQuestion();
+
+  const handleRetry = async () => {
+    if (!userMsg || !activeConv?.id) return;
+    await retryTurn({ conversation: activeConv, userMessage: userMsg, askBeforeRewind, chatText: t.chat });
   };
 
   // Tool execution steps for this loop. Thinking is rebuilt per-message inside
@@ -1010,7 +1057,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
       // have unique timestamped names. Non-output images (web URLs, pre-existing
       // files) still render as thumbnails.
       const baseOf = (p: string) => (p.split(/[/\\]/).pop() || p).trim();
-      const outputBasenames = new Set(fileOutputs.map((f) => baseOf(f.path)));
+      const outputBasenames = new Set((declaredMode ? onDiskFiles ?? [] : fileOutputs).map((f) => baseOf(f.path)));
       const mdImages = allMdImages.filter((src) => !outputBasenames.has(baseOf(src)));
       // Always strip ALL markdown images from the rendered text (MarkdownRenderer
       // drops <img> anyway); the ones we keep are shown as ImageThumbnail below.
@@ -1033,15 +1080,16 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
             </div>
           )}
           {cleanedText && (
-            <div className="text-[var(--abu-text-primary)] break-words mb-2 select-text">
+            <div className="mb-2 break-words text-label select-text">
               <MarkdownRenderer
                 content={cleanedText}
                 searchResults={searchResults.length > 0 ? searchResults : undefined}
                 onCitationClick={searchResults.length > 0 ? handleCitationClick : undefined}
+                resolveFileMention={resolveTurnFileMention}
               />
             </div>
           )}
-          {showCursor && <span className="streaming-cursor" />}
+          {showCursor && <span aria-hidden="true" className="ml-1 inline-block h-4 w-0.5 bg-label-secondary align-text-bottom" />}
         </div>
       );
     }
@@ -1136,6 +1184,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
             isActive={execIsActive}
             isStopped={isStopped}
             onRetry={seg.isLastGroup && hasError && !isStreaming ? handleRetry : undefined}
+            fileChanges={fileChanges}
           />
         ) : hasLegacySteps && (
           <TaskBlock
@@ -1143,6 +1192,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
             isActive={legacyIsActive}
             isStopped={isStopped}
             onRetry={seg.isLastGroup && hasError && !isStreaming ? handleRetry : undefined}
+            fileChanges={fileChanges}
           />
         )}
         {segSettledUQCards.map((tc) => (
@@ -1162,28 +1212,13 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
         // transition-colors lives on the base class so the highlight fades both
         // in AND out (a conditional transition class vanishes with the bg and
         // makes the removal instant).
-        'message-group w-full rounded-lg transition-colors duration-700',
+        'message-group w-full rounded-panel transition-colors duration-slow',
         GROUP_CONTENT_GAP,
         highlightMessageId != null &&
           messages.some((m) => m.id === highlightMessageId) &&
-          'bg-[var(--abu-clay-bg-15)]',
+          'bg-fill-selected',
       )}
     >
-      <ConfirmDialog
-        open={!!pendingRewind}
-        title={t.chat.rewindConfirmTitle}
-        message={pendingRewind ? format(t.chat.rewindConfirmMessage, { count: String(pendingRewind.laterTurnsCount) }) : ''}
-        confirmText={t.common.confirm}
-        cancelText={t.common.cancel}
-        onConfirm={() => {
-          const run = pendingRewind?.run;
-          setPendingRewind(null);
-          run?.();
-        }}
-        onCancel={() => setPendingRewind(null)}
-        variant="danger"
-      />
-
       {/* User message renders standalone */}
       {userMsg && <MessageErrorBoundary><MessageBubble message={userMsg} /></MessageErrorBoundary>}
 
@@ -1196,7 +1231,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
           {/* Content area */}
           <div className="flex-1 min-w-0 overflow-hidden">
             {teamLeader && (
-              <div data-testid="team-leader-caption" className="mb-1 text-caption text-[var(--abu-text-tertiary)] truncate">
+              <div data-testid="team-leader-caption" className="mb-1 truncate text-ui text-label-secondary">
                 {teamLeader.leaderName} · {teamLeader.teamName}
               </div>
             )}
@@ -1204,7 +1239,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
                 Render it even when Stop arrived before the first model token
                 and the empty assistant placeholder was durably deleted. */}
             {isStopped && workFoldEnd == null && (
-              <div className="text-body text-[var(--abu-text-muted)] mb-2">
+              <div className="mb-2 text-ui text-label-secondary">
                 {stoppedLabel}
               </div>
             )}
@@ -1249,8 +1284,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
               {workFoldEnd != null && (
                 /* Lightweight fold header — matches the thinking/step block
                     style (muted text + trailing chevron, no card background). */
-                <button
-                  type="button"
+                <Pressable
                   aria-expanded={workExpanded}
                   onClick={() => {
                     useWorkProcessFoldStore.getState().setMode(
@@ -1259,14 +1293,15 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
                       workExpanded ? 'collapsed' : 'expanded',
                     );
                   }}
-                  className="flex items-center gap-1 text-body text-[var(--abu-text-muted)] hover:text-[var(--abu-text-muted)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-focus-ring)] rounded-sm transition-colors mb-2"
+                  className="mb-2 flex items-center gap-1 rounded-control text-ui text-label-secondary transition-colors duration-fast hover:text-label"
                 >
                   <span>{foldHeaderLabel}</span>
-                  <ChevronDown
-                    aria-hidden="true"
-                    className={cn('h-3.5 w-3.5 transition-transform', !workExpanded && '-rotate-90')}
+                  <Icon
+                    icon={AppIcons.expand}
+                    size="sm"
+                    className={cn('transition-transform duration-fast', !workExpanded && '-rotate-90')}
                   />
-                </button>
+                </Pressable>
               )}
               {workFoldEnd == null || workExpanded
                 ? segments.slice(0, workFoldEnd ?? segments.length).map((seg, i) => renderSegment(seg, i))
@@ -1350,6 +1385,10 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
               />
             ))}
 
+            {appPreviewCallId !== undefined && allToolCalls.some((tc) => tc.id === appPreviewCallId) && (
+              <AppDraftCard key={`app-draft-${appPreviewCallId}`} conversationId={conversationId} toolCallId={appPreviewCallId} />
+            )}
+
             {/* Grouped skill-patch summary — one collapsible fold-row per
                 skill, replacing the old per-patch floating pills. */}
             {(() => {
@@ -1395,6 +1434,34 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
                 </>
               );
             })()}
+
+            {/* Presented files that are on disk, in the order they were presented:
+                the first four, and the rest behind one button. */}
+            {declaredMode && onDiskFiles !== null && onDiskFiles.length > 0 && (
+              <>
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {(allFilesShown ? onDiskFiles : onDiskFiles.slice(0, MAX_FILE_CARDS_SHOWN)).map((file) => (
+                    isImageFile(file.path)
+                      ? <ImagePreviewCard key={file.path} filePath={file.path} />
+                      : <FileAttachment key={file.path} filePath={file.path} description={file.description} declared />
+                  ))}
+                </div>
+                {onDiskFiles.length > MAX_FILE_CARDS_SHOWN && (
+                  <Pressable
+                    aria-expanded={allFilesShown}
+                    onClick={() => setAllFilesShown((shown) => !shown)}
+                    className="mt-2 flex items-center gap-1 rounded-control text-ui text-label-secondary transition-colors duration-fast hover:text-label"
+                  >
+                    {allFilesShown ? t.chat.collapseFiles : format(t.chat.allFilesCount, { count: onDiskFiles.length })}
+                  </Pressable>
+                )}
+              </>
+            )}
+
+            {/* What the turn changed on disk, once per loop and once the run has ended. */}
+            {isLastGroupOfLoop && isGroupDone && loopId && (
+              <ChangedFilesCard conversationId={conversationId} loopId={loopId} />
+            )}
 
             {/* Sources section - below file attachments */}
             {searchResults.length > 0 && !isStreaming && (

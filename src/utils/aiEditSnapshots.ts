@@ -14,6 +14,7 @@ import { exists, readTextFile, stat } from '@tauri-apps/plugin-fs';
 import { normalizePath, snapshotVersion } from '@/utils/canvasVersions';
 import { getMessageText } from '@/core/context/contextUtils';
 import { useChatStore } from '@/stores/chatStore';
+import { captureBefore } from '@/core/session/turnChanges';
 
 /** Files larger than this are not read into memory in the stat-then-read
  *  branch below — guards against loading a huge file just to snapshot it.
@@ -85,11 +86,38 @@ function latestUserMessageLabel(conversationId?: string): string | undefined {
 }
 
 /**
+ * Keeps `path` as it is now for the turn's change record
+ * (`core/session/turnChanges.ts`). Call it before an AI tool writes or removes
+ * the file. NEVER throws: the record is a side write, and a failure in it must
+ * not stop the tool.
+ */
+export async function captureTurnFileBefore(path: string, loopId: string | undefined): Promise<void> {
+  if (!loopId) return;
+  try {
+    await captureBefore(loopId, path);
+  } catch (err) {
+    console.warn('[aiEditSnapshots] turn capture failed (non-blocking)', path, err);
+  }
+}
+
+/**
+ * What a file tool running in this process calls before it overwrites `path`:
+ * the turn capture, then the version-history snapshot. NEVER throws.
+ */
+export async function snapshotBeforeAiEdit(
+  path: string,
+  opts: { loopId?: string; conversationId?: string; knownContent?: string }
+): Promise<void> {
+  await captureTurnFileBefore(path, opts.loopId);
+  await snapshotVersionBeforeAiEdit(path, opts);
+}
+
+/**
  * Snapshot the current on-disk content of `path` before an AI tool overwrites
  * it. First-touch-per-loop semantics; new files (nothing on disk yet) and
  * oversize files are skipped. NEVER throws.
  */
-export async function snapshotBeforeAiEdit(
+export async function snapshotVersionBeforeAiEdit(
   path: string,
   opts: { loopId?: string; conversationId?: string; knownContent?: string }
 ): Promise<void> {

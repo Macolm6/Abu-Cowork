@@ -64,6 +64,7 @@ import {
   type AgentRunTerminal,
 } from '@/core/agent/agentRunTerminal';
 import { normalizeBatchTerminalSummary } from '@/core/agent/batchTerminalSummary';
+import { parseFileChange } from '@/core/files/fileChange';
 import { enqueueUserInputWithId } from '@/core/agent/userInputQueue';
 import { applyPlanModeState } from '@/core/agent/planMode';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
@@ -332,6 +333,13 @@ function parseToolExecutionMetadata(
     metadata.sandboxRecovery = typeof value.sandboxRecovery.targetApp === 'string'
       ? { kind: 'app-automation', targetApp: value.sandboxRecovery.targetApp }
       : { kind: 'app-automation' };
+  }
+  if (value.fileChange !== undefined) {
+    const fileChange = parseFileChange(value.fileChange);
+    if (!fileChange) {
+      throw new RpcError(-32603, 'Invalid tool.invoke file change envelope');
+    }
+    metadata.fileChange = fileChange;
   }
   return Object.keys(metadata).length > 0 ? metadata : undefined;
 }
@@ -791,17 +799,14 @@ const pendingLedgerStarts = new Map<string, PendingLedgerStart>();
 const LOCALE_DICTIONARIES: Readonly<Record<string, TranslationDict>> = { 'zh-CN': zhCN, 'en-US': enUS };
 
 /**
- * The two strings the loaded-message sanitiser writes into a row. Read from
+ * The string the loaded-message sanitiser writes into a row. Read from
  * the dictionaries by the start's own `locale`: `getI18n()` resolves its
  * locale from a run's context, and a start runs before any run exists.
  */
 function sanitizerTextFor(locale: string): LoadedMessageSanitizerText {
   const dictionary = LOCALE_DICTIONARIES[locale];
   if (!dictionary) throw new RpcError(-32602, `Invalid params: unsupported locale "${locale}"`);
-  return {
-    runRecoveredAfterRestart: dictionary.chat.runRecoveredAfterRestart,
-    errorEmptyBody: dictionary.chat.errorEmptyBody,
-  };
+  return { errorEmptyBody: dictionary.chat.errorEmptyBody };
 }
 
 function registerAcceptedRun(params: IdentifiedRunParams, cancelRequested: boolean): RunRegistryEntry {

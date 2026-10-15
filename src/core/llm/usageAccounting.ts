@@ -22,7 +22,7 @@
  *    溢出后的数当成可信计数。这里一律判为未知并记下字段名。
  */
 
-/** 一次尝试的来源。页面按三类展示：主对话（main）/ 子代理（subagent）/ 系统辅助（其余）。 */
+/** 一次尝试的来源。 */
 export type UsageSource =
   | 'main'
   | 'subagent'
@@ -376,6 +376,23 @@ export function promptTokensOf(
   return (
     usage.inputTokens + (usage.cacheReadInputTokens ?? 0) + (usage.cacheCreationInputTokens ?? 0)
   );
+}
+
+/**
+ * 没有命中缓存的那部分输入，给按输入单价估算费用用。
+ *
+ * Anthropic 的 `inputTokens` 本身就是这一部分。OpenAI 兼容协议的 `inputTokens` 是整段输入，
+ * 要减去缓存读。缓存读大于整段输入时数字互相矛盾，返回 `null`，与
+ * `normalizeOpenAICompatibleUsage` 的处理一致。
+ */
+export function uncachedInputTokensOf(
+  protocol: UsageProtocol,
+  usage: { inputTokens: number; cacheReadInputTokens?: number },
+): number | null {
+  if (protocol === 'anthropic') return usage.inputTokens;
+  const cacheRead = usage.cacheReadInputTokens ?? 0;
+  if (cacheRead > usage.inputTokens) return null;
+  return usage.inputTokens - cacheRead;
 }
 
 /**

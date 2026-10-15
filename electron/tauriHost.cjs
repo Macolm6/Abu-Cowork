@@ -29,7 +29,7 @@
  */
 'use strict';
 
-const { ipcMain, nativeTheme, screen, BrowserWindow, dialog } = require('electron');
+const { ipcMain, nativeTheme, powerMonitor, screen, BrowserWindow, dialog } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
@@ -53,6 +53,7 @@ const {
 const { updaterDispatch, UPDATER_MISS } = require('./updaterHost.cjs');
 const { fsDispatch, FS_MISS, canonicalizeForPathPolicy } = require('./fsHost.cjs');
 const { pluginGitDispatch, PLUGIN_GIT_MISS } = require('./pluginGitHost.cjs');
+const { createMarketSourceHost, marketSourceDispatch, MARKET_SOURCE_MISS } = require('./marketSourceHost.cjs');
 const { PLUGIN_SNAPSHOT_CHANNEL, createPluginSnapshotHost } = require('./pluginSnapshotHost.cjs');
 const { createOperationSession } = require('./pluginOperationSession.cjs');
 const { PLUGIN_REGISTRY_CHANNEL, createPluginRegistryHost } = require('./pluginRegistryHost.cjs');
@@ -173,6 +174,7 @@ const {
   assertResourceOwner,
 } = require('./securityBoundary.cjs');
 const { wireRendererResourceCleanup } = require('./rendererLifecycle.cjs');
+const { createQuitGate } = require('./quitGate.cjs');
 
 // Window-family state (Phase 2 slice D). `mainWindow` is set by main.cjs right
 // after createWindow() via setMainWindow(); `quitting` is the standard
@@ -181,12 +183,19 @@ const { wireRendererResourceCleanup } = require('./rendererLifecycle.cjs');
 // prevent-loop.
 let mainWindow = null;
 let quitting = false;
+// The handshake every quit goes through before any teardown (quitGate.cjs);
+// created in registerTauriHost. `sessionEnding` is set when the OS is shutting
+// down or logging out, and tells the renderer to ask the user nothing.
+let quitGate = null;
+let sessionEnding = false;
 let computerUseGate = null;
 let computerUseGrantStore = null;
 let unsubscribeNativeHelperEvents = null;
 let migrationStartupBlock = null;
 let migrationStartupPending = false;
 let migrationBackupPath = null;
+/** Markets added by address; created on first use, once `app` knows the home directory. */
+let marketSourceHost = null;
 
 function setMigrationStartupBlock(reason) {
   migrationStartupBlock = String(reason || 'migration-incomplete');
@@ -281,6 +290,10 @@ function requestAppExit(app) {
  */
 function markQuitting() {
   quitting = true;
+  // The renderer saved its conversations before it asked for this restart
+  // (`restartApp`), and the user has already said yes to it: the quit the
+  // installer triggers asks nothing and waits for nothing.
+  quitGate?.allow();
 }
 
 /** True iff any live subscription exists for `event`. */
@@ -315,6 +328,16 @@ function wireWindowEvents(win) {
     e.preventDefault();
     emitEvent('close-requested', null);
   });
+  // Windows ends the session through the window; macOS and Linux report it on
+  // powerMonitor (registerTauriHost).
+  win.on('session-end', () => {
+    sessionEnding = true;
+  });
+  // A handshake has nobody to answer it once the window is closed or its
+  // renderer process has ended. A page that only stopped responding is found
+  // out by the next quit attempt (quitGate.cjs, `request` while asking).
+  win.on('closed', () => quitGate?.rendererGone());
+  win.webContents.on('render-process-gone', () => quitGate?.rendererGone());
   // Purge this renderer's resources only when its top-level document is being
   // replaced. Child-frame loads (notably HTML widget `srcdoc` previews) keep
   // the renderer alive and must not disconnect its main→renderer event bridge.
@@ -324,6 +347,8 @@ function wireWindowEvents(win) {
     cleanupGlobalShortcutsForSender(win.webContents);
     computerUseGate?.revokeSender(win.webContents);
     runtimeState.noteRendererResourcesCleared({ reason, subscriptionCount });
+    // The page a quit handshake was talking to has been replaced.
+    quitGate?.rendererGone();
   });
 }
 
@@ -822,6 +847,10 @@ function windowDispatch(app, cmd, args, callerWin) {
       return null;
     case 'app_exit':
       requestAppExit(app);
+      return null;
+    case 'app_quit_report':
+      // The main window's answer to 'quit-requested' (quitGate.cjs).
+      if (callerWin === win) quitGate?.report(Number(a.requestId), String(a.stage));
       return null;
     case 'window_hide':
       if (win) win.hide();
@@ -1370,7 +1399,25 @@ function registerTauriHost(app, options = {}) {
   // with closeAction='minimize' would just hide the window and never quit.
   let pluginRegistryQuitReady = false;
   let pluginRegistryQuitPending = false;
+  quitGate = createQuitGate({
+    send: (payload) => emitWindowEvent(getMainWindow(), 'quit-requested', payload),
+    onProceed: () => app.quit(),
+    onCancelled: () => {},
+    // The user sees the application leave at once; the write finishes behind it.
+    onFlushing: () => getMainWindow()?.hide(),
+  });
+  powerMonitor.on('shutdown', () => {
+    sessionEnding = true;
+  });
   app.on('before-quit', (event) => {
+    // The handshake comes before any teardown: a quit the user calls off
+    // leaves every window, view and shortcut in use, and the next window
+    // close goes through the preventable-close handler again.
+    if (!quitGate.request({ sessionEnding })) {
+      event.preventDefault();
+      quitting = false;
+      return;
+    }
     if (!pluginRegistryQuitReady) {
       event.preventDefault();
       if (!pluginRegistryQuitPending) {
@@ -1457,6 +1504,11 @@ function registerTauriHost(app, options = {}) {
       // both re-validated here. Returns a Promise; this handler awaits it.
       const pluginGitResult = pluginGitDispatch(cmd, { args: a }, { packagesRoot: path.join(app.getPath('home'), '.abu', 'plugin-packages') });
       if (pluginGitResult !== PLUGIN_GIT_MISS) return pluginGitResult;
+      // Markets added by address — fetched into ~/.abu/markets/<name>/ in
+      // this process; the renderer only names the address (marketSourceHost.cjs).
+      if (!marketSourceHost) marketSourceHost = createMarketSourceHost({ marketsRoot: path.join(app.getPath('home'), '.abu', 'markets') });
+      const marketSourceResult = marketSourceDispatch(cmd, { args: a }, marketSourceHost);
+      if (marketSourceResult !== MARKET_SOURCE_MISS) return marketSourceResult;
       // Preview server (slice F13) — get_preview_server_info/register_preview_root/
       // unregister_preview_root, backed by a real loopback Node http server
       // (electron/previewServer.cjs) since the frontend hardcodes the `http://`

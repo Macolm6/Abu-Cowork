@@ -1,6 +1,9 @@
 ---
 name: alert-sop
 description: 自动分析告警信息，按SOP排查问题并生成处理报告
+display-description:
+  zh-CN: 自动分析告警信息，按 SOP 排查问题并生成处理报告
+  en-US: Analyze an alert, investigate it by the SOP and write a handling report
 trigger: 收到告警消息需要自动排查处理，或用户提到告警分析、告警排查、SOP处理
 do-not-trigger: 用户只是讨论告警相关概念，没有具体告警需要处理
 user-invocable: true

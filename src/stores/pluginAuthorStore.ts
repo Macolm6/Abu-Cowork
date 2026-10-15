@@ -2,12 +2,10 @@ import { create } from 'zustand';
 import { homeDir } from '@tauri-apps/api/path';
 import { deletePluginAuthor, bindPluginAuthor, validatePluginAuthor, createPluginAuthor, listPluginAuthors, preparePluginAuthor, type PluginAuthor } from '@/core/plugin/authorBridge';
 import { planPreparedInstall, releasePreparedInstall, type InstallDisclosure } from '@/core/plugin/installer';
+import { createGeneralShellConversation } from '@/core/app/generalShellConversation';
 import { useChatStore } from './chatStore';
 import { useSettingsStore } from './settingsStore';
 import { getI18n, format } from '@/i18n';
-
-/** What the creation conversation opens with: a plain plugin, or an app (a plugin with `app` and teams). */
-export type PluginAuthorKind = 'plugin' | 'app';
 
 interface PluginAuthorState {
   authors: PluginAuthor[];
@@ -15,21 +13,22 @@ interface PluginAuthorState {
   remove: (id: string) => Promise<void>;
   error: string | null;
   refresh: () => Promise<void>;
-  create: (kind?: PluginAuthorKind) => Promise<void>;
-  edit: (author: PluginAuthor) => Promise<void>;
+  create: (shell: AuthorShell) => Promise<void>;
+  edit: (author: PluginAuthor, shell: AuthorShell) => Promise<void>;
   prepare: (identity: { id: string } | { conversationId: string }) => Promise<{ author: PluginAuthor; disclosure: InstallDisclosure }>;
 }
-async function openAuthor(author: PluginAuthor, kind: PluginAuthorKind = 'plugin') {
+/** `leaveApp`: false where the organization keeps the employee inside its app. */
+interface AuthorShell { leaveApp: boolean }
+// Creating a plugin is an activity of the general shell: a draft with no conversation to return to gets one there.
+async function openAuthor(author: PluginAuthor, shell: AuthorShell) {
   const chat = useChatStore.getState();
   if (author.conversationId && (chat.conversations[author.conversationId] || chat.conversationIndex[author.conversationId])) {
     await chat.switchConversation(author.conversationId);
   } else {
-    const conversationId = chat.createConversation(author.sourceDir);
+    const conversationId = createGeneralShellConversation(author.sourceDir, shell);
     await bindPluginAuthor(author.id, conversationId, author.conversationId);
     chat.renameConversation(conversationId, format(getI18n().toolbox.pluginsAuthorConversation, { name: author.name ?? getI18n().toolbox.pluginsDraft }));
-    // The same skill and the same package rules either way; the opening line
-    // tells the model which shape the user is after.
-    chat.setPendingInput(kind === 'app' ? getI18n().toolbox.pluginsAuthorAppPrompt : getI18n().toolbox.pluginsAuthorPrompt);
+    chat.setPendingInput(getI18n().toolbox.pluginsAuthorPrompt);
   }
   useSettingsStore.getState().closeExtensions();
 }
@@ -40,17 +39,17 @@ export const usePluginAuthorStore = create<PluginAuthorState>((set, get) => ({
     try { set({ authors: await listPluginAuthors(), error: null }); }
     catch (error) { set({ error: String(error) }); throw error; }
   },
-  create: async (kind = 'plugin') => {
+  create: async shell => {
     if (get().creating) return;
     set({ creating: true });
     try {
     const author = await createPluginAuthor();
     await get().refresh();
-    await openAuthor(author, kind);
+    await openAuthor(author, shell);
     await get().refresh();
     } finally { set({ creating: false }); }
   },
-  edit: async author => { await openAuthor(author); await get().refresh(); },
+  edit: async (author, shell) => { await openAuthor(author, shell); await get().refresh(); },
   prepare: async identity => {
     const prepared = await preparePluginAuthor(identity);
     try {

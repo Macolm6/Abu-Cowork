@@ -143,8 +143,6 @@ export interface TranslationDict {
   // Sidebar
   sidebar: {
     newTask: string;
-    projectFiles: string;
-    backToConversations: string;
     automation: string;
     scheduledTasks: string;
     triggers: string;
@@ -154,6 +152,7 @@ export interface TranslationDict {
     recents: string;
     searchPlaceholder: string;
     noSearchResults: string;
+    searchMoreResults: string;
     noSessionsYet: string;
     hideSidebar: string;
     showSidebar: string;
@@ -166,6 +165,10 @@ export interface TranslationDict {
     deleteConversation: string;
     conversationDeleted: string;
     undo: string;
+    /** The question before a task whose record cannot be read is deleted: no undo can be offered for it. */
+    deleteUnreadableTitle: string;
+    /** `{name}` is the task's title. */
+    deleteUnreadableMessage: string;
     importSession: string;
     renameConversation: string;
     moreActions: string;
@@ -321,6 +324,68 @@ export interface TranslationDict {
     sources: string;
     showAllSources: string;
     collapseSources: string;
+    /** Button under the file cards of a turn that presented more than four files; `{count}` is the number of cards. */
+    allFilesCount: string;
+    collapseFiles: string;
+    /** Accessible name of a file name or path in a reply that opens the side preview; `{name}` is the file name. */
+    openFileInPreview: string;
+    /** Button in the middle of a folded diff; `{count}` is the number of diff lines. */
+    showAllDiffLines: string;
+    /** Closing line of a diff whose saved lines stop before the end of the change. */
+    diffCut: string;
+    /** Title of the card under a reply that lists the files the turn changed; `{count}` is the number of files. */
+    changedFilesTitle: string;
+    /** Title of that card when the turn changed one file; `{name}` is the file name. */
+    changedFileSingleTitle: string;
+    /** Status of a changed file that has no line counts. */
+    changeCreated: string;
+    changeModified: string;
+    changeDeleted: string;
+    /** Last line of the card when the turn changed more files than it lists; `{count}` is the number left out. */
+    moreChangedFiles: string;
+    /** Button on that card: undoes the turn's file changes. */
+    undoTurn: string;
+    /** Button on the card of an undone turn: puts the changes back. */
+    reapplyTurn: string;
+    /** Why the two buttons cannot be used while a turn of the conversation runs. */
+    undoBusyHint: string;
+    reapplyBusyHint: string;
+    /** Title of the card of an undone turn; `{count}` is the number of files restored. */
+    undoneFilesTitle: string;
+    /** That title when one file was restored; `{name}` is the file name. */
+    undoneFileSingleTitle: string;
+    /** Mark on a file row of an undone turn that does not hold its content before the turn. */
+    undoNotRestored: string;
+    /** Mark on a file row whose changes were not put back. */
+    reapplyNotPutBack: string;
+    /** The question before a turn is undone; `{count}` is the number of files that will be restored. */
+    undoConfirmTitle: string;
+    undoConfirmCount: string;
+    /** What undoing does to one file: a modified, a created and a deleted one. */
+    undoActionWriteBefore: string;
+    undoActionTrash: string;
+    undoActionPutBack: string;
+    /** Heading of the files undoing leaves as they are. */
+    undoWontRestore: string;
+    /** The question before the changes are put back; `{count}` is the number of files that will be put back. */
+    reapplyConfirmTitle: string;
+    reapplyConfirmCount: string;
+    /** What putting back does to one file: a modified, a created and a deleted one. */
+    reapplyActionWriteAfter: string;
+    reapplyActionPutBack: string;
+    reapplyActionTrash: string;
+    /** Heading of the files putting back leaves as they are. */
+    reapplyWontPutBack: string;
+    /** Why a file is left as it is. */
+    undoReasonByCommand: string;
+    undoReasonChangedSince: string;
+    reapplyReasonChangedSince: string;
+    undoReasonTooLarge: string;
+    undoReasonFolderGone: string;
+    undoReasonNotAuthorized: string;
+    /** Notice after an undo or a put-back in which files failed; `{done}` and `{notDone}` are counts. */
+    undoPartialNotice: string;
+    reapplyPartialNotice: string;
     userMessageShowMore: string;
     userMessageCollapse: string;
     runPending: string;
@@ -331,7 +396,9 @@ export interface TranslationDict {
     runConnectionFailed: string;
     contentPolicyRejected: string;
     runInterrupted: string;
-    runRecoveredAfterRestart: string;
+    /** Notice under a turn the application closed on. */
+    runClosedMidway: string;
+    runResend: string;
     runRetry: string;
     /** Escape hatch on an oversize failure row — opens a new conversation carrying the text (#549). */
     newConversationAction: string;
@@ -459,10 +526,6 @@ export interface TranslationDict {
     addAttachment: string;
     /** Composer `+` menu (添加文件 / 队员·团队 / 技能). */
     composerMenu: { open: string; addFile: string; teamOrMember: string; skill: string };
-    // Agent selector in toolbar
-    pickAgent: string;
-    pickAgentEmpty: string;
-    pickAgentClear: string;
     /** Trailing tag on a plugin-contributed agent's row in the @ picker. */
     pickAgentPluginTag: string;
     // Conversation ID badge
@@ -560,6 +623,8 @@ export interface TranslationDict {
      * names what happened and carries no instruction.
      */
     historyUnavailable: string;
+    /** The chat page of a task whose record is on disk and cannot be read, above 「重试」. */
+    recordUnreadable: string;
     /**
      * The sidecar never reached `running`, so the message was never sent (#549).
      * The chat row says 「发送失败」 and offers Retry instead of this sentence;
@@ -698,6 +763,73 @@ export interface TranslationDict {
       tooFew: string;
       failed: string;
     };
+    /** Goal mode: /goal command feedback, goal bar, round marker, event cards. */
+    goal: {
+      /** Usage hint for /goal. */
+      commandUsage: string;
+      noGoal: string;
+      notAvailable: string;
+      emptyObjective: string;
+      /** {objective} */
+      alreadyExists: string;
+      /** {objective} */
+      created: string;
+      edited: string;
+      paused: string;
+      resumed: string;
+      cleared: string;
+      /** {phase} */
+      cannotChange: string;
+      /** Resume was refused because the goal reached the hard cap on automatic rounds. */
+      roundsExhausted: string;
+      staleRevision: string;
+      /** {objective} {phase} {rounds} {maxRounds} */
+      status: string;
+      phaseActive: string;
+      phasePaused: string;
+      phaseBlocked: string;
+      phaseComplete: string;
+      /** Goal bar: status word while the app keeps working on the goal. */
+      barActive: string;
+      /** Status word whenever the app is not working on an unfinished goal by itself. */
+      barPaused: string;
+      /** Status word for a goal that stopped and needs the user. */
+      barBlocked: string;
+      /** After the objective: a run failed and another starts by itself. {minutes} */
+      barRetry: string;
+      /** Hover detail on a goal that paused because a run failed. */
+      stoppedRunError: string;
+      blockedNoProgress: string;
+      blockedRoundLimit: string;
+      blockedTeamLimit: string;
+      blockedDispatchFailed: string;
+      /** {reason} */
+      blockedModel: string;
+      actionPause: string;
+      actionResume: string;
+      actionEdit: string;
+      actionClear: string;
+      actionSave: string;
+      actionCancel: string;
+      editPlaceholder: string;
+      clearConfirmTitle: string;
+      clearConfirmBody: string;
+      /** Asked when /goal names a new objective while another goal is unfinished. */
+      replaceConfirmTitle: string;
+      /** {objective} = the unfinished goal */
+      replaceConfirmBody: string;
+      actionReplace: string;
+      /** Marker in the transcript where the app continued the goal by itself. */
+      roundMarker: string;
+      /** Suffix on a round marker whose run was stopped before it finished. */
+      roundInterrupted: string;
+      /** Suffix on a round marker whose run failed. */
+      roundFailed: string;
+      /** OS notification when the round driver stops a goal. {objective} */
+      notifyBlockedTitle: string;
+      /** Shown on the max-turns card instead of Continue while goal mode drives the rounds. */
+      maxTurnsAutoContinue: string;
+    };
     /** Rewind confirmation (edit-resend / regenerate / retry) — shown only
      * when the redone turn is not the conversation's last, so later turns
      * would otherwise be silently and permanently discarded. */
@@ -737,10 +869,7 @@ export interface TranslationDict {
 
   // Status Bar
   status: {
-    ready: string;
     thinking: string;
-    responding: string;
-    usingTool: string;
   };
 
   // Task Block
@@ -758,6 +887,7 @@ export interface TranslationDict {
     executedCommands: string;
     calledTool: string;
     calledTools: string;
+    presentedFiles: string;
     executedOperations: string;
     thoughtFor: string;
     executedIn: string;
@@ -1123,7 +1253,6 @@ export interface TranslationDict {
     advanced: string;
     pressEscToClose: string;
     // API Section
-    provider: string;
     providerAnthropic: string;
     providerOpenAI: string;
     providerLocal: string;
@@ -1143,18 +1272,17 @@ export interface TranslationDict {
     clearAllKeys: string;
     clearAllKeysConfirm: string;
     clearAllKeysDone: string;
+    secretShow: string;
+    secretHide: string;
     // Model Section
-    model: string;
     customModelOption: string;
     customModelName: string;
     customModelPlaceholder: string;
     customModelDesc: string;
     currentModel: string;
-    notSet: string;
     // Advanced Section
     baseUrl: string;
     baseUrlPlaceholder: string;
-    apiFormat: string;
     billingPaygo: string;
     billingPaygoBeijing: string;
     billingCoding: string;
@@ -1180,7 +1308,6 @@ export interface TranslationDict {
     serviceNameRequired: string;
     // Language
     language: string;
-    languageDescription: string;
     followSystem: string;
     // Image Generation — independent backend list (design doc §3.1, "C-a")
     imageGenVendor: string;
@@ -2188,6 +2315,34 @@ export interface TranslationDict {
     enter: string;
     current: string;
     openLabel: string;
+    remove: string;
+    removeCreatedTitle: string;
+    removeCreatedMessage: string;
+    removeFailed: string;
+    /** What the user can do after `removeFailed`. */
+    removeFailedHint: string;
+    createFailed: string;
+    /** What the user can do after `createFailed`. */
+    createFailedHint: string;
+    createConversation: string;
+    createPrompt: string;
+  };
+  /** The preview of an app made in 「创建应用」. */
+  appDraft: {
+    title: string;
+    home: string;
+    newExperts: string;
+    newTeams: string;
+    confirm: string;
+    modify: string;
+    adding: string;
+    added: string;
+    failed: string;
+    /** What the user can do after `failed`. */
+    failedHint: string;
+    previewFailed: string;
+    /** What the user can do after `previewFailed`. */
+    previewFailedHint: string;
   };
   appMarket: {
     title: string;
@@ -2196,6 +2351,45 @@ export interface TranslationDict {
     entryCount: string;
     emptyTitle: string;
     emptyHint: string;
+    use: string;
+    enter: string;
+    update: string;
+    needsUpgrade: string;
+    uses: string;
+    addMarket: string;
+    fromFolder: string;
+    marketsTitle: string;
+    removeMarket: string;
+    removeMarketTitle: string;
+    removeMarketMessage: string;
+    confirmAddTitle: string;
+    confirmUpdateTitle: string;
+    previewTitle: string;
+    needInstall: string;
+    needUpdate: string;
+    sitesTitle: string;
+    scenesTitle: string;
+    confirm: string;
+    adding: string;
+    addFailed: string;
+    updateFailed: string;
+    previewFailed: string;
+    /** A scene's plugin could not be installed again. */
+    repairFailed: string;
+    /** What the user can do after a failed add, update or repair. */
+    failedHint: string;
+    /** What the user can do after `previewFailed`. */
+    previewFailedHint: string;
+    /** A market whose list of apps could not be read; `{name}` is the market. */
+    marketUnreadable: string;
+    remoteNeedsSha: string;
+    nameMismatch: string;
+    entryMismatch: string;
+    needsNewerAbu: string;
+    pluginNotFound: string;
+    pluginTooOld: string;
+    pluginLacksReference: string;
+    invalidApp: string;
   };
 
   /** App home page (product spec §5.4) and app-bound conversations. */
@@ -2210,8 +2404,16 @@ export interface TranslationDict {
     connectorHintBody: string;
     connectorHintConnect: string;
     connectorHintLater: string;
+    sceneRunUnavailable: string;
+    scenePreparing: string;
+    scenePrepareFailed: string;
+    /** An app's web page that did not load. */
+    pageLoadFailed: string;
     removedNotice: string;
+    removedCreatedNotice: string;
     removedAction: string;
+    disabledNotice: string;
+    offlineNotice: string;
   };
 
   toolbox: {
@@ -2279,6 +2481,8 @@ export interface TranslationDict {
     pluginsConfigurationHint: string;
     pluginsMarketplaceNameConflict: string;
     pluginsMarketplaceIdentityChanged: string;
+    pluginsMarketplaceAuthRequired: string;
+    pluginsMarketplaceNotFound: string;
     pluginsRefreshMarketplace: string;
     pluginsCachedMarketplace: string;
     pluginsRecoveryNeeded: string;
@@ -2292,18 +2496,24 @@ export interface TranslationDict {
     pluginsDisabledCapability: string;
     pluginsComponentInvalidJson: string;
     pluginsRequiresNewerAbu: string;
-    pluginsProvidesAppWithoutApp: string;
     pluginsComponentConflict: string;
     pluginsMarketplaceDirLabel: string;
     pluginsMarketplaceDirPlaceholder: string;
     pluginsMarketplaceDirHint: string;
     pluginsBrowseDir: string;
     pluginsMarketplaceReadFailed: string;
+    /** What to check when an address could not be fetched for a reason the host did not classify. */
+    pluginsMarketplaceAddressFailed: string;
+    /** What to check when a folder could not be read as a market. */
+    pluginsMarketplaceFolderFailed: string;
+    pluginsBrowseFailed: string;
     pluginsNoMarketplaces: string;
     pluginsNoMarketplacesHint: string;
     pluginsRemoveMarketplace: string;
     pluginsRemoveMarketplaceTitle: string;
     pluginsRemoveMarketplaceMessage: string;
+    /** A market whose fetched copy could not be deleted, so it is still listed; `{name}` is the market. */
+    pluginsRemoveMarketplaceFailed: string;
     pluginsNoMatches: string;
     pluginsEntryCount: string;
     pluginsInstall: string;
@@ -2318,7 +2528,7 @@ export interface TranslationDict {
     pluginsUninstallTitle: string;
     pluginsUninstallMessage: string;
     pluginsUninstallTeamsNote: string;
-    pluginsUninstallAppNote: string;
+    usedByApps: string;
     pluginsUninstallFailed: string;
     pluginsSkillCount: string;
     pluginsServerCount: string;
@@ -2326,22 +2536,8 @@ export interface TranslationDict {
     pluginsGoToMarketplace: string;
     /** 「我的」 empty state — the user has authored no plugins yet. */
     pluginsMineEmptyHint: string;
-    pluginsUse: string;
-    pluginsEnter: string;
-    pluginsInstallAndEnter: string;
-    pluginsAgreeAndUse: string;
     pluginsAppEntered: string;
     pluginsDisclosureTeams: string;
-    pluginsDisclosureApp: string;
-    pluginsAppContents: string;
-    pluginsDisclosureAppNav: string;
-    pluginsDisclosureAppPages: string;
-    pluginsDisclosureAppScenes: string;
-    pluginsDisclosureRunTeam: string;
-    pluginsDisclosureRunExpert: string;
-    pluginsDisclosureRunSkill: string;
-    pluginsDisclosureRunDefault: string;
-    pluginsAuthorAppPrompt: string;
     /** Heading of the group for installs whose marketplace is gone. */
     pluginsOrphanGroup: string;
     /** One line under it: they still work, and the detail dialog uninstalls. */
@@ -2480,22 +2676,6 @@ export interface TranslationDict {
     systemSkills: string;
     customSkills: string;
     noCustomSkills: string;
-    // ModelsSection
-    currentConfig: string;
-    quickSwitch: string;
-    current: string;
-    configured: string;
-    notConfigured: string;
-    localModels: string;
-    openaiCompatible: string;
-    qiniuCloud: string;
-    openrouter: string;
-    deepseek: string;
-    anthropic: string;
-    volcengine: string;
-    bailian: string;
-    advancedSettings: string;
-    advancedSettingsDesc: string;
     // Sub-tab labels
     tabSystem: string;
     tabCustom: string;
@@ -2552,7 +2732,6 @@ export interface TranslationDict {
     skillContextFork: string;
     skillMaxTurns: string;
     maxTurnsInheritGlobalHint: string;
-    skillContent: string;
     skillEnabled: string;
     skillDisabled: string;
     skillEdit: string;
@@ -2622,8 +2801,6 @@ export interface TranslationDict {
     installAgentSkillsHint: string;
     installAgentSkillsButton: string;
     recommendedSkills: string;
-    activeSkills: string;
-    activeSkillsRemove: string;
     // Category filter
     categoryAll: string;
     categoryDocument: string;
@@ -2646,7 +2823,6 @@ export interface TranslationDict {
     agentMemoryUser: string;
     agentMaxTurns: string;
     agentBackground: string;
-    agentSystemPrompt: string;
     agentEdit: string;
     /** Provenance row on a plugin-contributed agent — it also says how to get rid of it; `{plugin}` is the plugin's display name. */
     agentFromPluginRemoveHint: string;
@@ -2834,8 +3010,9 @@ export interface TranslationDict {
       authorizeCapabilities: string[];
       authorizeWarning: string;
     };
+    /** Toast: a folder was picked after the request it was picked for had ended. */
+    folderRequestEnded: string;
     abuCanDo: string;
-    allowOnce: string;
     allowAlways: string;
     deny: string;
     rememberChoice: string;
@@ -2853,10 +3030,6 @@ export interface TranslationDict {
     allowSessionButton: string;
     allow24hButton: string;
     allowAlwaysButton: string;
-    // Compact inline permission labels (InlinePermissionRequest)
-    compactAccessLabel: string;
-    compactShellLabel: string;
-    compactWriteLabel: string;
   };
 
   // Panels
@@ -2864,8 +3037,24 @@ export interface TranslationDict {
     workspace: string;
     files: string;
     preview: string;
+    /** Title of the tab that compares the one file a turn changed; `{name}` is the file name. */
+    changesTabSingle: string;
+    /** Title of that tab for several files; `{name}` is the first file name, `{count}` the number of files. */
+    changesTabMany: string;
+    /** The two layouts of a comparison in the changes tab: before above after, and before beside after. */
+    diffUnified: string;
+    diffSplit: string;
+    /** Button of the changes tab that opens the file in view in the side preview. */
+    openFile: string;
+    /** Shown in the changes tab for a file that has no line comparison. */
+    noDiffToShow: string;
+    /** Shown in the changes tab when the saved changes of the turn cannot be read. */
+    changesUnreadable: string;
+    /** First line of the changes tab of a turn that is undone. */
+    changesUndone: string;
     noWorkspaceSelected: string;
     selectWorkspace: string;
+    viewFiles: string;
     noFilesModified: string;
     selectWorkspaceHint: string;
     recentlyUsed: string;
@@ -2910,7 +3099,9 @@ export interface TranslationDict {
     unsupportedFileType: string;
     showInFinder: string;
     failedToReadFile: string;
+    passwordProtectedFile: string;
     fileNotFound: string;
+    keptCopyNotice: string;
     // Editable preview (P2): autosave + external-change conflict notices
     saveFailedTitle: string;
     externalChangeTitle: string;
@@ -2981,7 +3172,7 @@ export interface TranslationDict {
     imageCopy: string;
     imageCopied: string;
     imageCopyFailed: string;
-    // WorkspaceFileTree (lightweight lazy-loaded project file tree, code-canvas P0)
+    // WorkspaceFileTree (the lazily loaded file tree of the workspace files tab)
     fileTree: {
       title: string;
       noWorkspace: string;
@@ -3032,6 +3223,8 @@ export interface TranslationDict {
     agentTitle: string;
     summaryTitle: string;
     summaryDesc: string;
+    filesTitle: string;
+    filesDesc: string;
     browserDesc: string;
     terminalDesc: string;
     agentStatusQueued: string;
@@ -3534,6 +3727,8 @@ export interface TranslationDict {
     title: string;
     message: string;
     agentRunningWarning: string;
+    /** The question asked when the application is quit while a conversation is running. */
+    quitWhileRunning: string;
     quit: string;
     minimize: string;
     rememberChoice: string;
@@ -4318,6 +4513,45 @@ export interface TranslationDict {
     statusPaused: string;
     /** Locale-appropriate separator for joining inline lists of items. */
     listSeparator: string;
+    // manage_goal (goal mode)
+    goal: {
+      noConversation: string;
+      invalidAction: string;
+      /** Only the main conversation (not a delegated expert) may manage the goal. */
+      deniedSubagent: string;
+      /** Scheduled / trigger / IM / read-only conversations. */
+      deniedAutomated: string;
+      /** create / edit / pause / resume need a run started by the user's own message. */
+      deniedNeedsHuman: string;
+      /** {min} {rounds} */
+      deniedBlockTooEarly: string;
+      noGoal: string;
+      missingObjective: string;
+      missingEvidence: string;
+      missingReason: string;
+      /** A live goal already exists. {objective} */
+      alreadyExists: string;
+      /** {phase} */
+      invalidTransition: string;
+      staleRevision: string;
+      /** {objective} */
+      created: string;
+      /** {objective} */
+      edited: string;
+      paused: string;
+      resumed: string;
+      /** Resume was asked for a goal that is already working. */
+      alreadyRunning: string;
+      completed: string;
+      /** {reason} */
+      blocked: string;
+      /** {objective} {phase} {rounds} {maxRounds} */
+      status: string;
+      phaseActive: string;
+      phasePaused: string;
+      phaseBlocked: string;
+      phaseComplete: string;
+    };
     // report_plan / update_memory / todo_write / log_task_completion
     memory: {
       // reportPlanTool
@@ -5005,6 +5239,25 @@ export interface TranslationDict {
       sendFileError: string;
       /** send_file hit the platform's transient rate limit (ret=-2). */
       sendFileRateLimited: string;
+    };
+    // present_files (turn deliverables)
+    present: {
+      /** The list is empty or longer than the limit. {max} */
+      countOutOfRange: string;
+      /** First line of a rejected call. */
+      nothingPresented: string;
+      /** Rejection reason: relative path without a workspace, or a `~` path. */
+      needsAbsolutePath: string;
+      /** Rejection reason: the read-path check did not allow the path. */
+      notAuthorized: string;
+      /** Rejection reason: nothing exists at the path. */
+      notFound: string;
+      /** Rejection reason: the path is not a regular file. */
+      notAFile: string;
+      /** Header above the paths that passed in a rejected call. */
+      theseWereFine: string;
+      /** Last line of a rejected call. */
+      fixAndRetry: string;
     };
     // show_widget / read_me — inline visualization tool
     widget: {

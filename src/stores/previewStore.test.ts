@@ -6,7 +6,7 @@ import {
   BATCH_PROGRESS_GLOBAL_RICH_CONTENT_BYTES,
   useBatchProgressStore,
 } from './batchProgressStore';
-import { getVisibleTabs, subagentTabId, usePreviewStore, type WorkspaceTab } from './previewStore';
+import { getVisibleTabs, isWideTab, subagentTabId, usePreviewStore, type WorkspaceTab } from './previewStore';
 import { clearBrowserSignals, getRecentBrowserSignals } from '@/core/observability/browserSignals';
 
 function reset() {
@@ -19,7 +19,7 @@ function reset() {
     previewFilePath: null,
     chatWidth: null,
     reloadNonce: 0,
-    fileTreeMode: false,
+    emptyPanelShown: {},
     currentConversationId: null,
     lastActiveTabByConversation: {},
     panelStateByConversation: {},
@@ -98,6 +98,189 @@ describe('previewStore', () => {
       usePreviewStore.getState().openPreview('/a/2.md');
       usePreviewStore.getState().openPreview('/a/3.md');
       expect(usePreviewStore.getState().tabs).toHaveLength(3);
+    });
+
+    it('creates the tab with the requested line', () => {
+      usePreviewStore.getState().openPreview('/a.ts', { line: 3 });
+      const s = usePreviewStore.getState();
+      expect(s.tabs).toHaveLength(1);
+      expect(s.tabs[0]).toMatchObject({ kind: 'preview', filePath: '/a.ts', line: 3 });
+    });
+
+    it('creates a tab without a line field when no line is requested', () => {
+      usePreviewStore.getState().openPreview('/a.ts');
+      expect(usePreviewStore.getState().tabs[0]).not.toHaveProperty('line');
+    });
+
+    it('moves an open tab to the newly requested line without adding a tab', () => {
+      usePreviewStore.getState().openPreview('/a.ts', { line: 3 });
+      usePreviewStore.getState().openPreview('/b.ts');
+      usePreviewStore.getState().openPreview('/a.ts', { line: 9 });
+      const s = usePreviewStore.getState();
+      expect(s.tabs).toHaveLength(2);
+      expect(s.tabs[0]).toMatchObject({ filePath: '/a.ts', line: 9 });
+      expect(s.activeTabId).toBe(s.tabs[0].id);
+    });
+
+    it('counts each request for a line, so asking for the same line again is a new request', () => {
+      usePreviewStore.getState().openPreview('/a.ts', { line: 3 });
+      expect(usePreviewStore.getState().tabs[0]).toMatchObject({ line: 3, lineRequest: 1 });
+
+      usePreviewStore.getState().openPreview('/a.ts', { line: 3 });
+      const s = usePreviewStore.getState();
+      expect(s.tabs).toHaveLength(1);
+      expect(s.tabs[0]).toMatchObject({ line: 3, lineRequest: 2 });
+    });
+
+    it('creates a tab without a request count when no line is requested', () => {
+      usePreviewStore.getState().openPreview('/a.ts');
+      expect(usePreviewStore.getState().tabs[0]).not.toHaveProperty('lineRequest');
+    });
+
+    it('clears the line of an open tab when it is opened again without one', () => {
+      usePreviewStore.getState().openPreview('/a.ts', { line: 3 });
+      const id = usePreviewStore.getState().tabs[0].id;
+      usePreviewStore.getState().openPreview('/a.ts');
+      const tab = usePreviewStore.getState().tabs[0];
+      expect(tab.id).toBe(id);
+      expect(tab.kind === 'preview' ? tab.line : 'not-a-preview').toBeUndefined();
+    });
+
+    it('marks the tab of a kept copy with the path the file was at', () => {
+      usePreviewStore.getState().openPreview('/data/outputs/files/ab12/notes.md', { keptCopyOf: '/w/notes.md' });
+      expect(usePreviewStore.getState().tabs[0]).toMatchObject({
+        kind: 'preview', filePath: '/data/outputs/files/ab12/notes.md', keptCopyOf: '/w/notes.md',
+      });
+    });
+
+    it('creates a tab without the mark for a file at its own path', () => {
+      usePreviewStore.getState().openPreview('/w/notes.md');
+      expect(usePreviewStore.getState().tabs[0]).not.toHaveProperty('keptCopyOf');
+    });
+
+    it('marks an open tab when its file is opened again as a kept copy, and keeps the mark afterwards', () => {
+      usePreviewStore.getState().openPreview('/data/outputs/files/ab12/notes.md');
+      usePreviewStore.getState().openPreview('/data/outputs/files/ab12/notes.md', { keptCopyOf: '/w/notes.md' });
+      expect(usePreviewStore.getState().tabs).toHaveLength(1);
+      expect(usePreviewStore.getState().tabs[0]).toMatchObject({ keptCopyOf: '/w/notes.md' });
+
+      usePreviewStore.getState().openPreview('/data/outputs/files/ab12/notes.md', { line: 2 });
+      expect(usePreviewStore.getState().tabs[0]).toMatchObject({ keptCopyOf: '/w/notes.md', line: 2 });
+    });
+  });
+
+  describe('openFiles', () => {
+    beforeEach(() => {
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
+    });
+
+    it('opens the file list after the other tabs, makes it active and expands the panel', () => {
+      usePreviewStore.getState().openSummary();
+      useSettingsStore.getState().setRightPanelCollapsed(true);
+
+      const id = usePreviewStore.getState().openFiles();
+
+      const state = usePreviewStore.getState();
+      expect(state.tabs.map((tab) => tab.kind)).toEqual(['summary', 'files']);
+      expect(state.tabs[1]).toEqual({ id, kind: 'files', ownerConversationId: 'conv-a' });
+      expect(state.activeTabId).toBe(id);
+      expect(useSettingsStore.getState().rightPanelCollapsed).toBe(false);
+    });
+
+    it('returns to the open file list and adds no second one', () => {
+      const first = usePreviewStore.getState().openFiles();
+      usePreviewStore.getState().openPreview('/work/a.md');
+      useSettingsStore.getState().setRightPanelCollapsed(true);
+
+      const second = usePreviewStore.getState().openFiles();
+
+      const state = usePreviewStore.getState();
+      expect(second).toBe(first);
+      expect(state.tabs.filter((tab) => tab.kind === 'files')).toHaveLength(1);
+      expect(state.activeTabId).toBe(first);
+      expect(useSettingsStore.getState().rightPanelCollapsed).toBe(false);
+    });
+
+    it('keeps one file list per conversation', () => {
+      const ofA = usePreviewStore.getState().openFiles();
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-b');
+      expect(getVisibleTabs()).toEqual([]);
+
+      const ofB = usePreviewStore.getState().openFiles();
+
+      expect(ofB).not.toBe(ofA);
+      expect(getVisibleTabs().map((tab) => tab.id)).toEqual([ofB]);
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
+      expect(getVisibleTabs().map((tab) => tab.id)).toEqual([ofA]);
+      expect(usePreviewStore.getState().activeTabId).toBe(ofA);
+    });
+
+    it('leaves the previewed file unset: the list is no preview', () => {
+      usePreviewStore.getState().openPreview('/work/a.md');
+      usePreviewStore.getState().openFiles();
+
+      expect(usePreviewStore.getState().previewFilePath).toBeNull();
+    });
+  });
+
+  describe('isWideTab', () => {
+    it('keeps the summary and the file list narrow and every other tab wide', () => {
+      const tabs: WorkspaceTab[] = [
+        { id: 's', kind: 'summary' },
+        { id: 'f', kind: 'files' },
+        { id: 'p', kind: 'preview', filePath: '/work/a.md' },
+        { id: 'b', kind: 'browser', url: '' },
+        { id: 't', kind: 'terminal' },
+        { id: 'team', kind: 'team', conversationId: 'conv-a' },
+        { id: 'c', kind: 'changes', conversationId: 'conv-a', loopId: 'loop', fileIndex: 0, title: 'Changes' },
+        { id: 'a', kind: 'subagent', identity: identity('conv-a'), taskIndex: 0, title: 'Worker' },
+      ];
+
+      expect(tabs.filter(isWideTab).map((tab) => tab.kind)).toEqual([
+        'preview', 'browser', 'terminal', 'team', 'changes', 'subagent',
+      ]);
+    });
+  });
+
+  describe('showEmptyPanel', () => {
+    it('records the conversation in view and expands the panel', () => {
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
+      useSettingsStore.getState().setRightPanelCollapsed(true);
+
+      usePreviewStore.getState().showEmptyPanel();
+
+      expect(usePreviewStore.getState().emptyPanelShown).toEqual({ 'conv-a': true });
+      expect(useSettingsStore.getState().rightPanelCollapsed).toBe(false);
+    });
+
+    it('does nothing while no conversation is in view', () => {
+      useSettingsStore.getState().setRightPanelCollapsed(true);
+
+      usePreviewStore.getState().showEmptyPanel();
+
+      expect(usePreviewStore.getState().emptyPanelShown).toEqual({});
+      expect(useSettingsStore.getState().rightPanelCollapsed).toBe(true);
+    });
+
+    // The panel of one task stays asked for while another task's panel is opened.
+    it('is kept per conversation', () => {
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
+      usePreviewStore.getState().showEmptyPanel();
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-b');
+      usePreviewStore.getState().showEmptyPanel();
+
+      expect(usePreviewStore.getState().emptyPanelShown).toEqual({ 'conv-a': true, 'conv-b': true });
+    });
+
+    it('is forgotten with the conversation it was asked for', () => {
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
+      usePreviewStore.getState().showEmptyPanel();
+
+      usePreviewStore.getState().closeOwnedTabsForConversation('conv-b');
+      expect(usePreviewStore.getState().emptyPanelShown).toEqual({ 'conv-a': true });
+
+      usePreviewStore.getState().closeOwnedTabsForConversation('conv-a');
+      expect(usePreviewStore.getState().emptyPanelShown).toEqual({});
     });
   });
 
@@ -1084,6 +1267,101 @@ describe('delayed popup ownership', () => {
     store().openBrowser('https://late.example', '__abu-browser-automation__late', undefined, source);
     expect(store().tabs).toEqual([]);
   });
+  describe('openPreview with focusTab', () => {
+    it('asks for the focus on the tab it opens, and on the tab it returns to', () => {
+      usePreviewStore.getState().openPreview('/a/b.md', { focusTab: true });
+      const first = usePreviewStore.getState();
+      expect(first.focusTabId).toBe(first.tabs[0].id);
+
+      usePreviewStore.getState().consumeFocusTabRequest(first.tabs[0].id);
+      usePreviewStore.getState().openTerminal();
+      usePreviewStore.getState().openPreview('/a/b.md', { focusTab: true });
+      const second = usePreviewStore.getState();
+      expect(second.activeTabId).toBe(first.tabs[0].id);
+      expect(second.focusTabId).toBe(first.tabs[0].id);
+    });
+
+    it('asks for no focus without the option', () => {
+      usePreviewStore.getState().openPreview('/a/b.md');
+      expect(usePreviewStore.getState().focusTabId).toBeNull();
+    });
+  });
+
+  describe('openTurnChanges', () => {
+    const store = () => usePreviewStore.getState();
+    const target = { conversationId: 'conv-a', loopId: 'loop-1', fileIndex: 0, title: 'Changes: plan.md' };
+
+    it('opens a changes tab for the turn, activates it and expands the panel', () => {
+      useSettingsStore.getState().setRightPanelCollapsed(true);
+      store().closeTabsForConversationSwitch('conv-a');
+
+      const id = store().openTurnChanges({ ...target, fileIndex: 2 });
+
+      expect(store().tabs).toEqual([{
+        id,
+        kind: 'changes',
+        conversationId: 'conv-a',
+        loopId: 'loop-1',
+        fileIndex: 2,
+        title: 'Changes: plan.md',
+        ownerConversationId: 'conv-a',
+      }]);
+      expect(store().activeTabId).toBe(id);
+      expect(useSettingsStore.getState().rightPanelCollapsed).toBe(false);
+    });
+
+    it('returns to the tab of the same turn and moves it to the file asked for', () => {
+      store().closeTabsForConversationSwitch('conv-a');
+      const first = store().openTurnChanges(target);
+      store().openPreview('/ws/plan.md');
+
+      const second = store().openTurnChanges({ ...target, fileIndex: 3, title: 'Changes: plan.md and 4 files' });
+
+      expect(second).toBe(first);
+      expect(store().tabs.filter((tab) => tab.kind === 'changes')).toHaveLength(1);
+      expect(store().tabs.find((tab) => tab.id === first)).toMatchObject({ fileIndex: 3, title: 'Changes: plan.md and 4 files' });
+      expect(store().activeTabId).toBe(first);
+    });
+
+    it('opens a tab per turn', () => {
+      store().closeTabsForConversationSwitch('conv-a');
+      const first = store().openTurnChanges(target);
+      const second = store().openTurnChanges({ ...target, loopId: 'loop-2' });
+      expect(second).not.toBe(first);
+      expect(store().tabs.map((tab) => tab.kind)).toEqual(['changes', 'changes']);
+    });
+
+    it('selectTurnChangesFile moves a changes tab to another file and leaves other tabs alone', () => {
+      store().closeTabsForConversationSwitch('conv-a');
+      const id = store().openTurnChanges(target);
+      store().openPreview('/ws/plan.md');
+      const previewId = store().activeTabId as string;
+
+      store().selectTurnChangesFile(id, 4);
+      store().selectTurnChangesFile(previewId, 4);
+      store().selectTurnChangesFile('missing', 4);
+
+      expect(store().tabs.find((tab) => tab.id === id)).toMatchObject({ kind: 'changes', fileIndex: 4 });
+      expect(store().tabs.find((tab) => tab.id === previewId)).toEqual(
+        { id: previewId, kind: 'preview', filePath: '/ws/plan.md', ownerConversationId: 'conv-a' },
+      );
+      expect(store().activeTabId).toBe(previewId);
+    });
+
+    it('shows the tab only in its conversation and closes it with the conversation', () => {
+      store().closeTabsForConversationSwitch('conv-a');
+      const id = store().openTurnChanges(target);
+
+      store().closeTabsForConversationSwitch('conv-b');
+      expect(getVisibleTabs(store())).toEqual([]);
+      store().closeTabsForConversationSwitch('conv-a');
+      expect(getVisibleTabs(store()).map((tab) => tab.id)).toEqual([id]);
+
+      store().closeOwnedTabsForConversation('conv-a');
+      expect(store().tabs).toEqual([]);
+    });
+  });
+
   it('does not recreate a deleted current conversation snapshot on the next switch', () => {
     const store = () => usePreviewStore.getState();
     store().closeTabsForConversationSwitch('a');
