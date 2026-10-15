@@ -107,18 +107,16 @@ async function focusMainWindow(): Promise<void> {
  */
 async function jumpToConversation(id: string): Promise<void> {
   try {
-    const [{ useChatStore }, { useSettingsStore }, { usePreviewStore }, { useNoticeBadgeStore }] =
+    const [{ useChatStore }, { useSettingsStore }, { useNoticeBadgeStore }] =
       await Promise.all([
         import('@/stores/chatStore'),
         import('@/stores/settingsStore'),
-        import('@/stores/previewStore'),
         import('@/stores/noticeBadgeStore'),
       ]);
     const chat = useChatStore.getState();
     if (!(id in chat.conversationIndex)) return; // deleted since the notice fired
     void chat.switchConversation(id);
     useSettingsStore.getState().setViewMode('chat');
-    usePreviewStore.getState().setFileTreeMode(false);
     useNoticeBadgeStore.getState().clear(id);
     chat.clearCompletedStatus(id);
   } catch {

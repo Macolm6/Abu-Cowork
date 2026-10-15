@@ -2,8 +2,6 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { useChatStore } from '@/stores/chatStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { usePreviewStore } from '@/stores/previewStore';
-import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { useI18n } from '@/i18n';
 import ShareExportDialog from '@/components/share/ShareExportDialog';
 import { Button, IconButton } from '@/components/ds/button';
@@ -56,7 +54,6 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
   const conversationIndex = useChatStore((s) => s.conversationIndex);
   const setViewMode = useSettingsStore((s) => s.setViewMode);
   const viewMode = useSettingsStore((s) => s.viewMode);
-  const setShowFileTree = usePreviewStore((s) => s.setFileTreeMode);
 
   const setConversationProject = useChatStore((s) => s.setConversationProject);
 
@@ -238,7 +235,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
     <div>
       {/* Project header row */}
       <ContextMenu content={projectMenuItems} onOpenChange={dropActionOnOpen} onCloseAutoFocus={runAfterMenuClose}>
-        {/* A group named by the project: 项目文件, 新任务 and 更多操作 read the same on every row. */}
+        {/* A group named by the project: 新任务 and 更多操作 read the same on every row. */}
         <div role="group" aria-labelledby={nameId} className="group flex items-center gap-1">
           <NavItem
             id={nameId}
@@ -248,18 +245,6 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
             onClick={() => toggleExpanded(project.id)}
             className="min-w-0 flex-1"
             {...projectRowProps(project.id)}
-          />
-          <IconButton
-            icon={AppIcons.fileTree}
-            label={t.sidebar.projectFiles}
-            size="sm"
-            onClick={(e) => {
-              e.stopPropagation();
-              useWorkspaceStore.getState().setWorkspace(project.workspacePath);
-              setShowFileTree(true);
-              setViewMode('chat');
-            }}
-            className={REVEAL}
           />
           <IconButton
             icon={AppIcons.add}
@@ -352,21 +337,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
                       <Spinner size="sm" label={t.task.running} labelHidden />
                     </span>
                   )}
-                  {/* Row actions step aside while renaming so the field gets the row's width. */}
-                  {!editing && conv.workspacePath && (
-                    <IconButton
-                      icon={AppIcons.fileTree}
-                      label={t.sidebar.projectFiles}
-                      size="sm"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        switchConversation(conv.id);
-                        setViewMode('chat');
-                        setShowFileTree(true);
-                      }}
-                      className={REVEAL}
-                    />
-                  )}
+                  {/* The row action steps aside while renaming so the field gets the row's width. */}
                   {!editing && (
                     <IconButton
                       icon={AppIcons.more}

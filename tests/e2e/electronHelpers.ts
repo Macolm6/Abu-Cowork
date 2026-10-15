@@ -278,6 +278,20 @@ export async function dismissFirstRunOverlays(page: Page): Promise<void> {
   await expect(page.getByPlaceholder(/^(想让阿布帮你做点什么？|What can Abu help you with\?)$/)).toBeVisible({ timeout: READY_TIMEOUT });
 }
 
+/**
+ * Open the 工作区文件 tab of a new task in a sidebar project: 新任务 on the project row, the
+ * title bar's panel button (the task has no message yet), then 工作区文件 on the launcher.
+ * No model is asked anything.
+ */
+export async function openWorkspaceFilesOfProject(page: Page, projectName: string): Promise<void> {
+  await page.getByRole('group', { name: projectName, exact: true })
+    .getByRole('button', { name: '新任务', exact: true }).click();
+  await page.getByRole('button', { name: '显示面板', exact: true }).click();
+  await expect(page.getByText('从这里开始', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+  await page.getByRole('button', { name: /^工作区文件/ }).click();
+  await expect(page.getByRole('tab', { name: '工作区文件', exact: true })).toHaveAttribute('aria-selected', 'true');
+}
+
 export interface LocalMockProviderOptions {
   apiKey?: string;
   /**
@@ -291,7 +305,7 @@ export interface LocalMockProviderOptions {
   maxOutputTokens?: number;
   modelId?: string;
   modelLabel?: string;
-  permissionMode?: 'standard' | null;
+  permissionMode?: 'standard' | 'autonomous' | null;
   providerId?: string;
   providerName?: string;
   supportsReasoning?: boolean | null;

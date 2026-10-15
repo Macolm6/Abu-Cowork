@@ -5,11 +5,11 @@ import { useConfirm } from '@/components/ds/confirm-context';
 import { useI18n } from '@/i18n';
 import { isTauriEnv } from '@/utils/tauriEnv';
 import { useChatStore } from '@/stores/chatStore';
-import { answerQuitRequest, saveConversationsForExit, type QuitRequest } from '@/core/session/quitFlush';
+import { answerQuitRequest, type QuitRequest } from '@/core/session/quitFlush';
 
 /**
  * Answers the main process when the application is quit: asks before a
- * running task is interrupted, then saves every conversation. Renders nothing.
+ * running task is interrupted. The host starts saving after confirmation.
  */
 export default function QuitRequestListener() {
   const confirm = useConfirm();
@@ -25,8 +25,11 @@ export default function QuitRequestListener() {
     let cancelled = false;
     listen<QuitRequest>('quit-requested', (event) => {
       void answerQuitRequest(event.payload, {
-        hasRunningConversation: () =>
-          Object.values(useChatStore.getState().conversations).some((c) => c.status === 'running'),
+        hasRunningConversation: () => {
+          const state = useChatStore.getState();
+          return Object.values(state.conversations).some(c => c.status === 'running'
+            && (!state.hasAbortController(c.id) || !state.getAbortController(c.id).signal.aborted));
+        },
         askToQuit: async () => {
           // The window may be in the tray: the question has to be seen.
           await invoke('window_show');
@@ -37,7 +40,6 @@ export default function QuitRequestListener() {
           });
         },
         report: (requestId, stage) => invoke('app_quit_report', { requestId, stage }),
-        save: saveConversationsForExit,
       });
     }).then((fn) => {
       if (cancelled) fn();

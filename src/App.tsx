@@ -31,7 +31,7 @@ import { PET_POSITION_EVENT, parsePetPosition } from '@/core/pet/petPositionSync
 import { petMessageConversation } from '@/core/pet/petQuickMessage';
 import { useEnterpriseAppPolicy } from '@/core/enterprise/appPolicy';
 import RightPanel from '@/components/panel/RightPanel';
-import { isTabVisibleFor, useHasTabs, usePreviewStore } from '@/stores/previewStore';
+import { isTabVisibleFor, isWideTab, useHasTabs, usePreviewStore } from '@/stores/previewStore';
 import { resolveChatWidth, useViewportWidth } from '@/components/panel/panelWidths';
 import ToasterMount from '@/components/common/ToasterMount';
 import QuitRequestListener from '@/components/common/QuitRequestListener';
@@ -170,7 +170,6 @@ function App() {
   const viewMode = useSettingsStore((s) => s.viewMode);
   const setViewMode = useSettingsStore((s) => s.setViewMode);
   const startNewConversation = useChatStore((s) => s.startNewConversation);
-  const setFileTreeMode = usePreviewStore((s) => s.setFileTreeMode);
   // Preview split (TRAE-style): when the workspace panel has WIDE content
   // (preview/browser/terminal — not the narrow summary tab), the chat column
   // takes a stable, resizable width and the workspace flex-fills the rest.
@@ -178,7 +177,11 @@ function App() {
   // in the store but must not size or reveal THIS conversation's panel.
   const hasAnyTab = useHasTabs();
   const hasWideContent = usePreviewStore(
-    (s) => s.tabs.some((t) => t.kind !== 'summary' && isTabVisibleFor(t, s.currentConversationId)),
+    (s) => s.tabs.some((t) => isWideTab(t) && isTabVisibleFor(t, s.currentConversationId)),
+  );
+  // The user opened this conversation's panel before it had a message or a tab.
+  const emptyPanelShown = usePreviewStore(
+    (s) => s.currentConversationId !== null && s.emptyPanelShown[s.currentConversationId] === true,
   );
   const chatWidth = usePreviewStore((s) => s.chatWidth);
   const viewportWidth = useViewportWidth();
@@ -275,12 +278,31 @@ function App() {
     }
   }, [theme]);
 
-  // Right panel toggle only when there's an active conversation with messages
-  // The overlay panel toggle is now ONLY the "reopen panel" affordance: when the right
+  // Whether the right panel actually sits BESIDE the chat — mirrors RightPanel's own
+  // render gate: the conversation has a message or a tab, or a workspace whose panel
+  // the user asked for. Drives the chat's right margin: a tight 4px gutter between
+  // the two cards, vs 8px to the window edge when chat is alone.
+  const conversationHasMessages = (activeConv?.messages?.length ?? 0) > 0;
+  const conversationHasWorkspace = !!activeConv?.workspacePath;
+  const rightPanelBeside =
+    viewMode === 'chat' &&
+    !rightPanelCollapsed &&
+    (conversationHasMessages || hasAnyTab || (conversationHasWorkspace && emptyPanelShown));
+  // The overlay panel toggle is ONLY the "open the panel" affordance: when the right
   // panel is open it carries its own collapse button in the workspace tab strip, so the
-  // overlay would just double it up. Show the overlay only while the panel is collapsed
-  // (and there's a conversation to show a panel for).
-  const showRightPanelToggle = viewMode === 'chat' && ((activeConv?.messages?.length ?? 0) > 0 || hasAnyTab) && rightPanelCollapsed;
+  // overlay would just double it up. Show the overlay only while the panel is off the
+  // page and the conversation has something a panel can show: a message, a tab, or a
+  // workspace folder whose files it can list.
+  const showRightPanelToggle =
+    viewMode === 'chat' &&
+    !rightPanelBeside &&
+    (conversationHasMessages || hasAnyTab || conversationHasWorkspace);
+  // A conversation with no message and no tab has its panel off the page whatever the
+  // collapse setting says; opening it there is a request of its own.
+  const openRightPanel = () => {
+    if (conversationHasMessages || hasAnyTab) toggleRightPanel();
+    else usePreviewStore.getState().showEmptyPanel();
+  };
   // Lives in previewStore (not local state) so BrowserTab can hide the native
   // browser webview while the dialog is up — otherwise the webview paints over
   // it and the user cannot see or click the close confirmation.
@@ -831,13 +853,6 @@ function App() {
   // on the summary tab the chat flex-fills and the panel is a fixed details column.
   const previewSplit = viewMode === 'chat' && hasWideContent && !rightPanelCollapsed;
   const previewChatWidth = resolveChatWidth(chatWidth, viewportWidth, !sidebarCollapsed);
-  // Whether the right panel actually sits BESIDE the chat (either tab) — mirrors
-  // RightPanel's own render gate. Drives the chat's right margin: a tight 4px
-  // gutter between the two cards, vs 8px to the window edge when chat is alone.
-  const rightPanelBeside =
-    viewMode === 'chat' &&
-    !rightPanelCollapsed &&
-    (((activeConv?.messages?.length ?? 0) > 0) || hasAnyTab);
 
   const windowTitleBarProps = {
     platform: desktopPlatform,
@@ -846,15 +861,14 @@ function App() {
     showSearch: viewMode !== 'settings',
     showNewTask: sidebarCollapsed && viewMode !== 'settings',
     showRightPanelToggle,
-    rightPanelCollapsed,
+    rightPanelCollapsed: !rightPanelBeside,
     onToggleSidebar: toggleSidebar,
     onOpenSearch: () => setSearchModalOpen(true),
     onNewTask: () => {
       startNewConversation();
       setViewMode('chat');
-      setFileTreeMode(false);
     },
-    onToggleRightPanel: toggleRightPanel,
+    onToggleRightPanel: openRightPanel,
     onOpenWindowMenu: (
       group: 'edit' | 'window' | 'help',
       anchor: { x: number; y: number },

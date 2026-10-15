@@ -892,6 +892,8 @@ function updateSessionMessageState(
     session.userMessageId,
     {
       state,
+      ...(state === 'interrupted' && session.shellAbortController.signal.reason === 'app-quit'
+        ? { interruptCause: 'app_exit' as const } : {}),
       ...(error ? { error } : {}),
       ...(errorDetails ? { errorDetails } : {}),
     },
@@ -906,7 +908,7 @@ function updateSessionMessageState(
  */
 export function closeRunningRunsForExit(): void {
   for (const session of sessions.values()) {
-    if (session.terminal || session.closedOnExit || !session.userMessageId) continue;
+    if (session.terminal || session.closedOnExit || !session.userMessageId || session.shellAbortController.signal.aborted) continue;
     session.closedOnExit = true;
     useChatStore.getState().updateUserMessageRun(
       session.conversationId,
@@ -922,9 +924,11 @@ async function finalizePreDispatchInterruptedRun(
   runId: string,
   stage: 'params_build_aborted' | 'before_dispatch' | 'waiting_for_sidecar',
   runtimeStartedAt: number,
+  signal: AbortSignal,
 ): Promise<AgentLoopDispatchResult> {
   useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
     state: 'interrupted',
+    ...(signal.reason === 'app-quit' ? { interruptCause: 'app_exit' as const } : {}),
   });
   getAbortRegistry().clearAbortController(conversationId);
   getChatDelta().setConversationStatus(conversationId, 'idle');
@@ -3584,6 +3588,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         runId,
         'waiting_for_sidecar',
         runtimeStartedAt,
+        shellAbortController.signal,
       );
     }
     return finalizePreAcceptFailure({
@@ -3641,6 +3646,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         runId,
         'params_build_aborted',
         runtimeStartedAt,
+        shellAbortController.signal,
       );
     }
     // Failed before any dispatch. Nothing ran in either venue (#549), so the
@@ -3678,6 +3684,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       runId,
       'before_dispatch',
       runtimeStartedAt,
+      shellAbortController.signal,
     );
   }
 

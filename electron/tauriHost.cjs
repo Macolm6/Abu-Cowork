@@ -52,6 +52,7 @@ const {
 } = require('./deviceIdStore.cjs');
 const { updaterDispatch, UPDATER_MISS } = require('./updaterHost.cjs');
 const { createQuitPreparation } = require('./quitPreparation.cjs');
+const { createExitSaveController } = require('./exitSaveController.cjs');
 const { fsDispatch, FS_MISS, canonicalizeForPathPolicy, inspectPathNameComparison } = require('./fsHost.cjs');
 const { FILE_OPERATION_CHANNEL, createFileOperationHost } = require('./fileOperationHost.cjs');
 const { pluginGitDispatch, PLUGIN_GIT_MISS } = require('./pluginGitHost.cjs');
@@ -88,6 +89,7 @@ const {
   cleanupFsWatchesForSender,
 } = require('./fsWatchHost.cjs');
 const { mcpDispatch } = require('./mcpBridge.cjs');
+const { ownedChildProcesses } = require('./ownedChildProcesses.cjs');
 const { SIDECAR_BRIDGE_STATE_CHANNEL } = require('./sidecarEventChannel.cjs');
 const { sidecarRunRegistry } = require('./sidecarRunRegistry.cjs');
 const {
@@ -280,13 +282,22 @@ function requestAppExit(app) {
 }
 
 let exitPreparation = null;
-async function prepareAppExit() {
-  await exitPreparation?.prepare();
+let externalExitPending = false;
+async function prepareAppExit(external = false) {
+  if (external) externalExitPending = true;
+  try {
+    await exitPreparation?.prepare();
+  } catch (error) {
+    cancelAppExitPreparation();
+    throw error;
+  }
 }
 function cancelAppExitPreparation() {
   quitting = false;
+  externalExitPending = false;
   exitPreparation?.cancel();
-  quitGate?.cancel();
+  ownedChildProcesses.resume();
+  quitGate?.reset();
 }
 
 /**
@@ -302,9 +313,8 @@ function cancelAppExitPreparation() {
  */
 function markQuitting() {
   quitting = true;
-  // The renderer saved its conversations before it asked for this restart
-  // (`restartApp`), and the user has already said yes to it: the quit the
-  // installer triggers asks nothing and waits for nothing.
+  // Update callers await prepareAppExit before closing windows. Their user
+  // confirmation also covers interruption of running work.
   quitGate?.allow();
 }
 
@@ -1412,39 +1422,67 @@ function registerTauriHost(app, options = {}) {
   let pluginRegistryQuitReady = false;
   let pluginRegistryQuitPending = false;
   const quitPreparation = createQuitPreparation({ ipcMain, assertSender: assertTrustedMainIpcSender });
-  exitPreparation = quitPreparation;
-  let quitPreparationPending = false;
+  async function askAboutExitSave(kind, signal) {
+    const text = quitPreparation.dialogText();
+    const choices = kind === 'waiting' ? ['wait', 'force'] : ['retry', 'cancel', 'force'];
+    const options = {
+      type: 'warning', title: 'Abu', message: text[kind],
+      buttons: choices.map(choice => text[choice]), defaultId: 0,
+      cancelId: kind === 'waiting' ? 0 : 1, noLink: true, signal,
+    };
+    const window = getMainWindow();
+    if (window && !window.isDestroyed()) window.show();
+    const result = await (window && !window.isDestroyed()
+      ? dialog.showMessageBox(window, options)
+      : dialog.showMessageBox(options));
+    return choices[result.response];
+  }
+  exitPreparation = createExitSaveController({
+    preparation: quitPreparation,
+    ask: askAboutExitSave,
+    finish: () => ownedChildProcesses.shutdown(),
+  });
+  let quitConfirmationPending = false;
   quitGate = createQuitGate({
-    send: (payload) => emitWindowEvent(getMainWindow(), 'quit-requested', payload),
+    send: payload => emitWindowEvent(getMainWindow(), 'quit-requested', payload),
     onProceed: () => app.quit(),
-    onCancelled: () => {},
-    // The user sees the application leave at once; the write finishes behind it.
-    onFlushing: () => getMainWindow()?.hide(),
+    onCancelled: () => { quitting = false; },
+    onUnavailable: () => {
+      if (quitConfirmationPending) return;
+      quitConfirmationPending = true;
+      void askAboutExitSave('waiting', new AbortController().signal).then(answer => {
+        quitConfirmationPending = false;
+        if (answer === 'force') {
+          exitPreparation.force();
+          quitGate.allow();
+        }
+        app.quit();
+      });
+    },
   });
-  powerMonitor.on('shutdown', () => {
-    sessionEnding = true;
-  });
+  powerMonitor.on('shutdown', () => { sessionEnding = true; });
+  let quitPreparationPending = false;
   app.on('before-quit', (event) => {
-    // The handshake comes before any teardown: a quit the user calls off
-    // leaves every window, view and shortcut in use, and the next window
-    // close goes through the preventable-close handler again.
-    if (!quitGate.request({ sessionEnding })) {
+    // Restart owns the final installer/relaunch action while its save is pending.
+    if (externalExitPending && !quitting) {
+      event.preventDefault();
+      return;
+    }
+    if (quitConfirmationPending || !quitGate.request({ sessionEnding })) {
       event.preventDefault();
       quitting = false;
       return;
     }
-    if (!quitPreparation.isPrepared()) {
+    if (!exitPreparation.isPrepared()) {
       event.preventDefault();
       if (!quitPreparationPending) {
         quitPreparationPending = true;
-        void quitPreparation.prepare().then(() => {
+        void prepareAppExit().then(() => {
           quitPreparationPending = false;
-          app.quit();
+          if (!externalExitPending) app.quit();
         }, () => {
           quitPreparationPending = false;
           cancelAppExitPreparation();
-          getMainWindow()?.show();
-          dialog.showErrorBox('Abu', quitPreparation.failureMessage());
         });
       }
       return;

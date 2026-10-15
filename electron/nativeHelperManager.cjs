@@ -33,6 +33,7 @@
 'use strict';
 
 const { spawn } = require('node:child_process');
+const { ownedChildProcesses } = require('./ownedChildProcesses.cjs');
 const path = require('node:path');
 const fs = require('node:fs');
 const { runtimeState } = require('./runtimeObservability.cjs');
@@ -433,6 +434,7 @@ function handleLine(line) {
 }
 
 function ensureChild() {
+  ownedChildProcesses.assertAdmission();
   if (child && !child.killed && child.exitCode === null) return child;
   if (!fs.existsSync(HELPER_PATH)) {
     const failedGeneration = helperGeneration + 1;
@@ -444,6 +446,10 @@ function ensureChild() {
     );
   }
   const spawnedChild = spawn(HELPER_PATH, [], { stdio: ['pipe', 'pipe', 'pipe'] });
+  ownedChildProcesses.track(spawnedChild, () => {
+    if (child === spawnedChild) killNativeHelper('app-exit');
+    else if (!spawnedChild.killed) spawnedChild.kill('SIGKILL');
+  });
   child = spawnedChild;
   helperGeneration += 1;
   const spawnedGeneration = helperGeneration;

@@ -169,8 +169,6 @@ function isEnterpriseServerBlocked(name: string): boolean {
 }
 
 export interface MCPServerConfig {
-  /** Runtime owner can revoke access without changing the server's tool namespace. */
-  isAvailable?: () => boolean;
   /** Opaque encrypted configuration reference; no credential values persist here. */
   pluginConfiguration?: string;
   name: string;
@@ -560,9 +558,6 @@ export function resetRawAppResults(): void {
 
 export class MCPClientManager {
   private servers: Map<string, ConnectedServer> = new Map();
-  private isServerBlocked(name: string): boolean {
-    return isEnterpriseServerBlocked(name) || this.servers.get(name)?.config.isAvailable?.() === false;
-  }
   private pendingConnections = new Map<string, { admissionName: string; cancelled: boolean; client?: { close(): Promise<void> } }>();
   private clientClosures = new WeakMap<object, Promise<void>>();
 
@@ -612,7 +607,6 @@ export class MCPClientManager {
     this.pendingConnections.set(config.name, attempt);
     const admit = () => {
       assertPluginMcpEpoch(admissionName, epoch);
-      if (config.isAvailable?.() === false) throw new Error(`MCP server ${config.name} is unavailable`);
       if (attempt.cancelled || this.pendingConnections.get(config.name) !== attempt) throw new Error(format(getI18n().toolbox.pluginsDisabledCapability, { name: admissionName }));
     };
     const track = (client: { close(): Promise<void> }) => { admit(); attempt.client = client; };
@@ -960,7 +954,6 @@ export class MCPClientManager {
     error?: string;
   }> {
     if (!isPluginMcpAllowed(config.name)) return { success: false, error: format(getI18n().toolbox.pluginsDisabledCapability, { name: config.name }) };
-    if (this.isServerBlocked(config.name) || config.isAvailable?.() === false) return { success: false, error: `MCP server ${config.name} is unavailable` };
     // Probe the live transport without starting or stopping a second runtime.
     const active = this.servers.get(config.name);
     if (active) {
@@ -1047,14 +1040,14 @@ export class MCPClientManager {
   listTools(): ToolDefinition[] {
     const allTools: ToolDefinition[] = [];
     for (const [name, server] of this.servers) {
-      if (this.isServerBlocked(name) || !isPluginMcpAllowed(name)) continue;
+      if (isEnterpriseServerBlocked(name) || !isPluginMcpAllowed(name)) continue;
       allTools.push(...server.tools.values());
     }
     return allTools;
   }
 
   getServerTools(serverName: string): ToolDefinition[] {
-    if (this.isServerBlocked(serverName) || !isPluginMcpAllowed(serverName)) return [];
+    if (isEnterpriseServerBlocked(serverName) || !isPluginMcpAllowed(serverName)) return [];
     const server = this.servers.get(serverName);
     return server ? Array.from(server.tools.values()) : [];
   }
@@ -1066,7 +1059,7 @@ export class MCPClientManager {
    * then falls back to this.
    */
   getAppTool(serverName: string, toolName: string): ToolDefinition | undefined {
-    if (this.isServerBlocked(serverName) || !isPluginMcpAllowed(serverName)) return undefined;
+    if (isEnterpriseServerBlocked(serverName) || !isPluginMcpAllowed(serverName)) return undefined;
     return this.servers.get(serverName)?.appTools.get(toolName);
   }
 
@@ -1089,7 +1082,7 @@ export class MCPClientManager {
     const release = acquirePluginUse(pluginOwnerForMcp(serverName));
     try {
       assertPluginMcpEnabled(serverName);
-      if (this.isServerBlocked(serverName)) {
+      if (isEnterpriseServerBlocked(serverName)) {
         throw new McpAppResourceError(
           'server-not-authorized',
           `Enterprise MCP server ${serverName} is not authorized by the current live session`
@@ -1183,7 +1176,7 @@ export class MCPClientManager {
    * Returns the number of tools discovered, or -1 if server not connected.
    */
   async refreshServerTools(serverName: string): Promise<number> {
-    if (this.isServerBlocked(serverName) || !isPluginMcpAllowed(serverName)) return -1;
+    if (isEnterpriseServerBlocked(serverName) || !isPluginMcpAllowed(serverName)) return -1;
     const server = this.servers.get(serverName);
     if (!server) return -1;
 
@@ -1328,7 +1321,7 @@ export class MCPClientManager {
     }
   ): Promise<ToolResult> {
     assertPluginMcpEnabled(serverName);
-    if (this.isServerBlocked(serverName)) {
+    if (isEnterpriseServerBlocked(serverName)) {
       throw new Error('Enterprise MCP is not authorized by the current live session');
     }
     const server = this.servers.get(serverName);
@@ -1551,7 +1544,7 @@ export class MCPClientManager {
     const release = acquirePluginUse(pluginOwnerForMcp(serverName));
     try {
       assertPluginMcpEnabled(serverName);
-      if (this.isServerBlocked(serverName)) {
+      if (isEnterpriseServerBlocked(serverName)) {
         throw new McpAppResourceError(
           'server-not-authorized',
           `Enterprise MCP server ${serverName} is not authorized by the current live session`
@@ -1595,7 +1588,7 @@ export class MCPClientManager {
     const release = acquirePluginUse(pluginOwnerForMcp(serverName));
     try {
       assertPluginMcpEnabled(serverName);
-      if (this.isServerBlocked(serverName)) {
+      if (isEnterpriseServerBlocked(serverName)) {
         throw new McpAppResourceError(
           'server-not-authorized',
           `Enterprise MCP server ${serverName} is not authorized by the current live session`

@@ -37,7 +37,7 @@ test('exit requests share one preparation and require the matching main-frame ac
   assert.equal(f.preparation.isPrepared(), true);
 });
 
-test('failed saves cancel preparation and a retry needs a fresh acknowledgement', async () => {
+test('failed saves retain the participant until a retry or cancellation', async () => {
   const f = fixture();
   f.invoke('abu:quit-register', 'Save failed. Please try again.');
   const failed = f.preparation.prepare();
@@ -45,10 +45,10 @@ test('failed saves cancel preparation and a retry needs a fresh acknowledgement'
   const oldId = f.sent[0].payload;
   f.invoke('abu:quit-ack', { id: oldId, success: false });
   await rejected;
-  assert.equal(f.sent[1].channel, 'abu:quit-cancel');
+  assert.equal(f.sent.length, 1);
   assert.equal(f.preparation.isPrepared(), false);
   const retry = f.preparation.prepare();
-  const id = f.sent[2].payload;
+  const id = f.sent[1].payload;
   assert.notEqual(id, oldId);
   assert.equal(f.invoke('abu:quit-ack', { id: oldId, success: true }), false);
   f.invoke('abu:quit-ack', { id, success: true });
@@ -80,4 +80,30 @@ test('explicit cancellation rejects pending preparation and ignores its late ack
   await rejected;
   assert.equal(f.invoke('abu:quit-ack', { id, success: true }), false);
   assert.equal(f.preparation.isPrepared(), false);
+});
+
+test('a confirmed save remains prepared when an updater destroys the window before before-quit', async () => {
+  const f = fixture();
+  f.invoke('abu:quit-register', 'Save failed. Please try again.');
+  const ready = f.preparation.prepare();
+  f.invoke('abu:quit-ack', { id: f.sent[0].payload, success: true });
+  await ready;
+  f.sender.isDestroyed = () => true;
+  f.sender.emit('destroyed');
+  assert.equal(f.preparation.isPrepared(), true);
+  await f.preparation.prepare();
+  f.preparation.cancel();
+  assert.equal(f.preparation.isPrepared(), false);
+});
+
+test('destroying a window without a confirmed save rejects exit preparation', async () => {
+  const f = fixture();
+  f.invoke('abu:quit-register', 'Save failed. Please try again.');
+  const ready = f.preparation.prepare();
+  const rejected = assert.rejects(ready, /cancelled/);
+  f.sender.isDestroyed = () => true;
+  f.sender.emit('destroyed');
+  await rejected;
+  assert.equal(f.preparation.isPrepared(), false);
+  await assert.rejects(f.preparation.prepare(), /unavailable/);
 });

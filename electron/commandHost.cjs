@@ -34,6 +34,7 @@ const os = require('node:os');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn, spawnSync, execFileSync } = require('node:child_process');
+const { ownedChildProcesses } = require('./ownedChildProcesses.cjs');
 const { resourceRoot, REPO_ROOT } = require('./appEnv.cjs');
 const {
   resolveBundledProgram,
@@ -862,6 +863,7 @@ function __resetCommandHostForTests() {
  * Object with KILL_ON_JOB_CLOSE inside the launcher.
  */
 function spawnForeground(app, spec, opts, timeoutSecs, commandId) {
+  ownedChildProcesses.assertAdmission();
   return new Promise((resolve) => {
     const { file, args, env } = spec;
     const launcherPath = sandboxLauncherPathFor(app);
@@ -887,6 +889,7 @@ function spawnForeground(app, spec, opts, timeoutSecs, commandId) {
     }
 
     const entry = { commandId, child, completed: false, killed: false, forceKillTimer: null };
+    ownedChildProcesses.track(child, () => killProcessTree(entry));
     opts.onConsumerStarted?.(() => killProcessTree(entry));
     child.once('close', () => opts.onConsumerClosed?.());
     addActiveCommand(entry);
@@ -944,6 +947,7 @@ function spawnForeground(app, spec, opts, timeoutSecs, commandId) {
  * The 3s return semantics and placeholder string match Tauri.
  */
 function spawnBackground(app, spec, opts, commandId) {
+  ownedChildProcesses.assertAdmission();
   return new Promise((resolve) => {
     const { file, args, env } = spec;
     const launcherPath = sandboxLauncherPathFor(app);
@@ -968,6 +972,7 @@ function spawnBackground(app, spec, opts, commandId) {
     }
 
     const entry = { commandId, child, completed: false, killed: false, forceKillTimer: null };
+    ownedChildProcesses.track(child, () => killProcessTree(entry));
     addActiveCommand(entry);
 
     const stdoutC = makeCappedCollector();
