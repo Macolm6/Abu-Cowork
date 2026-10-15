@@ -2,7 +2,6 @@ import { exists, mkdir, readDir, readTextFile } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 import type { SubagentDefinition } from '@/types';
 import type { AppDefinition, AppRunRef, ParsedAppFile, ParsedPluginTeam } from '@/types/app';
-import { GENERAL_APP_ID } from '@/types/app';
 import { APP_FILE_PATH, appRuns, parseAppFile, splitRunTarget } from '../../../electron/shared/appSpec.mjs';
 import { parseTeamFile } from '../../../electron/shared/pluginSpec.mjs';
 import { convertSingleFileAgent, renderAgentMd, BUILTIN_AGENT_NAMES } from '../../../electron/shared/pluginAgentFormat.mjs';
@@ -24,6 +23,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { addedAppId, appDir, saveAddedApp } from './appRecords';
 import { isUsersOwnAgent, isUsersOwnTeam, liveRefCatalog, resolveTarget, type RefCatalog } from './appRefs';
 import { refreshAddedApps } from './appSync';
+import { createGeneralShellConversation } from './generalShellConversation';
 
 /**
  * 「创建应用」 (docs/app-spec.md, product brief §6.7). The conversation writes
@@ -61,23 +61,16 @@ function randomId(): string {
  * Start a creation conversation with its own draft folder, and show it: the
  * chat page comes into view with that conversation active.
  *
- * Creating an app is an activity of the general shell. The conversation
- * belongs to no app, whichever app it was started from, and the shell leaves
- * that app (`leaveApp`); an organization that keeps its employees inside its
- * app passes `false`, and the conversation opens there, still unbound.
- * Nothing changes until the draft folder exists.
+ * Creating an app is an activity of the general shell
+ * (`createGeneralShellConversation`). Nothing changes until the draft folder
+ * exists.
  */
 export async function createAppDraft({ leaveApp }: { leaveApp: boolean }): Promise<void> {
   const id = randomId();
   const dir = joinPath(await homeDir(), APPS_FOLDER, id);
   await mkdir(dir, { recursive: true });
-  const apps = useAppStore.getState();
-  if (leaveApp && apps.selectedAppId !== GENERAL_APP_ID) apps.exitApp();
+  const conversationId = createGeneralShellConversation(dir, { leaveApp });
   const chat = useChatStore.getState();
-  // An app home keeps its binding and its team ready for the next conversation started there.
-  chat.setPendingAppBinding(undefined);
-  chat.setPendingTeamId(undefined);
-  const conversationId = chat.createConversation(dir);
   useAppDraftStore.getState().record(conversationId, { id, dir, createdAt: new Date().toISOString() });
   chat.renameConversation(conversationId, getI18n().appSwitcher.createConversation);
   chat.setPendingInput(getI18n().appSwitcher.createPrompt);

@@ -28,6 +28,7 @@ function tabMenuKey(tabId: string): string {
 
 function tabIcon(tab: WorkspaceTab) {
   if (tab.kind === 'summary') return AppIcons.plan;
+  if (tab.kind === 'files') return AppIcons.fileTree;
   if (tab.kind === 'preview') return AppIcons.file;
   if (tab.kind === 'browser') return AppIcons.webPage;
   if (tab.kind === 'subagent') return AppIcons.agent;
@@ -38,6 +39,7 @@ function tabIcon(tab: WorkspaceTab) {
 
 function tabTitle(tab: WorkspaceTab, t: ReturnType<typeof useI18n>['t']): string {
   if (tab.kind === 'summary') return t.workspace.summaryTitle;
+  if (tab.kind === 'files') return t.workspace.filesTitle;
   if (tab.kind === 'preview') {
     if (tab.filePath.startsWith('data:image/')) return t.panel.imagePreview;
     return getBaseName(tab.filePath);
@@ -82,6 +84,7 @@ export default function TabStrip() {
   const focusTabId = usePreviewStore((s) => s.focusTabId);
   const consumeFocusTabRequest = usePreviewStore((s) => s.consumeFocusTabRequest);
   const openSummary = usePreviewStore((s) => s.openSummary);
+  const openFiles = usePreviewStore((s) => s.openFiles);
   const openBrowser = usePreviewStore((s) => s.openBrowser);
   const openTerminal = usePreviewStore((s) => s.openTerminal);
   const setMenuOpen = usePreviewStore((s) => s.setMenuOpen);
@@ -382,6 +385,7 @@ export default function TabStrip() {
         trigger={<IconButton size="sm" icon={AppIcons.add} label={t.workspace.newTab} />}
       >
         <MenuItem icon={AppIcons.plan} onSelect={() => openSummary()}>{t.workspace.summaryTitle}</MenuItem>
+        <MenuItem icon={AppIcons.fileTree} onSelect={() => openFiles()}>{t.workspace.filesTitle}</MenuItem>
         <MenuItem icon={AppIcons.webPage} onSelect={() => { pendingNewTab.current = () => openBrowser(); }}>
           {t.workspace.newBrowserTab}
         </MenuItem>

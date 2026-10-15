@@ -8,6 +8,7 @@ import { StatusIcon } from '@/components/ds/status-icon';
 import { Tag } from '@/components/ds/tag';
 import { useI18n, format } from '@/i18n';
 import { useVisibleTeams } from '@/core/team/useVisibleTeams';
+import { localizedTeam } from '@/core/team/localizedTeam';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import AgentAvatar from '@/components/common/AgentAvatar';
@@ -53,7 +54,7 @@ function statusLabel(status: DispatchStatus | 'idle', t: ReturnType<typeof useI1
  * member's read-only process tab.
  */
 export default function TeamTab({ conversationId }: { conversationId: string }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const teams = useVisibleTeams();
   const leaderRunning = useTaskExecutionStore((s) => {
     for (const exec of Object.values(s.executions)) {
@@ -93,7 +94,14 @@ export default function TeamTab({ conversationId }: { conversationId: string }) 
   }
 
   const defOf = (name: string) => memberDefByName(team, name);
-  const teamAvatar = teams.find((entry) => entry.id === team.teamId)?.avatar;
+  // Experts are shown under their name in the interface language; hand-offs and instructions keep the stored one.
+  const shownName = (name: string) => {
+    const agent = name === team.leader.name ? team.leader : team.members.find((member) => member.name === name);
+    return agent?.displayNames?.[locale] ?? name;
+  };
+  const stored = teams.find((entry) => entry.id === team.teamId);
+  const teamAvatar = stored?.avatar;
+  const teamName = stored ? localizedTeam(stored, locale).name : team.teamName;
   const runningCount = members.filter((member) => member.status === 'running').length;
 
   return (
@@ -102,13 +110,13 @@ export default function TeamTab({ conversationId }: { conversationId: string }) 
         <header className="rounded-panel border border-separator bg-surface p-4">
           <div className="flex items-center gap-2 text-ui font-medium text-label">
             <TeamAvatar avatar={teamAvatar} size="sm" />
-            <span className="truncate">{team.teamName}</span>
+            <span className="truncate">{teamName}</span>
           </div>
           <div className="mt-3 flex items-center gap-3">
             <AgentAvatar agent={defOf(team.leader.name)} size="lg" round />
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 text-ui text-label">
-                <span className="truncate">{team.leader.name}</span>
+                <span className="truncate">{shownName(team.leader.name)}</span>
                 <Tag>{t.workspace.teamLeaderBadge}</Tag>
               </div>
               {/* One height, size and tone for both states, so the line stays steady when the leader starts. */}
@@ -144,7 +152,7 @@ export default function TeamTab({ conversationId }: { conversationId: string }) 
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-3">
                       <div className="min-w-0 flex-1">
-                        <div className="truncate text-ui text-label">{member.agent}</div>
+                        <div className="truncate text-ui text-label">{shownName(member.agent)}</div>
                         <div className="flex flex-wrap items-center gap-x-2 text-caption text-label-tertiary">
                           <span className="inline-flex items-center gap-1"><DispatchMark status={member.status} />{statusLabel(member.status, t)}</span>
                           <span>{member.dispatches.length > 0 ? format(t.workspace.teamDispatchCount, { n: member.dispatches.length }) : t.workspace.teamNoDispatchYet}</span>
@@ -190,8 +198,8 @@ export default function TeamTab({ conversationId }: { conversationId: string }) 
                                     size="sm"
                                     icon={AppIcons.stop}
                                     onClick={() => requestDispatchCancel(d.key)}
-                                    aria-label={format(t.workspace.teamStopDispatch, { member: member.agent })}
-                                    title={format(t.workspace.teamStopDispatch, { member: member.agent })}
+                                    aria-label={format(t.workspace.teamStopDispatch, { member: shownName(member.agent) })}
+                                    title={format(t.workspace.teamStopDispatch, { member: shownName(member.agent) })}
                                   >
                                     {t.workspace.teamStopDispatchShort}
                                   </Button>

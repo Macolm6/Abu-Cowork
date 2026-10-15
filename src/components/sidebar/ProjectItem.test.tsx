@@ -201,6 +201,38 @@ describe('ProjectItem — "+N more" expander', () => {
   });
 });
 
+describe('ProjectItem — a task opened from the search', () => {
+  it('shows every task when the task is past the first five, scrolls its row into view and clears the request', () => {
+    const scrolled: Element[] = [];
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function (this: Element) {
+      scrolled.push(this);
+    });
+    mocks.project.revealConversationId = 'c6';
+    mocks.project.clearRevealConversation = vi.fn();
+
+    renderItem(Array.from({ length: 8 }, (_, i) => makeConv(i)));
+
+    const row = screen.getByText('对话6').closest('[role="button"]');
+    expect(scrolled).toEqual([row]);
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+    expect(mocks.project.clearRevealConversation).toHaveBeenCalledOnce();
+    scrollIntoView.mockRestore();
+  });
+
+  it('leaves the request alone while the project is collapsed, and for a task of another project', () => {
+    mocks.project.revealConversationId = 'c1';
+    mocks.project.clearRevealConversation = vi.fn();
+
+    renderItem([makeConv(0), makeConv(1)], { expanded: false });
+    expect(mocks.project.clearRevealConversation).not.toHaveBeenCalled();
+    cleanup();
+
+    mocks.project.revealConversationId = 'elsewhere';
+    renderItem([makeConv(0), makeConv(1)]);
+    expect(mocks.project.clearRevealConversation).not.toHaveBeenCalled();
+  });
+});
+
 describe('ProjectItem — project row', () => {
   it('toggles the folder from its name and keeps 新任务 beside it', async () => {
     const onNewTask = vi.fn();
@@ -212,13 +244,13 @@ describe('ProjectItem — project row', () => {
     expect(onNewTask).toHaveBeenCalledWith('p1');
   });
 
-  // 项目文件, 新任务 and 更多操作 read the same on every project row: the group says whose they are.
+  // 新任务 and 更多操作 read the same on every project row: the group says whose they are.
   it('groups the row\'s buttons under the name of the project', () => {
     renderItem([makeConv(0)]);
     const group = projectGroup();
     expect(group).toHaveAttribute('aria-labelledby', screen.getByRole('button', { name: 'fastapi-bridge-dev' }).id);
     expect(within(group).getAllByRole('button').map((button) => button.getAttribute('aria-label') ?? button.textContent)).toEqual([
-      'fastapi-bridge-dev', '项目文件', '新任务', '更多操作',
+      'fastapi-bridge-dev', '新任务', '更多操作',
     ]);
     // The E2E specs find 新任务 from the element around the project name: both sit directly in the group.
     expect(Array.from(group.children)).toContain(screen.getByRole('button', { name: 'fastapi-bridge-dev' }));
@@ -414,9 +446,9 @@ describe('ProjectItem — the project row\'s 更多操作', () => {
       // Hidden by opacity alone: Tab reaches it.
       expect(button.tabIndex).toBe(0);
     }
-    // After 项目文件 and 新任务, the last control of the row.
+    // After 新任务, the last control of the row.
     expect(within(projectGroup()).getAllByRole('button').map((button) => button.getAttribute('aria-label') ?? button.textContent)).toEqual([
-      'fastapi-bridge-dev', '项目文件', '新任务', '更多操作',
+      'fastapi-bridge-dev', '新任务', '更多操作',
     ]);
   });
 

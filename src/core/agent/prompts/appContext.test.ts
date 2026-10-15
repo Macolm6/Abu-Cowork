@@ -17,6 +17,16 @@ describe('buildAppContextSection', () => {
     expect(withText).toContain('<app-instructions>\nFocus on margins.\n</app-instructions>');
   });
 
+  it('names an app whose name is given per locale by one fixed text: zh-CN, else en-US', () => {
+    const both = buildAppContextSection({ ...binding, appName: { 'zh-CN': '店铺运营', 'en-US': 'Shop Operations' } });
+    expect(both).toContain('inside the app "店铺运营"');
+    expect(both).not.toContain('Shop Operations');
+    expect(both).toBe(buildAppContextSection(binding));
+
+    const englishOnly = buildAppContextSection({ ...binding, appName: { 'en-US': 'Shop Operations' } });
+    expect(englishOnly).toContain('inside the app "Shop Operations"');
+  });
+
   it('caps the package instructions', () => {
     const long = 'x'.repeat(APP_PROMPT_APPEND_MAX_CHARS + 10);
     const text = buildAppContextSection({ ...binding, promptAppend: long });

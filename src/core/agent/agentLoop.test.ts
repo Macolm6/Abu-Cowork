@@ -1195,6 +1195,49 @@ describe('runAgentLoop expert execution', () => {
     }
   });
 
+  it('writes the step labels of a turn in the interface language', async () => {
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const adapters = await import('../llm/selectChatAdapter');
+    const { getToolInvoker, setToolInvoker } = await import('./ports/toolInvoker');
+    const originalInvoker = getToolInvoker();
+    const settings = useSettingsStore.getState();
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: p.models.some((m) => m.id === 'llama3.2') ? p.models : [...p.models, { id: 'llama3.2', label: 'llama3.2' }] }
+          : p),
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 0; });
+    const conversationId = useChatStore.getState().createConversation();
+    const emit = (events: StreamEvent[]) => async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+      events.forEach(onEvent);
+    };
+    const chat = vi.fn().mockImplementationOnce(emit([
+      { type: 'tool_use', id: 'read-source', name: 'read_file', input: { path: '/ws/source.md' } },
+      { type: 'done', stopReason: 'tool_use' },
+    ])).mockImplementation(emit([{ type: 'text', text: 'Read it.' }, { type: 'done', stopReason: 'end_turn' }]));
+    const selectAdapter = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat });
+    const tools: ToolDefinition[] = [{ name: 'read_file', description: 'read_file', inputSchema: { type: 'object', properties: {} }, execute: async () => 'ok' }];
+    setToolInvoker({ getAllTools: () => tools, toolResultToString: String, executeAnyTool: vi.fn(async () => '# Source') });
+    try {
+      const result = await runAgentLoop(conversationId, 'read the source');
+      expect(result.reason).toBe('completed');
+
+      const steps = useChatStore.getState().conversations[conversationId].messages
+        .flatMap((message) => message.executionSteps ?? []);
+      const readStep = steps.find((step) => step.toolName === 'read_file')!;
+      expect(readStep.label).toBe('Read source.md');
+      expect(readStep.detailBlocks?.map((block) => block.title)).toEqual(['Result']);
+    } finally {
+      selectAdapter.mockRestore();
+      setToolInvoker(originalInvoker);
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('offers a dispatched member neither present_files nor the instruction to call it', async () => {
     const { useSettingsStore } = await import('../../stores/settingsStore');
     const { runSubagentLoop } = await import('./subagentLoop');

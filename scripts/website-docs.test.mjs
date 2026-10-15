@@ -11,6 +11,10 @@ const mirroredDocs = [
   'User-Guide.zh-CN.md',
   'Installation-Guide.md',
   'Installation-Guide.zh-CN.md',
+  'app-spec.md',
+  'app-spec.en.md',
+  'plugin-spec.md',
+  'plugin-spec.en.md',
 ];
 
 const publicDocs = [
@@ -41,18 +45,71 @@ test('documentation viewer uses current product terminology', () => {
   assert.match(en, /data-doc="web-browsing"[\s\S]*Web Browsing/);
   assert.doesNotMatch(zh, />\s*浏览器桥接\s*</);
   assert.doesNotMatch(en, />\s*Browser Bridge\s*</);
-  assert.match(zh, /hash === 'browser-bridge' \? 'web-browsing'/);
-  assert.match(en, /hash === 'browser-bridge' \? 'web-browsing'/);
+  // Both pages run the same viewer script.
+  const viewer = read('website/docs.js');
+  assert.match(viewer, /hash === 'browser-bridge' \? 'web-browsing'/);
+  assert.match(viewer, /title: '浏览网页'/);
+  assert.match(viewer, /title: 'Web Browsing'/);
+  for (const source of [zh, en]) {
+    assert.ok(source.includes('<script src="docs.js"></script>'));
+    for (const key of ['user-guide', 'installation', 'web-browsing', 'app-spec', 'plugin-spec']) {
+      assert.ok(source.includes(`href="#${key}" data-doc="${key}"`), `missing the ${key} entry`);
+    }
+  }
+});
+
+test('documentation viewer reads each language from its own files', () => {
+  const viewer = read('website/docs.js');
+
+  for (const file of [
+    'docs/User-Guide.zh-CN.md',
+    'docs/Installation-Guide.zh-CN.md',
+    'docs/browser-bridge-vs-playwright.zh-CN.md',
+    'docs/User-Guide.md',
+    'docs/Installation-Guide.md',
+    'docs/browser-bridge-vs-playwright.md',
+    'docs/app-spec.md',
+    'docs/plugin-spec.md',
+    'docs/app-spec.en.md',
+    'docs/plugin-spec.en.md',
+  ]) {
+    assert.ok(viewer.includes(`file: '${file}'`), `viewer does not read ${file}`);
+    assert.ok(fs.existsSync(path.join(root, 'website', file)), `website/${file} is missing`);
+  }
+});
+
+test('the deployment puts both changelogs where the viewer reads them', () => {
+  const workflow = read('.github/workflows/deploy-website.yml');
+  const viewer = read('website/docs.js');
+
+  // The web server serves no file named CHANGELOG.md, so the copies are named release-notes*.md.
+  for (const [source, copy] of [['CHANGELOG.md', 'release-notes.md'], ['CHANGELOG.zh-CN.md', 'release-notes.zh-CN.md']]) {
+    assert.ok(workflow.includes(`cp ${source} website/docs/${copy}`), `the deployment copies ${source} to website/docs/${copy}`);
+    assert.ok(workflow.indexOf(`cp ${source}`) < workflow.indexOf('rsync -avz'), 'the copy runs before the upload');
+    assert.ok(workflow.includes(`      - '${source}'`), `a change to ${source} on main deploys the site`);
+    assert.ok(viewer.includes(`changelog: 'docs/${copy}'`), `viewer does not read docs/${copy}`);
+  }
+  assert.ok(!viewer.includes("docs/CHANGELOG"), 'the viewer reads the copies only');
+});
+
+test('every changelog section is a version the viewer can list, or the unreleased one', () => {
+  const versionHeading = /^## v\d+\.\d+\.\d+ · \d{4}-\d{2}-\d{2}$/;
+  for (const [name, unreleased] of [['CHANGELOG.md', '## Unreleased'], ['CHANGELOG.zh-CN.md', '## 未发布']]) {
+    const sections = read(name).split('\n').filter((line) => line.startsWith('## '));
+    assert.ok(sections.length > 1, `${name} has no version sections`);
+    for (const heading of sections) {
+      assert.ok(heading === unreleased || versionHeading.test(heading), `${name}: unexpected section heading "${heading}"`);
+    }
+  }
 });
 
 test('documentation viewer keeps cross-guide links in the viewer', () => {
-  const zh = read('website/docs.zh-CN.html');
-  const en = read('website/docs.html');
+  const viewer = read('website/docs.js');
 
-  for (const source of [zh, en]) {
-    assert.match(source, /candidate\.file\.endsWith\('\/' \+ href\)/);
-    assert.match(source, /link\.setAttribute\('href', '#' \+ target\[0\]\)/);
-  }
+  assert.ok(viewer.includes("return file.replace(/\\.(?:zh-CN|en)\\.md$/, '.md');"));
+  assert.ok(viewer.includes("const file = plainName(href.split('#')[0]);"));
+  assert.ok(viewer.includes("plainName(candidate.file).endsWith('/' + file)"));
+  assert.match(viewer, /link\.setAttribute\('href', '#' \+ target\[0\]\)/);
 });
 
 test('public guides do not restore retired navigation paths', () => {
@@ -129,17 +186,17 @@ test('homepage uses the same current terminology', () => {
   const zh = read('website/index.zh-CN.html');
   const en = read('website/index.html');
 
-  assert.ok(zh.includes('<h3>连接器</h3>'));
-  assert.ok(zh.includes('<span class="more-cap">项目管理</span>'));
-  assert.ok(zh.includes('点击本页顶部的下载按钮，选择对应平台的安装包'));
+  assert.ok(zh.includes('<span class="cell-name">连接器</span>'));
+  assert.ok(zh.includes('<span class="pill">项目管理</span>'));
+  assert.ok(zh.includes('安装之后配置一个模型，选一个文件夹，告诉阿布你要什么'));
   assert.ok(!zh.includes('MCP 工具协议'));
   assert.ok(!zh.includes('Projects 管理'));
   assert.ok(!zh.includes('7×24 无人值守'));
   assert.ok(!zh.includes('从 GitHub Releases 下载对应平台的安装包'));
 
-  assert.ok(en.includes('<h3>Connectors</h3>'));
-  assert.ok(en.includes('<span class="more-cap">Project management</span>'));
-  assert.ok(en.includes('Use the download button at the top of this page and choose your platform'));
+  assert.ok(en.includes('<span class="cell-name">Connectors</span>'));
+  assert.ok(en.includes('<span class="pill">Project management</span>'));
+  assert.ok(en.includes('After installing, set up a model, pick a folder and tell Abu what you need'));
   assert.ok(!en.includes('MCP Tool Protocol'));
   assert.ok(!en.includes('Projects management'));
   assert.ok(!en.includes('24/7 unattended operation'));

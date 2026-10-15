@@ -34,6 +34,7 @@ const PROJECT_NAME = 'E2E 交付文件';
 const PROMPT = '请写一份季度报告';
 const FINAL_TEXT = '报告已经写好。';
 const REPLY_TIMEOUT = 60_000;
+const RECORD_TIMEOUT = 30_000;
 
 let app: ElectronApplication | undefined;
 let dataRoot: ElectronDataRoot | undefined;
@@ -116,6 +117,18 @@ function workProcessToggle(page: Page): Locator {
   return page.getByRole('button', { name: /^用时/ }).first();
 }
 
+/**
+ * Wait until `target` has stopped moving. Opening the work process or a group
+ * of its steps animates the height of the boxes around the rows, and the
+ * conversation scrolls along with it, so a row travels up the page for as long
+ * as an animation runs on one of the elements that contain it.
+ */
+async function waitUntilAtRest(target: Locator): Promise<void> {
+  await expect.poll(() => target.evaluate((element) => document.getAnimations()
+    .filter((animation) => (animation.effect as KeyframeEffect | null)?.target?.contains(element))
+    .length)).toBe(0);
+}
+
 /** A file card is the button that opens the file in the side preview. */
 function fileCards(page: Page): Locator {
   return page.getByRole('button').and(page.getByTitle('点击预览', { exact: true }));
@@ -180,7 +193,13 @@ test('a presented file gets a card with its description, and a file that was onl
   const card = cardOf(page, 'report.md');
   await expect(card).toBeVisible();
   await expect(card).toContainText('季度报告');
-  await expect(page.getByTitle('build.py', { exact: true })).toHaveCount(0);
+  await expect(cardOf(page, 'build.py')).toHaveCount(0);
+  // Once the turn's record is saved, build.py is a row of the changed-files
+  // card; that row is the one element on the page titled with its name.
+  const changed = page.getByTestId('changed-files-card');
+  await expect(changed.getByTitle('build.py', { exact: true })).toContainText('+1', { timeout: RECORD_TIMEOUT });
+  await expect(page.getByTitle('build.py', { exact: true })).toHaveCount(1);
+  await expect(fileCards(page)).toHaveCount(1);
   await expect(page.getByRole('button', { name: '在文件夹中显示', exact: true })).toBeVisible();
 
   // The side preview opens the presented file by itself once the turn ends.
@@ -192,6 +211,7 @@ test('a presented file gets a card with its description, and a file that was onl
   await page.getByRole('button', { name: /^交付了文件/ }).click();
   const presentedRow = page.getByText('交付了 1 个文件', { exact: true }).locator('xpath=..');
   await expect(presentedRow).toBeVisible();
+  await waitUntilAtRest(presentedRow);
   await presentedRow.getByRole('button', { name: '结果', exact: true }).click();
   await expect(presentedRow).toContainText('report.md');
 });
@@ -272,7 +292,7 @@ test('a file renamed before it is presented gets one card, under its new name', 
   await expect(cardOf(page, '终稿.md')).toContainText('定稿');
   await expect(cardOf(page, '初稿.md')).toHaveCount(0);
   const changed = page.getByTestId('changed-files-card');
-  await expect(changed.getByTitle('初稿.md', { exact: true })).toContainText('已删除');
+  await expect(changed.getByTitle('初稿.md', { exact: true })).toContainText('已删除', { timeout: RECORD_TIMEOUT });
   await expect(changed.getByTitle('终稿.md', { exact: true })).toContainText('新建');
 });
 

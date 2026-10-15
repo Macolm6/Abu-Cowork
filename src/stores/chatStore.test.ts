@@ -2391,6 +2391,45 @@ describe('chatStore', () => {
       expect(reindex).toBeUndefined();
     });
 
+    // The reindex reads messages.jsonl in the main process, so the reply that
+    // finishStreaming checkpoints at the end of the same turn has to be in the
+    // file by then, or search finds the turn only after a later reindex.
+    it('reindexes after the final reply of the turn has reached messages.jsonl', async () => {
+      const id = useChatStore.getState().createConversation();
+      const ledgerWritesAtReindex: string[][] = [];
+      const ledgerWrites: string[] = [];
+      // A replacement is written only to a ledger file that exists.
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(invoke).mockImplementation(async (command, args) => {
+        const payload = args as { path?: string; content?: string; data?: string } | undefined;
+        if (payload?.path?.endsWith(`${id}/messages.jsonl`)) {
+          if (command === 'append_file_text') ledgerWrites.push(payload.data ?? '');
+          if (command === 'atomic_write_text') ledgerWrites.push(payload.content ?? '');
+        }
+        if (command === 'catalog_reindex_conversation') ledgerWritesAtReindex.push([...ledgerWrites]);
+        return undefined;
+      });
+
+      try {
+        useChatStore.getState().addMessage(id, { id: 'turn-user', role: 'user', content: 'question', timestamp: 1 });
+        useChatStore.getState().setConversationStatus(id, 'running');
+        useChatStore.getState().addMessage(id, {
+          id: 'turn-reply', role: 'assistant', content: '', timestamp: 2, isStreaming: true,
+        });
+        useChatStore.getState().setLastMessageContent(id, 'the settled answer', 'turn-reply');
+        useChatStore.getState().finishStreaming(id, 'turn-reply');
+        useChatStore.getState().setConversationStatus(id, 'completed');
+
+        await vi.waitFor(() => expect(ledgerWritesAtReindex).toHaveLength(1));
+        expect(ledgerWritesAtReindex[0].join('')).toContain('the settled answer');
+        await waitForConversationPersistence(id);
+      } finally {
+        vi.mocked(exists).mockReset();
+        vi.mocked(exists).mockResolvedValue(false);
+        vi.mocked(invoke).mockReset();
+      }
+    });
+
     // Fix #5: a convId absent from state (e.g. already deleted) must never
     // trigger a reindex call.
     it('does not fire a catalog reindex for a convId absent from state', async () => {
@@ -2794,7 +2833,7 @@ describe('chatStore', () => {
 
   describe('sandbox recovery restart sanitization', () => {
     it.each(['pending', 'accepted', 'running'] as const)(
-      'turns a persisted %s user run into an explicit retryable failure',
+      'turns a persisted %s user run into a run the application closed on',
       (runState) => {
         const [message] = sanitizeLoadedMessages([{
           id: 'msg-running-before-restart',
@@ -2805,8 +2844,9 @@ describe('chatStore', () => {
           runState,
         }]);
 
-        expect(message.runState).toBe('failed');
-        expect(message.runError).toBeTruthy();
+        expect(message.runState).toBe('interrupted');
+        expect(message.runInterruptCause).toBe('app_exit');
+        expect(message.runError).toBeUndefined();
         expect(message.runId).toBe('run-before-restart');
       },
     );
@@ -3802,7 +3842,7 @@ describe('sanitizeLoadedMessages — stale pending rows whose loop actually repl
     expect(sanitized[0].runError).toBeUndefined();
   });
 
-  it('still fails a pending row whose loop never produced a reply', () => {
+  it('marks a pending row whose loop never produced a reply as closed on', () => {
     const sanitized = sanitizeLoadedMessages([
       {
         id: 'u1', role: 'user', content: 'hello',
@@ -3811,7 +3851,7 @@ describe('sanitizeLoadedMessages — stale pending rows whose loop actually repl
       // Ghost placeholder — empty assistant row, filtered out and NOT a reply.
       { id: 'a1', role: 'assistant', content: '', timestamp: 2, loopId: 'loop-b' },
     ] as never);
-    expect(sanitized[0].runState).toBe('failed');
+    expect(sanitized[0]).toMatchObject({ runState: 'interrupted', runInterruptCause: 'app_exit' });
     expect(sanitized).toHaveLength(1);
   });
 
@@ -3828,7 +3868,7 @@ describe('sanitizeLoadedMessages — truncated replies are not completion', () =
   // Review finding on the inference: non-empty text alone also describes a
   // stream that died mid-sentence. Such a turn must keep the failed/retry
   // affordance — only a usage-bearing (cleanly ended) reply proves completion.
-  it('keeps a pending row failed when the reply has text but no usage', () => {
+  it('does not complete a pending row when the reply has text but neither usage nor a finished mark', () => {
     const sanitized = sanitizeLoadedMessages([
       {
         id: 'u1', role: 'user', content: 'explain this',
@@ -3839,7 +3879,7 @@ describe('sanitizeLoadedMessages — truncated replies are not completion', () =
         timestamp: 2, loopId: 'loop-t',
       },
     ] as never);
-    expect(sanitized[0].runState).toBe('failed');
+    expect(sanitized[0]).toMatchObject({ runState: 'interrupted', runInterruptCause: 'app_exit' });
   });
 });
 
@@ -3863,11 +3903,11 @@ describe('sanitizeImportedMessage — same completion inference as disk load', (
     expect((sanitized[0] as { runState?: string }).runState).toBe('completed');
   });
 
-  it('still fails a stale row without the set (legacy call shape)', () => {
+  it('marks a stale row as closed on without the set (legacy call shape)', () => {
     const sanitized = sanitizeImportedMessage({
       id: 'u1', role: 'user', content: 'x', timestamp: 1, runState: 'pending', loopId: 'loop-z',
     } as never);
-    expect((sanitized as { runState?: string }).runState).toBe('failed');
+    expect(sanitized).toMatchObject({ runState: 'interrupted', runInterruptCause: 'app_exit' });
   });
 
   it.each([
@@ -4133,7 +4173,6 @@ describe('sanitizeLoadedMessages replays the shared sanitiser fixtures (#549 P2a
       const { chat } = getI18n();
       const out = sanitizeLoadedMessages(testCase.input as never);
       expect(JSON.parse(JSON.stringify(out))).toEqual(expectedForText(testCase.expected, {
-        runRecoveredAfterRestart: chat.runRecoveredAfterRestart,
         errorEmptyBody: chat.errorEmptyBody,
       }));
     });

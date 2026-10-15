@@ -643,6 +643,14 @@ describe('persisted stop terminal', () => {
     }])).toBe(true);
   });
 
+  it('does not read a turn the application closed on as stopped by the user', () => {
+    expect(hasPersistedStopState([{
+      ...makeUser('u1', 'cut by a quit'),
+      runState: 'interrupted',
+      runInterruptCause: 'app_exit',
+    }])).toBe(false);
+  });
+
   it('keeps compatibility with assistant stopReason and legacy markers', () => {
     expect(hasPersistedStopState([{ ...makeAssistant('a1', ''), stopReason: 'user' }])).toBe(true);
     expect(hasPersistedStopState([makeAssistant('a2', 'partial\n\n*[已停止]*')])).toBe(true);

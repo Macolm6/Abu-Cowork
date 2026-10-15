@@ -11,8 +11,12 @@ on:
       - 'website/**'
       - 'docs/User-Guide*.md'
       - 'docs/Installation-Guide*.md'
+      - 'CHANGELOG.md'
+      - 'CHANGELOG.zh-CN.md'
       - 'scripts/website-download-links.test.mjs'
       - 'scripts/website-docs.test.mjs'
+      - 'scripts/website-analytics.test.mjs'
+      - 'scripts/website-pages.test.mjs'
       - '.github/workflows/deploy-website.yml'
   workflow_dispatch:
 
@@ -30,6 +34,13 @@ jobs:
 
       - name: Verify website content
         run: npm run test:website
+
+      # 文档页的更新日志读取 docs/release-notes*.md，部署时从仓库根目录的两份 CHANGELOG 复制。
+      # 服务器不提供名为 CHANGELOG.md 的文件，所以复制时改名。
+      - name: Add the changelogs to the site
+        run: |
+          cp CHANGELOG.md website/docs/release-notes.md
+          cp CHANGELOG.zh-CN.md website/docs/release-notes.zh-CN.md
 
       - name: Prepare SSH key
         run: |

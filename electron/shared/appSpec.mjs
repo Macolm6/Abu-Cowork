@@ -332,15 +332,25 @@ export function parseManagedAppConfig(raw, field) {
     return parseAppConfig(config, { source: 'enterprise', field });
 }
 
+/**
+ * A text of `interface` that may be given per locale: a plain string is held
+ * to the rules of a string field, an object to those of `LocalizedText`, with
+ * `max` applied to each locale's text.
+ */
+function parseInterfaceText(value, field, max, { required = false } = {}) {
+    if (value === undefined || typeof value === 'string') return required ? requireString(value, field, max) : optionalString(value, field, max);
+    return parseLocalizedText(value, field, { required, max });
+}
+
 function parseInterface(value, field) {
     const iface = requireObject(value, field);
     rejectUnknownKeys(iface, field, ['displayName', 'shortDescription', 'longDescription', 'developerName', 'category', 'brandColor', 'logo', 'logoDark']);
     const brandColor = optionalString(iface.brandColor, `${field}.brandColor`);
     if (brandColor !== undefined && !HEX_COLOR_RE.test(brandColor)) fail('must be a #RRGGBB colour', `${field}.brandColor`, 'type');
     return {
-        displayName: requireString(iface.displayName, `${field}.displayName`, 64),
-        shortDescription: requireString(iface.shortDescription, `${field}.shortDescription`, 200),
-        longDescription: optionalString(iface.longDescription, `${field}.longDescription`, 4000),
+        displayName: parseInterfaceText(iface.displayName, `${field}.displayName`, 64, { required: true }),
+        shortDescription: parseInterfaceText(iface.shortDescription, `${field}.shortDescription`, 200, { required: true }),
+        longDescription: parseInterfaceText(iface.longDescription, `${field}.longDescription`, 4000),
         developerName: optionalString(iface.developerName, `${field}.developerName`, 100),
         category: optionalString(iface.category, `${field}.category`, 64),
         brandColor,
