@@ -100,6 +100,8 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
     return {
       name: name.trim(),
       description: description.trim(),
+      // An edited description is what the interface shows from then on.
+      displayDescription: skill && description.trim() === skill.description ? skill.displayDescription : undefined,
       license: license.trim() || undefined,
       trigger: trigger.trim() || undefined,
       doNotTrigger: doNotTrigger.trim() || undefined,

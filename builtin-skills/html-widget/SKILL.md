@@ -1,6 +1,9 @@
 ---
 name: html-widget
 description: 生成可交互的 HTML 可视化组件 — 算法动画、数据图表、概念演示、交互式教程等。当用户需要交互式演示、动画解释、数据探索、UI 原型等场景时触发，直接输出 html 代码块，前端会在安全沙箱中渲染为可交互组件。
+display-description:
+  zh-CN: 生成可交互的 HTML 组件：算法动画、数据图表、概念演示、交互教程
+  en-US: "Build interactive HTML widgets: algorithm animations, charts, concept demos, tutorials"
 trigger: 用户要求做图表、可视化、交互式演示、动画演示、数据展示、仪表盘、计数器、计时器、小工具、小游戏、算法可视化、UI 原型/mockup、交互式教程，或任何适合用交互/动画来呈现的内容
 do-not-trigger: 能用 mermaid 解决的结构化图表（流程图、ER图、时序图）；能用 infographic 解决的数据海报/信息图；用户明确要求生成代码文件而非演示；纯文字能说清的简单问题
 user-invocable: true

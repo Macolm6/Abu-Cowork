@@ -41,11 +41,31 @@ function normalizeToolList(raw: unknown): string[] | undefined {
   return undefined;
 }
 
+const DISPLAY_DESCRIPTION_LOCALES = ['zh-CN', 'en-US'] as const;
+
 /**
- * Parse a SKILL.md file: YAML frontmatter (between ---) + Markdown body
+ * `display-description`: one interface description per locale. The field is
+ * unchecked third-party YAML, so only a non-empty string under a known locale
+ * is kept; a value of any other form leaves the locale to `description`.
+ */
+function parseDisplayDescription(raw: unknown): SkillMetadata['displayDescription'] {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
+  const result: NonNullable<SkillMetadata['displayDescription']> = {};
+  for (const locale of DISPLAY_DESCRIPTION_LOCALES) {
+    const text = (raw as Record<string, unknown>)[locale];
+    if (typeof text === 'string' && text.trim().length > 0) result[locale] = text;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+/**
+ * Parse a SKILL.md file: YAML frontmatter (between ---) + Markdown body.
+ * A file checked out or saved with CRLF line endings reads the same as its LF
+ * form: the frontmatter is cut at a line feed, and a carriage return left
+ * after a quoted value at its end is a YAML error.
  */
 export function parseSkillFile(raw: string, filePath: string): Skill | null {
-  const match = raw.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
+  const match = raw.replace(/\r\n/g, '\n').match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
   if (!match) return null;
 
   try {
@@ -73,6 +93,7 @@ export function parseSkillFile(raw: string, filePath: string): Skill | null {
       // YAML, so `description: 42` or a list survives `?? ''` and reaches
       // consumers typed as a string it is not.
       description: typeof meta.description === 'string' ? meta.description : '',
+      displayDescription: parseDisplayDescription(meta['display-description']),
       trigger: meta.trigger as string | undefined,
       doNotTrigger: (meta['do-not-trigger'] ?? meta.doNotTrigger) as string | undefined,
       userInvocable: meta['user-invocable'] !== false,
@@ -648,6 +669,7 @@ export function serializeSkillMd(metadata: Partial<SkillMetadata>, content: stri
 
   set('name', metadata.name);
   set('description', metadata.description);
+  set('display-description', metadata.displayDescription);
   set('trigger', metadata.trigger);
   set('do-not-trigger', metadata.doNotTrigger);
   set('user-invocable', metadata.userInvocable);

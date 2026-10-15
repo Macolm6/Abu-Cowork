@@ -33,6 +33,7 @@ const enterpriseConfig = mergeConfig(
         '@noble/curves/ed25519': path.resolve(__dirname, 'node_modules/@noble/curves/esm/ed25519.js'),
         '@noble/hashes/sha2': path.resolve(__dirname, 'node_modules/@noble/hashes/esm/sha2.js'),
         fflate: path.resolve(__dirname, 'node_modules/fflate/esm/browser.js'),
+        xlsx: path.resolve(__dirname, 'node_modules/xlsx/xlsx.mjs'),
         minimatch: path.resolve(__dirname, 'node_modules/minimatch/dist/esm/index.js'),
         refa: path.resolve(__dirname, 'node_modules/refa/index.js'),
         'zustand/react/shallow': path.resolve(__dirname, 'node_modules/zustand/esm/react/shallow.mjs'),

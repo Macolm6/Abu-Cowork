@@ -55,6 +55,7 @@
 'use strict';
 
 const os = require('node:os');
+const path = require('node:path');
 const { shell, clipboard, dialog, powerSaveBlocker, BrowserWindow } = require('electron');
 const { openChromeExtensionsPage } = require('./chromeExtensionsLauncher.cjs');
 const { readChromeExtensionInstallation } = require('./chromeExtensionInstallation.cjs');
@@ -179,7 +180,10 @@ function setPreventSleep(enabled) {
  * @param {string} targetPath
  */
 async function moveToTrash(targetPath) {
-  await shell.trashItem(String(targetPath));
+  if (typeof targetPath !== 'string' || !targetPath.trim() || !path.isAbsolute(targetPath)) {
+    throw new Error('Trash target must be an absolute path');
+  }
+  await shell.trashItem(path.resolve(targetPath));
   return null;
 }
 
@@ -453,7 +457,7 @@ function processRestart(app) {
 async function processRestartInternal(app) {
   const { prepareAppExit, cancelAppExitPreparation } = require('./tauriHost.cjs');
   const { createApplicationExitWait } = require('./applicationExitWait.cjs');
-  await prepareAppExit();
+  await prepareAppExit(true);
   // If a downloaded update is pending (updaterHost's download_and_install
   // completed), restart must apply it: quitAndInstall replaces the app and
   // relaunches. Plain relaunch would boot the OLD version — and note the
@@ -471,7 +475,7 @@ async function processRestartInternal(app) {
 }
 
 async function processExit(app, a) {
-  await require('./tauriHost.cjs').prepareAppExit();
+  await require('./tauriHost.cjs').prepareAppExit(true);
   app.exit(Number((a && a.code) || 0));
   return null;
 }

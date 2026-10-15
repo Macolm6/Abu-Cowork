@@ -33,6 +33,7 @@
 'use strict';
 
 const { spawn } = require('node:child_process');
+const { ownedChildProcesses } = require('./ownedChildProcesses.cjs');
 const path = require('node:path');
 const fs = require('node:fs');
 const { runtimeState } = require('./runtimeObservability.cjs');
@@ -433,6 +434,7 @@ function handleLine(line) {
 }
 
 function ensureChild() {
+  ownedChildProcesses.assertAdmission();
   if (child && !child.killed && child.exitCode === null) return child;
   if (!fs.existsSync(HELPER_PATH)) {
     const failedGeneration = helperGeneration + 1;
@@ -444,6 +446,10 @@ function ensureChild() {
     );
   }
   const spawnedChild = spawn(HELPER_PATH, [], { stdio: ['pipe', 'pipe', 'pipe'] });
+  ownedChildProcesses.track(spawnedChild, () => {
+    if (child === spawnedChild) killNativeHelper('app-exit');
+    else if (!spawnedChild.killed) spawnedChild.kill('SIGKILL');
+  });
   child = spawnedChild;
   helperGeneration += 1;
   const spawnedGeneration = helperGeneration;
@@ -496,11 +502,14 @@ function ensureChild() {
  * @param {Record<string, unknown>} params
  * @returns {Promise<unknown>}
  */
-function callHelper(method, params, context = null) {
+function callHelper(method, params, context = null, boundChild = null, control = false) {
   return new Promise((resolve, reject) => {
     let c;
     try {
-      c = ensureChild();
+      if (boundChild && (child !== boundChild || boundChild.killed || boundChild.exitCode !== null)) {
+        throw new Error('Native file session belongs to a stopped helper');
+      }
+      c = boundChild || ensureChild();
     } catch (err) {
       reject(err);
       return;
@@ -508,7 +517,7 @@ function callHelper(method, params, context = null) {
     const callGeneration = helperGeneration;
     const id = nextId++;
     try {
-      helperSupervisor.requestStarted(method, pending.size + 1);
+      if (!control) helperSupervisor.requestStarted(method, pending.size + 1);
     } catch (err) {
       reject(err);
       return;
@@ -518,7 +527,7 @@ function callHelper(method, params, context = null) {
       if (pending.has(id)) {
         pending.delete(id);
         runtimeState.noteNativeHelperCallTimeout(callGeneration, method, timeoutMs);
-        helperSupervisor.requestFailed(method, pending.size, `timeout:${method}`);
+        if (!control) helperSupervisor.requestFailed(method, pending.size, `timeout:${method}`);
         if (child === c) killNativeHelper(`timeout:${method}`);
         reject(new Error(`native-helper call '${method}' timed out after ${timeoutMs}ms`));
       }
@@ -526,11 +535,11 @@ function callHelper(method, params, context = null) {
     pending.set(id, {
       method,
       resolve(value) {
-        helperSupervisor.requestCompleted(method, pending.size);
+        if (!control) helperSupervisor.requestCompleted(method, pending.size);
         resolve(value);
       },
       reject(error) {
-        helperSupervisor.requestFailed(
+        if (!control) helperSupervisor.requestFailed(
           method,
           pending.size,
           error instanceof Error ? error.message : String(error),
@@ -549,7 +558,7 @@ function callHelper(method, params, context = null) {
     } catch (err) {
       pending.delete(id);
       clearTimeout(timer);
-      helperSupervisor.requestFailed(
+      if (!control) helperSupervisor.requestFailed(
         method,
         pending.size,
         err instanceof Error ? err.message : String(err),
@@ -806,6 +815,89 @@ function readDirectoryNameComparison(directoryPath) {
   });
 }
 
+let nextFileSession = 0n;
+
+/** A session remains attached to the child that accepted its immutable plan. */
+function createNativeFileSession(targets) {
+  let cancelled = false;
+  let session = null;
+  let ownerChild = null;
+  let ownerGeneration = null;
+  let openError;
+  let releasePromise;
+  const invalidationListeners = new Set();
+  const invalidate = () => {
+    cancelled = true;
+    for (const listener of invalidationListeners) listener();
+    invalidationListeners.clear();
+  };
+  const current = () => {
+    if (cancelled || (ownerChild && (child !== ownerChild || helperGeneration !== ownerGeneration))) {
+      throw new Error('Native file operation is no longer active');
+    }
+  };
+  const opened = requestScheduler.run(async () => {
+    current();
+    const hello = await ensureHelperCompatibility();
+    current();
+    if (!hello.supported_commands.includes('file_operation')) throw new Error('Native file operations are unavailable');
+    if (nextFileSession >= 0xffff_ffff_ffff_ffffn) throw new Error('Native file session sequence exhausted');
+    session = String(++nextFileSession);
+    ownerChild = child;
+    ownerGeneration = helperGeneration;
+    ownerChild.once('exit', invalidate);
+    ownerChild.once('error', invalidate);
+    await callHelper('file_operation', { action: 'open', session, targets }, null, ownerChild);
+    current();
+  }).then(undefined, error => { openError = error; });
+  const cancel = () => {
+    if (cancelled) return Promise.resolve();
+    invalidate();
+    if (!session || child !== ownerChild || helperGeneration !== ownerGeneration) return Promise.resolve();
+    // Cancellation reaches the existing reader while ordinary work is queued.
+    return callHelper('file_operation', { action: 'cancel', session }, null, ownerChild, true);
+  };
+  return Object.freeze({
+    async request(action, request) {
+      current();
+      await opened;
+      if (openError) throw openError;
+      current();
+      return requestScheduler.run(async () => {
+        current();
+        const result = await callHelper('file_operation', { ...request, action, session }, null, ownerChild);
+        current();
+        return result;
+      });
+    },
+    assertCurrent: current,
+    onInvalidated(listener) {
+      if (cancelled || (ownerChild && (child !== ownerChild || helperGeneration !== ownerGeneration))) listener();
+      else invalidationListeners.add(listener);
+      return () => invalidationListeners.delete(listener);
+    },
+    release() {
+      if (releasePromise) return releasePromise;
+      const cancellation = cancel();
+      releasePromise = (async () => {
+        try {
+          await cancellation;
+          await opened;
+          await requestScheduler.run(() => {
+            if (!session || child !== ownerChild || helperGeneration !== ownerGeneration
+              || ownerChild.exitCode !== null || ownerChild.signalCode !== null) return;
+            return callHelper('file_operation', { action: 'release', session }, null, ownerChild, true);
+          });
+        } finally {
+          ownerChild?.removeListener('exit', invalidate);
+          ownerChild?.removeListener('error', invalidate);
+        }
+      })();
+      return releasePromise;
+    },
+  });
+}
+
 /** Kill the helper child (called on app quit; no orphans). */
 function killNativeHelper(reason = 'stopped') {
   requestScheduler.invalidate();
@@ -859,6 +951,7 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
 }
 
 module.exports = {
+  createNativeFileSession,
   readDirectoryNameComparison,
   nativeHelperDispatch,
   normalizeHelperError,

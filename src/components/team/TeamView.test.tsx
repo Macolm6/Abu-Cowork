@@ -8,6 +8,7 @@ import { Button } from '@/components/ds/button';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { useTeamStore } from '@/stores/teamStore';
 import { BUILTIN_TEAMS } from '@/core/team/builtinTeams';
+import enUS from '@/i18n/locales/en-US';
 import { DEFAULT_SOURCES, useExtensionSourceStore } from '@/stores/extensionSourceStore';
 
 // TeamView reads/writes the real teamStore (zustand works fine in tests);
@@ -582,6 +583,91 @@ describe('TeamView', () => {
     expect(screen.getByTestId('team-row-Solo').textContent).toContain('Leader: lead · 1 member');
     expect(screen.getByTestId('team-row-Solo').textContent).not.toContain('1 members');
     expect(screen.getByTestId('team-row-Pair').textContent).toContain('Leader: lead · 2 members');
+  });
+
+  it('teams tab: the shipped teams read in English under en-US — card, detail, expertise and sample prompts', () => {
+    localeRef.current = 'en-US';
+    settingsState.activeTeamTab = 'teams';
+    useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES, teams: 'market' } });
+    useTeamStore.setState({ teams: [...BUILTIN_TEAMS] });
+    render(<TeamView />);
+    // The card keeps its test id by the stored name and shows the English one.
+    const card = screen.getByTestId('team-row-招聘专家团');
+    expect(card.textContent).toContain('Recruiting Team');
+    expect(card.textContent).toContain('From role to offer: the recruiter sets the bar');
+    expect(card.textContent).not.toContain('招聘专家团');
+    for (const name of ['Software Development Team', 'Data Analysis Team', 'Content Creation Team', 'Reporting Team', 'Finance Reconciliation Team']) {
+      expect(screen.getByText(name)).toBeVisible();
+    }
+
+    fireEvent.click(card);
+    const detail = screen.getByRole('dialog', { name: 'Recruiting Team' });
+    expect(within(detail).getByText('Role profiles and JD writing')).toBeVisible();
+    expect(within(detail).getByText('Interview questions and scorecards')).toBeVisible();
+    expect(within(detail).getByText('Check the salary market for this role in Beijing')).toBeVisible();
+    expect(detail.textContent).not.toContain('岗位画像与 JD 撰写');
+    // The leader's briefing joins the prompt and stays as it is written.
+    expect(detail.textContent).toContain('先把岗位要求、预算和时间线问清楚再动手');
+
+    fireEvent.click(within(detail).getByText('Check the salary market for this role in Beijing'));
+    expect(chatState.setPendingTeamId).toHaveBeenCalledWith('builtin-team:recruiting');
+    expect(readComposerDraft(WELCOME_COMPOSER_DRAFT_KEY).text).toBe('Check the salary market for this role in Beijing');
+  });
+
+  it('teams tab: experts are named and described in the interface language — card summary, leader and member rows', () => {
+    settingsState.activeTeamTab = 'teams';
+    Object.assign(seedAgent('招聘官', { roleId: 'r-lead' }), {
+      displayNames: { 'en-US': 'Recruiter' }, descriptions: { 'en-US': 'Sets the bar for a role' },
+    });
+    Object.assign(seedAgent('调研专家', { roleId: 'r-mem' }), {
+      displayNames: { 'en-US': 'Researcher' }, descriptions: { 'en-US': 'Checks the market' },
+    });
+    seedAgent('自建助手', { roleId: 'r-own' });
+    discoveryState.agents = [{ name: '招聘官' }, { name: '调研专家' }, { name: '自建助手' }];
+    useTeamStore.setState({ teams: [{ id: 't1', name: 'Hiring', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-mem', 'r-own'], createdAt: 1 }] });
+
+    localeRef.current = 'en-US';
+    const english = render(<TeamView />);
+    expect(screen.getByTestId('team-row-Hiring').textContent).toContain('Leader: Recruiter · 2 members');
+    fireEvent.click(screen.getByTestId('team-row-Hiring'));
+    const detail = screen.getByRole('dialog', { name: 'Hiring' });
+    expect(within(detail).getByText('Recruiter')).toBeVisible();
+    expect(within(detail).getByText('Sets the bar for a role')).toBeVisible();
+    expect(within(detail).getByText('Researcher')).toBeVisible();
+    expect(within(detail).getByText('Checks the market')).toBeVisible();
+    // An expert with no text for the locale keeps its own name and description.
+    expect(within(detail).getByText('自建助手')).toBeVisible();
+    expect(within(detail).getByText('自建助手 desc')).toBeVisible();
+    expect(detail.textContent).not.toContain('招聘官');
+    expect(detail.textContent).not.toContain('调研专家');
+    english.unmount();
+
+    localeRef.current = 'zh-CN';
+    render(<TeamView />);
+    expect(screen.getByTestId('team-row-Hiring').textContent).toContain('招聘官');
+    fireEvent.click(screen.getByTestId('team-row-Hiring'));
+    const chinese = screen.getByRole('dialog', { name: 'Hiring' });
+    expect(within(chinese).getByText('招聘官')).toBeVisible();
+    expect(within(chinese).getByText('调研专家 desc')).toBeVisible();
+    expect(chinese.textContent).not.toContain('Recruiter');
+  });
+
+  it('teams tab: the shipped teams read in Chinese under zh-CN, and the search finds them by what is shown', () => {
+    settingsState.activeTeamTab = 'teams';
+    useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES, teams: 'market' } });
+    useTeamStore.setState({ teams: [...BUILTIN_TEAMS] });
+    const view = render(<TeamView />);
+    const card = screen.getByTestId('team-row-招聘专家团');
+    expect(card.textContent).toContain('招聘专家团');
+    expect(card.textContent).toContain('从岗位到 offer：招聘官定标准');
+    expect(card.textContent).not.toContain('Recruiting Team');
+    view.unmount();
+
+    localeRef.current = 'en-US';
+    render(<TeamView />);
+    fireEvent.change(screen.getByPlaceholderText(enUS.team.searchPlaceholder), { target: { value: 'recruiting' } });
+    expect(screen.getByTestId('team-row-招聘专家团')).toBeVisible();
+    expect(screen.queryByTestId('team-row-软件研发专家团')).toBeNull();
   });
 
   it('teams tab: the card labels an unresolvable leader as invalid, matching the detail', () => {

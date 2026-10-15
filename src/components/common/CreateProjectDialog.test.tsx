@@ -57,10 +57,6 @@ vi.mock('@/stores/settingsStore', async () => {
   const { create } = await import('zustand');
   return { useSettingsStore: create(() => ({ setViewMode: (mode: string) => { h.log.push(`setViewMode ${mode}`); } })) };
 });
-vi.mock('@/stores/previewStore', async () => {
-  const { create } = await import('zustand');
-  return { usePreviewStore: create(() => ({ setFileTreeMode: (on: boolean) => { h.log.push(`setFileTreeMode ${on}`); } })) };
-});
 
 import { useChatStore as chatStore } from '@/stores/chatStore';
 import { useProjectStore as projectStore } from '@/stores/projectStore';
@@ -143,7 +139,6 @@ describe('CreateProjectDialog', () => {
         'startNewConversation',
         `setWorkspace ${PROJECTS}/Demo`,
         'setViewMode chat',
-        'setFileTreeMode true',
         'onClose',
       ]);
       expect(vi.mocked(mkdir).mock.calls[0][1]).toEqual({ recursive: true });
@@ -290,7 +285,6 @@ describe('CreateProjectDialog', () => {
         'startNewConversation',
         `setWorkspace ${PROJECTS}/Demo`,
         'setViewMode chat',
-        'setFileTreeMode true',
         'onClose',
       ]);
       expect(onClose).toHaveBeenCalledTimes(1);
@@ -319,7 +313,6 @@ describe('CreateProjectDialog', () => {
         'startNewConversation',
         'setWorkspace /fake/work/reports',
         'setViewMode chat',
-        'setFileTreeMode true',
         'onClose',
       ]);
       expect(onClose).toHaveBeenCalledTimes(1);
@@ -811,7 +804,6 @@ describe('CreateProjectDialog', () => {
           'startNewConversation',
           `setWorkspace ${PROJECTS}/Demo`,
           'setViewMode chat',
-          'setFileTreeMode true',
           'onClose',
         ]);
         expect(onAnswer).not.toHaveBeenCalled();

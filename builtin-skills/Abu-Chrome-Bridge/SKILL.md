@@ -1,6 +1,9 @@
 ---
 name: Abu-Chrome-Bridge
 description: 通过 Abu Chrome 扩展操作用户现有的 Chrome 标签页、登录态和浏览器资料。仅在用户明确要求使用 Chrome、已有标签页或现有登录状态时使用。
+display-description:
+  zh-CN: 通过 Abu Chrome 扩展操作你已经打开的 Chrome 标签页和登录状态
+  en-US: Work in your own Chrome tabs and sign-ins through the Abu Chrome extension
 trigger: 用户明确要求操作 Chrome、现有 Chrome 标签页、Chrome 登录态、Chrome Cookie 或 Abu Chrome 扩展
 do-not-trigger: 用户只要求打开普通网页、在阿布内预览网页或截图；这些场景使用 Abu-Browser
 user-invocable: true

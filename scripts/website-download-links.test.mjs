@@ -72,16 +72,13 @@ for (const page of pages) {
   });
 }
 
-test('English and Chinese documentation pages select different notes from the same metadata record', () => {
+test('English and Chinese documentation pages read the changelog of their own language', () => {
   // The release notes are shown by the documentation viewer; each page takes its own language and never the other one.
   const viewer = fs.readFileSync(path.join(root, 'website/docs.js'), 'utf8');
   assert.match(fs.readFileSync(path.join(root, 'website/docs.html'), 'utf8'), /<html lang="en">/);
   assert.match(fs.readFileSync(path.join(root, 'website/docs.zh-CN.html'), 'utf8'), /<html lang="zh-CN">/);
   assert.ok(viewer.includes("const zh = document.documentElement.lang.toLowerCase().indexOf('zh') === 0;"));
-  assert.ok(viewer.includes("'changelog': { release: 'zh-CN', title: '更新日志' }"));
-  assert.ok(viewer.includes("'changelog': { release: 'en-US', title: 'Release notes' }"));
-  assert.ok(
-    viewer.includes("const notes = ((data.notes_i18n || {})[doc.release] || '').trim();"),
-    'docs.js must not fall back to another language',
-  );
+  assert.ok(viewer.includes("'changelog': { changelog: 'docs/release-notes.zh-CN.md', title: '更新日志' }"));
+  assert.ok(viewer.includes("'changelog': { changelog: 'docs/release-notes.md', title: 'Release notes' }"));
+  assert.ok(!viewer.includes('notes_i18n'), 'docs.js reads the notes from the changelog files');
 });

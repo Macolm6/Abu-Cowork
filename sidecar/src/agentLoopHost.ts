@@ -104,6 +104,7 @@ interface SerializableToolDefinition {
   description: string;
   inputSchema: ToolDefinition['inputSchema'];
   execution?: ToolDefinition['execution'];
+  executionRoute?: 'host';
 }
 
 interface CapsSnapshotEntry {
@@ -296,6 +297,7 @@ function toWireToolContext(context: ToolExecutionContext | undefined): ToolExecu
   const {
     abortSignal: _abortSignal,
     operationOwner: _operationOwner,
+    files: _files,
     reportMetadata: _reportMetadata,
     reportBrowserDenial: _reportBrowserDenial,
     reportBrowserAllow: _reportBrowserAllow,
@@ -431,6 +433,7 @@ function parseAbortParams(params: unknown): { runId: string } {
 type LocalApprovalOutcome =
   | { decision: 'allow'; executionPath?: string; executionInput?: Readonly<Record<string, unknown>> }
   | { decision: 'deny'; reason: string }
+  | { decision: 'host' }
   | { decision: 'unavailable' };
 
 /**
@@ -472,6 +475,7 @@ async function checkLocalToolApproval(
     // never as an allow.
     return { decision: 'unavailable' };
   }
+  if (isRecord(result) && result.decision === 'host') return { decision: 'host' };
   if (isRecord(result) && result.decision === 'allow') {
     if (result.executionInput !== undefined && !isRecord(result.executionInput)) {
       return { decision: 'unavailable' };
@@ -525,7 +529,7 @@ async function materializeReverseToolResultForSidecarProvider(
   }
 }
 
-function createReverseToolInvoker(
+export function createReverseToolInvoker(
   runId: string,
   initialTools: SerializableToolDefinition[],
   mediaOriginConversationId: string,
@@ -588,7 +592,8 @@ function createReverseToolInvoker(
       // for why that's NOT the same as an explicit deny) falls through to
       // the reverse `tool.invoke` path, which re-derives its own approval
       // decision (and any UI) independently and exactly once.
-      if (hasLocalTool(name)) {
+      const hostRoute = cache.some(tool => tool.name === name && tool.executionRoute === 'host');
+      if (!hostRoute && hasLocalTool(name)) {
         const approval = await checkLocalToolApproval(runId, name, input, toWireToolContext(context as ToolExecutionContext | undefined));
         if (approval.decision === 'deny') {
           return approval.reason;
@@ -629,6 +634,7 @@ function createReverseToolInvoker(
             if (!isLocalToolReadOnly(name)) throw err;
           }
         }
+        // An explicit 'host' route has not consumed approval. Likewise,
         // approval.decision === 'unavailable' (transport failure or a
         // malformed/unrecognized approval.check response) — local execute()
         // was NEVER invoked, so falling through to the reverse tool.invoke
@@ -808,17 +814,14 @@ const pendingLedgerStarts = new Map<string, PendingLedgerStart>();
 const LOCALE_DICTIONARIES: Readonly<Record<string, TranslationDict>> = { 'zh-CN': zhCN, 'en-US': enUS };
 
 /**
- * The two strings the loaded-message sanitiser writes into a row. Read from
+ * The string the loaded-message sanitiser writes into a row. Read from
  * the dictionaries by the start's own `locale`: `getI18n()` resolves its
  * locale from a run's context, and a start runs before any run exists.
  */
 function sanitizerTextFor(locale: string): LoadedMessageSanitizerText {
   const dictionary = LOCALE_DICTIONARIES[locale];
   if (!dictionary) throw new RpcError(-32602, `Invalid params: unsupported locale "${locale}"`);
-  return {
-    runRecoveredAfterRestart: dictionary.chat.runRecoveredAfterRestart,
-    errorEmptyBody: dictionary.chat.errorEmptyBody,
-  };
+  return { errorEmptyBody: dictionary.chat.errorEmptyBody };
 }
 
 function registerAcceptedRun(params: IdentifiedRunParams, cancelRequested: boolean): RunRegistryEntry {

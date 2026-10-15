@@ -1,5 +1,7 @@
 import type { ToolExecutionContext } from '@/types';
 import { createPortSlot } from '@/core/agent/ports/portSlot';
+import { FileOperationDenied, type FileAccessPurpose, type FileOperationContext, type FileOperationPlan, type ToolFileAccess } from '@/core/tools/fileOperation';
+import type { ElectronPathNameComparison } from '@/utils/electronHost';
 
 export type OperationAuthorizationDecision =
   | { decision: 'allow' }
@@ -15,6 +17,11 @@ export interface FileAuthorizationTarget {
   canonicalPath: string;
   capability: 'read' | 'write';
   followFinalSymlink: boolean;
+  phase?: 'lexical' | 'resolved';
+  purpose?: FileAccessPurpose;
+  pathContext?: Readonly<Pick<FileOperationPlan, 'homePath' | 'workspacePath'>>;
+  comparison?: ElectronPathNameComparison;
+  compareComponent?: (pathKind: 'lexical' | 'canonical', component: number, pattern: string) => Promise<'match' | 'no-match' | 'unknown'>;
 }
 
 export interface ToolOperationOwner {
@@ -32,9 +39,11 @@ export interface ToolOperationRequest {
 }
 
 export interface ToolOperationAuthorization {
+  cancel?: (reason: string) => void;
   inspect(): OperationAuthorizationDecision;
   authorize(executionInput: Readonly<Record<string, unknown>>): Promise<OperationAuthorizationDecision>;
   authorizeFile(target: FileAuthorizationTarget): Promise<OperationAuthorizationDecision>;
+  createFiles?: (plan: FileOperationPlan, context: FileOperationContext) => ToolFileAccess;
   /** Runs synchronously immediately before consuming an approval. */
   validate(executionInput: Readonly<Record<string, unknown>>): OperationAuthorizationDecision | { decision: 'reauthorize' };
 }
@@ -42,6 +51,10 @@ export interface ToolOperationAuthorization {
 export interface ToolAuthorizationProvider {
   begin(request: ToolOperationRequest): ToolOperationAuthorization;
   captureOwner?: () => ToolOperationOwner;
+  captureFileOwner?: () => ToolOperationOwner;
+  allowUnownedFileRecovery?: () => boolean;
+  /** File operations must execute where the invocation's file handles are held. */
+  requiresHostFiles?: boolean;
 }
 
 const provider = createPortSlot<ToolAuthorizationProvider | null>(() => null);
@@ -51,8 +64,36 @@ export function hasToolAuthorizationProvider(): boolean {
   return provider.get() !== null;
 }
 
+export function requiresHostFileOperations(): boolean {
+  return provider.get()?.requiresHostFiles === true;
+}
+
 export function captureToolOperationOwner(): ToolOperationOwner | undefined {
   return provider.get()?.captureOwner?.();
+}
+
+export function captureFileOperationOwner(): ToolOperationOwner | undefined {
+  return provider.get()?.captureFileOwner?.() ?? captureToolOperationOwner();
+}
+
+/** Keep invalidation observable while declared file targets are being planned. */
+export function captureFilePlanningGuard(): { assertCurrent(): void; dispose(): void } {
+  const owner = captureFileOperationOwner();
+  let invalidated = false;
+  const unsubscribe = owner?.onInvalidated?.(() => { invalidated = true; });
+  return {
+    assertCurrent() {
+      if (invalidated || (owner && !owner.isCurrent())) {
+        throw new FileOperationDenied('Error: file authorization changed during planning');
+      }
+    },
+    dispose() { unsubscribe?.(); },
+  };
+}
+
+export function canRecoverUnownedFiles(): boolean {
+  const current = provider.get();
+  return current?.allowUnownedFileRecovery?.() ?? current?.requiresHostFiles !== true;
 }
 
 function freezeValue(value: unknown): void {

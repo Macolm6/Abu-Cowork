@@ -74,6 +74,7 @@ import {
   sanitizeLoadedLedgerMessages,
   sanitizeRunErrorKind,
   sanitizeRunErrorText,
+  sanitizeRunInterruptCause,
   type LoadedMessageSanitizerText,
 } from '../core/session/loadedMessageSanitizer';
 import { clearBrowserToolTrackers } from '../core/observability/browserSignals';
@@ -123,10 +124,9 @@ function toolCallHasNonSuccessMetadata(tc: ToolCall): boolean {
     || batchSummaryHasNonSuccess(tc.batchTerminalSummary);
 }
 
-/** The two strings the shared sanitiser writes into a row, in the UI's locale. */
+/** The string the shared sanitiser writes into a row, in the UI's locale. */
 function loadedMessageSanitizerText(): LoadedMessageSanitizerText {
-  const { chat } = getI18n();
-  return { runRecoveredAfterRestart: chat.runRecoveredAfterRestart, errorEmptyBody: chat.errorEmptyBody };
+  return { errorEmptyBody: getI18n().chat.errorEmptyBody };
 }
 
 function sanitizeRunError(value: unknown, errorDetails?: UpstreamErrorDetails): string | undefined {
@@ -164,7 +164,7 @@ export function sanitizeImportedMessage(msg: Message, answeredLoopIds?: Readonly
       const fileChange = parseFileChange(untrustedFileChange);
       return { ...safeToolCall, ...(fileChange ? { fileChange } : {}), isExecuting: false };
     }),
-  }, { recoveredText: getI18n().chat.runRecoveredAfterRestart, answeredLoopIds }));
+  }, { answeredLoopIds }));
 }
 
 /**
@@ -275,11 +275,23 @@ interface ConversationPersistenceState {
 }
 
 const pendingConversationPersistence = new Map<string, ConversationPersistenceState>();
+const conversationPersistenceRevisions = new Map<string, symbol>();
+
+export function getConversationPersistenceRevision(convId: string): symbol | undefined {
+  return conversationPersistenceRevisions.get(convId);
+}
+
+export function acknowledgeConversationPersistence(convId: string, revision: symbol): void {
+  if (conversationPersistenceRevisions.get(convId) === revision) {
+    conversationPersistenceRevisions.delete(convId);
+  }
+}
 
 function trackConversationPersistence(
   convId: string,
   operation: () => Promise<unknown>,
 ): void {
+  conversationPersistenceRevisions.set(convId, Symbol());
   const state = pendingConversationPersistence.get(convId) ?? {
     tail: Promise.resolve(),
   };
@@ -381,6 +393,38 @@ export async function waitForConversationPersistence(convId: string): Promise<vo
     if (state.firstError !== undefined) throw state.firstError;
     return;
   }
+}
+
+/**
+ * Wait until the persistence every conversation has started is settled: the
+ * barrier before the application leaves. A write that failed was reported to
+ * the dispatch that owns it (`waitForConversationPersistence`); here it only
+ * has to be over, so the remaining conversations are still waited for.
+ */
+export async function waitForAllConversationPersistence(): Promise<void> {
+  await Promise.allSettled(
+    [...pendingConversationPersistence.keys()].map((convId) => waitForConversationPersistence(convId)),
+  );
+}
+
+/**
+ * Hand every reply that is still streaming to the stream snapshot as it
+ * stands, buffered tokens included. The loop's own snapshot runs on a timer;
+ * a quit between two of them would otherwise leave the next start with an
+ * older copy of the reply, or none.
+ */
+export async function snapshotStreamingMessagesForExit(): Promise<void> {
+  const { snapshotMessageRevision } = await import('../core/session/conversationStorage');
+  flushTokenBuffer();
+  const snapshots: Promise<void>[] = [];
+  for (const [convId, conversation] of Object.entries(useChatStore.getState().conversations)) {
+    for (const message of conversation.messages) {
+      if (message.role === 'assistant' && message.isStreaming) {
+        snapshots.push(snapshotMessageRevision(convId, message));
+      }
+    }
+  }
+  await Promise.all(snapshots);
 }
 
 // ── Streaming token buffer (RAF-based debounce) ──
@@ -723,6 +767,8 @@ interface ChatActions {
       error?: string;
       errorDetails?: UpstreamErrorDetails;
       errorKind?: Message['runErrorKind'];
+      /** Kept only with `state: 'interrupted'`. */
+      interruptCause?: Message['runInterruptCause'];
       content?: Message['content'];
       skill?: Message['skill'];
       delegateAgent?: Message['delegateAgent'];
@@ -954,6 +1000,7 @@ export const useChatStore = create<ChatStore>()(
           ...(initialModel ? { model: initialModel } : {}),
           ...(initialPermissionMode ? { permissionMode: initialPermissionMode } : {}),
         };
+        conversationPersistenceRevisions.set(id, Symbol());
         set((state) => {
           state.conversations[id] = {
             ...meta,
@@ -1180,6 +1227,7 @@ export const useChatStore = create<ChatStore>()(
       },
 
       deleteConversation: (id) => {
+        conversationPersistenceRevisions.delete(id);
         // P1-3c-2 (design doc §3 change 3 / P1-3C-SCOUT-REPORT.md §5
         // "secondary finding"): this abort MUST run before the `conversations`/
         // `conversationIndex` deletion below — verified still true, not just
@@ -1326,6 +1374,9 @@ export const useChatStore = create<ChatStore>()(
       },
 
       renameConversation: (id, title) => {
+        if (get().conversationIndex[id] || get().conversations[id]) {
+          conversationPersistenceRevisions.set(id, Symbol());
+        }
         set((state) => {
           if (state.conversations[id]) {
             state.conversations[id].title = title;
@@ -1511,7 +1562,10 @@ export const useChatStore = create<ChatStore>()(
             state.conversations[convId]?.messages,
             msgId ?? FALLBACK_LAST,
           );
-          if (target) target.isStreaming = false;
+          if (target) {
+            target.isStreaming = false;
+            if (target.role === 'assistant') target.streamEnded = true;
+          }
           state.agentStates = nextAgentStates;
         });
         // Persist the final completed message to disk.
@@ -1833,6 +1887,11 @@ export const useChatStore = create<ChatStore>()(
           const errorKind = isFailure ? sanitizeRunErrorKind(patch.errorKind) : undefined;
           if (errorKind) message.runErrorKind = errorKind;
           else delete message.runErrorKind;
+          const interruptCause = patch.state === 'interrupted'
+            ? sanitizeRunInterruptCause(patch.interruptCause)
+            : undefined;
+          if (interruptCause) message.runInterruptCause = interruptCause;
+          else delete message.runInterruptCause;
           if ('content' in patch && patch.content !== undefined) message.content = patch.content;
           if ('skill' in patch) message.skill = patch.skill;
           if ('delegateAgent' in patch) message.delegateAgent = patch.delegateAgent;
@@ -2574,13 +2633,17 @@ export const useChatStore = create<ChatStore>()(
         // Live-freshness write-through (message-storage hybrid P2): turn-end
         // is the moment a conversation's messages are settled for this round,
         // so re-index its catalog row + FTS body now instead of waiting for
-        // the next startup reconcile. Fire-and-forget, matches the existing
-        // dynamic-import + .catch(()=>{}) pattern used elsewhere in this
-        // store — never await inside the reducer.
+        // the next startup reconcile. The reindex reads messages.jsonl in the
+        // main process, so it rides the conversation's serial persistence
+        // queue: every write this turn already queued there (finishStreaming's
+        // checkpoint of the final reply among them) reaches the file first.
         if (shouldReindex) {
-          import('../core/session/conversationStorage').then(({ catalogReindexConversation }) => {
-            catalogReindexConversation(convId).catch(() => {});
-          });
+          trackConversationPersistence(
+            convId,
+            () => import('../core/session/conversationStorage').then(({ catalogReindexConversation }) =>
+              catalogReindexConversation(convId)
+            ),
+          );
         }
       },
 
@@ -2683,6 +2746,10 @@ export const useChatStore = create<ChatStore>()(
             const bundle = parsed as ShareBundle;
             if (!Array.isArray(bundle.messages) || !bundle.conversation) return null;
             const { conv, meta } = buildImportedFromShareBundle(bundle);
+            trackConversationPersistence(conv.id, async () => {
+              const { migrateConversation } = await import('../core/session/conversationStorage');
+              await migrateConversation(conv);
+            });
 
             set((state) => {
               state.conversations[conv.id] = conv;
@@ -2698,10 +2765,7 @@ export const useChatStore = create<ChatStore>()(
               ? bundle.attachments
               : null;
             (async () => {
-              try {
-                const { migrateConversation } = await import('../core/session/conversationStorage');
-                await migrateConversation(conv);
-              } catch { /* non-fatal */ }
+              await waitForConversationPersistence(conv.id).catch(() => undefined);
               if (attachmentsToInstall) {
                 try {
                   const { installSharedAttachments } = await import('../core/session/outputSnapshots');
@@ -2796,9 +2860,10 @@ export const useChatStore = create<ChatStore>()(
             state.activeConversationId = newId;
           });
           // Write messages to disk + update index
-          import('../core/session/conversationStorage').then(async ({ migrateConversation }) => {
+          trackConversationPersistence(newId, async () => {
+            const { migrateConversation } = await import('../core/session/conversationStorage');
             await migrateConversation(imported);
-          }).catch(() => {});
+          });
           // Sync workspace to imported conversation
           const ws = useWorkspaceStore.getState();
           if (imported.workspacePath) {
@@ -2846,10 +2911,13 @@ export const useChatStore = create<ChatStore>()(
           const meta = get().conversationIndex[convId];
           if (!meta) return;
 
-          const recoveredMessages = messages.filter((message, index) => (
+          // Rows whose stale active state the sanitiser settled, matched by id:
+          // the sanitiser drops ghost rows, so positions differ between the two lists.
+          const loadedRunStates = new Map(loadedMessages.map((message) => [message.id, message.runState]));
+          const recoveredMessages = messages.filter((message) => (
             message.role === 'user'
-            && message.runState === 'failed'
-            && ACTIVE_RUN_STATES.has(loadedMessages[index]?.runState)
+            && !ACTIVE_RUN_STATES.has(message.runState)
+            && ACTIVE_RUN_STATES.has(loadedRunStates.get(message.id))
           ));
           set((state) => {
             delete state.loadFailures[convId];
@@ -2881,9 +2949,12 @@ export const useChatStore = create<ChatStore>()(
           // fails (for example, a transient permission or I/O error). A
           // failed repair must never fall through to the outer load catch
           // and replace a successfully-read conversation with an empty one.
-          await Promise.allSettled(
-            recoveredMessages.map((message) => replaceMessageById(convId, message)),
-          );
+          if (recoveredMessages.length > 0) {
+            trackConversationPersistence(convId, () => Promise.allSettled(
+              recoveredMessages.map((message) => replaceMessageById(convId, message)),
+            ));
+            await waitForConversationPersistence(convId).catch(() => undefined);
+          }
         } catch (err) {
           // The record is on disk and could not be read. No conversation is
           // put in memory for it: an empty one would say "this conversation

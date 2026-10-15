@@ -393,6 +393,7 @@ async function uploadPayloadFiles(
   }
   if (delivery === 'path') {
     return files.map((file) => ({
+      ...(file.base64 !== undefined ? { base64: file.base64 } : {}),
       path: file.path,
       name: file.name,
       size: file.size,
@@ -408,6 +409,10 @@ async function uploadPayloadFiles(
   const noFollow = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
   const out: Array<Record<string, unknown>> = [];
   for (const file of files) {
+    if (file.base64 !== undefined) {
+      out.push({ name: file.name, size: file.size, base64: file.base64 });
+      continue;
+    }
     let handle;
     try {
       handle = await open(file.path, constants.O_RDONLY | noFollow);

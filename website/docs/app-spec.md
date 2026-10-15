@@ -1,5 +1,7 @@
 # Abu 应用 · 开发者规范
 
+[English](app-spec.en.md) | **中文**
+
 > 适用版本：Abu 0.51.0 起。
 > 相关：[插件规范](plugin-spec.md)（技能、专家、专家团、连接器）；[使用指南](User-Guide.zh-CN.md) 的「应用」一节。
 
@@ -49,9 +51,9 @@
 
 | 字段 | 必填 | 类型 | 规则 |
 |---|---|---|---|
-| `displayName` | 是 | string | 切换器和应用市场里的名称，不超过 64 个字符 |
-| `shortDescription` | 是 | string | 一句话介绍，不超过 200 个字符 |
-| `longDescription` | 否 | string | 应用市场详情里的介绍，不超过 4000 个字符 |
+| `displayName` | 是 | LocalizedText | 切换器和应用市场里的名称，每种语言的文字不超过 64 个字符 |
+| `shortDescription` | 是 | LocalizedText | 一句话介绍，每种语言的文字不超过 200 个字符 |
+| `longDescription` | 否 | LocalizedText | 应用市场详情里的介绍，每种语言的文字不超过 4000 个字符 |
 | `developerName` | 否 | string | 开发者名称，不超过 100 个字符 |
 | `category` | 否 | string | 分类，不超过 64 个字符 |
 | `brandColor` | 否 | string | 必须是 `#RRGGBB` |
@@ -162,8 +164,8 @@
   "version": "1.0.0",
   "minAbuVersion": "0.51.0",
   "interface": {
-    "displayName": "店铺运营",
-    "shortDescription": "选品、详情页、评价回复，一个首页全做完",
+    "displayName": { "zh-CN": "店铺运营", "en-US": "Shop Operations" },
+    "shortDescription": { "zh-CN": "选品、详情页、评价回复，一个首页全做完", "en-US": "Product picks, listing pages and review replies from one home page" },
     "logo": "assets/logo.png",
     "logoDark": "assets/logo-dark.png"
   },
@@ -224,7 +226,7 @@
 | `name` | 是 | 与应用文件的 `name` 相同 |
 | `source` | 是 | 应用从哪里取，写法与插件条目相同：市场目录内的相对路径、`url`、`git-subdir` |
 | `version` | 远程来源必填 | 与应用文件的 `version` 相同 |
-| `description` | 远程来源必填 | 应用市场卡片上的一句话介绍 |
+| `description` | 远程来源必填 | 应用市场卡片上的一句话介绍，写法是 `LocalizedText`（见 3.7） |
 | `minAbuVersion` | 远程来源必填 | 与应用文件的 `minAbuVersion` 相同 |
 
 相对路径的应用，应用市场直接读应用文件里的名称、介绍、logo，以及每个场景交给了谁；远程来源的应用，应用市场显示条目里写的内容，用户点「使用」时再取回整个应用。

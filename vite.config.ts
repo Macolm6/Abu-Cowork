@@ -37,13 +37,6 @@ const enterprisePeerPackages = [
   'minimatch',
   'refa',
 ]
-const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-const enterprisePeerAliases = BUILD_TARGET === 'enterprise'
-  ? enterprisePeerPackages.map((pkg) => ({
-      find: new RegExp(`^${escapeRegExp(pkg)}(?=$|/)`),
-      replacement: path.resolve(__dirname, 'node_modules', pkg),
-    }))
-  : []
 
 console.log(`[vite] ABU_BUILD_TARGET=${BUILD_TARGET} → @enterprise-modules → ${enterpriseModulesPath}`)
 
@@ -61,12 +54,13 @@ export default defineConfig({
     alias: [
       { find: /^@enterprise-modules(?=$|\/)/, replacement: enterpriseModulesPath },
       { find: /^@\//, replacement: `${srcPath}/` },
-      ...enterprisePeerAliases,
     ],
-    // Enterprise modules are a sibling peer-dependency package. Vite 8's
-    // Rolldown resolver otherwise starts from the external importer's path and
-    // cannot see the host node_modules directory. Resolve every shared runtime
-    // from this application root so OSS and Enterprise builds use one copy.
+    // Enterprise modules live beside this checkout and have no node_modules of
+    // their own. `dedupe` resolves each of these packages from this application
+    // root whoever imports it, through the package's `exports`: the enterprise
+    // modules and the application get the same file, and the build holds one
+    // copy of each package and of what it imports (zustand's immer middleware
+    // and the stores share one immer).
     dedupe: enterprisePeerPackages,
   },
   clearScreen: false,

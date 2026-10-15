@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
 import { Button } from '@/components/ds/button';
+import { InlineMessage } from '@/components/ds/inline-message';
 import { LoadError } from '@/components/ds/load-error';
 import { Pressable } from '@/components/ds/pressable';
 import { SegmentedControl } from '@/components/ds/segmented-control';
@@ -8,7 +9,7 @@ import { DiffLines } from '@/components/diff/DiffLines';
 import { DiffSplit } from '@/components/diff/DiffSplit';
 import { limitHunkLines, MAX_RENDERED_DIFF_LINES } from '@/components/diff/hunkLimit';
 import { focusIsOnWindow } from '@/components/toolbox/cardFocus';
-import { useTurnChangesDetail } from '@/hooks/useTurnChanges';
+import { useTurnChangesDetail, useTurnChangesEntry } from '@/hooks/useTurnChanges';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { usePreviewStore } from '@/stores/previewStore';
@@ -83,6 +84,7 @@ function ChangesTab({ tabId, conversationId, loopId, fileIndex }: {
 }) {
   const { t } = useI18n();
   const detail = useTurnChangesDetail(conversationId, loopId);
+  const undone = useTurnChangesEntry(conversationId, loopId, true)?.undone === true;
   const selectFile = usePreviewStore((s) => s.selectTurnChangesFile);
   const openPreview = usePreviewStore((s) => s.openPreview);
   const [containerRef, width] = useElementWidth<HTMLDivElement>();
@@ -131,6 +133,11 @@ function ChangesTab({ tabId, conversationId, loopId, fileIndex }: {
       )}
       {loaded && (
         <>
+          {undone && (
+            <div className="shrink-0 border-b border-separator p-2">
+              <InlineMessage tone="info">{t.panel.changesUndone}</InlineMessage>
+            </div>
+          )}
           <ul onKeyDown={walkRows} className="max-h-40 shrink-0 overflow-y-auto border-b border-separator py-1">
             {files.map((entry, index) => (
               <li key={entry.path}>

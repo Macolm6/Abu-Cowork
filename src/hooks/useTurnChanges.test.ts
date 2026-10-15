@@ -3,22 +3,50 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TurnChanges, TurnIndex } from '@/core/session/turnChanges';
 
+import type { TurnUndoPlan, TurnUndoResult } from '@/core/session/turnUndo';
+import type { TurnUndoRecord } from '@/core/session/turnUndoRecord';
+import { useChatStore } from '@/stores/chatStore';
+import type { Conversation } from '@/types';
+
 const mocks = vi.hoisted(() => ({
   readTurnIndex: vi.fn(),
   readTurnChanges: vi.fn(),
+  readTurnUndoRecord: vi.fn(),
+  planTurnUndo: vi.fn(),
+  undoTurn: vi.fn(),
+  reapplyTurn: vi.fn(),
+  checkWritePath: vi.fn(),
+  canonicalize: vi.fn(),
   listeners: new Set<(conversationId: string, loopId: string) => void>(),
 }));
 
 vi.mock('@/core/session/turnChanges', () => ({
   readTurnIndex: (...args: unknown[]) => mocks.readTurnIndex(...args),
   readTurnChanges: (...args: unknown[]) => mocks.readTurnChanges(...args),
+  readTurnUndoRecord: (...args: unknown[]) => mocks.readTurnUndoRecord(...args),
   onTurnChangesSaved: (listener: (conversationId: string, loopId: string) => void) => {
     mocks.listeners.add(listener);
     return () => { mocks.listeners.delete(listener); };
   },
 }));
 
-import { __testing, useTurnChangesDetail, useTurnChangesEntry } from './useTurnChanges';
+vi.mock('@/core/session/turnUndo', () => ({
+  planTurnUndo: (...args: unknown[]) => mocks.planTurnUndo(...args),
+  undoTurn: (...args: unknown[]) => mocks.undoTurn(...args),
+  reapplyTurn: (...args: unknown[]) => mocks.reapplyTurn(...args),
+}));
+
+vi.mock('@/core/tools/pathSafety', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/core/tools/pathSafety')>()),
+  checkWritePath: (...args: unknown[]) => mocks.checkWritePath(...args),
+}));
+
+vi.mock('@/utils/electronHost', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/utils/electronHost')>()),
+  canonicalizeElectronPathForPolicy: (...args: unknown[]) => mocks.canonicalize(...args),
+}));
+
+import { __testing, useTurnChangesDetail, useTurnChangesEntry, useTurnUndo, useTurnUndoRecord } from './useTurnChanges';
 
 const ENTRY = { total: 2, added: 5, deleted: 1, firstFile: 'a.md' };
 const TURN: TurnChanges = {
@@ -32,8 +60,25 @@ const TURN: TurnChanges = {
   deleted: 1,
 };
 
+const RECORD: TurnUndoRecord = {
+  version: 1,
+  loopId: 'loop-1',
+  state: 'applied',
+  entries: [{ path: '/ws/a.md', hash: '0123456789abcdef', before: 'absent', after: 'file', afterSha256: 'a'.repeat(64) }],
+};
+const PLAN: TurnUndoPlan = { willRestore: [{ path: '/ws/a.md', display: 'a.md', action: 'trash' }], wontRestore: [] };
+const RESULT: TurnUndoResult = { done: 1, notDone: [] };
+
 function saved(conversationId: string, loopId: string): void {
   for (const listener of [...mocks.listeners]) listener(conversationId, loopId);
+}
+
+function setConversations(ids: string[], workspacePath?: string): void {
+  const conversations = Object.fromEntries(ids.map((id): [string, Conversation] => [
+    id,
+    { id, title: id, messages: [], createdAt: 1_000, updatedAt: 1_000, status: 'idle', ...(workspacePath ? { workspacePath } : {}) },
+  ]));
+  useChatStore.setState({ conversations });
 }
 
 describe('useTurnChanges', () => {
@@ -43,6 +88,19 @@ describe('useTurnChanges', () => {
     mocks.readTurnChanges.mockReset();
     mocks.readTurnIndex.mockResolvedValue({ 'loop-1': ENTRY } satisfies TurnIndex);
     mocks.readTurnChanges.mockResolvedValue(TURN);
+    mocks.readTurnUndoRecord.mockReset();
+    mocks.readTurnUndoRecord.mockResolvedValue(RECORD);
+    mocks.planTurnUndo.mockReset();
+    mocks.planTurnUndo.mockResolvedValue(PLAN);
+    mocks.undoTurn.mockReset();
+    mocks.undoTurn.mockResolvedValue(RESULT);
+    mocks.reapplyTurn.mockReset();
+    mocks.reapplyTurn.mockResolvedValue(RESULT);
+    mocks.checkWritePath.mockReset();
+    mocks.checkWritePath.mockResolvedValue({ allowed: true });
+    mocks.canonicalize.mockReset();
+    mocks.canonicalize.mockResolvedValue(null);
+    setConversations(['conv-1']);
     vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
@@ -166,6 +224,193 @@ describe('useTurnChanges', () => {
 
       await waitFor(() => expect(result.current.turn?.total).toBe(9));
       expect(mocks.readTurnChanges).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('useTurnUndoRecord', () => {
+    it('is null while the record is read, then the record', async () => {
+      const { result } = renderHook(() => useTurnUndoRecord('conv-1', 'loop-1', true));
+      expect(result.current).toBeNull();
+      await waitFor(() => expect(result.current).toEqual(RECORD));
+      expect(mocks.readTurnUndoRecord).toHaveBeenCalledExactlyOnceWith('conv-1', 'loop-1');
+    });
+
+    it('reads nothing while disabled', async () => {
+      const { result } = renderHook(() => useTurnUndoRecord('conv-1', 'loop-1', false));
+      await act(async () => {});
+      expect(mocks.readTurnUndoRecord).not.toHaveBeenCalled();
+      expect(result.current).toBeNull();
+    });
+
+    it('reads one record once for every reader', async () => {
+      const first = renderHook(() => useTurnUndoRecord('conv-1', 'loop-1', true));
+      const second = renderHook(() => useTurnUndoRecord('conv-1', 'loop-1', true));
+      await waitFor(() => expect(first.result.current).toEqual(RECORD));
+      expect(second.result.current).toEqual(RECORD);
+      expect(mocks.readTurnUndoRecord).toHaveBeenCalledTimes(1);
+    });
+
+    it('reads the record again when the turn has been saved again, keeping the old one meanwhile', async () => {
+      const { result } = renderHook(() => useTurnUndoRecord('conv-1', 'loop-1', true));
+      await waitFor(() => expect(result.current).toEqual(RECORD));
+      const undone: TurnUndoRecord = { ...RECORD, state: 'undone' };
+      let release: (record: TurnUndoRecord) => void = () => {};
+      mocks.readTurnUndoRecord.mockReturnValueOnce(new Promise<TurnUndoRecord>((resolve) => { release = resolve; }));
+
+      act(() => saved('conv-1', 'loop-1'));
+      expect(result.current).toEqual(RECORD);
+      await act(async () => { release(undone); });
+
+      expect(result.current).toEqual(undone);
+    });
+
+    it('is null for a turn that has no record', async () => {
+      mocks.readTurnUndoRecord.mockResolvedValue(null);
+      const { result } = renderHook(() => useTurnUndoRecord('conv-1', 'loop-1', true));
+      await waitFor(() => expect(mocks.readTurnUndoRecord).toHaveBeenCalledTimes(1));
+      await act(async () => {});
+      expect(result.current).toBeNull();
+    });
+  });
+
+  describe('useTurnUndo', () => {
+    it('plans for the turn and the direction asked', async () => {
+      const { result } = renderHook(() => useTurnUndo('conv-1', 'loop-1'));
+
+      await expect(result.current.plan('reapply')).resolves.toEqual(PLAN);
+
+      expect(mocks.planTurnUndo).toHaveBeenCalledExactlyOnceWith('conv-1', 'loop-1', 'reapply', {
+        authorize: expect.any(Function),
+        isConversationPresent: expect.any(Function),
+      });
+    });
+
+    it('plans with the write check the run uses, and asks for nothing', async () => {
+      const { result } = renderHook(() => useTurnUndo('conv-1', 'loop-1'));
+      await result.current.plan('undo');
+      const { authorize } = mocks.planTurnUndo.mock.calls[0][3] as { authorize: (path: string) => Promise<boolean> };
+
+      mocks.checkWritePath.mockResolvedValueOnce({ allowed: true, resolvedPath: '/ws/a.md' });
+      await expect(authorize('/ws/a.md')).resolves.toBe(true);
+      mocks.checkWritePath.mockResolvedValueOnce({ allowed: false, needsPermission: true, permissionPath: '/elsewhere' });
+      await expect(authorize('/elsewhere/a.md')).resolves.toBe(false);
+      expect(mocks.checkWritePath.mock.calls).toEqual([['/ws/a.md'], ['/elsewhere/a.md']]);
+    });
+
+    it('undoes the turn and is busy until that has ended', async () => {
+      let release: (result: TurnUndoResult) => void = () => {};
+      mocks.undoTurn.mockReturnValue(new Promise<TurnUndoResult>((resolve) => { release = resolve; }));
+      const { result } = renderHook(() => useTurnUndo('conv-1', 'loop-1'));
+      expect(result.current.busy).toBe(false);
+
+      let running: Promise<TurnUndoResult | null> = Promise.resolve(null);
+      act(() => { running = result.current.run('undo'); });
+      expect(result.current.busy).toBe(true);
+      expect(mocks.undoTurn).toHaveBeenCalledExactlyOnceWith('conv-1', 'loop-1', {
+        authorize: expect.any(Function),
+        isConversationPresent: expect.any(Function),
+      });
+      expect(mocks.reapplyTurn).not.toHaveBeenCalled();
+
+      await act(async () => { release(RESULT); });
+      await expect(running).resolves.toEqual(RESULT);
+      expect(result.current.busy).toBe(false);
+    });
+
+    it('puts the changes back through reapplyTurn', async () => {
+      const { result } = renderHook(() => useTurnUndo('conv-1', 'loop-1'));
+      let outcome: TurnUndoResult | null = null;
+      await act(async () => { outcome = await result.current.run('reapply'); });
+      expect(outcome).toEqual(RESULT);
+      expect(mocks.reapplyTurn).toHaveBeenCalledTimes(1);
+      expect(mocks.undoTurn).not.toHaveBeenCalled();
+    });
+
+    it('starts no second run while one is going', async () => {
+      let release: (result: TurnUndoResult) => void = () => {};
+      mocks.undoTurn.mockReturnValue(new Promise<TurnUndoResult>((resolve) => { release = resolve; }));
+      const { result } = renderHook(() => useTurnUndo('conv-1', 'loop-1'));
+      let first: Promise<TurnUndoResult | null> = Promise.resolve(null);
+      act(() => { first = result.current.run('undo'); });
+
+      await expect(result.current.run('undo')).resolves.toBeNull();
+      await expect(result.current.run('reapply')).resolves.toBeNull();
+      expect(mocks.undoTurn).toHaveBeenCalledTimes(1);
+      expect(mocks.reapplyTurn).not.toHaveBeenCalled();
+
+      await act(async () => { release(RESULT); });
+      await first;
+    });
+
+    it('is no longer busy after a run that was refused, and runs again', async () => {
+      mocks.undoTurn.mockRejectedValueOnce(new Error('Turn undo refused: turn-running'));
+      const { result } = renderHook(() => useTurnUndo('conv-1', 'loop-1'));
+
+      let refused: Promise<unknown> = Promise.resolve();
+      act(() => { refused = result.current.run('undo'); });
+      await act(async () => { await expect(refused).rejects.toThrow('turn-running'); });
+      expect(result.current.busy).toBe(false);
+
+      await act(async () => { await result.current.run('undo'); });
+      expect(mocks.undoTurn).toHaveBeenCalledTimes(2);
+    });
+
+    it('authorizes a file exactly when the write check allows its path', async () => {
+      const { result } = renderHook(() => useTurnUndo('conv-1', 'loop-1'));
+      await act(async () => { await result.current.run('undo'); });
+      const { authorize } = mocks.undoTurn.mock.calls[0][2] as { authorize: (path: string) => Promise<boolean> };
+
+      mocks.checkWritePath.mockResolvedValueOnce({ allowed: true, resolvedPath: '/ws/a.md' });
+      await expect(authorize('/ws/a.md')).resolves.toBe(true);
+      mocks.checkWritePath.mockResolvedValueOnce({ allowed: false, needsPermission: true, permissionPath: '/elsewhere' });
+      await expect(authorize('/elsewhere/a.md')).resolves.toBe(false);
+      mocks.checkWritePath.mockResolvedValueOnce({ allowed: false, reason: 'blocked' });
+      await expect(authorize('/blocked/a.md')).resolves.toBe(false);
+      expect(mocks.checkWritePath.mock.calls).toEqual([['/ws/a.md'], ['/elsewhere/a.md'], ['/blocked/a.md']]);
+      expect(mocks.canonicalize).not.toHaveBeenCalled();
+    });
+
+    it('checks a file under the resolved workspace folder in the spelling of the workspace', async () => {
+      setConversations(['conv-1'], '/var/work/project/');
+      mocks.canonicalize.mockResolvedValue('/private/var/work/project');
+      const { result } = renderHook(() => useTurnUndo('conv-1', 'loop-1'));
+      await act(async () => { await result.current.run('undo'); });
+      const { authorize } = mocks.undoTurn.mock.calls[0][2] as { authorize: (path: string) => Promise<boolean> };
+
+      await authorize('/private/var/work/project/docs/a.md');
+      await authorize('/var/work/project/b.md');
+      await authorize('/private/var/work/project-old/c.md');
+      await authorize('/elsewhere/d.md');
+
+      expect(mocks.checkWritePath.mock.calls).toEqual([
+        ['/var/work/project/docs/a.md'],
+        ['/var/work/project/b.md'],
+        ['/private/var/work/project-old/c.md'],
+        ['/elsewhere/d.md'],
+      ]);
+      expect(mocks.canonicalize).toHaveBeenCalledWith('/var/work/project');
+    });
+
+    it('checks the recorded path where the host resolves no paths', async () => {
+      setConversations(['conv-1'], '/var/work/project');
+      mocks.canonicalize.mockResolvedValue(null);
+      const { result } = renderHook(() => useTurnUndo('conv-1', 'loop-1'));
+      await act(async () => { await result.current.run('undo'); });
+      const { authorize } = mocks.undoTurn.mock.calls[0][2] as { authorize: (path: string) => Promise<boolean> };
+
+      await authorize('/private/var/work/project/a.md');
+
+      expect(mocks.checkWritePath.mock.calls).toEqual([['/private/var/work/project/a.md']]);
+    });
+
+    it('says the conversation is present exactly while the chat store holds it', async () => {
+      const { result } = renderHook(() => useTurnUndo('conv-1', 'loop-1'));
+      await result.current.plan('undo');
+      const { isConversationPresent } = mocks.planTurnUndo.mock.calls[0][3] as { isConversationPresent: () => boolean };
+
+      expect(isConversationPresent()).toBe(true);
+      setConversations(['conv-2']);
+      expect(isConversationPresent()).toBe(false);
     });
   });
 });

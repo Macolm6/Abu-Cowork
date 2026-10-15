@@ -1,4 +1,5 @@
 import type { ConversationAppBinding } from '@/types/app';
+import { resolveLocalizedText } from '../../../../electron/shared/specFields.mjs';
 
 /**
  * The prompt section a conversation started inside an app carries. The app's
@@ -7,13 +8,16 @@ import type { ConversationAppBinding } from '@/types/app';
  * package author's guidance, never as Abu's own rules; the total is capped
  * the way plugin skills are, so a package cannot push the rest of the prompt
  * out of the window.
+ *
+ * The app is named by one fixed text of its display name (zh-CN, then en-US),
+ * so the section reads the same in every interface language.
  */
 export const APP_PROMPT_APPEND_MAX_CHARS = 48000;
 
 export function buildAppContextSection(binding: ConversationAppBinding): string {
   const lines = [
     '## App Context',
-    `You are working inside the app "${binding.appName}". This is the workspace the user selected for this conversation. When this app's experts, skills and connectors can complete the task, use them first.`,
+    `You are working inside the app "${resolveLocalizedText(binding.appName, 'zh-CN')}". This is the workspace the user selected for this conversation. When this app's experts, skills and connectors can complete the task, use them first.`,
   ];
   const instructions = binding.promptAppend?.trim();
   if (instructions) {

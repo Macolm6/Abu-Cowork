@@ -1,6 +1,9 @@
 ---
 name: Abu-Browser
 description: 操作阿布应用内置的可见浏览器：打开网页、点击、填写、截图和提取数据。用户要求在阿布内预览或操作网页时使用；无需安装浏览器扩展。
+display-description:
+  zh-CN: 在阿布内置的浏览器里打开网页、点击、填写
+  en-US: Open, click and fill in pages in Abu's built-in browser
 trigger: 用户要求使用阿布内置浏览器、在阿布内打开网页、查看网页内容、网页截图、填写网页表单、点击网页按钮或提取网页数据
 do-not-trigger: 用户明确要求操作已有 Chrome 标签页、复用 Chrome 登录态或使用 Abu Chrome 扩展；这些场景使用 Abu-Chrome-Bridge
 user-invocable: true

@@ -195,15 +195,18 @@ test('release notes live on the documentation page, the home page keeps version 
   assert.ok(homeScript.includes("whatsnew: `${docsPage}#changelog`, news: `${docsPage}#changelog`"), 'old update addresses open the release notes');
 
   const viewer = read('docs.js');
-  assert.ok(viewer.includes("'changelog': { release: 'zh-CN', title: '更新日志' }"));
-  assert.ok(viewer.includes("'changelog': { release: 'en-US', title: 'Release notes' }"));
+  assert.ok(viewer.includes("'changelog': { changelog: 'docs/release-notes.zh-CN.md', title: '更新日志' }"));
+  assert.ok(viewer.includes("'changelog': { changelog: 'docs/release-notes.md', title: 'Release notes' }"));
   assert.ok(viewer.includes("const RELEASE_METADATA = 'https://abu-agent.oss-cn-beijing.aliyuncs.com/electron/latest-release.json';"));
-  assert.ok(viewer.includes("(data.notes_i18n || {})[doc.release]"), 'the notes are taken in the page language only');
-  assert.ok(viewer.includes("version.textContent = source.version;"), 'the version shows at the top');
+  assert.ok(viewer.includes('keep = numbers !== null && isReleased(numbers, latest);'), 'only released versions are shown');
+  for (const source of [read('docs.zh-CN.html'), read('docs.html')]) {
+    assert.ok(source.includes('<div class="wrap docs" id="docs">'));
+    assert.ok(source.includes('class="docs-rail"') && source.includes('id="contents"'), 'the page has the contents column');
+  }
   assert.ok(viewer.includes("const DEFAULT_DOC = 'installation';"));
   for (const [file, labels] of [
     ['docs.zh-CN.html', ['安装指南', '使用指南', '浏览网页', '应用规范', '插件规范', '更新日志']],
-    ['docs.html', ['Installation Guide', 'User Guide', 'Web Browsing', 'App Spec (Chinese)', 'Plugin Spec (Chinese)', 'Release notes']],
+    ['docs.html', ['Installation Guide', 'User Guide', 'Web Browsing', 'App Spec', 'Plugin Spec', 'Release notes']],
   ]) {
     const source = read(file);
     assert.deepEqual([...source.matchAll(/<a class="doc-link" href="#[a-z-]+" data-doc="[a-z-]+">([^<]+)<\/a>/g)].map((match) => match[1]), labels, file);
@@ -326,8 +329,13 @@ test('open platform pages show the parts of an app, the delivery steps and where
   const app = JSON.parse(fs.readFileSync(path.join(root, 'builtin-plugin-market/apps/recruiting/.abu-app/app.json'), 'utf8'));
   assert.equal(app.name, 'recruiting');
   assert.deepEqual(app.defaultRun, { team: 'builtin-team:recruiting' });
-  assert.equal(app.interface.displayName, '招聘');
-  assert.equal(app.interface.shortDescription, '写 JD、筛简历、备面试、查行情');
+  assert.deepEqual(app.interface.displayName, { 'zh-CN': '招聘', 'en-US': 'Recruiting' });
+  assert.deepEqual(app.interface.shortDescription, { 'zh-CN': '写 JD、筛简历、备面试、查行情', 'en-US': 'Write JDs, screen resumes, prepare interviews, check the market' });
+  for (const [file, locale] of [['platform.zh-CN.html', 'zh-CN'], ['platform.html', 'en-US']]) {
+    const source = read(file);
+    assert.ok(source.includes(`"displayName": { "${locale}": "${app.interface.displayName[locale]}" }`), `${file}: the excerpt quotes the app's name in the page's language`);
+    assert.ok(source.includes(`"shortDescription": { "${locale}": "${app.interface.shortDescription[locale]}" }`), `${file}: the excerpt quotes the app's description in the page's language`);
+  }
   assert.equal(app.home.modes.items[0].scenes[0].templates[0].title['zh-CN'], '高级前端 JD');
 });
 

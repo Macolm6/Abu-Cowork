@@ -1,12 +1,15 @@
 import type { ToolApprovalDecision } from './registry';
 import type { OperationAuthorizationDecision, ToolOperationAuthorization } from './operationAuthorization';
+import type { ToolFileAccess } from '@/core/tools/fileOperation';
 
 interface ApprovalOperation {
-  authorization: ToolOperationAuthorization;
+  authorization?: ToolOperationAuthorization;
   input: Readonly<Record<string, unknown>>;
   recordDenial: (decision: Exclude<OperationAuthorizationDecision, { decision: 'allow' }>) => void;
   reportConsent: () => void;
   checkPermissions?: () => ToolApprovalDecision | null | Promise<ToolApprovalDecision | null>;
+  files?: ToolFileAccess;
+  release?: () => void;
 }
 
 const operations = new WeakMap<ToolApprovalDecision, ApprovalOperation>();
@@ -15,13 +18,28 @@ export function rememberToolApproval(decision: ToolApprovalDecision, operation: 
   operations.set(decision, operation);
 }
 
+export function filesForToolApproval(decision: ToolApprovalDecision): ToolFileAccess | undefined {
+  return operations.get(decision)?.files;
+}
+
+export async function releaseToolApproval(decision: ToolApprovalDecision): Promise<void> {
+  const operation = operations.get(decision);
+  if (!operation) return;
+  operations.delete(decision);
+  try {
+    await operation.files?.dispose();
+  } finally {
+    operation.release?.();
+  }
+}
+
 /** A synchronous allow has passed every check immediately before consumption. */
 export function finalizeToolApproval(decision: ToolApprovalDecision): ToolApprovalDecision | Promise<ToolApprovalDecision> {
   const operation = operations.get(decision);
   if (!operation || decision.decision === 'deny') return decision;
-  const checked = operation.authorization.validate(operation.input);
+  const checked = operation.authorization?.validate(operation.input) ?? { decision: 'allow' };
   if (checked.decision === 'reauthorize') {
-    return operation.authorization.authorize(operation.input).then(result => {
+    return operation.authorization!.authorize(operation.input).then(result => {
       if (result.decision === 'allow') return decision;
       operation.recordDenial(result);
       return { decision: 'deny', reason: result.reason };

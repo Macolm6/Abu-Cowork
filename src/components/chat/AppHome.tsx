@@ -16,6 +16,7 @@ import { mergeDraftPrefill } from '@/utils/inputCommand';
 import { agentRegistry } from '@/core/agent/registry';
 import { prepareExpertEntry } from '@/core/team/expertEntry';
 import { expertIdentity, teamIdentity } from '@/core/team/expertContact';
+import { localizedTeam } from '@/core/team/localizedTeam';
 import { appHomeTitle } from '@/core/app/appRegistry';
 import { buildAppBinding, effectiveRun, pickMode, resolveText } from '@/core/app/appBinding';
 import { reportAppFailure } from '@/core/app/appFailure';
@@ -115,7 +116,7 @@ export default function AppHome({ app, onPlaceholderChange }: {
   return (
     <div data-testid="app-home" data-app-id={app.appId} className="w-full">
       <div className="text-center mb-6">
-        <AppLogo name={app.name} logo={app.logo} logoDark={app.logoDark} icon={app.icon} size="xl" className="mx-auto mb-4 rounded-window" />
+        <AppLogo name={resolveText(app.name)} logo={app.logo} logoDark={app.logoDark} icon={app.icon} size="xl" className="mx-auto mb-4 rounded-window" />
         <h1 className="mb-2 text-title-lg text-label" data-testid="app-home-title">{appHomeTitle(app, locale)}</h1>
         {app.config.home.header?.slogan && <p className="text-ui text-label-secondary">{resolveText(app.config.home.header.slogan)}</p>}
       </div>
@@ -151,7 +152,7 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
     const { label, unavailable } = describeSceneRun(app, scene, resolved, t, format, locale);
     const owner = resolved?.owner;
     const avatar = !resolved
-      ? <AppLogo name={app.name} logo={app.logo} logoDark={app.logoDark} icon={app.icon} size="sm" />
+      ? <AppLogo name={resolveText(app.name)} logo={app.logo} logoDark={app.logoDark} icon={app.icon} size="sm" />
       : owner?.status === 'ok' && owner.kind === 'team' ? <TeamAvatar avatar={owner.team.avatar} size="xs" round />
         : owner?.status === 'ok' && owner.kind === 'expert' ? <AgentAvatar agent={owner.agent} size="sm" />
           : owner ? <TeamAvatar size="xs" round />
@@ -201,7 +202,7 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
     const skill = resolved?.skill?.status === 'ok' && resolved.skill.kind === 'skill' ? resolved.skill.name : undefined;
     const draftKey = () => getComposerDraftKey(null, getComposerDraftScopeForEnterpriseMode(useEnterpriseStore.getState().mode));
     if (owner?.status === 'ok' && owner.kind === 'team') {
-      prepareExpertEntry({ identity: teamIdentity(owner.team) }, prompt);
+      prepareExpertEntry({ identity: teamIdentity(localizedTeam(owner.team, locale)) }, prompt);
     } else if (owner?.status === 'ok' && owner.kind === 'expert') {
       prepareExpertEntry({ identity: expertIdentity(owner.agent, locale) }, prompt);
     } else if (skill) {

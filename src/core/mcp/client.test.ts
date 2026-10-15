@@ -159,6 +159,13 @@ describe('abort signal propagation into MCP callTool', () => {
     );
   });
 
+  it('checks the operation immediately before SDK dispatch and refuses an invalidated owner', async () => {
+    await expect(manager.callTool('test-server', 'some_tool', {}, {
+      beforeDispatch: () => { throw new Error('operation owner changed'); },
+    })).rejects.toThrow('operation owner changed');
+    expect(mockCallTool).not.toHaveBeenCalled();
+  });
+
   // Task B2 (controller addendum): the SDK's own request/response cycle has
   // an internal default request timeout (60s, DEFAULT_REQUEST_TIMEOUT_MSEC)
   // that used to fire independently of the manual Promise.race above it —

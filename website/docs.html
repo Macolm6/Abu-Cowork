@@ -23,7 +23,7 @@
     var _hmt = _hmt || [];
     (function() {
       var hm = document.createElement("script");
-      hm.src = "https://hm.baidu.com/hm.js?01567fba26100539d5fb9f494c789f4d";
+      hm.src = "https://hm.baidu.com/hm.js?c45beefad88f58c50e011c5fb5245c86";
       var s = document.getElementsByTagName("script")[0];
       s.parentNode.insertBefore(hm, s);
     })();
@@ -52,7 +52,7 @@
   </div>
 </header>
 
-<div class="wrap docs">
+<div class="wrap docs" id="docs">
   <button class="btn btn-line btn-sm docs-menu" type="button" id="docsMenu" aria-expanded="false" aria-controls="docsSide">Docs and contents</button>
 
   <aside class="docs-side" id="docsSide">
@@ -61,8 +61,8 @@
       <a class="doc-link" href="#installation" data-doc="installation">Installation Guide</a>
       <a class="doc-link" href="#user-guide" data-doc="user-guide">User Guide</a>
       <a class="doc-link" href="#web-browsing" data-doc="web-browsing">Web Browsing</a>
-      <a class="doc-link" href="#app-spec" data-doc="app-spec">App Spec (Chinese)</a>
-      <a class="doc-link" href="#plugin-spec" data-doc="plugin-spec">Plugin Spec (Chinese)</a>
+      <a class="doc-link" href="#app-spec" data-doc="app-spec">App Spec</a>
+      <a class="doc-link" href="#plugin-spec" data-doc="plugin-spec">Plugin Spec</a>
       <a class="doc-link" href="#changelog" data-doc="changelog">Release notes</a>
     </nav>
     <nav aria-label="On this page" id="toc"></nav>
@@ -73,6 +73,8 @@
     <article class="article" id="article"></article>
     <footer class="docs-foot"><span>© 2026 Abu</span><a href="index.html">Home</a><a href="enterprise.html">Enterprise</a><a href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener">GitHub</a><a href="docs.zh-CN.html" lang="zh-CN" onclick="try{localStorage.setItem('abu-lang','zh')}catch(e){}">中文</a></footer>
   </main>
+
+  <nav class="docs-rail" aria-label="On this page" id="contents"></nav>
 </div>
 
 <script src="assets/vendor/marked.umd.js"></script>

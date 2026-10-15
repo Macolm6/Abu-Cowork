@@ -31,8 +31,9 @@ serde_json = "1"
 # Tauri-free `computer_use_impl.rs` via `include!` (see src/cu.rs). Same
 # versions as src-tauri/Cargo.toml.
 base64 = "0.22"
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "tiff"] }
 rusty-leveldb = "4.0.1"
+regex = "1.13.1"
 
 # Accessibility (AXUIElement) — re-hosts src-tauri's Tauri-free AX impl via
 # `include!` (see src/ax.rs). Versions + features copied verbatim from
@@ -57,6 +58,8 @@ tokio = { version = "1", features = ["time"] }
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
 windows = { version = "0.58", features = [
+  "Wdk_Foundation",
+  "Wdk_Storage_FileSystem",
   "Win32_Foundation",
   "Win32_Graphics_Dwm",
   "Win32_Security",
@@ -68,6 +71,7 @@ windows = { version = "0.58", features = [
   "Win32_System_Com",
   "Win32_System_DataExchange",
   "Win32_System_Memory",
+  "Win32_System_IO",
   "Win32_System_Ole",
   "Win32_System_Registry",
   "Win32_System_RemoteDesktop",

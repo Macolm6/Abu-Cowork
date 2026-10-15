@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { useI18n } from '@/i18n';
-import { IconButton } from '@/components/ds/button';
+import { Button, IconButton } from '@/components/ds/button';
 import { useConfirm } from '@/components/ds/confirm-context';
 import { ContextMenu } from '@/components/ds/context-menu';
 import { Icon } from '@/components/ds/icon';
@@ -271,12 +271,13 @@ const TreeRow = memo(function TreeRow({
 });
 
 /**
- * Lightweight, lazily-expanding project file tree for the right-side workspace panel.
- * Deliberately NOT a full IDE explorer: no drag/drop, no multi-select — but each row
- * does support a right-click context menu (reveal in Finder / add to chat / copy path /
- * rename / delete / new file & folder inside a directory), mirroring TRAE Work.
+ * Lightweight, lazily-expanding file tree of the workspace folder: the body of the right
+ * panel's workspace files tab. Deliberately NOT a full IDE explorer: no drag/drop, no
+ * multi-select — but each row does support a right-click context menu (reveal in Finder /
+ * add to chat / copy path / rename / delete / new file & folder inside a directory),
+ * mirroring TRAE Work. `onSelectWorkspace` serves the state with no workspace folder.
  */
-function WorkspaceFileTree() {
+function WorkspaceFileTree({ onSelectWorkspace }: { onSelectWorkspace: () => void }) {
   const { t } = useI18n();
   const confirm = useConfirm();
   const openPreview = usePreviewStore((s) => s.openPreview);
@@ -692,25 +693,29 @@ function WorkspaceFileTree() {
   };
 
   return (
-    <div className="flex flex-col h-full min-h-0 gap-2 mt-3">
-      <div className="flex items-center justify-between shrink-0">
-        <h4 className="text-ui-sm font-medium text-label-tertiary">
-          {t.panel.fileTree.title}
+    <div className="flex h-full min-h-0 flex-col gap-2 px-3 pt-3">
+      <div className="flex shrink-0 items-center gap-1">
+        {/* The tab above already says what this is; the header says which folder. */}
+        <h4 className="min-w-0 flex-1 truncate text-ui-sm font-medium text-label-tertiary">
+          {rootPath ? getBaseName(rootPath) : t.panel.fileTree.title}
         </h4>
         {rootPath && (
-          <Menu
-            align="end"
-            onOpenChange={handleHeaderMenuOpenChange}
-            onCloseAutoFocus={handleHeaderMenuCloseAutoFocus}
-            trigger={<IconButton size="sm" icon={AppIcons.more} label={t.panel.fileTree.moreActions} />}
-          >
-            <MenuItem icon={AppIcons.newFolder} onSelect={() => { pendingActionRef.current = { kind: 'newRootFolder' }; }}>
-              {t.panel.fileTree.newFolder}
-            </MenuItem>
-            <MenuItem icon={AppIcons.fileCreate} onSelect={() => { void handleAddFile(); }}>
-              {t.panel.fileTree.addFile}
-            </MenuItem>
-          </Menu>
+          <>
+            <IconButton size="sm" icon={AppIcons.reload} label={t.panel.fileTree.refresh} onClick={refresh} />
+            <Menu
+              align="end"
+              onOpenChange={handleHeaderMenuOpenChange}
+              onCloseAutoFocus={handleHeaderMenuCloseAutoFocus}
+              trigger={<IconButton size="sm" icon={AppIcons.more} label={t.panel.fileTree.moreActions} />}
+            >
+              <MenuItem icon={AppIcons.newFolder} onSelect={() => { pendingActionRef.current = { kind: 'newRootFolder' }; }}>
+                {t.panel.fileTree.newFolder}
+              </MenuItem>
+              <MenuItem icon={AppIcons.fileCreate} onSelect={() => { void handleAddFile(); }}>
+                {t.panel.fileTree.addFile}
+              </MenuItem>
+            </Menu>
+          </>
         )}
       </div>
 
@@ -726,11 +731,17 @@ function WorkspaceFileTree() {
       )}
 
       {!rootPath ? (
-        <p className="py-1 text-ui-sm text-label-tertiary">{t.panel.fileTree.noWorkspace}</p>
+        <div className="flex flex-col items-start gap-2 py-1">
+          <p className="text-ui-sm text-label-tertiary">{t.panel.fileTree.noWorkspace}</p>
+          <Button size="sm" onClick={onSelectWorkspace}>{t.panel.selectWorkspace}</Button>
+        </div>
       ) : rootMissing ? (
         <p className="py-1 text-ui-sm text-label-tertiary">{t.panel.fileTree.folderDeleted}</p>
       ) : rootError ? (
-        <p className="py-1 text-ui-sm text-label-tertiary">{t.panel.fileTree.loadError}</p>
+        <div className="flex flex-col items-start gap-2 py-1">
+          <p className="text-ui-sm text-label-tertiary">{t.panel.fileTree.loadError}</p>
+          <Button size="sm" onClick={refresh}>{t.panel.fileTree.refresh}</Button>
+        </div>
       ) : isRootLoading && rootEntries.length === 0 ? (
         <p className="py-1 text-ui-sm text-label-tertiary">{t.panel.fileTree.loading}</p>
       ) : rootEntries.length === 0 ? (
@@ -764,6 +775,6 @@ function WorkspaceFileTree() {
   );
 }
 
-// The sidebar renders again for every streamed character; the tree takes no props, so
-// none of that reaches it.
+// A folder can hold thousands of rows; the tree takes one stable callback, so a render of
+// the panel around it does not reach them.
 export default memo(WorkspaceFileTree);

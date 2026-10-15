@@ -668,8 +668,9 @@ function readWindowMaterial() {
 let quitParticipant = null;
 let quitRequest = null;
 ipcRenderer.on('abu:quit-prepare', async (_event, id) => {
-  if (!quitParticipant || quitRequest) throw new Error('Exit preparation participant is unavailable');
-  const request = { id, cancelled: false, release: null, cancel: null, inert: document.body.inert };
+  if (!quitParticipant || (quitRequest && !quitRequest.failed)) throw new Error('Exit preparation participant is unavailable');
+  const previous = quitRequest;
+  const request = { id, cancelled: false, failed: false, release: null, cancel: null, inert: previous?.inert ?? document.body.inert };
   quitRequest = request;
   document.body.inert = true;
   const release = () => {
@@ -684,11 +685,16 @@ ipcRenderer.on('abu:quit-prepare', async (_event, id) => {
     request.cancel = callback;
     if (request.cancelled) callback();
   };
-  const [result] = await Promise.allSettled([quitParticipant(onCancel)]);
+  const preparation = quitParticipant(onCancel);
+  // A retry acquires its task barrier before releasing the failed attempt's.
+  previous?.cancel?.();
+  previous?.release?.();
+  const [result] = await Promise.allSettled([preparation]);
+  request.failed = result.status === 'rejected';
   if (result.status === 'fulfilled') request.release = result.value;
   if (request.cancelled) { release(); return; }
   const accepted = await ipcRenderer.invoke('abu:quit-ack', { id, success: result.status === 'fulfilled' });
-  if (!accepted || result.status === 'rejected' || request.cancelled) release();
+  if (!accepted || request.cancelled) { request.cancel?.(); release(); }
 });
 ipcRenderer.on('abu:quit-cancel', (_event, id) => {
   if (!quitRequest || quitRequest.id !== id) return;
@@ -700,10 +706,10 @@ ipcRenderer.on('abu:quit-cancel', (_event, id) => {
 });
 
 contextBridge.exposeInMainWorld('__ABU_SHELL__', {
-  registerQuitParticipant: async (participant, failureMessage) => {
+  registerQuitParticipant: async (participant, failureMessage, dialogText) => {
     if (typeof participant !== 'function' || quitParticipant) throw new Error('Invalid exit preparation participant');
     quitParticipant = participant;
-    await ipcRenderer.invoke('abu:quit-register', failureMessage);
+    await ipcRenderer.invoke('abu:quit-register', failureMessage, dialogText);
   },
   mainSupervisesSidecar: true,
   deepLinkScheme: readDeepLinkScheme(),
@@ -719,6 +725,7 @@ contextBridge.exposeInMainWorld('__ABU_SHELL__', {
   speech: invokeSpeech,
   subscribeSpeechEvents,
   pluginOperation: (action, request) => ipcRenderer.invoke('abu:plugin-operation', { action, request }),
+  fileOperation: (action, request) => ipcRenderer.invoke('abu:file-operation', { action, request }),
   canonicalizePathForPolicy: (path, followFinalSymlink = true) => ipcRenderer.invoke(
     FS_CANONICALIZE_FOR_POLICY_CHANNEL,
     { path, followFinalSymlink },

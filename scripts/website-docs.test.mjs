@@ -12,7 +12,9 @@ const mirroredDocs = [
   'Installation-Guide.md',
   'Installation-Guide.zh-CN.md',
   'app-spec.md',
+  'app-spec.en.md',
   'plugin-spec.md',
+  'plugin-spec.en.md',
 ];
 
 const publicDocs = [
@@ -68,17 +70,45 @@ test('documentation viewer reads each language from its own files', () => {
     'docs/browser-bridge-vs-playwright.md',
     'docs/app-spec.md',
     'docs/plugin-spec.md',
+    'docs/app-spec.en.md',
+    'docs/plugin-spec.en.md',
   ]) {
     assert.ok(viewer.includes(`file: '${file}'`), `viewer does not read ${file}`);
     assert.ok(fs.existsSync(path.join(root, 'website', file)), `website/${file} is missing`);
   }
 });
 
+test('the deployment puts both changelogs where the viewer reads them', () => {
+  const workflow = read('.github/workflows/deploy-website.yml');
+  const viewer = read('website/docs.js');
+
+  // The web server serves no file named CHANGELOG.md, so the copies are named release-notes*.md.
+  for (const [source, copy] of [['CHANGELOG.md', 'release-notes.md'], ['CHANGELOG.zh-CN.md', 'release-notes.zh-CN.md']]) {
+    assert.ok(workflow.includes(`cp ${source} website/docs/${copy}`), `the deployment copies ${source} to website/docs/${copy}`);
+    assert.ok(workflow.indexOf(`cp ${source}`) < workflow.indexOf('rsync -avz'), 'the copy runs before the upload');
+    assert.ok(workflow.includes(`      - '${source}'`), `a change to ${source} on main deploys the site`);
+    assert.ok(viewer.includes(`changelog: 'docs/${copy}'`), `viewer does not read docs/${copy}`);
+  }
+  assert.ok(!viewer.includes("docs/CHANGELOG"), 'the viewer reads the copies only');
+});
+
+test('every changelog section is a version the viewer can list, or the unreleased one', () => {
+  const versionHeading = /^## v\d+\.\d+\.\d+ · \d{4}-\d{2}-\d{2}$/;
+  for (const [name, unreleased] of [['CHANGELOG.md', '## Unreleased'], ['CHANGELOG.zh-CN.md', '## 未发布']]) {
+    const sections = read(name).split('\n').filter((line) => line.startsWith('## '));
+    assert.ok(sections.length > 1, `${name} has no version sections`);
+    for (const heading of sections) {
+      assert.ok(heading === unreleased || versionHeading.test(heading), `${name}: unexpected section heading "${heading}"`);
+    }
+  }
+});
+
 test('documentation viewer keeps cross-guide links in the viewer', () => {
   const viewer = read('website/docs.js');
 
-  assert.match(viewer, /const file = href\.split\('#'\)\[0\]\.replace\('\.zh-CN\.md', '\.md'\)/);
-  assert.match(viewer, /candidate\.file\.replace\('\.zh-CN\.md', '\.md'\)\.endsWith\('\/' \+ file\)/);
+  assert.ok(viewer.includes("return file.replace(/\\.(?:zh-CN|en)\\.md$/, '.md');"));
+  assert.ok(viewer.includes("const file = plainName(href.split('#')[0]);"));
+  assert.ok(viewer.includes("plainName(candidate.file).endsWith('/' + file)"));
   assert.match(viewer, /link\.setAttribute\('href', '#' \+ target\[0\]\)/);
 });
 

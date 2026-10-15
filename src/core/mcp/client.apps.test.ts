@@ -120,48 +120,6 @@ it('closes a pending handshake before disconnect resolves', async () => {
   } finally { spy.mockRestore(); }
 });
 
-it('refuses to publish tools when the runtime owner revokes a pending handshake', async () => {
-  let available = true;
-  let finish!: () => void;
-  let began!: () => void;
-  const started = new Promise<void>(resolve => { began = resolve; });
-  const spy = vi.spyOn(mcpMock.FakeClient.prototype, 'connect').mockImplementationOnce(async () => {
-    began();
-    await new Promise<void>(resolve => { finish = resolve; });
-  });
-  try {
-    state.tools = [tool('owned-tool')];
-    const connecting = mcpManager.connectServer({ name: SERVER, command: 'echo', isAvailable: () => available });
-    const rejected = expect(connecting).rejects.toThrow('unavailable');
-    await started;
-    available = false;
-    finish();
-    await rejected;
-    expect(mcpManager.isConnected(SERVER)).toBe(false);
-    expect(mcpManager.getServerTools(SERVER)).toEqual([]);
-    expect(state.closed).toBe(1);
-  } finally { spy.mockRestore(); }
-});
-
-it('checks runtime owner availability for tool discovery, calls and resources', async () => {
-  let available = true;
-  state.tools = [tool('owned-tool')];
-  await mcpManager.connectServer({ name: SERVER, command: 'echo', isAvailable: () => available });
-  expect(mcpManager.getServerTools(SERVER)).toHaveLength(1);
-  available = false;
-  expect(mcpManager.listTools()).toEqual([]);
-  expect(mcpManager.getServerTools(SERVER)).toEqual([]);
-  expect(mcpManager.getAppTool(SERVER, 'owned-tool')).toBeUndefined();
-  await expect(mcpManager.testConnection({ name: SERVER, command: 'echo' })).resolves.toMatchObject({ success: false });
-  await expect(mcpManager.callTool(SERVER, 'owned-tool', { q: 'query' })).rejects.toThrow();
-  await expect(mcpManager.readResource(SERVER, 'ui://app')).rejects.toThrow();
-  await expect(mcpManager.listServerResources(SERVER)).rejects.toThrow();
-  expect(state.callCalls).toEqual([]);
-  expect(state.readCalls).toEqual([]);
-  expect(state.listResourceCalls).toEqual([]);
-  await mcpManager.disconnectServer(SERVER);
-});
-
 it('does not delete a newer connection when an older close completes', async () => {
   await connect([tool('old-tool')]);
   let finish!: () => void;

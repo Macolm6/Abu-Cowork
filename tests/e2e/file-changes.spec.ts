@@ -170,6 +170,35 @@ function stepDiffRows(page: Page, kind?: 'added' | 'deleted' | 'context'): Locat
     .and(page.locator(':not([role="tabpanel"] *)'));
 }
 
+function findLedgers(dir: string): string[] {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const entryPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) return findLedgers(entryPath);
+    return entry.name === 'messages.jsonl' ? [entryPath] : [];
+  });
+}
+
+/**
+ * What the conversation record on disk holds of one turn: the run state of the
+ * user message with `prompt`, and whether an assistant message carries `reply`.
+ * Each message counts as its last ledger revision has it.
+ */
+function turnOnDisk(rootDir: string, prompt: string, reply: string): { runState: string | null; replySaved: boolean } {
+  const rows = new Map<string, { role?: string; content?: unknown; runState?: string }>();
+  for (const ledger of findLedgers(rootDir)) {
+    for (const line of fs.readFileSync(ledger, 'utf8').split('\n')) {
+      if (!line) continue;
+      const row = JSON.parse(line) as { id?: string; role?: string; content?: unknown; runState?: string };
+      if (row.id) rows.set(row.id, row);
+    }
+  }
+  const saved = [...rows.values()];
+  return {
+    runState: saved.find((row) => row.role === 'user' && row.content === prompt)?.runState ?? null,
+    replySaved: saved.some((row) => row.role === 'assistant' && JSON.stringify(row.content).includes(reply)),
+  };
+}
+
 async function reopenConversation(prompt = PROMPT): Promise<Page> {
   await closeAbuElectron(app!);
   app = (await launchAbuElectron(dataRoot!)).app;
@@ -308,6 +337,11 @@ test('a turn that changed one file titles its card by the file name, compares th
   await composer.fill(secondPrompt);
   await composer.press('Enter');
   await expect(page.getByText(secondReply)).toBeVisible({ timeout: REPLY_TIMEOUT });
+  // The reply is on the page before its turn has ended and been saved; the
+  // restart reads the record, so it waits for the record to hold the finished turn.
+  await expect
+    .poll(() => turnOnDisk(dataRoot!.rootDir, secondPrompt, secondReply), { timeout: RECORD_TIMEOUT })
+    .toEqual({ runState: 'completed', replySaved: true });
   // Read from disk again, the conversation still has the one card, and it sits above the second reply.
   const reopened = await reopenConversation(PROMPT);
   await expect(reopened.getByText(secondReply)).toBeVisible();
@@ -372,9 +406,13 @@ test('files a command created, modified and deleted are listed by status after t
   test.setTimeout(200_000);
   const { page, workspace } = await launchInProject(
     (folder) => [
-      commandCall('call-make-sheet', "printf 'sheet' > 报表.xlsx"),
-      commandCall('call-change-contract', "printf 'second version' > 合同.docx"),
-      commandCall('call-remove-draft', 'unlink 旧稿.md'),
+      commandCall('call-make-sheet', process.platform === 'win32'
+        ? "Set-Content -LiteralPath '报表.xlsx' -Value 'sheet' -NoNewline -Encoding Ascii"
+        : "printf 'sheet' > 报表.xlsx"),
+      commandCall('call-change-contract', process.platform === 'win32'
+        ? "Set-Content -LiteralPath '合同.docx' -Value 'second version' -NoNewline -Encoding Ascii"
+        : "printf 'second version' > 合同.docx"),
+      commandCall('call-remove-draft', process.platform === 'win32' ? "Remove-Item -LiteralPath '旧稿.md'" : 'unlink 旧稿.md'),
       editFileCall('call-edit-plan', path.join(folder, '方案.md'), '目标甲', '目标一'),
       { kind: 'tool-call', toolCallId: 'call-present', toolName: 'present_files', arguments: { files: [{ path: '方案.md', description: '改好的方案' }] } },
       finalReply(),
@@ -386,7 +424,12 @@ test('files a command created, modified and deleted are listed by status after t
     },
   );
 
-  await runTurn(page);
+  const completed = runTurn(page);
+  if (process.platform === 'win32') {
+    await expect(page.getByRole('heading', { name: '操作确认', exact: true })).toBeVisible({ timeout: REPLY_TIMEOUT });
+    await page.getByRole('button', { name: '确认执行', exact: true }).click();
+  }
+  await completed;
   expect(fs.readFileSync(path.join(workspace, '报表.xlsx'), 'utf8')).toBe('sheet');
   expect(fs.readFileSync(path.join(workspace, '合同.docx'), 'utf8')).toBe('second version');
   expect(fs.existsSync(path.join(workspace, '旧稿.md'))).toBe(false);
