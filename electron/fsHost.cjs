@@ -108,7 +108,7 @@ function openForPluginWrite(resolved, options) {
   return fs.openSync(resolved, append ? 'a' : 'w', mode);
 }
 
-function openExclusiveSibling(parent, prefix) {
+function openExclusiveSibling(parent, prefix, fileMode = 0o600) {
   const flags =
     fs.constants.O_WRONLY |
     fs.constants.O_CREAT |
@@ -117,7 +117,7 @@ function openExclusiveSibling(parent, prefix) {
   for (let attempt = 0; attempt < 32; attempt++) {
     const candidate = path.join(parent, `${prefix}.${crypto.randomBytes(16).toString('hex')}`);
     try {
-      return { path: candidate, fd: fs.openSync(candidate, flags, 0o600) };
+      return { path: candidate, fd: fs.openSync(candidate, flags, fileMode) };
     } catch (err) {
       if (!err || err.code !== 'EEXIST') throw err;
     }
@@ -212,6 +212,58 @@ function writeAtomic(target, content) {
     }
     throw err;
   }
+}
+
+/**
+ * Publishes `content` as the whole of `target`: it is written to a sibling
+ * temp file and synced, then made the target in one step, so a reader sees the
+ * file as it was or with all of `content`, never a part.
+ *   - 'replace': `target` must be a regular file now (a symlink is refused);
+ *     the new file keeps its permission bits and takes its place by rename.
+ *   - 'create': nothing may be at `target`; the temp file is hard-linked
+ *     there, which fails with EEXIST when a file appeared meanwhile, and it
+ *     gets the permissions a newly created file gets.
+ * On any failure before that step the temp file is removed and `target` is
+ * left as it was.
+ * @param {string} target absolute, already scope-checked
+ * @param {Buffer} content
+ * @param {'replace' | 'create'} mode
+ */
+function writeFileAtomic(target, content, mode) {
+  const parent = path.dirname(target);
+  let keptMode;
+  if (mode === 'replace') {
+    const info = fs.lstatSync(target);
+    if (!info.isFile()) throw new Error(`fs: not a regular file: ${target}`);
+    keptMode = info.mode & 0o7777;
+  }
+  // 0o666 is the mode open() asks for a new file; the process umask applies to it.
+  const tmp = openExclusiveSibling(parent, `.${path.basename(target)}.tmp.${process.pid}`, keptMode ?? 0o666);
+  try {
+    writeAll(tmp.fd, content);
+    if (keptMode !== undefined) fs.fchmodSync(tmp.fd, keptMode);
+    fs.fsyncSync(tmp.fd);
+    fs.closeSync(tmp.fd);
+    tmp.fd = undefined;
+    if (mode === 'replace') fs.renameSync(tmp.path, target);
+    else fs.linkSync(tmp.path, target);
+  } catch (err) {
+    if (tmp.fd !== undefined) {
+      try {
+        fs.closeSync(tmp.fd);
+      } catch {
+        /* already closed */
+      }
+    }
+    try {
+      fs.rmSync(tmp.path, { force: true });
+    } catch {
+      /* temp may not exist */
+    }
+    throw err;
+  }
+  // The target holds the content now; the temp name is only a second link to it.
+  if (mode === 'create') fs.rmSync(tmp.path, { force: true });
 }
 
 /**
@@ -672,6 +724,13 @@ function fsDispatch(app, cmd, payload) {
         resolveScoped(app, a.path, undefined),
         Buffer.isBuffer(body) ? body : String(a.content),
       );
+      return null;
+    }
+
+    case 'write_file_atomic': {
+      // securityBoundary.validateAtomicFileWrite gave the decoded path, the
+      // mode and the bytes as a Buffer.
+      writeFileAtomic(resolveScoped(app, a.path, undefined), body, a.mode);
       return null;
     }
 
