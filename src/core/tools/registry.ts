@@ -129,10 +129,13 @@ export function getToolLabsGateId(name: string): string | undefined {
 import {
   beginToolOperationAuthorization,
   captureFilePlanningGuard,
+  captureFileOperationOwner,
+  requiresHostFileOperations,
   freezeToolInput,
   type OperationAuthorizationDecision,
 } from './operationAuthorization';
-import { finalizeToolApproval, rememberToolApproval, filesForToolApproval, releaseToolApproval } from './approvalFinalization';
+import { finalizeToolApproval, rememberToolApproval, filesForToolApproval, scopeForToolApproval, releaseToolApproval } from './approvalFinalization';
+import { snapshotToolOutputs, type OutputCapture } from '../session/outputSnapshots';
 import { FileOperationDenied, type ToolFileAccess } from '@/core/tools/fileOperation';
 import { uint8ArrayToBase64 } from '@/core/tools/helpers/toolHelpers';
 import { hasToolFileTargets, planToolFiles } from '@/core/tools/fileToolTargets';
@@ -2432,6 +2435,7 @@ export async function checkToolApproval(
       input: executionInput ?? input,
       files: retainFileAccess ? files : undefined,
       release: retainFileAccess ? () => disposeAuthorizationScope(teamFileScope) : undefined,
+      getScopeId: () => teamFileScope ?? toolContext?.authorizationScopeId,
       recordDenial: recordOperationDenial,
       checkPermissions: recheckBrowserPermission,
       reportConsent: () => {
@@ -2578,7 +2582,11 @@ export async function executeAnyTool(
   /** Current context window usage (0-100). Scales truncation limits under pressure. */
   contextUsagePercent?: number
 ): Promise<ToolResult> {
-  if (toolContext) toolContext = { ...toolContext, files: undefined };
+  if (toolContext || requiresHostFileOperations()) toolContext = {
+    ...toolContext, files: undefined,
+    operationOwner: toolContext?.operationOwner ?? captureFileOperationOwner(),
+  };
+  const outputPlanning = requiresHostFileOperations() ? captureFilePlanningGuard() : undefined;
   const throwIfAborted = (): void => {
     if (!toolContext?.abortSignal?.aborted) return;
     const error = new Error('Tool execution aborted');
@@ -2586,12 +2594,22 @@ export async function executeAnyTool(
     throw error;
   };
 
-  throwIfAborted();
   // P1-3d-3: approval chain extracted to checkToolApproval — see its doc.
   // Behavior-preserving: same deny-reason strings, same order, same callbacks.
-  let approval = await checkToolApproval(name, input, toolContext, onRequireConfirmation, onRequireFilePermission, true);
-  const initialApproval = approval;
+  let initialApproval: ToolApprovalDecision | undefined;
+  let outputCapture: OutputCapture | undefined;
+  const assertOutputCurrent = (): void => {
+    throwIfAborted();
+    outputPlanning?.assertCurrent();
+    if (outputCapture && toolContext?.operationOwner && !toolContext.operationOwner.isCurrent()) {
+      throw new FileOperationDenied('Error: output capture owner changed');
+    }
+  };
   try {
+  try {
+  throwIfAborted();
+  let approval = await checkToolApproval(name, input, toolContext, onRequireConfirmation, onRequireFilePermission, true);
+  initialApproval = approval;
   while (true) {
     const finalized = finalizeToolApproval(approval);
     if (finalized instanceof Promise) {
@@ -2619,12 +2637,33 @@ export async function executeAnyTool(
     ? { ...input, path: approval.executionPath }
     : input);
 
+  const captureOutputs = async (result: ToolResult): Promise<void> => {
+    if (!outputPlanning) return;
+    toolContext?.reportMetadata?.({ outputSnapshotsHandled: true });
+    const assertActive = () => {
+      outputPlanning.assertCurrent();
+      throwIfAborted();
+      if (toolContext?.operationOwner && !toolContext.operationOwner.isCurrent()) {
+        throw new FileOperationDenied('Error: output capture owner changed');
+      }
+    };
+    assertActive();
+    if (!toolContext?.conversationId) return;
+    outputCapture = await snapshotToolOutputs(toolContext.conversationId, {
+      id: toolContext.toolCallId ?? '', name, input: executionInput,
+      result: browserSignalToolResultToString(result),
+    }, toolContext.workspacePath, {
+      ...toolContext, authorizationScopeId: scopeForToolApproval(initialApproval!),
+    }, { assertCurrent: async () => { assertActive(); }, assertActive }) ?? undefined;
+  };
+
   // First check builtin tools. A Labs-gated-off tool stays in the registry but
   // is treated as absent here too, so a stale/hallucinated tool_use falls
   // through to the "Unknown tool" fail-safe instead of silently executing.
   if (toolRegistry.has(name) && !isToolGatedOff(name)) {
     const result = await toolRegistry.execute(name, executionInput, toolContext);
     await files?.assertCurrent();
+    await captureOutputs(result);
     // Only truncate string results; rich content (images) passes through
     if (typeof result === 'string') {
       // File-tool OS-permission errors get a friendly grant-guide (not
@@ -2755,6 +2794,7 @@ export async function executeAnyTool(
         result = `${result}\n\n${getI18n().commandConfirm.browserLoginRequiredHint}`;
       }
       // Only truncate string results; rich content (images) passes through
+      await captureOutputs(result);
       if (typeof result === 'string') {
         return truncateToolResult(name, result, contextUsagePercent);
       }
@@ -2763,11 +2803,21 @@ export async function executeAnyTool(
   }
 
   return unknownToolResult(name, toolContext);
+  } finally {
+    let completed = false;
+    try {
+      if (initialApproval) await releaseToolApproval(initialApproval);
+      assertOutputCurrent();
+      completed = true;
+      await outputCapture?.commit();
+    } finally {
+      outputPlanning?.dispose();
+      if (!completed) await outputCapture?.rollback();
+    }
+  }
   } catch (error) {
     if (error instanceof FileOperationDenied) return error.message;
     throw error;
-  } finally {
-    await releaseToolApproval(initialApproval);
   }
 }
 

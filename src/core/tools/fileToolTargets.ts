@@ -22,7 +22,7 @@ const singlePurposes: Readonly<Record<string, FileAccessPurpose>> = {
 };
 
 export function requiresHostFileExecution(name: string): boolean {
-  return requiresHostFileOperations() && hasToolFileTargets(name);
+  return requiresHostFileOperations() && (hasToolFileTargets(name) || name === TOOL_NAMES.RUN_COMMAND);
 }
 
 export function hasToolFileTargets(name: string): boolean {

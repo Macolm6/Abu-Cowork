@@ -29,6 +29,8 @@ export interface ToolFileAccess {
   readonly executionInput: Readonly<Record<string, unknown>>;
   /** The approved lexical path for a target whose execution path follows links. */
   originalPath(path: string): string;
+  /** Returns an approved alias only when this operation already owns the target. */
+  originalPathIfKnown?(path: string): string | undefined;
   prepare(): Promise<void>;
   assertCurrent(): Promise<void>;
   /** Check cancellation synchronously immediately before starting external I/O. */

@@ -1445,6 +1445,21 @@ describe('agentLoopHost', () => {
       expect(reportMetadata).toHaveBeenCalledWith({ subagentStopReason: 'max_turns' });
     });
 
+    it('preserves the trusted host output-capture receipt across reverse tool invocation', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      mockSendRequest({ toolInvokeResult: { result: 'captured', metadata: { outputSnapshotsHandled: true } } });
+      const reportMetadata = vi.fn();
+      await withToolInvoker(invoker => invoker.executeAnyTool('run_command', { command: 'report' }, undefined, undefined, { reportMetadata }));
+      expect(reportMetadata).toHaveBeenCalledWith({ outputSnapshotsHandled: true });
+    });
+
+    it('rejects an invalid output-capture receipt', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      mockSendRequest({ toolInvokeResult: { result: 'captured', metadata: { outputSnapshotsHandled: 'true' } } });
+      await expect(withToolInvoker(invoker => invoker.executeAnyTool('run_command', { command: 'report' })))
+        .rejects.toThrow('Invalid output capture metadata');
+    });
+
     it('replays a validated file change metadata envelope into the original tool context', async () => {
       hasLocalToolMock.mockReturnValue(false);
       const fileChange = {

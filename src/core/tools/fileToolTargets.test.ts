@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { planToolFiles, resolveToolFileInput, hasToolFileTargets } from './fileToolTargets';
+import { planToolFiles, resolveToolFileInput, hasToolFileTargets, requiresHostFileExecution } from './fileToolTargets';
+import { setToolAuthorizationProvider } from './operationAuthorization';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { homeDir } from '@tauri-apps/api/path';
 
@@ -16,11 +17,18 @@ beforeEach(() => {
   useWorkspaceStore.setState({ currentPath: null });
 });
 afterEach(() => {
+  setToolAuthorizationProvider(null);
   vi.useRealTimers();
   useWorkspaceStore.setState({ currentPath: workspace });
 });
 
 describe('declared tool file targets', () => {
+  it('routes command output capture to the host without inventing command file targets', () => {
+    setToolAuthorizationProvider({ requiresHostFiles: true, begin: () => { throw new Error('No authorization requested'); } });
+    expect(requiresHostFileExecution('run_command')).toBe(true);
+    expect(hasToolFileTargets('run_command')).toBe(false);
+    expect(requiresHostFileExecution('web_search')).toBe(false);
+  });
   it('normalizes the full path and preserves every input field in a frozen request', async () => {
     const content = `${'padding '.repeat(100)}complete content`;
     const input = { path: ' ./reports/../report.txt ', content, options: { values: ['original'] } };

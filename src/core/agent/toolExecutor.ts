@@ -642,7 +642,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       // Uses the un-offloaded toolResult so extractFileOutputs can still parse stdout.
       if (!error && matchedTc) {
         const workspacePath = getConversationReader().getConversation(conversationId)?.workspacePath ?? null;
-        import('../session/outputSnapshots').then(({ snapshotToolOutputs }) => {
+        if (!metadata?.outputSnapshotsHandled) import('../session/outputSnapshots').then(({ snapshotToolOutputs }) => {
           snapshotToolOutputs(conversationId, {
             id,
             name: matchedTc.name,
@@ -656,9 +656,9 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
           // A scoped/background run must not re-read a user path after its
           // authority owner can be released. Persist the immutable bytes the
           // tool already returned and join that internal write before the
-          // batch settles. Foreground runs retain the existing non-blocking
-          // path-copy behavior.
-          const sourcePath = !isScopedRun
+          // batch settles. Runs without host output capture retain the
+          // existing non-blocking path-copy behavior.
+          const sourcePath = !isScopedRun && !metadata?.outputSnapshotsHandled
             && matchedTc.name === TOOL_NAMES.READ_FILE
             && typeof matchedTc.input.path === 'string'
             ? matchedTc.input.path
@@ -669,7 +669,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
           if (!isPersistedExplicitScreenshot) {
             const snapshotPromise = snapshotResultImage(conversationId, id, image, sourcePath)
               .catch((e) => logger.warn('snapshot tool result image failed', { tool: matchedTc.name, err: e }));
-            if (isScopedRun) {
+            if (isScopedRun || metadata?.outputSnapshotsHandled) {
               await snapshotPromise;
             } else {
               void snapshotPromise;

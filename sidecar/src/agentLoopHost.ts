@@ -317,6 +317,10 @@ function parseToolExecutionMetadata(
   if (value === undefined) return undefined;
   if (!isRecord(value)) throw new RpcError(-32603, 'Invalid tool.invoke metadata envelope');
   const metadata: ToolExecutionMetadata = {};
+  if (value.outputSnapshotsHandled !== undefined) {
+    if (typeof value.outputSnapshotsHandled !== 'boolean') throw new RpcError(-32603, 'Invalid output capture metadata');
+    metadata.outputSnapshotsHandled = value.outputSnapshotsHandled;
+  }
   if (value.subagentStopReason !== undefined) {
     if (!isSubagentStopReason(value.subagentStopReason)) {
       throw new RpcError(-32603, 'Invalid tool.invoke subagent metadata envelope');

@@ -136,6 +136,8 @@ export interface ComputerStepReport {
 }
 
 export interface ToolExecutionMetadata {
+  /** Trusted host has joined output capture within the original operation. */
+  outputSnapshotsHandled?: boolean;
   sandboxRecovery?: SandboxRecoveryPayload;
   /** Trusted computer tool: how this step ended, for the run report card. */
   computerStep?: ComputerStepReport;

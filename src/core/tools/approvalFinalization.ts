@@ -10,6 +10,7 @@ interface ApprovalOperation {
   checkPermissions?: () => ToolApprovalDecision | null | Promise<ToolApprovalDecision | null>;
   files?: ToolFileAccess;
   release?: () => void;
+  getScopeId?: () => string | undefined;
 }
 
 const operations = new WeakMap<ToolApprovalDecision, ApprovalOperation>();
@@ -20,6 +21,10 @@ export function rememberToolApproval(decision: ToolApprovalDecision, operation: 
 
 export function filesForToolApproval(decision: ToolApprovalDecision): ToolFileAccess | undefined {
   return operations.get(decision)?.files;
+}
+
+export function scopeForToolApproval(decision: ToolApprovalDecision): string | undefined {
+  return operations.get(decision)?.getScopeId?.();
 }
 
 export async function releaseToolApproval(decision: ToolApprovalDecision): Promise<void> {
