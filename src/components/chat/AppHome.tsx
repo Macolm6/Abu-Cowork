@@ -14,6 +14,7 @@ import { usePluginStore } from '@/stores/pluginStore';
 import { getComposerDraftKey, getComposerDraftScopeForEnterpriseMode, readComposerDraft, writeComposerDraft } from '@/stores/composerDraftStore';
 import { mergeDraftPrefill } from '@/utils/inputCommand';
 import { agentRegistry } from '@/core/agent/registry';
+import { prepareEnterpriseAppSkill, useEnterpriseAppSkillRevision } from '@/core/enterprise/appRuntime';
 import { prepareExpertEntry } from '@/core/team/expertEntry';
 import { expertIdentity, teamIdentity } from '@/core/team/expertContact';
 import { localizedTeam } from '@/core/team/localizedTeam';
@@ -57,6 +58,7 @@ function useAppHomeState(app: AppDefinition): { mode: AppMode; expandedScene: Ap
  * deleted since the app was added shows on the card at once.
  */
 function useResolvedRuns(app: AppDefinition): (scene: AppScene | undefined) => ResolvedRun | undefined {
+  useEnterpriseAppSkillRevision();
   const teams = useTeamStore((s) => s.teams);
   const managedTeamSources = useTeamStore((s) => s.managedTeamSources);
   const agents = useDiscoveryStore((s) => s.agents);
@@ -83,6 +85,8 @@ export default function AppHome({ app, onPlaceholderChange }: {
   const installed = usePluginStore((s) => s.installed);
   const resolved = useResolvedRuns(app);
   const defaultTeamId = resolvedTeamId(resolved(undefined));
+  const pendingAppBinding = useChatStore((s) => s.pendingAppBinding);
+  const binding = useMemo(() => buildAppBinding(app, mode, expandedScene), [app, mode, expandedScene]);
   // The home shows with no conversation and nothing holds a binding for the next one: a new
   // task was started with the home already in view (the sidebar's 新任务, the title bar's, a
   // project that was just created), which clears what the store held ready.
@@ -94,16 +98,20 @@ export default function AppHome({ app, onPlaceholderChange }: {
     return () => onPlaceholderChange(null);
   }, [app, expandedScene, onPlaceholderChange]);
 
-  // The mode and the expanded scene decide the binding the next conversation is
-  // created with. Text the user writes themselves goes to the app's default
-  // team (product spec §5.4): both are put in place whenever the home comes
-  // into view, changes mode or scene, or finds them cleared, and a template
-  // replaces the team with whoever that scene names.
+  // Refresh the app snapshot independently of explicit owner choices. App
+  // defaults can resolve later, after the team directory has loaded.
   useEffect(() => {
     const chat = useChatStore.getState();
-    chat.setPendingAppBinding(buildAppBinding(app, mode, expandedScene));
-    chat.setPendingTeamId(defaultTeamId);
-  }, [app, mode, expandedScene, defaultTeamId, picksCleared]);
+    if (chat.activeConversationId !== null) return;
+    const previous = chat.pendingAppBinding;
+    const sameContext = previous !== undefined && binding !== undefined
+      && previous.appId === binding.appId && previous.modeId === binding.modeId && previous.sceneId === binding.sceneId;
+    const hasExplicitOwner = chat.pendingOwnerSource === 'user' || chat.pendingTeamId !== undefined || chat.pendingAgentName !== null;
+    if (previous !== binding) chat.setPendingAppBinding(binding);
+    if (sameContext ? chat.pendingOwnerSource === 'app' : previous || !hasExplicitOwner) {
+      chat.setPendingTeamId(defaultTeamId, 'app');
+    }
+  }, [binding, defaultTeamId, pendingAppBinding, picksCleared]);
 
   // `requiredConnectors` names `<plugin>/<connector>`; the connector the user
   // sees is the one that plugin's install registered under that name.
@@ -116,7 +124,7 @@ export default function AppHome({ app, onPlaceholderChange }: {
   return (
     <div data-testid="app-home" data-app-id={app.appId} className="w-full">
       <div className="text-center mb-6">
-        <AppLogo name={resolveText(app.name)} logo={app.logo} logoDark={app.logoDark} icon={app.icon} size="xl" className="mx-auto mb-4 rounded-window" />
+        <AppLogo name={resolveText(app.name)} logo={app.logo} logoDark={app.logoDark} icon={app.icon} size="xl" className="mx-auto mb-4 rounded-panel" />
         <h1 className="mb-2 text-title-lg text-label" data-testid="app-home-title">{appHomeTitle(app, locale)}</h1>
         {app.config.home.header?.slogan && <p className="text-ui text-label-secondary">{resolveText(app.config.home.header.slogan)}</p>}
       </div>
@@ -146,6 +154,11 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
   const [preparation, setPreparation] = useState<Record<string, { state: 'busy' | 'failed'; name: string }>>({});
   // The scenes whose template is being handed over: one start per scene at a time.
   const startingRef = useRef(new Set<string>());
+  const contextRevision = useRef(0);
+  useEffect(() => {
+    contextRevision.current += 1;
+    return () => { contextRevision.current += 1; };
+  }, [app.appId, app.version, mode.modeId, visible]);
 
   const describeRun = (scene: AppScene): { label: string; avatar: ReactNode; unavailable: boolean } => {
     const resolved = resolvedRun(scene);
@@ -166,7 +179,8 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
    * runs again from the repair's callback, and the plugin it installed has to
    * count.
    */
-  const startFromTemplate = async (scene: AppScene, prompt: string): Promise<void> => {
+  const startFromTemplate = async (scene: AppScene, prompt: string, isCurrent: () => boolean): Promise<void> => {
+    if (!isCurrent()) return;
     const run = effectiveRun(app, scene);
     const resolved = run ? resolveRun(app, run, liveRefCatalog()) : undefined;
     const chat = useChatStore.getState();
@@ -174,7 +188,7 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
     if (targets.some((target) => target.status === 'needs-plugin')) {
       // A plugin the scene needs was removed since the app was added: the
       // same confirmation as adding the app, then the scene starts.
-      await useAppAddFlowStore.getState().repair(app, () => { void startFromTemplate(scene, prompt); });
+      await useAppAddFlowStore.getState().repair(app, () => { void startFromTemplate(scene, prompt, isCurrent); });
       return;
     }
     const unprepared = targets.find((target) => target.status === 'needs-preparation');
@@ -183,17 +197,20 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
       setPreparation((current) => ({ ...current, [scene.id]: { state: 'busy', name } }));
       try {
         for (const roleId of unprepared.roleIds) await agentRegistry.prepareManagedAgent(roleId);
+        if (unprepared.skillName) await prepareEnterpriseAppSkill(unprepared.skillName);
       } catch (error) {
+        if (!isCurrent()) return;
         reportAppFailure('prepare scene', error);
         setPreparation((current) => ({ ...current, [scene.id]: { state: 'failed', name } }));
         return;
       }
+      if (!isCurrent()) return;
       setPreparation((current) => {
         const next = { ...current };
         delete next[scene.id];
         return next;
       });
-      await startFromTemplate(scene, prompt);
+      await startFromTemplate(scene, prompt, isCurrent);
       return;
     }
     if (targets.some((target) => target.status === 'unavailable')) return;
@@ -223,7 +240,23 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
   const start = (scene: AppScene, prompt: string) => {
     if (startingRef.current.has(scene.id)) return;
     startingRef.current.add(scene.id);
-    void startFromTemplate(scene, prompt).finally(() => { startingRef.current.delete(scene.id); });
+    const revision = contextRevision.current;
+    const selected = useAppStore.getState().selectedAppId;
+    const conversation = useChatStore.getState().activeConversationId;
+    const view = useSettingsStore.getState().viewMode;
+    const isCurrent = () => contextRevision.current === revision
+      && useAppStore.getState().selectedAppId === selected
+      && useChatStore.getState().activeConversationId === conversation
+      && useSettingsStore.getState().viewMode === view;
+    void startFromTemplate(scene, prompt, isCurrent).finally(() => {
+      startingRef.current.delete(scene.id);
+      setPreparation((current) => {
+        if (current[scene.id]?.state !== 'busy') return current;
+        const next = { ...current };
+        delete next[scene.id];
+        return next;
+      });
+    });
   };
 
   if (!visible) return null;
@@ -232,7 +265,7 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
   const preparing = expandedScene ? preparation[expandedScene.id] : undefined;
   const working = preparing?.state === 'busy';
   return (
-    <div className="mt-4 w-full">
+    <div className="mb-4 w-full">
       {app.config.home.modes.items.length > 1 && (
         <div className="mb-4 flex flex-wrap items-center justify-center gap-2" role="tablist" aria-label={t.appHome.modes} data-testid="app-home-modes">
           {app.config.home.modes.items.map((item) => (

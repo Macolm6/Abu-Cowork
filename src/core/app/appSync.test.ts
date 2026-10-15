@@ -94,10 +94,26 @@ describe('appSync', () => {
 
   it('keeps the later of two overlapping loads', async () => {
     await addApp('weekly');
+    let release!: () => void;
+    let entered!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const reading = new Promise<void>((resolve) => { entered = resolve; });
+    let held = false;
+    vi.mocked(readTextFile).mockImplementation(async (p) => {
+      const content = readFileSync(String(p), 'utf8');
+      if (!held && String(p).endsWith('added.json')) {
+        held = true;
+        entered();
+        await blocked;
+      }
+      return content;
+    });
     const first = refreshAddedApps();
+    await reading;
     await addApp('contract-review');
-    const second = refreshAddedApps();
-    await Promise.all([first, second]);
+    await refreshAddedApps();
+    release();
+    await first;
     expect(ids().sort()).toEqual(['contract-review@lawyer-market', 'weekly@lawyer-market']);
   });
 
@@ -111,7 +127,7 @@ describe('appSync', () => {
   });
 
   it('hands the page host each organization app\'s pages whenever a sync replaces them', async () => {
-    initAddedAppsSync();
+    const stop = initAddedAppsSync();
     await vi.waitFor(() => expect(useAppStore.getState().addedApps).toEqual([]));
     const app = {
       appId: 'enterprise-app:a1', name: '合同审阅', version: '1', origin: { kind: 'enterprise' }, plugins: [],
@@ -125,5 +141,9 @@ describe('appSync', () => {
     await vi.waitFor(() => expect(pageCalls).toContainEqual(['setManagedApps', {
       apps: [{ appId: 'enterprise-app:a1', nav: app.config.nav, allowedOrigins: ['https://contracts.example.com'] }],
     }]));
+    stop();
+    pageCalls.length = 0;
+    useAppStore.getState().replaceManagedApps('enterprise', []);
+    expect(pageCalls).toEqual([]);
   });
 });

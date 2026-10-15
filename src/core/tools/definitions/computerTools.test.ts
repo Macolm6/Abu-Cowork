@@ -30,6 +30,7 @@ import { useSettingsStore } from '../../../stores/settingsStore';
 import { computerUseController } from '../../agent/computerUseController';
 import { recoveryBudget, runBudgetKey } from '@/core/computer-use/recoveryBudget';
 import { computerObservationContexts } from '../../computer-use/observationContext';
+import { enforceContextBudget } from '../../context/contextManager';
 import {
   drainCapabilitySetupRequests,
   getPendingCapabilitySetup,
@@ -1098,7 +1099,7 @@ describe('launch_app', () => {
     expect(String(result)).toMatch(/not to be recorded/);
   });
 
-  it('warns instead of inviting retries when Office reports that editing is disabled', async () => {
+  it.each([false, true])('preserves observation safety notes through the context budget (vision=%s)', async (supportsVision) => {
     setElectronHost(true);
     vi.mocked(isWindows).mockReturnValue(true);
     vi.mocked(isMacOS).mockReturnValue(false);
@@ -1123,8 +1124,9 @@ describe('launch_app', () => {
         return Promise.resolve({
           session_id: 'ax-unlicensed-office',
           app: 'POWERPNT',
-          total_visited: 2,
-          truncated: false,
+          total_visited: 201,
+          truncated: true,
+          modal: true,
           elements: [{
             id: 0,
             role: 'Window',
@@ -1133,10 +1135,30 @@ describe('launch_app', () => {
             bounds: [0, 0, 1280, 720],
             actions: ['Focus'],
             depth: 0,
-          }],
+          }, ...Array.from({ length: 200 }, (_, index) => ({
+            id: index + 1,
+            role: 'Button',
+            label: `Office ribbon control ${index}`,
+            value: null,
+            bounds: [0, 0, 100, 20],
+            actions: ['Invoke'],
+            depth: 1,
+          }))],
           input_epoch: 1,
           window_id: 'hwnd:0x42',
           accessibility_revision: 1,
+        });
+      }
+      if (cmd === 'get_abu_window_id') return Promise.resolve(0);
+      if (cmd === 'capture_screen_excluding') {
+        return Promise.resolve({
+          base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR42mP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC',
+          width: 1,
+          height: 1,
+          scale_factor: 1,
+          origin_x: 0,
+          origin_y: 0,
+          screenshot_id: 'shot-unlicensed-office',
         });
       }
       return Promise.resolve(null);
@@ -1149,12 +1171,42 @@ describe('launch_app', () => {
         loopId: 'loop-unlicensed-office',
         toolCallId: 'tool-unlicensed-office',
         interactionMode: 'foreground',
-        supportsVision: false,
+        supportsVision,
       },
     );
 
-    expect(String(result)).toMatch(/Unlicensed Product|未经授权产品/);
-    expect(String(result)).toMatch(/Do not keep clicking|不要继续点击/);
+    const text = typeof result === 'string' ? result : result
+      .filter((block) => block.type === 'text')
+      .map((block) => block.text).join('\n');
+    const notes = getI18n().toolResult.computer;
+    for (const note of [notes.axTreeModal, notes.axTreeTruncated, notes.officeEditingUnavailable]) {
+      expect(text).toContain(note);
+    }
+    const budget = enforceContextBudget([
+      { id: 'office-user', role: 'user', content: 'Inspect the Office window', timestamp: 1 },
+      {
+        id: 'office-observation', role: 'assistant', content: '', timestamp: 2,
+        toolCallsForContext: [{
+          id: 'tool-unlicensed-office', name: 'computer',
+          input: { action: 'get_app_state', app: 'POWERPNT', consequence: 'none' },
+          result: text,
+          ...(typeof result === 'string' ? {} : { resultContent: result }),
+        }],
+      },
+    ], 'Inspect the requested window.', 2_000, 400);
+    expect(budget.strategy).toBe('last_round_compacted');
+    expect(budget.tokensAfter).toBeLessThanOrEqual(budget.inputBudget);
+    const toolCall = budget.messages[1]?.toolCallsForContext?.[0];
+    const compactedResults = [toolCall?.result,
+      ...(toolCall?.resultContent?.filter((block) => block.type === 'text').map((block) => block.text) ?? [])];
+    for (const compacted of compactedResults) {
+      expect(compacted).toContain('[Content truncated to fit the context budget]');
+      expect(compacted).toContain('window_ref: wr-powerpoint');
+      expect(compacted).toContain('state_id:');
+      for (const note of [notes.axTreeModal, notes.axTreeTruncated, notes.officeEditingUnavailable]) {
+        expect(compacted).toContain(note);
+      }
+    }
   });
 
   it('reports a missing named window as target-unavailable and never falls back to Abu', async () => {

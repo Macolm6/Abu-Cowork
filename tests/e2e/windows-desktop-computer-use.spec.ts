@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import type { ElectronApplication, Page } from 'playwright';
+import type { ComputerUseSessionResponse, ComputerWindowCandidatesResponse } from '../../src/core/computer-use/windowProtocol';
 import { closeAbuElectron, createElectronDataRoot, launchAbuElectron, removeElectronDataRoot, type ElectronDataRoot } from './electronHelpers';
 import { CU_CHAT, configureComputerUseEval, fixtureApprovalState, installFixtureApproval, invokeHost, releaseFixtureApproval, restartOwnedHelper } from './computerUseEvalHelpers';
 
@@ -77,7 +78,7 @@ async function setup(scenario: Scenario, live = false, hold = false): Promise<Jo
       } }),
     });
     data = createElectronDataRoot();
-    app = (await launchAbuElectron(data)).app;
+    app = (await launchAbuElectron(data, { extraEnv: { ABU_E2E_DECLINE_CU_APPROVALS: '0' } })).app;
     const page = await app.firstWindow({ timeout: 60_000 });
     await configureComputerUseEval(page, proxy.baseUrl);
     await installFixtureApproval(app, owned.appName, hold);
@@ -233,15 +234,29 @@ test.describe('Self-owned Windows scenarios through real Abu @desktop', () => {
     const journey = await setup('edit');
     const request = { conversationId: 'desktop-lifecycle', loopId: 'old-turn', toolCallId: 'observe', targetApp: journey.fixture.appName,
       interactionMode: 'foreground', scope: 'ui-control', permissionMode: 'standard', actionIntent: { action: 'get_app_state', category: 'none', summary: '' } };
+    const selectWindow = async (loopId: string) => {
+      const windows = await invokeHost<ComputerWindowCandidatesResponse>(journey.page, 'computer_use_list_windows', {
+        conversationId: request.conversationId, loopId, interactionMode: 'foreground', app: journey.fixture.appName,
+      });
+      if (windows.status !== 'candidates') throw new Error(`Desktop windows unavailable: ${JSON.stringify(windows.error)}`);
+      // The host includes titles only when selection needs disambiguation.
+      const mainWindows = windows.candidates.length === 1
+        ? windows.candidates
+        : windows.candidates.filter((window) => window.title === 'Abu CU Desktop');
+      expect(mainWindows).toHaveLength(1);
+      return { ...request, loopId, windowRef: mainWindows[0].window_ref };
+    };
     try {
       await invokeHost(journey.page, 'computer_use_set_enabled', { enabled: true });
-      const session = await invokeHost<{ token: string }>(journey.page, 'computer_use_begin_session', request);
+      const session = await invokeHost<ComputerUseSessionResponse>(journey.page, 'computer_use_begin_session', await selectWindow(request.loopId));
+      if (session.status !== 'authorized') throw new Error(`Initial desktop selection failed: ${JSON.stringify(session.error)}`);
       await invokeHost(journey.page, 'ax_snapshot', { appName: journey.fixture.appName, __abuComputerUseToken: session.token });
       await invokeHost(journey.page, 'computer_use_end_session', { __abuComputerUseToken: session.token });
       await invokeHost(journey.page, 'computer_use_stop_turn', { conversationId: request.conversationId, loopId: request.loopId, reason: 'user-stopped' });
       await restartOwnedHelper(journey.app);
       await expect(invokeHost(journey.page, 'computer_use_begin_session', { ...request, toolCallId: 'stale' })).rejects.toThrow(/stopped/);
-      const next = await invokeHost<{ token: string }>(journey.page, 'computer_use_begin_session', { ...request, loopId: 'new-turn' });
+      const next = await invokeHost<ComputerUseSessionResponse>(journey.page, 'computer_use_begin_session', await selectWindow('new-turn'));
+      if (next.status !== 'authorized') throw new Error(`Fresh desktop selection failed: ${JSON.stringify(next.error)}`);
       const state = await invokeHost<{ state_id: string }>(journey.page, 'ax_snapshot', { appName: journey.fixture.appName, __abuComputerUseToken: next.token });
       expect(state.state_id).toBeTruthy();
       await invokeHost(journey.page, 'computer_use_end_task', { conversationId: request.conversationId, loopId: 'new-turn' });

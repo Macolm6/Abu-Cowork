@@ -139,13 +139,13 @@ test.describe('Electron capability overview', () => {
     }
   });
 
-  test('routes either permission button through Electron to its matching system pane', async () => {
+  test('reports native permissions and routes available authorization buttons to system settings', async () => {
     const launched = await launchAbuElectron();
     app = launched.app;
     dataRoot = launched;
     // Replace only native consent/status and external navigation. Renderer,
     // preload IPC, request helper and Electron permission host remain real.
-    await app.evaluate(({ systemPreferences, shell, desktopCapturer }) => {
+    if (process.platform === 'darwin') await app.evaluate(({ systemPreferences, shell, desktopCapturer }) => {
       const fixture = { screen: false, control: false, opened: [] as string[], prompts: [] as boolean[] };
       (globalThis as typeof globalThis & { permissionFixture?: typeof fixture }).permissionFixture = fixture;
       systemPreferences.getMediaAccessStatus = () => fixture.screen ? 'granted' : 'denied';
@@ -164,6 +164,15 @@ test.describe('Electron capability overview', () => {
     await capabilityCard(page, COMPUTER_USE).click();
     const controlRow = page.getByRole('heading', { name: '操作界面', exact: true }).locator('..');
     const screenRow = page.getByRole('heading', { name: '查看屏幕', exact: true }).locator('..');
+    if (process.platform === 'win32') {
+      await expect(controlRow.getByText('已授权', { exact: true })).toBeVisible();
+      await expect(screenRow.getByText('已授权', { exact: true })).toBeVisible();
+      await expect(page.getByRole('button', { name: '去授权', exact: true })).toHaveCount(0);
+      await page.getByRole('switch', { name: '关闭电脑操控' }).click();
+      await expect(page.getByRole('heading', { name: COMPUTER_USE })).toBeVisible();
+      await expect(page.getByRole('switch', { name: '开启电脑操控' })).toHaveAttribute('aria-checked', 'false');
+      return;
+    }
     await expect(page.getByRole('button', { name: '去授权', exact: true })).toHaveCount(2);
     await controlRow.getByRole('button', { name: '去授权' }).click();
     await expect.poll(() => app!.evaluate(() => {

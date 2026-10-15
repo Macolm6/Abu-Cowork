@@ -650,6 +650,27 @@ test('deterministic driver consumes complete next_state without a redundant obse
   assert.deepEqual(driver.errors, []);
 });
 
+test('deterministic driver selects the named fixture window from an ambiguous observation', () => {
+  const driver = createDesktopModelDriver({ ...scope, scenario: 'edit' });
+  const body = (content) => ({ tools: [{ type: 'function', function: { name: 'computer' } }], messages: content ? [{ role: 'tool', content }] : [] });
+  assert.match(driver.respond(body()), /get_window_state/);
+  const selected = driver.respond(body([
+    'Error: Error: More than one window matches. Select one returned window_ref.',
+    'windows:',
+    '- window_ref: wr-untitled',
+    `  app: ${scope.appName}`,
+    '  relation: root',
+    '- window_ref: wr-main',
+    `  app: ${scope.appName}`,
+    '  relation: root',
+    '  title: Abu CU Desktop',
+  ].join('\n')));
+  assert.match(selected, /get_window_state/);
+  assert.match(selected, /window_ref\\":\\"wr-main/);
+  assert.doesNotMatch(selected, /wr-untitled/);
+  assert.deepEqual(driver.errors, []);
+});
+
 test('deterministic driver selects modal and secondary WindowRefs from explicit listings', () => {
   const body = (content) => ({ tools: [{ type: 'function', function: { name: 'computer' } }], messages: content ? [{ role: 'tool', content }] : [] });
   const windows = (...items) => ['windows:', ...items.map(({ ref, title }) => [

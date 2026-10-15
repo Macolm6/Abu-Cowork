@@ -27,6 +27,17 @@ function reset() {
 describe('appStore', () => {
   beforeEach(reset);
 
+  it('returns to chat when an application update removes the page being shown', () => {
+    const app = make('a');
+    useAppStore.getState().setAddedApps([app]);
+    useAppStore.getState().enterApp('a');
+    useAppStore.getState().openAppPage('portal');
+    useAppStore.getState().setAddedApps([{ ...app, config: { ...app.config, nav: { items: [{ id: 'chat', target: 'builtin:chat' }] } } }]);
+    expect(useAppStore.getState().activeAppPage).toBeNull();
+    expect(useSettingsStore.getState().viewMode).toBe('chat');
+    expect(useAppStore.getState().selectedAppId).toBe('a');
+  });
+
   it('enters an added app: selection, recents, home view; refuses one it does not list', () => {
     useAppStore.getState().setAddedApps([make('a'), make('b')]);
     useSettingsStore.setState({ viewMode: 'team' });
@@ -100,6 +111,27 @@ describe('appStore', () => {
     useAppStore.getState().enterApp('a');
     useAppStore.getState().replaceManagedApps('enterprise', [org('enterprise-app:1')]);
     expect(useAppStore.getState().selectedAppId).toBe('a');
+  });
+
+  it('keeps the open conversation while its app goes offline and returns', () => {
+    useAppStore.getState().replaceManagedApps('enterprise', [org('enterprise-app:1')]);
+    useAppStore.getState().enterApp('enterprise-app:1');
+    const conversationId = useChatStore.getState().createConversation();
+    useAppStore.getState().clearManagedApps('enterprise');
+    expect(useAppStore.getState().selectedAppId).toBe(GENERAL_APP_ID);
+    expect(useChatStore.getState().activeConversationId).toBe(conversationId);
+    useAppStore.getState().replaceManagedApps('enterprise', [org('enterprise-app:1')]);
+    expect(useAppStore.getState().selectedAppId).toBe('enterprise-app:1');
+    expect(useChatStore.getState().activeConversationId).toBe(conversationId);
+  });
+
+  it('keeps the open conversation when its app is disabled', () => {
+    useAppStore.getState().replaceManagedApps('enterprise', [org('enterprise-app:1')]);
+    useAppStore.getState().enterApp('enterprise-app:1');
+    const conversationId = useChatStore.getState().createConversation();
+    useAppStore.getState().replaceManagedApps('enterprise', []);
+    expect(useAppStore.getState().selectedAppId).toBe(GENERAL_APP_ID);
+    expect(useChatStore.getState().activeConversationId).toBe(conversationId);
   });
 
   it('does not bring back an app the organization disabled while online', () => {

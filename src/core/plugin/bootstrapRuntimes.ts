@@ -11,7 +11,7 @@ export function startCapabilityRuntimes(): () => void {
   // Plugin teams follow the plugin records the recovery below publishes; apps
   // have records of their own.
   const stopPluginTeams = initPluginTeamsSync();
-  initAddedAppsSync();
+  const stopApps = initAddedAppsSync();
   // Plugin recovery and MCP startup must not share a FATE — one unreadable
   // plugin journal used to keep every user-configured connector offline for
   // the whole session. But MCP startup must still share an ORDER with it:
@@ -33,6 +33,7 @@ export function startCapabilityRuntimes(): () => void {
   return () => {
     stopped = true;
     stopPluginTeams();
+    stopApps();
     void cleanupBuiltinBrowserRuntime();
     cleanupMCPStoreSync();
   };

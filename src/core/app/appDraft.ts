@@ -1,4 +1,4 @@
-import { exists, mkdir, readDir, readTextFile } from '@tauri-apps/plugin-fs';
+import { exists, mkdir, readDir, readTextFile, remove } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 import type { SubagentDefinition } from '@/types';
 import type { AppDefinition, AppRunRef, ParsedAppFile, ParsedPluginTeam } from '@/types/app';
@@ -10,7 +10,7 @@ import { resolveLocalizedText } from '../../../electron/shared/specFields.mjs';
 import { saveItemToAbuDir } from '@/utils/itemStorage';
 import { AGENT_NAME_RE } from '@/utils/validation';
 import { atomicWrite } from '@/utils/atomicFs';
-import { joinPath } from '@/utils/pathUtils';
+import { getParentDir, joinPath } from '@/utils/pathUtils';
 import { getI18n, getLocale } from '@/i18n';
 import { agentRegistry } from '@/core/agent/registry';
 import { ensureRoleId } from '@/core/team/roleIdentity';
@@ -20,7 +20,7 @@ import { useChatStore } from '@/stores/chatStore';
 import { useAppStore } from '@/stores/appStore';
 import { useAppDraftStore, type AppDraft } from '@/stores/appDraftStore';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { addedAppId, appDir, saveAddedApp } from './appRecords';
+import { addedAppId, prepareAppFiles, releaseAppFiles, saveAddedApp } from './appRecords';
 import { isUsersOwnAgent, isUsersOwnTeam, liveRefCatalog, resolveTarget, type RefCatalog } from './appRefs';
 import { refreshAddedApps } from './appSync';
 import { createGeneralShellConversation } from './generalShellConversation';
@@ -138,19 +138,30 @@ export async function readAppDraft(draft: AppDraft, catalog: RefCatalog = liveRe
   const file = parseAppFile(JSON.parse(await readTextFile(appPath)), { source: 'created' });
 
   const experts: DraftExpert[] = [];
+  const expertRoot = joinPath(await homeDir(), '.abu', 'agents');
+  const existingNames = new Set<string>();
+  for (const entry of await exists(expertRoot) ? await readDir(expertRoot) : []) {
+    if (entry.isDirectory && await exists(joinPath(expertRoot, entry.name, 'AGENT.md'))) existingNames.add(entry.name.toLowerCase());
+  }
   for (const name of await listFiles(joinPath(draft.dir, 'agents'), '.md')) {
     const converted = convertSingleFileAgent(await readTextFile(joinPath(draft.dir, 'agents', name)), name.replace(/\.md$/i, ''));
     const field = `agents/${name}`;
-    if (!AGENT_NAME_RE.test(converted.name)) draftFail(field, `"${converted.name}" cannot be an expert name`);
-    if (BUILTIN_AGENT_NAMES.includes(converted.name) || catalog.getAgent(converted.name)) draftFail(field, `an expert named "${converted.name}" already exists; pick another name`, 'duplicate');
+    if (!AGENT_NAME_RE.test(converted.name)) draftFail(field, `"${converted.name}" cannot be an expert name; use letters, digits, underscores or hyphens, without spaces`);
+    if (BUILTIN_AGENT_NAMES.includes(converted.name) || catalog.getAgent(converted.name) || existingNames.has(converted.name.toLowerCase())) draftFail(field, `an expert named "${converted.name}" already exists; pick another name`, 'duplicate');
+    existingNames.add(converted.name.toLowerCase());
     if (converted.body.trim().length === 0) draftFail(field, 'the expert has no instructions');
     experts.push({ name: converted.name, description: converted.description, markdown: renderAgentMd(converted) });
   }
 
   const teams: ParsedPluginTeam[] = [];
+  const teamNames = new Set(catalog.teams.map((team) => team.name));
   for (const name of await listFiles(joinPath(draft.dir, 'teams'), '.json')) {
     const id = name.replace(/\.json$/i, '');
-    teams.push(parseTeamFile(JSON.parse(await readTextFile(joinPath(draft.dir, 'teams', name))), id, { agentNames: experts.map((expert) => expert.name) }));
+    const team = parseTeamFile(JSON.parse(await readTextFile(joinPath(draft.dir, 'teams', name))), id, { agentNames: experts.map((expert) => expert.name) });
+    const displayName = resolveLocalizedText(team.name, getLocale()).trim();
+    if (teamNames.has(displayName)) draftFail(`teams/${name}.name`, `a team named "${displayName}" already exists; pick another name`, 'duplicate');
+    teamNames.add(displayName);
+    teams.push(team);
   }
 
   const appId = addedAppId(file.name, { kind: 'created', authoringId: draft.id });
@@ -160,6 +171,12 @@ export async function readAppDraft(draft: AppDraft, catalog: RefCatalog = liveRe
     config: file.config, version: file.version, origin: { kind: 'created', authoringId: draft.id }, plugins: file.plugins,
   };
   checkReferences(app, experts, teams, catalog);
+  for (const [index, reference] of (app.config.requiredConnectors ?? []).entries()) {
+    const [pluginName, connector] = reference.split('/');
+    if (!catalog.plugins.some((plugin) => plugin.name === pluginName && plugin.contributed.mcpServers.includes(connector))) {
+      draftFail(`requiredConnectors[${index}]`, `connector "${reference}" is not installed`);
+    }
+  }
   return { file, app, experts, teams };
 }
 
@@ -183,49 +200,73 @@ function rewriteTeamRefs(value: unknown, teamIds: Map<string, string>): unknown 
  */
 export async function commitAppDraft(conversationId: string): Promise<string> {
   const draft = draftFor(conversationId);
-  const preview = await readAppDraft(draft);
   const home = await homeDir();
+  const prepared = await prepareAppFiles(home, draft.dir, 'created');
+  const createdExperts: string[] = [];
+  const createdTeams: string[] = [];
+  let committed = false;
+  try {
+    const preview = await readAppDraft({ ...draft, dir: prepared });
 
-  for (const expert of preview.experts) {
-    await saveItemToAbuDir('agents', 'AGENT.md', expert.name, expert.markdown, undefined, { mustBeNew: true });
-  }
-  if (preview.experts.length > 0) await useDiscoveryStore.getState().refresh();
-  const roleIds = new Map<string, string>();
-  for (const expert of preview.experts) {
-    const agent = agentRegistry.getAgent(expert.name);
-    if (!agent) throw new Error(`the expert "${expert.name}" was written but did not load`);
-    roleIds.set(`plugin:${expert.name}`, (await ensureRoleId(agent)).roleId);
-  }
-  if (preview.experts.length > 0) await useDiscoveryStore.getState().refresh();
+    for (const expert of preview.experts) {
+      await saveItemToAbuDir('agents', 'AGENT.md', expert.name, expert.markdown, undefined, { mustBeNew: true });
+      createdExperts.push(joinPath(home, '.abu', 'agents', expert.name, 'AGENT.md'));
+    }
+    if (preview.experts.length > 0) await useDiscoveryStore.getState().refresh();
+    const roleIds = new Map<string, string>();
+    for (const expert of preview.experts) {
+      const agent = agentRegistry.getAgent(expert.name);
+      if (!agent) throw new Error(`the expert "${expert.name}" was written but did not load`);
+      roleIds.set(`plugin:${expert.name}`, (await ensureRoleId(agent)).roleId);
+    }
+    if (preview.experts.length > 0) await useDiscoveryStore.getState().refresh();
 
-  const locale = getLocale();
-  const text = (value: ParsedPluginTeam['name'] | undefined) => (value === undefined ? undefined : resolveLocalizedText(value, locale));
-  const role = (roleId: string) => roleIds.get(roleId) ?? roleId;
-  const teamIds = new Map<string, string>();
-  for (const team of preview.teams) {
-    const created = useTeamStore.getState().createTeam({
-      name: text(team.name)!,
-      leaderRoleId: role(team.leaderRoleId),
-      memberRoleIds: team.memberRoleIds.map(role),
-      leaderNote: team.leaderNote,
-      requirePlanApproval: team.requirePlanApproval,
-      avatar: team.avatar,
-      description: text(team.description),
-      intro: text(team.intro),
-      expertise: team.expertise.map((item) => text(item)!),
-      samplePrompts: team.samplePrompts.map((item) => text(item)!),
+    const locale = getLocale();
+    const text = (value: ParsedPluginTeam['name'] | undefined) => (value === undefined ? undefined : resolveLocalizedText(value, locale));
+    const role = (roleId: string) => roleIds.get(roleId) ?? roleId;
+    const teamIds = new Map<string, string>();
+    for (const team of preview.teams) {
+      const created = useTeamStore.getState().createTeam({
+        name: text(team.name)!,
+        leaderRoleId: role(team.leaderRoleId),
+        memberRoleIds: team.memberRoleIds.map(role),
+        leaderNote: team.leaderNote,
+        requirePlanApproval: team.requirePlanApproval,
+        avatar: team.avatar,
+        description: text(team.description),
+        intro: text(team.intro),
+        expertise: team.expertise.map((item) => text(item)!),
+        samplePrompts: team.samplePrompts.map((item) => text(item)!),
+      });
+      teamIds.set(team.id, created.id);
+      createdTeams.push(created.id);
+    }
+
+    const record = { appId: preview.app.appId, name: preview.file.name, version: preview.file.version, origin: { kind: 'created' as const, authoringId: draft.id }, addedAt: new Date().toISOString() };
+    const raw = JSON.parse(await readTextFile(joinPath(prepared, APP_FILE_PATH)));
+    await atomicWrite(joinPath(prepared, APP_FILE_PATH), `${JSON.stringify(rewriteTeamRefs(raw, teamIds), null, 2)}\n`);
+    await saveAddedApp(home, prepared, record, () => {
+      committed = true;
+      useAppDraftStore.getState().markAdded(conversationId, record.appId, resolveLocalizedText(preview.app.name, locale));
     });
-    teamIds.set(team.id, created.id);
+    useAppStore.getState().enterAppWhenAvailable(record.appId);
+    return record.appId;
+  } finally {
+    try {
+      if (committed) await refreshAddedApps();
+      if (!committed) {
+        for (const id of createdTeams.reverse()) useTeamStore.getState().deleteTeam(id);
+        for (const path of createdExperts.reverse()) {
+          await remove(path);
+          const dir = getParentDir(path);
+          if ((await readDir(dir)).length === 0) await remove(dir);
+        }
+        if (createdExperts.length > 0) await useDiscoveryStore.getState().refresh();
+      }
+    } finally {
+      await releaseAppFiles(prepared);
+    }
   }
-
-  const record = { appId: preview.app.appId, name: preview.file.name, version: preview.file.version, origin: { kind: 'created' as const, authoringId: draft.id }, addedAt: new Date().toISOString() };
-  await saveAddedApp(home, draft.dir, record);
-  const raw = JSON.parse(await readTextFile(joinPath(draft.dir, APP_FILE_PATH)));
-  await atomicWrite(joinPath(appDir(home, record.appId), APP_FILE_PATH), `${JSON.stringify(rewriteTeamRefs(raw, teamIds), null, 2)}\n`);
-  await refreshAddedApps();
-  useAppDraftStore.getState().markAdded(conversationId, record.appId);
-  useAppStore.getState().enterAppWhenAvailable(record.appId);
-  return record.appId;
 }
 
 /** Who a draft scene is handed to, for the preview: a new expert or team by its own name. */

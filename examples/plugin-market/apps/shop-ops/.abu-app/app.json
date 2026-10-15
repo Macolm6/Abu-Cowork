@@ -1,6 +1,6 @@
 {
   "name": "shop-ops",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "minAbuVersion": "0.51.0",
   "interface": {
     "displayName": { "zh-CN": "店铺运营", "en-US": "Shop Operations" },
@@ -9,8 +9,8 @@
     "developerName": "Abu",
     "category": "ecommerce",
     "brandColor": "#C4633A",
-    "logo": "assets/logo.png",
-    "logoDark": "assets/logo-dark.png"
+    "logo": "assets/logo.svg",
+    "logoDark": "assets/logo-dark.svg"
   },
   "plugins": ["shop-assistant"],
   "defaultRun": { "team": "plugin:shop-assistant/store-ops" },
