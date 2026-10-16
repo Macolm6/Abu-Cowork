@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import { initLanguage } from '@/i18n';
 import { useAppStore } from '@/stores/appStore';
-import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { DEFAULT_APP_CONFIG } from '@/data/defaultAppConfig';
 import type { ConversationAppBinding } from '@/types/app';
 import ConversationAppNotice from './ConversationAppNotice';
@@ -41,20 +40,9 @@ describe('ConversationAppNotice', () => {
     expect(screen.queryByRole('button', { name: '去添加' })).toBeNull();
   });
 
-  it('says an organization app was turned off while online', () => {
+  it('asks the user to sign in for a conversation belonging to an organization', () => {
     render(<ConversationAppNotice binding={binding('enterprise', 'enterprise-app:1')} />);
-    expect(screen.getByText('这个应用已停用')).toBeInTheDocument();
+    expect(screen.getByText('登录组织账号后可以继续使用这个应用')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '去添加' })).toBeNull();
-  });
-
-  it('says the server is out of reach while offline', () => {
-    const previous = useEnterpriseStore.getState().mode;
-    useEnterpriseStore.setState({ mode: { kind: 'offline' } as never });
-    try {
-      render(<ConversationAppNotice binding={binding('enterprise', 'enterprise-app:1')} />);
-      expect(screen.getByText('连不上公司服务器，恢复连接后可以继续')).toBeInTheDocument();
-    } finally {
-      useEnterpriseStore.setState({ mode: previous });
-    }
   });
 });

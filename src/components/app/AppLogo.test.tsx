@@ -53,53 +53,53 @@ describe('AppLogo', () => {
     });
   });
 
-  it('shows the first letter of the name, hidden from screen readers, when the package ships no image', () => {
+  it('shows a neutral application icon, hidden from screen readers, when the package ships no image', () => {
     render(<AppLogo name="  Shop desk" />);
     const logo = screen.getByTestId('app-logo');
-    expect(logo).toHaveAttribute('data-app-logo', 'letter');
+    expect(logo).toHaveAttribute('data-app-logo', 'default');
     expect(logo).toHaveAttribute('aria-hidden', 'true');
-    expect(logo).toHaveTextContent('S');
+    expect(logo.querySelector('svg')).not.toBeNull();
   });
 
   describe('an image that cannot be shown', () => {
     const logo = () => screen.getByTestId('app-logo');
 
-    it('shows the letter mark when the file is gone, and sends the reason to the console only', async () => {
+    it('shows the default application mark when the file is gone, and sends the reason to the console only', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       render(<AppLogo name="Shop desk" logo="/apps/removed/logo.png" />);
       await waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
       const reason = redactFailureText("ENOENT: no such file or directory, open '/apps/removed/logo.png?token=abc123secret'");
       expect(reason).not.toContain('abc123secret');
       expect(warn).toHaveBeenCalledWith('[app] logo image failed:', reason);
-      expect(logo()).toHaveAttribute('data-app-logo', 'letter');
-      expect(logo()).toHaveTextContent('S');
+      expect(logo()).toHaveAttribute('data-app-logo', 'default');
+      expect(logo().querySelector('svg')).not.toBeNull();
       expect(logo().outerHTML).not.toContain('ENOENT');
       warn.mockRestore();
     });
 
-    it('replaces the image it showed with the letter mark when the next file is gone', async () => {
+    it('replaces the image it showed with the default application mark when the next file is gone', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const { rerender } = render(<AppLogo name="Shop desk" logo="/pkg/light.png" />);
       await waitFor(() => expect(logo()).toHaveAttribute('data-app-logo', 'image'));
       rerender(<AppLogo name="Shop desk" logo="/apps/removed/logo.png" />);
-      await waitFor(() => expect(logo()).toHaveAttribute('data-app-logo', 'letter'));
+      await waitFor(() => expect(logo()).toHaveAttribute('data-app-logo', 'default'));
       warn.mockRestore();
     });
 
-    it('shows the letter mark when the file is no picture the page can draw', async () => {
+    it('shows the default application mark when the file is no picture the page can draw', async () => {
       render(<AppLogo name="Shop desk" logo="/pkg/light.png" />);
       await waitFor(() => expect(logo()).toHaveAttribute('data-app-logo', 'image'));
       fireEvent.error(logo().querySelector('img')!);
-      expect(logo()).toHaveAttribute('data-app-logo', 'letter');
+      expect(logo()).toHaveAttribute('data-app-logo', 'default');
     });
   });
 
-  it('draws the letter mark with design-system classes', () => {
+  it('draws the default icon with design-system classes', () => {
     render(<AppLogo name="Shop desk" />);
     const logo = screen.getByTestId('app-logo');
     expect(logo).toHaveClass('rounded-control');
     expect(logo).toHaveClass('bg-fill');
-    expect(logo).toHaveClass('text-label');
+    expect(logo).toHaveClass('text-label-secondary');
     expect(logo).toHaveClass('font-medium');
   });
 
@@ -107,8 +107,8 @@ describe('AppLogo', () => {
     ['sm', 'h-5', 'text-caption'],
     ['md', 'h-7', 'text-ui-sm'],
     ['lg', 'h-10', 'text-title'],
-    ['xl', 'h-20', 'text-title-lg'],
-  ] as const)('size %s is %s with %s letters', (size, box, text) => {
+    ['xl', 'h-14', 'text-title-lg'],
+  ] as const)('size %s is %s with %s text', (size, box, text) => {
     render(<AppLogo name="Shop desk" size={size} />);
     expect(screen.getByTestId('app-logo')).toHaveClass(box);
     expect(screen.getByTestId('app-logo')).toHaveClass(text);
@@ -128,5 +128,18 @@ describe('AppLogo', () => {
     const logo = screen.getByTestId('app-logo');
     expect(logo).toHaveAttribute('data-app-logo', 'general');
     expect(logo.querySelector('img')).not.toBeNull();
+  });
+
+  it('uses theme colors for an app preset while retaining its glyph', () => {
+    render(<AppLogo name="Shop desk" icon="icon:users/coral" />);
+    const logo = screen.getByTestId('app-logo');
+    expect(logo).toHaveClass('bg-fill', 'text-label-secondary');
+    expect(logo).not.toHaveAttribute('style');
+    expect(logo.querySelector('svg')).toHaveClass('lucide-users-round');
+  });
+
+  it('preserves an emoji avatar', () => {
+    render(<AppLogo name="Shop desk" icon="🛍️" />);
+    expect(screen.getByTestId('app-logo')).toHaveTextContent('🛍️');
   });
 });

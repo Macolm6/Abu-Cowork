@@ -153,6 +153,7 @@ export type AddedAppOrigin = Exclude<AppOrigin, { kind: 'enterprise' }>;
 
 /** An app the switcher can enter, or the general shell (`origin` null). */
 export interface AppDefinition {
+  referenceNames?: Record<string, string>;
   appId: string;
   /** The app's display name and one-line description; shown in the interface language. */
   name: LocalizedText;

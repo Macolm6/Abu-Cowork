@@ -21,6 +21,7 @@ import path from 'node:path';
 import type { ElectronApplication, Page } from 'playwright';
 import {
   closeAbuElectron,
+  configureLocalMockProvider,
   createElectronDataRoot,
   launchAbuElectron,
   removeElectronDataRoot,
@@ -139,10 +140,16 @@ function extractScreenshotId(text: string): string | null {
   return text.match(/screenshot_id\s*[：:]\s*([^\s（(。.]+)/i)?.[1] ?? null;
 }
 
-function extractAmbiguousWindowRefs(text: string): string[] {
+function extractAmbiguousWindowRefs(text: string, app: OfficeAppDefinition): string[] {
   if (!/多个可见窗口匹配|More than one visible window matches/i.test(text)) return [];
-  return [...text.matchAll(/^- window_ref:\s*(wr-[A-Za-z0-9_-]+)/gm)]
-    .map((match) => match[1]);
+  return [...text.matchAll(/^- window_ref:\s*(wr-[A-Za-z0-9_-]+)([\s\S]*?)(?=\n- window_ref:|(?![\s\S]))/gm)]
+    .map((match) => ({
+      windowRef: match[1],
+      title: match[2].match(/^\s+title:\s*(.+)$/m)?.[1] ?? '',
+    }))
+    .sort((left, right) => Number(right.title.toLowerCase().includes(app.key))
+      - Number(left.title.toLowerCase().includes(app.key)))
+    .map((candidate) => candidate.windowRef);
 }
 
 function requiresFreshObservation(text: string): boolean {
@@ -301,8 +308,8 @@ async function startOfficeModelMock(
         consequence: 'none',
         show_user: false,
       });
-    } else if (extractAmbiguousWindowRefs(latestToolText(body)).length > 0) {
-      pendingWindowRefs = extractAmbiguousWindowRefs(latestToolText(body));
+    } else if (extractAmbiguousWindowRefs(latestToolText(body), app).length > 0) {
+      pendingWindowRefs = extractAmbiguousWindowRefs(latestToolText(body), app);
       const windowRef = pendingWindowRefs.shift();
       response = toolCallSse(index, {
         action: 'get_window_state',
@@ -735,48 +742,12 @@ async function waitForApp(page: Page): Promise<void> {
 }
 
 async function configureOfficeProvider(page: Page, baseUrl: string, supportsImages = true): Promise<void> {
-  await page.evaluate(({ baseUrl, apiKey, modelId, providerId, supportsImages }) => {
-    const raw = window.localStorage.getItem('abu-settings');
-    if (!raw) throw new Error('abu-settings was not initialized');
-    const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
-    const declaredCapabilities = { supportsTools: true, supportsImages };
-    persisted.state.providers = [{
-      id: providerId,
-      source: 'custom',
-      name: 'Abu Office E2E loopback provider',
-      enabled: true,
-      apiFormat: 'openai-compatible',
-      baseUrl,
-      apiKey,
-      models: [{
-        id: modelId,
-        label: 'Abu Office E2E structured model',
-        isCustom: true,
-        declaredCapabilities,
-      }],
-      defaultModelId: modelId,
-      status: 'verified',
-      sortOrder: 0,
-      userAdded: true,
-      declaredCapabilities,
-    }];
-    persisted.state.activeModel = { providerId, modelId };
-    persisted.state.recentModels = [];
-    persisted.state.favoriteModels = [];
-    persisted.state.permissionMode = 'standard';
-    persisted.state.computerUseEnabled = true;
-    persisted.state.guideShown = true;
-    persisted.state.guideOpen = false;
-    persisted.state.hasAcknowledgedDisclaimer = true;
-    persisted.state.hasRunSensitiveAudit_v015 = true;
-    window.localStorage.setItem('abu-settings', JSON.stringify({
-      ...persisted,
-      state: persisted.state,
-      version: 42,
-    }));
-  }, { baseUrl, apiKey: TEST_API_KEY, modelId: TEST_MODEL_ID, providerId: PROVIDER_ID, supportsImages });
-  await page.reload();
-  await waitForApp(page);
+  await configureLocalMockProvider(page, baseUrl, {
+    apiKey: TEST_API_KEY, providerId: PROVIDER_ID, modelId: TEST_MODEL_ID,
+    providerName: 'Abu Office E2E loopback provider', modelLabel: 'Abu Office E2E structured model',
+    supportsTools: true, supportsImages, supportsReasoning: null, contextWindowSize: null,
+    permissionMode: 'standard', computerUseEnabled: true,
+  });
 }
 
 test.describe.serial('Windows Office through real Abu Computer Use', () => {
@@ -803,7 +774,7 @@ test.describe.serial('Windows Office through real Abu Computer Use', () => {
         await new Promise<void>((resolve) => setTimeout(resolve, 2_000));
 
         dataRoot = createElectronDataRoot();
-        const launched = await launchAbuElectron(dataRoot);
+        const launched = await launchAbuElectron(dataRoot, { extraEnv: { ABU_E2E_DECLINE_CU_APPROVALS: '0' } });
         electronApp = launched.app;
         const page = await electronApp.firstWindow({ timeout: READY_TIMEOUT });
         await waitForApp(page);
@@ -826,11 +797,12 @@ test.describe.serial('Windows Office through real Abu Computer Use', () => {
         const taskApprovals = approvals.filter((approval) => approval.kind === 'task');
         const actionApprovals = approvals.filter((approval) => approval.kind === 'action');
         expect(taskApprovals).toHaveLength(1);
-        expect(taskApprovals[0].buttons).toEqual(expect.arrayContaining([
-          expect.stringMatching(/允许本任务|Allow for this task/),
-          expect.stringMatching(/取消|Cancel/),
-        ]));
-        expect(taskApprovals[0]).toMatchObject({ defaultId: 0, cancelId: 1, noLink: true });
+        expect(taskApprovals[0].buttons).toEqual([
+          expect.stringMatching(/^(仅本次|This task only)$/),
+          expect.stringMatching(/^(始终允许|Always allow)$/),
+          expect.stringMatching(/^(取消|Cancel)$/),
+        ]);
+        expect(taskApprovals[0]).toMatchObject({ defaultId: 0, cancelId: 2, noLink: true });
         expect(actionApprovals).toHaveLength(0);
         expect(taskRequests(modelMock).length).toBeGreaterThanOrEqual(
           modelMock.editingUnavailable ? 2 : 5,
@@ -940,7 +912,7 @@ test.describe.serial('Windows Office natural-language live model @live', () => {
           assertFixtureReady: () => Boolean(officeChild && officeContainsMarker(officeApp, officeChild, executablePath, marker, 'guard')),
         });
         dataRoot = createElectronDataRoot();
-        electronApp = (await launchAbuElectron(dataRoot)).app;
+        electronApp = (await launchAbuElectron(dataRoot, { extraEnv: { ABU_E2E_DECLINE_CU_APPROVALS: '0' } })).app;
         const page = await electronApp.firstWindow({ timeout: READY_TIMEOUT });
         await waitForApp(page);
         await configureOfficeProvider(page, proxy.baseUrl, false);

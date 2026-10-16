@@ -113,6 +113,8 @@ export default function AddMarketplaceDialog({
     if (failure === 'auth_required') return tb.pluginsMarketplaceAuthRequired;
     if (failure === 'name_taken') return tb.pluginsMarketplaceNameConflict;
     if (failure === 'not_a_market') return tb.pluginsMarketplaceNotFound;
+    const message = err instanceof Error ? err.message : String(err);
+    if ([tb.pluginsMarketplaceNameConflict, tb.pluginsMarketplaceIdentityChanged, t.appMarket.reservedMarketName].includes(message)) return message;
     reportAppFailure('add market', err);
     return address ? tb.pluginsMarketplaceAddressFailed : tb.pluginsMarketplaceFolderFailed;
   };

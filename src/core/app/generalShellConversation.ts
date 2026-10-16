@@ -17,8 +17,6 @@ export function createGeneralShellConversation(workspacePath: string | null, { l
   const apps = useAppStore.getState();
   if (leaveApp && apps.selectedAppId !== GENERAL_APP_ID) apps.exitApp();
   const chat = useChatStore.getState();
-  // An app home keeps its binding and its team ready for the next conversation started there.
-  chat.setPendingAppBinding(undefined);
-  chat.setPendingTeamId(undefined);
+  chat.startNewConversation();
   return chat.createConversation(workspacePath);
 }

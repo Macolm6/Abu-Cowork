@@ -10,13 +10,17 @@ import { cleanupPluginConfiguration, usePluginStore, type MarketplaceRef } from 
 import { useAppStore } from '@/stores/appStore';
 import { APP_VERSION } from '@/utils/version';
 import { joinPath } from '@/utils/pathUtils';
-import { format, getI18n } from '@/i18n';
+import { format, getI18n, getLocale } from '@/i18n';
+import { resolveLocalizedText } from '../../../electron/shared/specFields.mjs';
 import { appRuns, splitRunTarget } from '../../../electron/shared/appSpec.mjs';
 import { PluginManifestError } from '../../../electron/shared/pluginManifestError.mjs';
 import { checkMinAbuVersion } from '../../../electron/shared/pluginSpec.mjs';
-import { addedAppId, readAppFile, saveAddedApp } from './appRecords';
+import { addedAppId, assertAppOriginAvailable, prepareAppFiles, readAppFile, releaseAppFiles, saveAddedApp } from './appRecords';
 import { liveRefCatalog, resolveAppRefs, type RefCatalog } from './appRefs';
 import { refreshAddedApps } from './appSync';
+import { AppAddError } from './appAddError';
+
+export { AppAddError } from './appAddError';
 
 /**
  * Adding and updating an app (docs/app-spec.md, 「使用」 and 「更新」 in the app
@@ -48,8 +52,9 @@ export interface AppPluginStep {
 export interface AppAddPlan {
   appId: string;
   origin: AddedAppOrigin;
-  /** The app's own files, as read (a market directory, a fetched copy, or the folder). */
+  /** The owned copy whose contents were disclosed. */
   sourceDir: string;
+  preparedDir?: string;
   file: ParsedAppFile;
   /** The app as the switcher and the home would show it once added. */
   app: AppDefinition;
@@ -60,21 +65,13 @@ export interface AppAddPlan {
   replacing: boolean;
 }
 
-/** A refusal the user reads as it is: the add stops and nothing is written. */
-export class AppAddError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'AppAddError';
-  }
-}
-
 function i18n() {
   return getI18n().appMarket;
 }
 
 /** Where a remote app is fetched before the user confirms: inside the plugin root, which is the only root the fetcher writes to. */
 function remoteAppStagingDir(home: string, market: string, name: string, sha: string): string {
-  return joinPath(pluginRoot(home), market, `app-${name}`, '_remote', sha);
+  return joinPath(pluginRoot(home), market, `app-${name}`, '_remote', `${sha}-${crypto.randomUUID()}`);
 }
 
 async function appDirFor(source: AppAddSource, home: string): Promise<string> {
@@ -82,8 +79,15 @@ async function appDirFor(source: AppAddSource, home: string): Promise<string> {
   const entrySource: PluginSource = source.entry.source;
   if (entrySource.kind === 'relative') return resolveSourceDir(entrySource, source.market.dir);
   if (!entrySource.sha) throw new AppAddError(format(i18n().remoteNeedsSha, { name: source.entry.name }));
-  const fetched = await fetchRemotePluginSource(entrySource, remoteAppStagingDir(home, source.market.name, source.entry.name, entrySource.sha));
-  return fetched.destDir;
+  const destDir = remoteAppStagingDir(home, source.market.name, source.entry.name, entrySource.sha);
+  let fetched = false;
+  try {
+    await fetchRemotePluginSource(entrySource, destDir);
+    fetched = true;
+    return destDir;
+  } finally {
+    if (!fetched) await releaseAppFiles(destDir);
+  }
 }
 
 /** The app as it will appear once added, with its images read from `dir`. */
@@ -138,38 +142,56 @@ function assertStepsCover(app: AppDefinition, steps: AppPluginStep[]): void {
       const brings = kind === 'team' ? (d.teams ?? []).some((team) => team.id === target.id)
         : kind === 'expert' ? d.agents.some((agent) => agent.name === target.id && !agent.conflict)
         : d.skills.includes(target.id);
-      if (!brings) throw new PluginManifestError(`${field}.${kind}: ${format(i18n().pluginLacksReference, { plugin: target.plugin, name: target.id })}`, `${field}.${kind}`, 'unknown-reference');
+      if (!brings) {
+        if (app.origin?.kind === 'market') {
+          const scene = app.config.home.modes.items.flatMap((mode) => mode.scenes).find((item) => item.run === run);
+          throw new AppAddError(format(i18n().sceneDependencyMissing, { scene: resolveLocalizedText(scene ? scene.title : app.name, getLocale()),
+            plugin: step.entry.displayName ?? step.entry.name }));
+        }
+        throw new PluginManifestError(`${field}.${kind}: ${format(i18n().pluginLacksReference, { plugin: target.plugin, name: target.id })}`, `${field}.${kind}`, 'unknown-reference');
+      }
     }
   }
 }
 
 /** Read, check and plan one app. Prepared plugin snapshots are released by `cancelAddApp` or `confirmAddApp`. */
 export async function planAddApp(source: AppAddSource, home: string, catalog: RefCatalog = liveRefCatalog()): Promise<AppAddPlan> {
-  const sourceDir = await appDirFor(source, home);
-  const file = await readAppFile(sourceDir, 'package');
-  if (source.kind === 'market') {
-    if (file.name !== source.entry.name) throw new AppAddError(format(i18n().nameMismatch, { listed: source.entry.name, actual: file.name }));
-    for (const key of ['version', 'minAbuVersion'] as const) {
-      const listed = source.entry[key];
-      if (listed !== undefined && listed !== file[key]) throw new AppAddError(format(i18n().entryMismatch, { name: file.name }));
+  const originalDir = await appDirFor(source, home);
+  let sourceDir: string | undefined;
+  let planned = false;
+  try {
+    sourceDir = await prepareAppFiles(home, originalDir);
+    const file = await readAppFile(sourceDir, 'package');
+    if (source.kind === 'market') {
+      if (file.name !== source.entry.name) throw new AppAddError(format(i18n().nameMismatch, { listed: source.entry.name, actual: file.name }));
+      for (const key of ['version', 'minAbuVersion'] as const) {
+        const listed = source.entry[key];
+        if (listed !== undefined && listed !== file[key]) throw new AppAddError(format(i18n().entryMismatch, { name: file.name }));
+      }
     }
-  }
-  if (!checkMinAbuVersion(file, APP_VERSION).ok) throw new AppAddError(format(i18n().needsNewerAbu, { version: file.minAbuVersion }));
+    if (!checkMinAbuVersion(file, APP_VERSION).ok) throw new AppAddError(format(i18n().needsNewerAbu, { version: file.minAbuVersion }));
 
-  const origin: AddedAppOrigin = source.kind === 'market' ? { kind: 'market', market: source.market.name } : { kind: 'folder', dir: source.dir };
-  const appId = addedAppId(file.name, origin);
-  const app = definitionFor(file, appId, origin, sourceDir);
-  const steps = await planPluginSteps(app, home, catalog);
-  return {
-    appId,
-    origin,
-    sourceDir,
-    file,
-    app,
-    steps,
-    sites: file.config.allowedOrigins ?? [],
-    replacing: useAppStore.getState().addedApps.some((item) => item.appId === appId),
-  };
+    const origin: AddedAppOrigin = source.kind === 'market' ? { kind: 'market', market: source.market.name } : { kind: 'folder', dir: source.dir };
+    const appId = addedAppId(file.name, origin);
+    await assertAppOriginAvailable(home, appId, origin);
+    const app = definitionFor(file, appId, origin, sourceDir);
+    const steps = await planPluginSteps(app, home, catalog);
+    planned = true;
+    return {
+      appId,
+      origin,
+      sourceDir,
+      preparedDir: sourceDir,
+      file,
+      app,
+      steps,
+      sites: file.config.allowedOrigins ?? [],
+      replacing: useAppStore.getState().addedApps.some((item) => item.appId === appId),
+    };
+  } finally {
+    if (!planned && sourceDir) await releaseAppFiles(sourceDir);
+    if (source.kind === 'market' && source.entry.source.kind !== 'relative') await releaseAppFiles(originalDir);
+  }
 }
 
 /**
@@ -190,7 +212,7 @@ export async function planPluginSteps(app: AppDefinition, home: string, catalog:
       // newer version; a market listing the version already installed has
       // nothing newer to offer.
       const existing = updating ? usePluginStore.getState().installed.find((plugin) => plugin.name === name && plugin.marketplace === found.marketplace.name) : undefined;
-      if (updating && (!existing || existing.version === found.entry.version)) throw new AppAddError(format(i18n().pluginTooOld, { plugin: name }));
+      if (existing && existing.version === found.entry.version) throw new AppAddError(format(i18n().pluginTooOld, { plugin: name }));
       const disclosure = await planInstall({
         prepareSnapshot: true,
         marketplaceName: found.marketplace.name,
@@ -199,7 +221,7 @@ export async function planPluginSteps(app: AppDefinition, home: string, catalog:
         home,
         fetchRemote: fetchRemotePluginSource,
       });
-      steps.push({ kind: updating ? 'update' : 'install', marketplace: found.marketplace, entry: found.entry, disclosure, existingKey: existing?.key });
+      steps.push({ kind: existing ? 'update' : 'install', marketplace: found.marketplace, entry: found.entry, disclosure, existingKey: existing?.key });
     }
     assertStepsCover(app, steps);
   } catch (error) {
@@ -225,6 +247,14 @@ export async function cancelPluginSteps(steps: AppPluginStep[]): Promise<void> {
   await releaseSteps(steps);
 }
 
+export async function cancelAddApp(plan: AppAddPlan): Promise<void> {
+  try {
+    await releaseSteps(plan.steps);
+  } finally {
+    if (plan.preparedDir) await releaseAppFiles(plan.preparedDir);
+  }
+}
+
 /**
  * Install or update the planned plugins in order. When one fails, the ones
  * this run installed are uninstalled again, so the result is what 「取消」
@@ -232,10 +262,11 @@ export async function cancelPluginSteps(steps: AppPluginStep[]): Promise<void> {
  * `configuration` holds the values each plugin's connectors asked for, by
  * plugin key.
  */
-export async function runPluginSteps(steps: AppPluginStep[], home: string, configuration: Record<string, Record<string, string>>): Promise<void> {
+export async function runPluginSteps(steps: AppPluginStep[], home: string, configuration: Record<string, Record<string, string>>, beforeInstall?: () => Promise<void>, afterInstall?: () => Promise<void>, canCompensate: () => boolean = () => true): Promise<void> {
   const installedNow: string[] = [];
   const store = usePluginStore.getState();
   try {
+    await beforeInstall?.();
     for (const step of steps) {
       const { disclosure, marketplace, entry } = step;
       let pluginConfiguration: string | undefined;
@@ -251,8 +282,9 @@ export async function runPluginSteps(steps: AppPluginStep[], home: string, confi
         await cleanupPluginConfiguration(pluginConfiguration);
       }
     }
+    await afterInstall?.();
   } catch (error) {
-    for (const key of installedNow.reverse()) await store.uninstall(home, key);
+    if (canCompensate()) for (const key of installedNow.reverse()) await store.uninstall(home, key);
     throw error;
   } finally {
     await releaseSteps(steps);
@@ -265,14 +297,21 @@ export async function runPluginSteps(steps: AppPluginStep[], home: string, confi
  * the app is recorded.
  */
 export async function confirmAddApp(plan: AppAddPlan, home: string, configuration: Record<string, Record<string, string>>): Promise<void> {
-  await runPluginSteps(plan.steps, home, configuration);
-  await saveAddedApp(home, plan.sourceDir, {
-    appId: plan.appId,
-    name: plan.file.name,
-    version: plan.file.version,
-    origin: plan.origin,
-    addedAt: new Date().toISOString(),
-  });
-  await refreshAddedApps();
+  let committed = false;
+  try {
+    await runPluginSteps(plan.steps, home, configuration, () => assertAppOriginAvailable(home, plan.appId, plan.origin), () => saveAddedApp(home, plan.sourceDir, {
+      appId: plan.appId,
+      name: plan.file.name,
+      version: plan.file.version,
+      origin: plan.origin,
+      addedAt: new Date().toISOString(),
+    }, () => { committed = true; }), () => !committed);
+  } finally {
+    try {
+      if (committed) await refreshAddedApps();
+    } finally {
+      if (plan.preparedDir) await releaseAppFiles(plan.preparedDir);
+    }
+  }
   if (!plan.replacing) useAppStore.getState().enterAppWhenAvailable(plan.appId);
 }

@@ -288,6 +288,34 @@ test('createNew creates a missing file and refuses an existing one without touch
   assert.equal(fs.readFileSync(file, 'utf8'), 'first');
 });
 
+test('createNew removes its partial file after a write failure and permits retry', (t) => {
+  const file = path.join(tempDir(t), 'AGENT.md');
+  const write = fs.writeSync.bind(fs);
+  const failing = t.mock.method(fs, 'writeSync', (fd, buffer) => {
+    write(fd, buffer, 0, 1);
+    throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+  });
+  assert.throws(() => writeCreateNew(file, 'expert instructions'), /disk full/);
+  assert.equal(fs.existsSync(file), false);
+  failing.mock.restore();
+  writeCreateNew(file, 'retry');
+  assert.equal(fs.readFileSync(file, 'utf8'), 'retry');
+});
+
+test('createNew cleanup preserves a replacement file owned by another writer', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'AGENT.md');
+  const write = fs.writeSync.bind(fs);
+  t.mock.method(fs, 'writeSync', () => {
+    fs.renameSync(file, path.join(dir, 'moved.md'));
+    const other = fs.openSync(file, 'wx');
+    try { write(other, Buffer.from('another writer')); } finally { fs.closeSync(other); }
+    throw new Error('write failed');
+  });
+  assert.throws(() => writeCreateNew(file, 'expert instructions'), /write failed/);
+  assert.equal(fs.readFileSync(file, 'utf8'), 'another writer');
+});
+
 test('createNew never overwrites a file that appears after an existence check', (t) => {
   const dir = tempDir(t);
   const file = path.join(dir, 'AGENT.md');

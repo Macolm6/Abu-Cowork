@@ -7,7 +7,7 @@
  * enterprise build answers from the signed `EnterpriseConfigSnapshot`
  * (`defaultAppId`, `allowExitDefaultApp`) and calls `enterApp` itself once the
  * employee has signed in; the apps the organization provides reach the
- * switcher through `appRegistry.registerAppSource`.
+ * switcher through `appStore.replaceManagedApps`.
  */
-export { useEnterpriseAppPolicy } from '@enterprise-modules';
+export { useEnterpriseAppPolicy, getEnterpriseAppPolicy } from '@enterprise-modules';
 export type { EnterpriseAppPolicy } from '@enterprise-modules';

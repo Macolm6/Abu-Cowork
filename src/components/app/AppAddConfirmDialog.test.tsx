@@ -8,7 +8,7 @@
 
 import type { ReactElement } from 'react';
 import { act, fireEvent, render as renderBare, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { keepClosingLayersOnScreen, passSettleInterval } from '@/test/dsWindows';
 
@@ -34,6 +34,7 @@ const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvi
 const copy = () => getI18n().appMarket;
 const common = () => getI18n().common;
 const flush = () => act(async () => { await Promise.resolve(); });
+afterEach(() => vi.unstubAllGlobals());
 
 const disclosure = (name: string, env: Record<string, string> = {}): InstallDisclosure => ({
   key: `${name}@acme`,
@@ -335,18 +336,26 @@ describe('AppAddConfirmDialog', () => {
     });
 
     it('writes nothing on Cancel, on Escape and on the corner button, and releases what was prepared', async () => {
+      const released: string[] = [];
+      vi.stubGlobal('__ABU_SHELL__', { pluginSnapshot: async (action: string, value: { token: string }) => {
+        if (action !== 'release') throw new Error(`Unexpected snapshot action: ${action}`);
+        released.push(value.token);
+        return { released: true };
+      } });
       for (const leave of [
         () => fireEvent.click(screen.getByRole('button', { name: common().cancel })),
         () => fireEvent.keyDown(confirmButton(), { key: 'Escape', code: 'Escape' }),
         () => fireEvent.click(screen.getByRole('button', { name: common().close })),
       ]) {
-        vi.mocked(cancelPluginSteps).mockClear();
-        const flow = ready();
+        released.length = 0;
+        const prepared = plan();
+        prepared.steps[0].disclosure.preparedToken = 'prepared-shop';
+        const flow = ready('add', prepared);
         flowIs(flow);
         leave();
         await flush();
         expect(useAppAddFlowStore.getState().flow.kind).toBe('closed');
-        expect(cancelPluginSteps).toHaveBeenCalledExactlyOnceWith(flow.kind === 'ready' ? flow.plan.steps : []);
+        expect(released).toEqual(['prepared-shop']);
       }
       expect(confirmAddApp).not.toHaveBeenCalled();
     });
