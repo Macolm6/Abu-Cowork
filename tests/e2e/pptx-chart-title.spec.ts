@@ -1,6 +1,6 @@
 /**
  * Real-Electron acceptance: a chart whose title was deleted in PowerPoint draws no title in the
- * slide preview.
+ * slide preview, and a chart whose series have no fill of their own draws them in the theme colors.
  *
  * The deck is `src/components/preview/__fixtures__/chart-titles.pptx`: a column, a pie and a line
  * chart saved with `c:autoTitleDeleted val="1"` and no `c:title`, then a column chart titled
@@ -77,4 +77,19 @@ test.describe('pptx chart titles', () => {
     // The pie chart's title would otherwise be its series name.
     await expect(charts.nth(1).locator('svg text', { hasText: 'Revenue' })).toHaveCount(0);
   });
+
+  test('draws the bars, slices and line of charts whose colors come from the theme', async () => {
+    const charts = panel().locator('.chart-node');
+    await expect(charts).toHaveCount(4, { timeout: READY_TIMEOUT });
+    await expect(charts.nth(3).locator('svg text', { hasText: 'Quarterly revenue' })).toHaveCount(1, { timeout: READY_TIMEOUT });
+
+    // No series in the deck has a fill of its own: series n and pie point n take accentN+1 of the
+    // Office theme. Each color is drawn once per bar or slice and once as its legend swatch.
+    const ACCENT = ['rgb(79,129,189)', 'rgb(192,80,77)', 'rgb(155,187,89)', 'rgb(128,100,162)'];
+    await expect(charts.nth(0).locator(`svg path[fill="${ACCENT[0]}"]`)).toHaveCount(5);
+    for (const color of ACCENT) {
+      await expect(charts.nth(1).locator(`svg path[fill="${color}"]`)).toHaveCount(2);
+    }
+    await expect(charts.nth(2).locator(`svg path[fill="none"][stroke="${ACCENT[0]}"]`)).not.toHaveCount(0);
+    await expect(charts.nth(3).locator(`svg path[fill="${ACCENT[0]}"]`)).toHaveCount(5);  });
 });
