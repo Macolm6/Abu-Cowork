@@ -6,7 +6,7 @@ const PERSISTED_STORES = [
   { key: 'abu-settings', minVersion: 54 },
   { key: 'abu-chat', minVersion: 16 },
   { key: 'abu-app', minVersion: 1 },
-  { key: 'abu-app-drafts', minVersion: 1 },
+    { key: 'abu-app-drafts', minVersion: 2 },
   { key: 'abu-scratchpad-store', minVersion: 1 },
   { key: 'abu-permissions', minVersion: 1 },
   { key: 'abu-workspace', minVersion: 1 },

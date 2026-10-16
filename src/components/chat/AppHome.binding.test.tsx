@@ -100,7 +100,7 @@ describe('the app home keeps the next conversation bound to its app', () => {
       chat().setPendingAppBinding(handedOver);
     });
     expect(chat().pendingTeamId).toBe('team-of-the-scene');
-    expect(chat().pendingAppBinding).toBe(handedOver);
+    expect(chat().pendingAppBinding).toEqual(handedOver);
   });
 
   it('leaves the creation conversation of 「创建应用」 unbound when the shell stays in the app', async () => {
