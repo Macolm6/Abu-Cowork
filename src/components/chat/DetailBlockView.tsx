@@ -49,6 +49,7 @@ function formatJsonText(text: string): string {
 
 function noteText(row: Extract<ToolResultRow, { kind: 'note' }>, t: TranslationDict): string {
   if (row.note === 'restNotKept') return t.chat.toolResultRestNotKept;
+  if (row.note === 'partNotSaved') return t.chat.toolResultPartNotSaved;
   const template = row.note === 'linesNotRead' ? t.chat.toolResultLinesNotRead : t.chat.toolResultCharsNotRead;
   return format(template, { count: row.count ?? 0 });
 }

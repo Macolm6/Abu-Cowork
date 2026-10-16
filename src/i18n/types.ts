@@ -508,8 +508,10 @@ export interface TranslationDict {
     toolResultLinesNotRead: string;
     /** Same line for characters; `{count}` characters were left out. */
     toolResultCharsNotRead: string;
-    /** Line where the end of a result was not kept. */
+    /** Line where the end of a command's output was not kept. */
     toolResultRestNotKept: string;
+    /** Line where the conversation record had no room for part of a step (its end, or its images). */
+    toolResultPartNotSaved: string;
     /** Under a step result whose whole text the conversation does not hold. */
     toolResultFullUnavailable: string;
     moreItems: string;

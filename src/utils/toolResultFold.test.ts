@@ -19,15 +19,18 @@ describe('toResultRows', () => {
     expect(note?.kind === 'note' ? note.count : 0).toBeGreaterThan(6000);
   });
 
-  it('turns the command cut note and the durable storage note into the same note', () => {
+  it('reads the command cut note as the rest not kept', () => {
     expect(toResultRows(`a\n${COMMAND_OUTPUT_CUT_NOTE}\n\nexit code: 0`)).toEqual([
       { kind: 'text', text: 'a' },
       { kind: 'note', note: 'restNotKept' },
       { kind: 'text', text: 'exit code: 0' },
     ]);
+  });
+
+  it('reads the durable storage note as part of the step not saved, since it also stands for dropped images', () => {
     expect(toResultRows(`a\n\n${DURABLE_RESULT_OMITTED_NOTE}`)).toEqual([
       { kind: 'text', text: 'a' },
-      { kind: 'note', note: 'restNotKept' },
+      { kind: 'note', note: 'partNotSaved' },
     ]);
   });
 
@@ -64,7 +67,7 @@ describe('foldToolResult', () => {
 
   it('keeps a note that ends the result in the folded tail', () => {
     const fold = foldToolResult(`${lines(12)}\n\n${DURABLE_RESULT_OMITTED_NOTE}`);
-    expect(fold.tail.at(-1)).toEqual({ kind: 'note', note: 'restNotKept' });
+    expect(fold.tail.at(-1)).toEqual({ kind: 'note', note: 'partNotSaved' });
   });
 
   it('shows 1000 characters on few lines whole and folds 1001 by characters', () => {

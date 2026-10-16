@@ -400,6 +400,7 @@ const zhCN: TranslationDict = {
     toolResultLinesNotRead: '内容过长，阿布没有读取中间的 {count} 行',
     toolResultCharsNotRead: '内容过长，阿布没有读取中间的 {count} 个字符',
     toolResultRestNotKept: '内容过长，后面的部分没有留下',
+    toolResultPartNotSaved: '这一步有部分内容没有保存下来',
     toolResultFullUnavailable: '这段对话里没有这一步的完整结果',
     moreItems: '还有 {count} 项...',
     moreRows: '还有 {count} 行...',

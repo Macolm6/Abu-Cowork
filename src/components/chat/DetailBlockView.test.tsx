@@ -255,6 +255,14 @@ describe('DetailBlockView whole result', () => {
     expect(document.body.textContent).not.toContain('omitted');
   });
 
+  it('says part of the step was not saved where the conversation record ran out of room', () => {
+    const text = 'Screenshot taken\n\n[Rich tool result omitted from durable history to stay within the storage budget]';
+    render(<DetailBlockView block={resultBlock()} onToggle={() => {}} fullText={text} />);
+
+    expect(screen.getByText('这一步有部分内容没有保存下来')).toBeInTheDocument();
+    expect(screen.queryByText('内容过长，后面的部分没有留下')).toBeNull();
+  });
+
   it('folds one long line by characters', () => {
     render(<DetailBlockView block={resultBlock()} onToggle={() => {}} fullText={'x'.repeat(3000)} />);
 

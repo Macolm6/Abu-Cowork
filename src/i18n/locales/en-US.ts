@@ -400,6 +400,7 @@ const enUS: TranslationDict = {
     toolResultLinesNotRead: 'Too long — Abu didn\'t read the {count} lines in the middle',
     toolResultCharsNotRead: 'Too long — Abu didn\'t read the {count} characters in the middle',
     toolResultRestNotKept: 'Too long — the rest wasn\'t kept',
+    toolResultPartNotSaved: 'Part of this step wasn\'t saved',
     toolResultFullUnavailable: 'This conversation doesn\'t have this step\'s full result',
     moreItems: '{count} more items...',
     moreRows: '{count} more rows...',

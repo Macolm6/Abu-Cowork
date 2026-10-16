@@ -4,7 +4,12 @@ import { DURABLE_RESULT_OMITTED_NOTE } from '@/core/session/durableToolResultCon
 /** Appended by electron/commandHost.cjs when a command's output passes its 2 MB buffer. */
 export const COMMAND_OUTPUT_CUT_NOTE = '[truncated: output too large]';
 
-export type ToolResultNoteKind = 'linesNotRead' | 'charsNotRead' | 'restNotKept';
+/**
+ * `restNotKept`: the command host dropped the end of the output.
+ * `partNotSaved`: the conversation record ran out of room for this call; that
+ * note also marks a call whose images were dropped with its text whole.
+ */
+export type ToolResultNoteKind = 'linesNotRead' | 'charsNotRead' | 'restNotKept' | 'partNotSaved';
 
 export type ToolResultRow =
   | { kind: 'text'; text: string }
@@ -29,7 +34,8 @@ function noteOf(line: string): ToolResultRow | null {
   if (lines) return { kind: 'note', note: 'linesNotRead', count: Number(lines[1]) };
   const chars = CHARS_OMITTED_LINE.exec(line);
   if (chars) return { kind: 'note', note: 'charsNotRead', count: Number(chars[1]) };
-  if (line === COMMAND_OUTPUT_CUT_NOTE || line === DURABLE_RESULT_OMITTED_NOTE) return { kind: 'note', note: 'restNotKept' };
+  if (line === COMMAND_OUTPUT_CUT_NOTE) return { kind: 'note', note: 'restNotKept' };
+  if (line === DURABLE_RESULT_OMITTED_NOTE) return { kind: 'note', note: 'partNotSaved' };
   return null;
 }
 
