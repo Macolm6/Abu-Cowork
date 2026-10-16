@@ -10,11 +10,27 @@ import { appRuns, splitRunTarget } from '../../../electron/shared/appSpec.mjs';
 export interface AppMembers {
   teamIds: ReadonlySet<string>;
   agentNames: ReadonlySet<string>;
+  roleIds: ReadonlySet<string>;
 }
 
 export function appMembers(app: AppDefinition, catalog: RefCatalog = liveRefCatalog()): AppMembers {
   const teamIds = new Set<string>();
   const agentNames = new Set<string>();
+  const roleIds = new Set<string>();
+  for (const { run } of appRuns(app.config)) {
+    if ('expert' in run && splitRunTarget('expert', run.expert)?.origin === 'enterprise') roleIds.add(run.expert);
+    if ('team' in run) {
+      const target = splitRunTarget('team', run.team);
+      if (target?.origin === 'enterprise') {
+        const team = catalog.teams.find((item) => item.id === target.id);
+        if (team) {
+          teamIds.add(team.id);
+          for (const roleId of team.memberRoleIds) roleIds.add(roleId);
+          roleIds.add(team.leaderRoleId);
+        }
+      }
+    }
+  }
   for (const entry of resolveAppRefs(app, catalog).runs) {
     for (const target of runTargets(entry.resolved)) {
       if (target.status !== 'ok') continue;
@@ -22,7 +38,7 @@ export function appMembers(app: AppDefinition, catalog: RefCatalog = liveRefCata
       if (target.kind === 'expert') agentNames.add(target.agent.name);
     }
   }
-  return { teamIds, agentNames };
+  return { teamIds, agentNames, roleIds };
 }
 
 /**

@@ -1089,6 +1089,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
                 searchResults={searchResults.length > 0 ? searchResults : undefined}
                 onCitationClick={searchResults.length > 0 ? handleCitationClick : undefined}
                 resolveFileMention={resolveTurnFileMention}
+                streaming={seg.message.isStreaming}
               />
             </div>
           )}

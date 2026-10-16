@@ -105,7 +105,7 @@ test('a conversation file is imported without its workspace, and a read under th
     timeout: READY_TIMEOUT,
   });
   // The grant is asked for the top-level folder of the request, under the user's Documents.
-  await expect(page.getByRole('alertdialog')).toContainText('Documents');
+  await expect(page.getByRole('alertdialog')).toContainText(/Documents/i);
   await pressWhenSettled(page.getByRole('button', { name: /^(拒绝|Deny)$/ }));
 
   await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);

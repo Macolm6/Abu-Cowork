@@ -20,13 +20,20 @@ export function describeSceneRun(
 ): { label: string; unavailable: boolean } {
   const run: AppRunRef | undefined = effectiveRun(app, scene);
   if (!run || !resolved) return { label: t.appHome.sceneRunDefault, unavailable: false };
+  if (resolved.skill?.status === 'unavailable') {
+    const name = app.referenceNames?.[`skill:${run.skill}`] ?? resolved.skill.label;
+    return { label: format(t.appHome.sceneSkillUnavailable, { name }), unavailable: true };
+  }
   const owner = resolved.owner;
-  if (owner?.status === 'unavailable') return { label: format(t.appHome.sceneRunUnavailable, { name: owner.label }), unavailable: true };
+  const ownerRef = 'team' in run ? `team:${run.team}` : 'expert' in run ? `expert:${run.expert}` : undefined;
+  const remembered = ownerRef ? app.referenceNames?.[ownerRef] : undefined;
+  if (owner?.status === 'unavailable') return { label: remembered ? format(t.appHome.sceneRunUnavailable, { name: remembered }) : t.appHome.sceneOwnerUnavailable, unavailable: true };
+  if (owner?.status === 'needs-plugin') return { label: remembered ? format('expert' in run ? t.appHome.sceneRunExpert : t.appHome.sceneRunTeam, { name: remembered }) : t.appHome.sceneNeedsExtension, unavailable: false };
   if (owner) {
     const name = targetDisplayName(owner, locale);
     return { label: format(owner.status === 'ok' && owner.kind === 'expert' ? t.appHome.sceneRunExpert : t.appHome.sceneRunTeam, { name }), unavailable: false };
   }
   const skill = resolved.skill!;
-  if (skill.status === 'unavailable') return { label: format(t.appHome.sceneRunUnavailable, { name: skill.label }), unavailable: true };
+  if (skill.status === 'needs-plugin') return { label: t.appHome.sceneNeedsExtension, unavailable: false };
   return { label: format(t.appHome.sceneRunSkill, { name: targetDisplayName(skill, locale) }), unavailable: false };
 }

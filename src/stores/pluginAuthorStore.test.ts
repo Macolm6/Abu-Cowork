@@ -7,7 +7,7 @@ vi.mock('@/core/plugin/installer', () => ({ planPreparedInstall: vi.fn(), releas
 vi.mock('./chatStore', () => ({ useChatStore: { getState: () => chat } }));
 vi.mock('./settingsStore', () => ({ useSettingsStore: { getState: () => ({ closeExtensions: vi.fn() }) } }));
 const chat = vi.hoisted(() => ({ conversations: {} as Record<string, unknown>, conversationIndex: {} as Record<string, unknown>,
-  switchConversation: vi.fn(), createConversation: vi.fn(() => 'new-conversation'), renameConversation: vi.fn(), setPendingInput: vi.fn(),
+  switchConversation: vi.fn(), startNewConversation: vi.fn(), createConversation: vi.fn(() => 'new-conversation'), renameConversation: vi.fn(), setPendingInput: vi.fn(),
   setPendingAppBinding: vi.fn(), setPendingTeamId: vi.fn() }));
 const shell = { leaveApp: true };
 const author = { id: 'a'.repeat(32), createdAt: '2026-09-09', conversationId: 'existing', name: 'demo', prepared: null, sourceDir: '/home/Abu Plugins/a', marketplace: 'author-a', key: 'demo@author-a' };

@@ -123,7 +123,7 @@ describe('planAddApp', () => {
     writeMarket([{ name: 'contract-review', plugins: ['contract-tools'], run: { team: 'plugin:contract-tools/review' } }], [{ name: 'contract-tools', version: '1.0.0' }]);
     vi.mocked(planInstall).mockResolvedValue(disclosure('contract-tools', ['other']));
     await expect(planAddApp({ kind: 'market', market: marketRef(), entry: entry('contract-review') }, root, emptyCatalog))
-      .rejects.toMatchObject({ field: 'home.modes.items[0].scenes[0].run.team' });
+      .rejects.toMatchObject({ message: expect.stringContaining('contract-tools') });
     // The snapshot prepared for a plan that was refused is released.
     expect(releasePreparedInstall).toHaveBeenCalledWith('token-contract-tools');
   });

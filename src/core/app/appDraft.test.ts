@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { homeDir } from '@tauri-apps/api/path';
 import { exists, readDir, readTextFile } from '@tauri-apps/plugin-fs';
 import type { SubagentDefinition } from '@/types';
 import type { Team } from '@/stores/teamStore';
@@ -72,6 +73,7 @@ beforeEach(() => {
   draft = { id: 'd'.repeat(32), dir: join(root, 'draft'), createdAt: '2026-09-28T00:00:00.000Z' };
   mkdirSync(draft.dir, { recursive: true });
   useRealTree();
+  vi.mocked(homeDir).mockResolvedValue(root);
   useAppStore.setState({ addedApps: [] });
   useAppDraftStore.setState({ draftsByConversation: {} });
 });
@@ -89,6 +91,48 @@ describe('draftFor', () => {
 });
 
 describe('readAppDraft', () => {
+  it('rejects a team name already used by a visible team before creating resources', async () => {
+    writeApp();
+    writeExpert('周报整理员');
+    writeTeam('weekly-review', ['周报整理员', 'builtin:产品经理']);
+    const refs = catalog();
+    refs.teams.push({ ...team('existing'), name: '周报复盘小组' });
+    await expect(readAppDraft(draft, refs)).rejects.toMatchObject({ field: 'teams/weekly-review.json.name', reason: 'duplicate' });
+  });
+
+  it('rejects two draft teams with the same display name', async () => {
+    writeApp();
+    writeExpert('周报整理员');
+    writeTeam('weekly-review', ['周报整理员', 'builtin:产品经理']);
+    writeTeam('weekly-other', ['周报整理员', 'builtin:产品经理']);
+    await expect(readAppDraft(draft, catalog())).rejects.toMatchObject({ reason: 'duplicate' });
+  });
+
+  it('rejects an expert whose folder is present but absent from the runnable catalog', async () => {
+    writeApp();
+    writeExpert('Writer');
+    mkdirSync(join(root, '.abu', 'agents', 'writer'), { recursive: true });
+    writeFileSync(join(root, '.abu', 'agents', 'writer', 'AGENT.md'), 'existing expert');
+    await expect(readAppDraft(draft, catalog())).rejects.toMatchObject({ field: 'agents/Writer.md', reason: 'duplicate' });
+  });
+
+  it('rejects a connector the installed plugin does not provide', async () => {
+    writeApp({ plugins: ['shop'], requiredConnectors: ['shop/missing'] });
+    writeExpert('周报整理员');
+    writeTeam('weekly-review', ['周报整理员', 'builtin:产品经理']);
+    const refs = catalog();
+    refs.plugins.push({ key: 'shop@market', name: 'shop', marketplace: 'market', enabled: true,
+      contributed: { agents: [], teams: [], skills: [], mcpServers: ['shop-api'] } });
+    await expect(readAppDraft(draft, refs)).rejects.toMatchObject({ field: 'requiredConnectors[0]' });
+  });
+
+  it('allows retrying creation after an empty expert directory remains', async () => {
+    writeApp();
+    writeExpert('周报整理员');
+    writeTeam('weekly-review', ['周报整理员', 'builtin:产品经理']);
+    mkdirSync(join(root, '.abu', 'agents', '周报整理员'), { recursive: true });
+    expect((await readAppDraft(draft, catalog())).experts).toHaveLength(1);
+  });
   it('reports an empty draft before the app file is written', async () => {
     expect(await draftHasApp(draft)).toBe(false);
     await expect(readAppDraft(draft, catalog())).rejects.toThrow('.abu-app/app.json');

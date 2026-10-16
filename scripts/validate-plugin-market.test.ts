@@ -1,12 +1,29 @@
 import { describe, expect, it } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { checkMarket } from './validate-plugin-market.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const hostVersion = '0.51.0';
 
 describe('validate-plugin-market', () => {
+  it.each([
+    { plugins: [] },
+    { name: 'invalid', plugins: [{ name: 'tool', source: './tool', author: { email: 'a@example.com' } }] },
+    { name: 'invalid', apps: [{ name: 'app', source: './app', description: '' }] },
+  ])('refuses metadata that the client cannot load: %j', async (manifest) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'abu-market-metadata-'));
+    try {
+      mkdirSync(path.join(dir, '.abu-plugin'));
+      writeFileSync(path.join(dir, '.abu-plugin', 'marketplace.json'), JSON.stringify(manifest));
+      await expect(checkMarket(dir, { hostVersion })).rejects.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('passes the official market and the example market', async () => {
     const official = await checkMarket(path.join(repoRoot, 'builtin-plugin-market'), { hostVersion });
     expect(official.failures.map(String)).toEqual([]);
@@ -20,6 +37,19 @@ describe('validate-plugin-market', () => {
     const examples = await checkMarket(path.join(repoRoot, 'examples', 'plugin-market'), { hostVersion });
     expect(examples.failures.map(String)).toEqual([]);
     expect(examples.checked.map(entry => `${entry.kind} ${entry.name}`)).toEqual(['plugin shop-assistant', 'app shop-ops']);
+  });
+
+  it('identifies an unsupported description locale before scanning packages', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'abu-market-locale-'));
+    try {
+      mkdirSync(path.join(dir, '.abu-plugin'));
+      writeFileSync(path.join(dir, '.abu-plugin', 'marketplace.json'), JSON.stringify({
+        name: 'invalid-locale', apps: [{ name: 'app', source: './app', description: { 'fr-FR': 'Description' } }],
+      }));
+      await expect(checkMarket(dir, { hostVersion })).rejects.toThrow('apps[0].description.fr-FR');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('names the failing field for every broken fixture entry', async () => {
@@ -37,8 +67,6 @@ describe('validate-plugin-market', () => {
     expect(byEntry.get('app wrong-ref')).toContain('home.modes.items[0].scenes[0].run.team');
     expect(byEntry.get('app unknown-plugin')).toContain('plugins[0]');
     expect(byEntry.get('app version-drift')).toContain('version');
-    // An entry's description is a string or one text per known locale.
-    expect(byEntry.get('app version-drift')).toContain('description');
   });
 
   it('reports an app that needs a newer Abu', async () => {
