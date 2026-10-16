@@ -110,7 +110,8 @@
     "test:e2e-report": "node scripts/e2e-report.mjs",
     "setup-python": "bash scripts/setup-python-runtime.sh",
     "setup-node": "bash scripts/setup-node-runtime.sh",
-    "prepare": "husky"
+    "prepare": "husky",
+    "postinstall": "patch-package --error-on-fail"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.95.2",
@@ -220,6 +221,7 @@
     "happy-dom": "20.11.2",
     "husky": "^9.1.7",
     "lint-staged": "^17.0.8",
+    "patch-package": "^8.0.1",
     "postcss": "^8.5.28",
     "selfsigned": "^5.5.0",
     "tailwindcss": "^4.2.1",
