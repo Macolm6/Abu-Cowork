@@ -597,6 +597,8 @@ function deactivateAllSkills(conversationId: string, loopId: string): void {
 }
 
 export interface AgentLoopOptions {
+  /** Process-local authority owner captured at dispatch; omitted from wire options. */
+  operationOwner?: import('../tools/operationAuthorization').ToolOperationOwner;
   /** Trusted UI selection for this specific retry turn; not accepted from the wire. */
   teamConfirmationRetryId?: string;
   /** Trusted UI flag: this run continues the conversation's current team task. Never sent to the sidecar. */
@@ -1092,6 +1094,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     initiatedBy: options?.initiatedBy,
   });
   const precomputeToolContext: ToolExecutionContext = {
+    operationOwner: options?.operationOwner,
+    abortSignal: abortController.signal,
     workspacePath: precomputeWorkspacePath,
     conversationId,
     loopId,
@@ -1180,6 +1184,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     abortController.abort(new Error('Run stopped after consecutive browser denials'));
   });
   const toolContext: ToolExecutionContext = {
+    operationOwner: options?.operationOwner,
     workspacePath: resolveToolContextWorkspacePath(
       options,
       _convForContext,
@@ -1478,6 +1483,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // way to escape it.
         reportBrowserDenial: toolContext.reportBrowserDenial,
         reportBrowserAllow: toolContext.reportBrowserAllow,
+        operationOwner: options?.operationOwner,
         parentLoopId: loopId,
         parentUserMessageId: delegatedUserTurn.origin.messageId,
         parentConversationId: conversationId,

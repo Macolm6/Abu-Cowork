@@ -43,6 +43,7 @@ import type {
   Message,
 } from '@/types';
 import type { TranslationDict } from '@/i18n/types';
+import { freezeToolInput } from '@/core/tools/operationAuthorization';
 import zhCN from '@/i18n/locales/zh-CN';
 import enUS from '@/i18n/locales/en-US';
 import type { PlannedStep, TaskExecution } from '@/types/execution';
@@ -103,6 +104,7 @@ interface SerializableToolDefinition {
   description: string;
   inputSchema: ToolDefinition['inputSchema'];
   execution?: ToolDefinition['execution'];
+  executionRoute?: 'host';
 }
 
 interface CapsSnapshotEntry {
@@ -294,6 +296,8 @@ function toWireToolContext(context: ToolExecutionContext | undefined): ToolExecu
   if (!context) return undefined;
   const {
     abortSignal: _abortSignal,
+    operationOwner: _operationOwner,
+    files: _files,
     reportMetadata: _reportMetadata,
     reportBrowserDenial: _reportBrowserDenial,
     reportBrowserAllow: _reportBrowserAllow,
@@ -313,6 +317,10 @@ function parseToolExecutionMetadata(
   if (value === undefined) return undefined;
   if (!isRecord(value)) throw new RpcError(-32603, 'Invalid tool.invoke metadata envelope');
   const metadata: ToolExecutionMetadata = {};
+  if (value.outputSnapshotsHandled !== undefined) {
+    if (typeof value.outputSnapshotsHandled !== 'boolean') throw new RpcError(-32603, 'Invalid output capture metadata');
+    metadata.outputSnapshotsHandled = value.outputSnapshotsHandled;
+  }
   if (value.subagentStopReason !== undefined) {
     if (!isSubagentStopReason(value.subagentStopReason)) {
       throw new RpcError(-32603, 'Invalid tool.invoke subagent metadata envelope');
@@ -427,8 +435,9 @@ function parseAbortParams(params: unknown): { runId: string } {
  *     longer bucketed together with an explicit deny.
  */
 type LocalApprovalOutcome =
-  | { decision: 'allow'; executionPath?: string }
+  | { decision: 'allow'; executionPath?: string; executionInput?: Readonly<Record<string, unknown>> }
   | { decision: 'deny'; reason: string }
+  | { decision: 'host' }
   | { decision: 'unavailable' };
 
 /**
@@ -470,7 +479,12 @@ async function checkLocalToolApproval(
     // never as an allow.
     return { decision: 'unavailable' };
   }
+  if (isRecord(result) && result.decision === 'host') return { decision: 'host' };
   if (isRecord(result) && result.decision === 'allow') {
+    if (result.executionInput !== undefined && !isRecord(result.executionInput)) {
+      return { decision: 'unavailable' };
+    }
+    const executionInput = isRecord(result.executionInput) ? freezeToolInput(result.executionInput) : undefined;
     const executionPath = typeof result.executionPath === 'string' && result.executionPath.length > 0
       ? result.executionPath
       : undefined;
@@ -481,7 +495,10 @@ async function checkLocalToolApproval(
     if (LOCAL_PATH_BOUND_TOOLS.has(toolName) && !executionPath) {
       return { decision: 'unavailable' };
     }
-    return executionPath ? { decision: 'allow', executionPath } : { decision: 'allow' };
+    if (LOCAL_PATH_BOUND_TOOLS.has(toolName) && executionInput && executionInput.path !== executionPath) {
+      return { decision: 'unavailable' };
+    }
+    return { decision: 'allow', ...(executionPath ? { executionPath } : {}), ...(executionInput ? { executionInput } : {}) };
   }
   if (isRecord(result) && result.decision === 'deny') {
     // Mirror registry.ts's executeAnyTool default exactly (`approval.reason
@@ -516,7 +533,7 @@ async function materializeReverseToolResultForSidecarProvider(
   }
 }
 
-function createReverseToolInvoker(
+export function createReverseToolInvoker(
   runId: string,
   initialTools: SerializableToolDefinition[],
   mediaOriginConversationId: string,
@@ -579,7 +596,8 @@ function createReverseToolInvoker(
       // for why that's NOT the same as an explicit deny) falls through to
       // the reverse `tool.invoke` path, which re-derives its own approval
       // decision (and any UI) independently and exactly once.
-      if (hasLocalTool(name)) {
+      const hostRoute = cache.some(tool => tool.name === name && tool.executionRoute === 'host');
+      if (!hostRoute && hasLocalTool(name)) {
         const approval = await checkLocalToolApproval(runId, name, input, toWireToolContext(context as ToolExecutionContext | undefined));
         if (approval.decision === 'deny') {
           return approval.reason;
@@ -595,9 +613,9 @@ function createReverseToolInvoker(
             throw error;
           }
           try {
-            const approvedInput = approval.executionPath
+            const approvedInput = approval.executionInput ?? (approval.executionPath
               ? { ...input, path: approval.executionPath }
-              : input;
+              : input);
             return await executeLocalTool(
               name,
               approvedInput,
@@ -620,6 +638,7 @@ function createReverseToolInvoker(
             if (!isLocalToolReadOnly(name)) throw err;
           }
         }
+        // An explicit 'host' route has not consumed approval. Likewise,
         // approval.decision === 'unavailable' (transport failure or a
         // malformed/unrecognized approval.check response) — local execute()
         // was NEVER invoked, so falling through to the reverse tool.invoke

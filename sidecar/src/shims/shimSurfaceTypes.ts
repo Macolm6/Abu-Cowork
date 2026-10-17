@@ -56,6 +56,8 @@
  */
 import type * as realLogger from '@/core/logging/logger';
 import type * as shimLogger from './logger';
+import type * as realAuthorizedFileOperationRun from '@/core/tools/authorizedFileOperation';
+import type * as shimAuthorizedFileOperationRun from './authorizedFileOperationRun';
 import type * as realTaskCommandInvokeRun from '@/core/tools/helpers/taskCommandInvoke';
 import type * as shimTaskCommandInvokeRun from './taskCommandInvokeRun';
 import type * as realCompatEvents from '@/core/observability/compatEvents';
@@ -341,3 +343,6 @@ export type TauriPathRunReturns = NoDrift<ReturnDrift<typeof realTauriPathRun, t
 
 export type PluginOsRunParams = NoDrift<ParamDrift<typeof realPluginOsRun, typeof shimPluginOsRun>>;
 export type PluginOsRunReturns = NoDrift<ReturnDrift<typeof realPluginOsRun, typeof shimPluginOsRun>>;
+
+export type AuthorizedFileOperationRunParams = NoDrift<ParamDrift<typeof realAuthorizedFileOperationRun, typeof shimAuthorizedFileOperationRun>>;
+export type AuthorizedFileOperationRunReturns = NoDrift<ReturnDrift<typeof realAuthorizedFileOperationRun, typeof shimAuthorizedFileOperationRun>>;

@@ -34,6 +34,8 @@ const enterprisePeerPackages = [
   '@tauri-apps/plugin-opener',
   'fflate',
   'lucide-react',
+  'minimatch',
+  'refa',
 ]
 
 console.log(`[vite] ABU_BUILD_TARGET=${BUILD_TARGET} → @enterprise-modules → ${enterpriseModulesPath}`)

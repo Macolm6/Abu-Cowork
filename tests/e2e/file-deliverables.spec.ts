@@ -187,7 +187,7 @@ test('a presented file gets a card with its description, and a file that was onl
   expect(fs.existsSync(path.join(workspace, 'report.md'))).toBe(true);
   expect(fs.existsSync(path.join(workspace, 'build.py'))).toBe(true);
   // The relative path was resolved against the project folder and accepted.
-  expect(toolResultsOfLastRequest(startedMock).at(-1)).toBe(`Presented ${path.join(workspace, 'report.md')}`);
+  expect(toolResultsOfLastRequest(startedMock).at(-1)).toBe(`Presented ${path.join(workspace, 'report.md').replaceAll('\\', '/')}`);
 
   await expect(fileCards(page)).toHaveCount(1);
   const card = cardOf(page, 'report.md');
@@ -265,7 +265,7 @@ test('a file the agent wrote and then removed in the same turn gets no card', as
   // The file was presented while it existed, then left the folder before the turn ended.
   const results = toolResultsOfLastRequest(startedMock);
   expect(results).toHaveLength(3);
-  expect(results[1]).toBe(`Presented ${path.join(workspace, '临时.md')}`);
+  expect(results[1]).toBe(`Presented ${path.join(workspace, '临时.md').replaceAll('\\', '/')}`);
   expect(fs.existsSync(path.join(workspace, '临时.md'))).toBe(false);
   await expect(fileCards(page)).toHaveCount(0);
   await expect(page.getByTitle('临时.md', { exact: true })).toHaveCount(0);
@@ -285,7 +285,7 @@ test('a file renamed before it is presented gets one card, under its new name', 
 
   await runTurn(page);
 
-  expect(toolResultsOfLastRequest(startedMock).at(-1)).toBe(`Presented ${path.join(workspace, '终稿.md')}`);
+  expect(toolResultsOfLastRequest(startedMock).at(-1)).toBe(`Presented ${path.join(workspace, '终稿.md').replaceAll('\\', '/')}`);
   expect(fs.existsSync(path.join(workspace, '初稿.md'))).toBe(false);
   expect(fs.existsSync(path.join(workspace, '终稿.md'))).toBe(true);
   await expect(fileCards(page)).toHaveCount(1);
@@ -371,7 +371,7 @@ test('a turn the user hands to an expert shows the card of the file the expert p
   const offeredTools = (firstRequest.tools ?? []).map((tool) => tool.function?.name);
   expect(offeredTools).toContain('present_files');
   expect(offeredTools).not.toContain('delegate_to_agent');
-  expect(toolResultsOfLastRequest(startedMock).at(-1)).toBe(`Presented ${path.join(workspace, '调研结论.md')}`);
+  expect(toolResultsOfLastRequest(startedMock).at(-1)).toBe(`Presented ${path.join(workspace, '调研结论.md').replaceAll('\\', '/')}`);
 
   await expect(fileCards(page)).toHaveCount(1);
   const card = cardOf(page, '调研结论.md');

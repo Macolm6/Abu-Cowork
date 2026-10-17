@@ -28,6 +28,9 @@ import { diffTexts, MAX_COMPARABLE_TEXT_BYTES } from '@/core/files/fileChange';
 import { utf8Length } from '@/core/files/fileChangeBudget';
 import { listConversationWorkspaceFiles, type WorkspaceFileEntry } from '@/core/files/workspaceFiles';
 import type { FileChangeHunk } from '@/types/fileChange';
+import { FileOperationDenied, type ToolFileAccess, type FileOperationGuard } from '@/core/tools/fileOperation';
+import { openAuthorizedFileOperation } from '@/core/tools/authorizedFileOperation';
+import { captureFileOperationOwner, captureToolOperationOwner, canRecoverUnownedFiles, type ToolOperationOwner } from '@/core/tools/operationAuthorization';
 import {
   assertConversationId,
   ConversationIdError,
@@ -120,6 +123,7 @@ type BeforeState = 'file' | 'absent' | 'oversized';
 
 interface ManifestEntry {
   path: string;
+  originalPath?: string;
   hash: string;
   state: BeforeState;
 }
@@ -132,6 +136,12 @@ interface BeforeManifest {
 }
 
 interface TurnScope {
+  operationOwner?: ToolOperationOwner;
+  fileOwner?: ToolOperationOwner;
+  fileOwnerInvalidated?: boolean;
+  unsubscribeFileOwner?: () => void;
+  fileGuards?: ToolFileAccess[];
+  resultGuards?: FileOperationGuard[];
   conversationId: string;
   loopId: string;
   /** The conversation's workspace as it spells it; the list is requested for this folder. */
@@ -263,13 +273,14 @@ function parseManifest(text: string): BeforeManifest {
       !isRecord(entry)
       || typeof entry.path !== 'string'
       || !isAbsoluteFilePath(entry.path)
+      || (entry.originalPath !== undefined && (typeof entry.originalPath !== 'string' || !isAbsoluteFilePath(entry.originalPath)))
       || typeof entry.hash !== 'string'
       || !/^[0-9a-f]{16}$/.test(entry.hash)
       || !(entry.state === 'file' || entry.state === 'absent' || entry.state === 'oversized')
     ) {
       throw new Error('Turn changes manifest entry is not in the saved format');
     }
-    return { path: entry.path, hash: entry.hash, state: entry.state };
+    return { path: entry.path, ...(entry.originalPath !== undefined ? { originalPath: entry.originalPath } : {}), hash: entry.hash, state: entry.state };
   });
   return { version: FORMAT_VERSION, loopId: value.loopId, workspaceRoots: value.workspaceRoots as string[], entries };
 }
@@ -442,12 +453,13 @@ function compareDisplay(a: { display: string }, b: { display: string }): number 
   return a.display < b.display ? -1 : a.display > b.display ? 1 : 0;
 }
 
-async function readCurrentSide(path: string): Promise<Side> {
-  if (!(await fileExists(path))) return { state: 'absent' };
-  const info = await fileStat(path);
+async function readCurrentSide(path: string, files?: ToolFileAccess): Promise<Side> {
+  const io = files ?? { exists: fileExists, stat: fileStat, readFile: readFileBytes };
+  if (!(await io.exists(path))) return { state: 'absent' };
+  const info = await io.stat(path);
   if (!info.isFile) return { state: 'absent' };
   if (info.size > MAX_TURN_FILE_BYTES) return { state: 'oversized' };
-  const bytes = await readFileBytes(path);
+  const bytes = await io.readFile(path);
   return bytes.length > MAX_TURN_FILE_BYTES ? { state: 'oversized' } : { state: 'file', bytes };
 }
 
@@ -580,7 +592,9 @@ async function compareCapturedFiles(dir: string, turn: TurnScope, entries: Manif
     if (i > 0) await yieldToMainThread();
     const { entry, display } = captured[i];
     const before = await readBeforeSide(dir, turn.loopId, entry);
-    const after = await readCurrentSide(entry.path);
+    const access = await turnFileAccess(turn, 'read_file', entry.originalPath ?? entry.path);
+    const after = await readCurrentSide(entry.path, access ?? undefined);
+    await retainTurnResult(turn, access);
     const file = compareSides(entry.path, display, before, after, budget);
     if (!file) continue;
     files.push(file);
@@ -602,7 +616,11 @@ async function compareCapturedFiles(dir: string, turn: TurnScope, entries: Manif
  */
 async function compareWorkspaceWithBaseline(turn: TurnScope, entries: ManifestEntry[]): Promise<TurnChangedFile[]> {
   if (!turn.workspacePath || !turn.baseline) return [];
-  const current = await listConversationWorkspaceFiles(turn.conversationId, turn.workspacePath, turn.scopeId);
+  const access = await turnFileAccess(turn, 'find_files', turn.workspacePath);
+  const current = access
+    ? await listConversationWorkspaceFiles(turn.conversationId, turn.workspacePath, turn.scopeId, access)
+    : await listConversationWorkspaceFiles(turn.conversationId, turn.workspacePath, turn.scopeId);
+  await retainTurnResult(turn, access);
   if (current.exceeded) return [];
   const compared = new Set<string>();
   for (const entry of entries) {
@@ -612,7 +630,7 @@ async function compareWorkspaceWithBaseline(turn: TurnScope, entries: ManifestEn
   return compareWorkspaceLists(current.root, turn.baseline, current.files, compared);
 }
 
-async function saveTurn(dir: string, loopId: string, changed: TurnChangedFile[], marks: TurnUndoMarks | null): Promise<void> {
+async function saveTurn(dir: string, loopId: string, changed: TurnChangedFile[], marks: TurnUndoMarks | null, turn: TurnScope): Promise<void> {
   const files = [...changed].sort(compareDisplay);
   const kept = files.slice(0, MAX_TURN_FILES);
   const saved: TurnChanges = {
@@ -623,8 +641,64 @@ async function saveTurn(dir: string, loopId: string, changed: TurnChangedFile[],
     added: files.reduce((sum, file) => sum + (file.added ?? 0), 0),
     deleted: files.reduce((sum, file) => sum + (file.deleted ?? 0), 0),
   };
+  await assertTurnFiles(turn);
+  assertTurnActive(turn);
   await atomicWrite(turnFilePath(dir, loopId), JSON.stringify(saved));
-  await saveIndexEntry(dir, loopId, indexEntryOf(saved), marks);
+  await assertTurnFiles(turn);
+  const index = await loadIndex(dir);
+  putIndexEntry(index, loopId, indexEntryOf(saved), marks);
+  await assertTurnFiles(turn);
+  assertTurnActive(turn);
+  await atomicWrite(joinConversationPath(dir, INDEX_FILENAME), JSON.stringify({ version: FORMAT_VERSION, turns: index }));
+  await assertTurnFiles(turn);
+}
+
+function assertTurnOwner(turn: TurnScope): void {
+  if (turn.fileOwnerInvalidated || (turn.operationOwner && !turn.operationOwner.isCurrent()) || (turn.fileOwner && !turn.fileOwner.isCurrent())
+    || (!turn.operationOwner && !canRecoverUnownedFiles())) throw new FileOperationDenied('Error: turn file authorization changed');
+}
+
+async function assertTurnFiles(turn: TurnScope): Promise<void> {
+  assertTurnOwner(turn);
+  for (const files of turn.fileGuards ?? []) await files.assertCurrent();
+  for (const guard of turn.resultGuards ?? []) await guard.assertCurrent();
+  assertTurnOwner(turn);
+}
+
+function assertTurnActive(turn: TurnScope): void {
+  assertTurnOwner(turn);
+  for (const files of turn.fileGuards ?? []) files.assertActive();
+  for (const guard of turn.resultGuards ?? []) guard.assertActive();
+  assertTurnOwner(turn);
+}
+
+async function turnFileAccess(turn: TurnScope, toolName: string, path: string): Promise<ToolFileAccess | null> {
+  assertTurnOwner(turn);
+  const files = await openAuthorizedFileOperation(toolName, { path, ...(toolName === 'find_files' ? { pattern: '*' } : {}) }, {
+    workspacePath: turn.workspacePath ?? undefined, operationOwner: turn.operationOwner,
+    authorizationScopeId: turn.scopeId, interactionMode: 'background',
+  });
+  if (files) (turn.fileGuards ??= []).push(files);
+  let retained = false;
+  try {
+    assertTurnOwner(turn);
+    retained = true;
+    return files;
+  } finally {
+    if (!retained) await releaseTurnAccess(turn, files);
+  }
+}
+
+async function retainTurnResult(turn: TurnScope, files: ToolFileAccess | null): Promise<void> {
+  if (!files) return;
+  (turn.resultGuards ??= []).push(files.resultGuard());
+  await releaseTurnAccess(turn, files);
+}
+
+async function releaseTurnAccess(turn: TurnScope, files: ToolFileAccess | null): Promise<void> {
+  if (!files) return;
+  try { await files.dispose(); }
+  finally { turn.fileGuards = turn.fileGuards?.filter(item => item !== files); }
 }
 
 /** Bytes of the copies a turn keeps: what its files held before the turn and when it was undone. */
@@ -648,7 +722,7 @@ async function measureCopies(dir: string, loopId: string): Promise<number> {
  * hold what the undo wrote. Resolves to the turns that lost their copies;
  * listeners hear of each one but `settling`, whose own settle tells them.
  */
-async function trimCopies(conversationId: string, dir: string, settling: string): Promise<string[]> {
+async function trimCopies(conversationId: string, dir: string, settling: string, turn?: TurnScope): Promise<string[]> {
   const index = await loadIndex(dir);
   const kept = Object.entries(index)
     .filter(([, entry]) => entry.restorable)
@@ -672,9 +746,12 @@ async function trimCopies(conversationId: string, dir: string, settling: string)
     dropped.push(loopId);
   }
   if (dropped.length === 0) return dropped;
+  if (turn) { await assertTurnFiles(turn); assertTurnActive(turn); }
   await saveIndex(dir, index);
+  if (turn) await assertTurnFiles(turn);
   for (const loopId of dropped) {
     await removeTurnDir(dir, loopId);
+    if (turn) { await assertTurnFiles(turn); assertTurnActive(turn); }
     if (loopId !== settling) emitSaved(conversationId, loopId);
   }
   return dropped;
@@ -706,29 +783,65 @@ async function pruneBeforeCopies(dir: string, loopId: string, record: TurnUndoRe
  * removed to keep the conversation within its copy limit.
  */
 async function settleTurn(turn: TurnScope, entries: ManifestEntry[]): Promise<string[]> {
+  try { return await settleTurnContent(turn, entries); }
+  finally {
+    try { await releaseTurnFiles(turn); }
+    finally { turn.unsubscribeFileOwner?.(); }
+  }
+}
+
+async function releaseTurnFiles(turn: TurnScope): Promise<void> {
+  const released = await Promise.allSettled((turn.fileGuards ?? []).map(files => files.dispose()));
+  const failures = released.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+  if (failures.length) throw new AggregateError(failures.map(result => result.reason), 'Turn file release failed');
+}
+
+async function settleTurnContent(turn: TurnScope, entries: ManifestEntry[]): Promise<string[]> {
   if (!turn.isConversationPresent()) return [];
   const dir = await changesDir(turn.conversationId);
-  const { files: captured, restorable, tooLarge, copyBytes } = await compareCapturedFiles(dir, turn, entries);
-  if (!turn.isConversationPresent()) return [];
-  const record = restorable.length > 0 ? createTurnUndoRecord(turn.loopId, restorable, tooLarge) : null;
-  let marks = record ? undoMarksOf(record, copyBytes) : null;
-  let dropped: string[] = [];
-  if (captured.length > 0) await saveTurn(dir, turn.loopId, captured, marks);
-  if (record) {
-    await atomicWrite(undoRecordPath(dir, turn.loopId), JSON.stringify(record));
-    await pruneBeforeCopies(dir, turn.loopId, record);
-    dropped = await trimCopies(turn.conversationId, dir, turn.loopId);
-    if (dropped.includes(turn.loopId)) marks = null;
-  } else {
-    await removeTurnDir(dir, turn.loopId);
-  }
-  if (captured.length > 0) emitSaved(turn.conversationId, turn.loopId);
+  try {
+    await assertTurnFiles(turn);
+    const { files: captured, restorable, tooLarge, copyBytes } = await compareCapturedFiles(dir, turn, entries);
+    if (!turn.isConversationPresent()) return [];
+    const record = restorable.length > 0 ? createTurnUndoRecord(turn.loopId, restorable, tooLarge) : null;
+    let marks = record ? undoMarksOf(record, copyBytes) : null;
+    let dropped: string[] = [];
+    if (captured.length > 0) await saveTurn(dir, turn.loopId, captured, marks, turn);
+    if (record) {
+      await assertTurnFiles(turn);
+      assertTurnActive(turn);
+      await atomicWrite(undoRecordPath(dir, turn.loopId), JSON.stringify(record));
+      await assertTurnFiles(turn);
+      await pruneBeforeCopies(dir, turn.loopId, record);
+      dropped = await trimCopies(turn.conversationId, dir, turn.loopId, turn);
+      if (dropped.includes(turn.loopId)) marks = null;
+    } else {
+      await removeTurnDir(dir, turn.loopId);
+    }
+    await assertTurnFiles(turn);
+    assertTurnActive(turn);
+    if (captured.length > 0) emitSaved(turn.conversationId, turn.loopId);
 
-  const listed = await compareWorkspaceWithBaseline(turn, entries);
-  if (!turn.isConversationPresent()) return dropped;
-  if (listed.length > 0) await saveTurn(dir, turn.loopId, [...captured, ...listed], marks);
-  if (listed.length > 0 || captured.length === 0) emitSaved(turn.conversationId, turn.loopId);
-  return dropped;
+    const listed = await compareWorkspaceWithBaseline(turn, entries);
+    if (!turn.isConversationPresent()) return dropped;
+    if (listed.length > 0) await saveTurn(dir, turn.loopId, [...captured, ...listed], marks, turn);
+    await assertTurnFiles(turn);
+    assertTurnActive(turn);
+    if (listed.length > 0 || captured.length === 0) emitSaved(turn.conversationId, turn.loopId);
+    return dropped;
+  } catch (error) {
+    if (!(error instanceof FileOperationDenied)) throw error;
+    const savedPath = turnFilePath(dir, turn.loopId);
+    if (await exists(savedPath)) await remove(savedPath);
+    const index = await loadIndex(dir);
+    if (index[turn.loopId]) {
+      delete index[turn.loopId];
+      await atomicWrite(joinConversationPath(dir, INDEX_FILENAME), JSON.stringify({ version: FORMAT_VERSION, turns: index }));
+    }
+    await removeTurnDir(dir, turn.loopId);
+    emitSaved(turn.conversationId, turn.loopId);
+    return [];
+  }
 }
 
 async function removeTurnDir(dir: string, loopId: string): Promise<void> {
@@ -754,8 +867,9 @@ async function loadUndoRecord(dir: string, loopId: string): Promise<TurnUndoReco
   return record === 'unreadable' ? null : record;
 }
 
-function writeManifest(turn: OpenTurn): Promise<void> {
+function writeManifest(turn: OpenTurn, files?: ToolFileAccess): Promise<void> {
   const write = turn.manifestWrites.then(async () => {
+    await files?.assertCurrent();
     const dir = await changesDir(turn.conversationId);
     const manifest: BeforeManifest = {
       version: FORMAT_VERSION,
@@ -763,7 +877,10 @@ function writeManifest(turn: OpenTurn): Promise<void> {
       workspaceRoots: turn.workspaceRoots,
       entries: [...turn.captured.values()].filter((entry): entry is ManifestEntry => entry !== null),
     };
+    await files?.assertCurrent();
+    files?.assertActive();
     await atomicWrite(joinConversationPath(beforeDirPath(dir, turn.loopId), MANIFEST_FILENAME), JSON.stringify(manifest));
+    await files?.assertCurrent();
   });
   turn.manifestWrites = write.then(() => undefined, () => undefined);
   return write;
@@ -781,15 +898,22 @@ export async function beginTurn(
   conversationId: string,
   loopId: string,
   workspacePath: string | null | undefined,
-  options?: { scopeId?: string; isConversationPresent?: () => boolean },
+  options?: { scopeId?: string; isConversationPresent?: () => boolean; operationOwner?: ToolOperationOwner },
 ): Promise<void> {
   assertConversationId(conversationId);
   assertLoopId(loopId);
+  const operationOwner = options?.operationOwner ?? captureToolOperationOwner();
+  const fileOwner = captureFileOperationOwner();
+  const invalidation = { current: false };
+  const unsubscribeFileOwner = fileOwner?.onInvalidated?.(() => { invalidation.current = true; });
   await (conversationWork.get(conversationId) ?? Promise.resolve());
-  if (openTurns.has(loopId)) return;
+  if (openTurns.has(loopId)) { unsubscribeFileOwner?.(); return; }
   const folder = workspacePath ? normalizeFilePath(workspacePath) : null;
   const turn: OpenTurn = {
     conversationId,
+    operationOwner, fileOwner, fileGuards: [],
+    get fileOwnerInvalidated() { return invalidation.current; },
+    unsubscribeFileOwner,
     loopId,
     workspacePath: folder,
     workspaceRoots: folder ? [folder] : [],
@@ -802,9 +926,15 @@ export async function beginTurn(
   openTurns.set(loopId, turn);
   turnsOfThisRun.add(loopId);
   if (!folder) return;
-  const list = await listConversationWorkspaceFiles(conversationId, folder, turn.scopeId);
-  if (list.root !== folder) turn.workspaceRoots = [folder, list.root];
-  if (!list.exceeded) turn.baseline = list.files;
+  const access = await turnFileAccess(turn, 'find_files', folder);
+  try {
+    const list = access
+      ? await listConversationWorkspaceFiles(conversationId, folder, turn.scopeId, access)
+      : await listConversationWorkspaceFiles(conversationId, folder, turn.scopeId);
+    await retainTurnResult(turn, access);
+    if (list.root !== folder) turn.workspaceRoots = [folder, list.root];
+    if (!list.exceeded) turn.baseline = list.files;
+  } finally { await releaseTurnAccess(turn, access); }
 }
 
 /**
@@ -812,23 +942,28 @@ export async function beginTurn(
  * the bytes of a file up to MAX_TURN_FILE_BYTES, or the fact that it is absent
  * or larger. Call it before the write. A loop that is not open is ignored.
  */
-export async function captureBefore(loopId: string, absolutePath: string): Promise<void> {
+export async function captureBefore(loopId: string, absolutePath: string, files?: ToolFileAccess): Promise<void> {
   const turn = openTurns.get(loopId);
   if (!turn || !turn.isConversationPresent()) return;
   const path = normalizeFilePath(absolutePath);
   if (!isAbsoluteFilePath(path) || turn.captured.has(path)) return;
   turn.captured.set(path, null);
   try {
-    const side = await readCurrentBeforeWrite(path);
+    const side = await readCurrentBeforeWrite(path, files);
     if (side === null) return;
     const hash = await pathHashOf(path);
     if (side.state === 'file') {
       const beforeDir = beforeDirPath(await changesDir(turn.conversationId), loopId);
+      await files?.assertCurrent();
+      files?.assertActive();
       await mkdir(beforeDir, { recursive: true });
+      await files?.assertCurrent();
+      files?.assertActive();
       await writeFile(joinConversationPath(beforeDir, hash), side.bytes);
+      await files?.assertCurrent();
     }
-    turn.captured.set(path, { path, hash, state: side.state });
-    await writeManifest(turn);
+    turn.captured.set(path, { path, ...(files ? { originalPath: files.originalPath(path) } : {}), hash, state: side.state });
+    await writeManifest(turn, files);
   } catch (error) {
     // Released so the next write to this path captures it.
     turn.captured.delete(path);
@@ -837,12 +972,13 @@ export async function captureBefore(loopId: string, absolutePath: string): Promi
 }
 
 /** What `path` holds, or null when it is neither absent nor a regular file. */
-async function readCurrentBeforeWrite(path: string): Promise<Side | null> {
-  if (!(await fileExists(path))) return { state: 'absent' };
-  const info = await fileStat(path);
+async function readCurrentBeforeWrite(path: string, files?: ToolFileAccess): Promise<Side | null> {
+  const io = files ?? { exists: fileExists, stat: fileStat, readFile: readFileBytes };
+  if (!(await io.exists(path))) return { state: 'absent' };
+  const info = await io.stat(path);
   if (!info.isFile) return null;
   if (info.size > MAX_TURN_FILE_BYTES) return { state: 'oversized' };
-  const bytes = await readFileBytes(path);
+  const bytes = await io.readFile(path);
   return bytes.length > MAX_TURN_FILE_BYTES ? { state: 'oversized' } : { state: 'file', bytes };
 }
 

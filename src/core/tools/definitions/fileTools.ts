@@ -10,6 +10,7 @@ import {
   IMAGE_EXTENSIONS,
   IMAGE_MEDIA_TYPES,
   resizeImageIfNeeded,
+  uint8ArrayToBase64,
   OFFICE_EXTENSIONS,
   ARCHIVE_EXTENSIONS,
   extractOfficeText,
@@ -25,6 +26,8 @@ import { captureTurnFileBefore, snapshotBeforeAiEdit } from '@/utils/aiEditSnaps
 import { formatFileSize } from '@/utils/formatFileSize';
 import { fuzzyFindAndReplace } from '../../skill/fuzzyPatch';
 import { computeFileChange, MAX_COMPARABLE_TEXT_BYTES, type FileChange } from '@/core/files/fileChange';
+import type { ToolFileAccess } from '@/core/tools/fileOperation';
+import { Minimatch } from 'minimatch';
 
 /** What a path held before a write, as far as the reported file change needs it. */
 type TextBefore =
@@ -34,11 +37,12 @@ type TextBefore =
   | { state: 'unread' };
 
 /** Reads the text a write is about to replace. */
-async function readTextBefore(path: string): Promise<TextBefore> {
-  if (!(await exists(path))) return { state: 'absent' };
-  const info = await stat(path);
+async function readTextBefore(path: string, files?: ToolFileAccess): Promise<TextBefore> {
+  const io = files ?? { exists, stat, readTextFile };
+  if (!(await io.exists(path))) return { state: 'absent' };
+  const info = await io.stat(path);
   if (!info.isFile || info.size > MAX_COMPARABLE_TEXT_BYTES) return { state: 'unread' };
-  return { state: 'text', text: await readTextFile(path) };
+  return { state: 'text', text: await io.readTextFile(path) };
 }
 
 function fileChangeAfterWrite(path: string, before: TextBefore | null, after: string | null): FileChange | null {
@@ -97,6 +101,7 @@ export const readFileTool: ToolDefinition = {
     required: ['path'],
   },
   execute: async (input, context) => {
+    const io = context?.files ?? { readFile: readBinFile, readTextFile, stat };
     const filePath = input.path as string;
     const ext = getFileExtension(filePath);
     const offset = typeof input.offset === 'number' ? Math.max(0, Math.floor(input.offset)) : undefined;
@@ -113,19 +118,30 @@ export const readFileTool: ToolDefinition = {
         if (context?.supportsVision === false) {
           return format(getI18n().toolResult.file.imageSkipNoVision, { path: filePath, mediaType });
         }
-        const bytes = new Uint8Array(await readBinFile(filePath));
-        const { data, resized } = await resizeImageIfNeeded(bytes, 1280, context);
+        const bytes = new Uint8Array(await io.readFile(filePath));
+        const needsNativeResize = Boolean(context?.files && bytes.length > 2 * 1024 * 1024);
+        const resizedBytes = needsNativeResize
+          ? await context!.files!.processImage(filePath, null, 'fit-width', { width: 1280 }) : null;
+        if (needsNativeResize && !(resizedBytes instanceof Uint8Array)) throw new Error('Image processing returned no bytes');
+        const { data, resized } = resizedBytes instanceof Uint8Array
+          ? { data: uint8ArrayToBase64(resizedBytes), resized: true }
+          : await resizeImageIfNeeded(bytes, 1280, context);
         const sizeKB = Math.round(bytes.length / 1024);
         const resizeNote = resized ? ' (auto-resized to 1280px width)' : '';
 
         return [
           { type: 'text', text: `Image: ${filePath} (${sizeKB}KB, ${mediaType})${resizeNote}` },
-          { type: 'image', source: { type: 'base64', media_type: mediaType, data } },
+          { type: 'image', source: { type: 'base64', media_type: resizedBytes ? 'image/png' : mediaType, data } },
         ] as ToolResultContent[];
       }
 
       // --- PDF files: extract text ---
       if (ext === '.pdf') {
+        if (context?.files) {
+          const output = await context.files.runProcessor(filePath, isWindows() ? 'python' : 'python3',
+            ['-c', PDFPLUMBER_SCRIPT, null]);
+          return output.code === 0 ? output.stdout : `Error reading PDF file: ${output.stderr}`;
+        }
         // Strategy 1: pdftotext (macOS/Linux — fast, native)
         if (!isWindows()) {
           try {
@@ -177,21 +193,21 @@ export const readFileTool: ToolDefinition = {
       }
 
       // --- Text files: read as UTF-8 with size gating and pagination ---
-      const fileStat = await stat(filePath);
+      const fileStat = await io.stat(filePath);
       const fileSize = fileStat.size;
       const hasRange = offset !== undefined || limit !== undefined;
 
       // File exceeds size limit and no range specified → reject with guidance
       if (fileSize > MAX_TEXT_READ_SIZE && !hasRange) {
         // Still read a small portion to count total lines via a fast heuristic
-        const fullContent = await readTextFile(filePath);
+        const fullContent = await io.readTextFile(filePath);
         const totalLines = fullContent.split('\n').length;
         return `File is too large to read at once (${formatFileSize(fileSize)}, ${totalLines} lines). ` +
           `Use offset and limit parameters to read specific portions, or use search_files to find relevant content.\n` +
           `Example: read_file(path, offset=0, limit=${DEFAULT_LINE_LIMIT}) to read the first ${DEFAULT_LINE_LIMIT} lines.`;
       }
 
-      const content = await readTextFile(filePath);
+      const content = await io.readTextFile(filePath);
       const allLines = content.split('\n');
       const totalLines = allLines.length;
 
@@ -270,7 +286,7 @@ export const writeFileTool: ToolDefinition = {
     }
 
     try {
-      await ensureParentDir(path);
+      await (context?.files ? context.files.ensureParentDir(path) : ensureParentDir(path));
       // Add UTF-8 BOM for CSV files so Excel opens them with correct encoding
       let finalContent = content;
       if (ext === '.csv' && !content.startsWith('\uFEFF')) {
@@ -278,15 +294,16 @@ export const writeFileTool: ToolDefinition = {
       } else if (ext === '.html' || ext === '.htm') {
         finalContent = ensureHtmlCharset(content);
       }
-      const before = context?.reportMetadata ? await readTextBefore(path) : null;
+      const before = context?.reportMetadata ? await readTextBefore(path, context.files) : null;
       // Pre-edit snapshot: capture the on-disk "before" state so this AI turn
       // shows up in the preview panel's version history. Fail-open — the
       // helper never throws and must not delay-fail the write.
       await snapshotBeforeAiEdit(path, {
         loopId: context?.loopId,
         conversationId: context?.conversationId,
+        files: context?.files,
       });
-      await writeTextFile(path, finalContent);
+      await (context?.files ? context.files.writeTextFile(path, finalContent) : writeTextFile(path, finalContent));
       const fileChange = fileChangeAfterWrite(path, before, finalContent);
       if (fileChange) context?.reportMetadata?.({ fileChange });
       // Lazily bind a managed default workspace only for a shell-confirmed
@@ -364,11 +381,11 @@ export const editFileTool: ToolDefinition = {
 
     try {
       // Check file exists
-      if (!(await exists(path))) {
+      if (!(await (context?.files ? context.files.exists(path) : exists(path)))) {
         return `Error: File not found: ${path}`;
       }
 
-      const content = await readTextFile(path);
+      const content = await (context?.files ? context.files.readTextFile(path) : readTextFile(path));
 
       // Count occurrences
       const occurrences = content.split(oldContent).length - 1;
@@ -386,8 +403,9 @@ export const editFileTool: ToolDefinition = {
             loopId: context?.loopId,
             conversationId: context?.conversationId,
             knownContent: content,
+            files: context?.files,
           });
-          await writeTextFile(path, fuzzy.newContent);
+          await (context?.files ? context.files.writeTextFile(path, fuzzy.newContent) : writeTextFile(path, fuzzy.newContent));
           context?.reportMetadata?.({
             fileChange: computeFileChange({ path, before: content, after: fuzzy.newContent }),
           });
@@ -431,6 +449,7 @@ export const editFileTool: ToolDefinition = {
         loopId: context?.loopId,
         conversationId: context?.conversationId,
         knownContent: content,
+        files: context?.files,
       });
 
       // Perform replacement. Use a function replacer so new_content is inserted
@@ -438,7 +457,7 @@ export const editFileTool: ToolDefinition = {
       // `` $` ``, `$'` in new_content as special patterns (even with a string
       // search), silently corrupting any content containing a literal `$`.
       const updated = content.replace(oldContent, () => newContent);
-      await writeTextFile(path, updated);
+      await (context?.files ? context.files.writeTextFile(path, updated) : writeTextFile(path, updated));
       context?.reportMetadata?.({
         fileChange: computeFileChange({ path, before: content, after: updated }),
       });
@@ -479,10 +498,11 @@ export const deleteFileTool: ToolDefinition = {
     if (await isCatastrophicDeleteTarget(path)) {
       return format(getI18n().toolResult.file.deleteRefusedCatastrophic, { path });
     }
-    const before = context?.reportMetadata ? await readTextBefore(path) : null;
-    await captureTurnFileBefore(path, context?.loopId);
     try {
-      await invoke('move_to_trash', { path });
+      await context?.files?.prepareDelete(path);
+      const before = context?.reportMetadata ? await readTextBefore(path, context.files) : null;
+      await (context?.files ? captureTurnFileBefore(path, context?.loopId, context.files) : captureTurnFileBefore(path, context?.loopId));
+      await (context?.files ? context.files.moveToTrash(path) : invoke('move_to_trash', { path }));
       const fileChange = fileChangeAfterWrite(path, before, null);
       if (fileChange) context?.reportMetadata?.({ fileChange });
       return format(getI18n().toolResult.file.movedToTrash, { path });
@@ -506,11 +526,11 @@ export const listDirectoryTool: ToolDefinition = {
     },
     required: ['path'],
   },
-  execute: async (input) => {
+  execute: async (input, context) => {
     const dirPath = input.path as string;
 
     try {
-      const entries = await readDir(dirPath);
+      const entries = await (context?.files ? context.files.readDir(dirPath) : readDir(dirPath));
       if (entries.length === 0) {
         return `Directory "${dirPath}" is empty.`;
       }
@@ -548,6 +568,28 @@ export const searchFilesTool: ToolDefinition = {
     const searchPath = input.path as string;
     const include = input.include as string | undefined;
     const safeMaxResults = Math.min(Math.max(1, Math.floor(Number(input.max_results) || 50)), 500);
+
+    if (context?.files) {
+      try {
+        if (!pattern || pattern.length > 4096 || (include?.length ?? 0) > 4096) {
+          return 'Error: Search pattern is empty or exceeds the supported limit.';
+        }
+        const includeMatcher = include ? new Minimatch(include, { dot: true, platform: 'linux' }) : undefined;
+        const entries = context.files.walkFiles(searchPath);
+        const lines: string[] = [];
+        for await (const entry of entries) {
+          if (includeMatcher && !includeMatcher.match(entry.name)) continue;
+          const result = await context.files.searchLines(entry.path, pattern, safeMaxResults - lines.length);
+          for (const match of result.matches) lines.push(`${entry.path}:${match.lineNumber}:${match.line}`);
+          if (lines.length >= safeMaxResults) break;
+        }
+        return lines.length
+          ? `Found ${lines.length}${lines.length >= safeMaxResults ? '+' : ''} matches:\n${lines.join('\n')}`
+          : 'No matches found.';
+      } catch (err) {
+        return `Error searching files: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
 
     // Sanitize inputs to prevent injection (strip newlines then escape quotes)
     const safePattern = pattern.replace(/[\n\r]/g, ' ').replace(/'/g, "'\\''");
@@ -617,6 +659,25 @@ export const findFilesTool: ToolDefinition = {
     const pattern = input.pattern as string;
     const searchPath = input.path as string;
     const safeMaxResults = Math.min(Math.max(1, Math.floor(Number(input.max_results) || 100)), 500);
+
+    if (context?.files) {
+      try {
+        if (!pattern || pattern.length > 4096) return 'Error: File pattern is empty or exceeds the supported limit.';
+        const matcher = new Minimatch(pattern, { dot: true, platform: 'linux' });
+        const entries = context.files.walkFiles(searchPath, { excludeNames: ['.git', 'node_modules'] });
+        const paths: string[] = [];
+        for await (const entry of entries) {
+          if (!matcher.match(entry.name)) continue;
+          paths.push(entry.path);
+          if (paths.length >= safeMaxResults) break;
+        }
+        return paths.length
+          ? `Found ${paths.length}${paths.length >= safeMaxResults ? '+' : ''} files:\n${paths.join('\n')}`
+          : 'No files found matching the pattern.';
+      } catch (err) {
+        return `Error finding files: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
 
     // Sanitize inputs (strip newlines then escape quotes)
     const safePattern = pattern.replace(/[\n\r]/g, ' ').replace(/'/g, "'\\''");
@@ -694,12 +755,13 @@ export const checkOpenDocumentTool: ToolDefinition = {
     },
     required: ['path'],
   },
-  execute: async (input) => {
+  execute: async (input, context) => {
     const path = input.path as string;
     const t = getI18n().toolResult.file;
     let report: OpenDocumentReport;
     try {
-      report = await invoke<OpenDocumentReport>('office_open_documents', { path });
+      report = context?.files ? await context.files.openDocument(path)
+        : await invoke<OpenDocumentReport>('office_open_documents', { path });
     } catch (err) {
       // An unreachable helper is "could not tell", not "not open" — the two
       // lead the user to opposite places.

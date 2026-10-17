@@ -655,6 +655,20 @@ describe('executeToolBatch · result image snapshots', () => {
     mocks.snapshotResultImage.mockResolvedValue(undefined);
   });
 
+  it('does not repeat host-owned output capture in the executor', async () => {
+    const toolCall = makeToolCall('write_file', { path: '/work/report.txt', content: 'report' });
+    const invoker = makeInvoker(async (_name, _input, _confirm, _permission, context) => {
+      context?.reportMetadata?.({ outputSnapshotsHandled: true });
+      return 'Successfully wrote report';
+    });
+    await executeToolBatch(makeParams(toolCall, invoker));
+    expect(mocks.snapshotToolOutputs).not.toHaveBeenCalled();
+    expect(mocks.updateToolCall).toHaveBeenCalledWith(
+      'conv-1', 'msg-1', toolCall.id, 'Successfully wrote report', undefined, false, undefined,
+      expect.objectContaining({ outputSnapshotsHandled: true }),
+    );
+  });
+
   it('does not await image persistence and absorbs a late snapshot rejection', async () => {
     let rejectSnapshot!: (error: Error) => void;
     mocks.snapshotResultImage.mockReturnValueOnce(new Promise<void>((_resolve, reject) => {

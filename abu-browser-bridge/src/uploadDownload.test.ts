@@ -246,6 +246,26 @@ describe('clampDownloadWait', () => {
 });
 
 describe('upload_file', () => {
+  it.each(['path', 'bytes'] as const)('uses captured input bytes without reopening a path on the %s transport', async delivery => {
+    const { tool, sent } = harness(delivery);
+    const base64 = Buffer.from('captured').toString('base64');
+    await tool('upload_file')(UPLOAD_ARGS, APPROVED_META([
+      { path: 'memory:input-0', name: 'report.txt', size: 8, ...PIN, base64 },
+    ]));
+    expect(sent).toHaveLength(1);
+    expect(sent[0].payload.files).toEqual([delivery === 'bytes'
+      ? { name: 'report.txt', size: 8, base64 }
+      : { path: 'memory:input-0', name: 'report.txt', size: 8, ...PIN, base64 }]);
+  });
+
+  it('refuses malformed captured bytes before sending an upload', async () => {
+    const { tool, sent } = harness('bytes');
+    const result = await tool('upload_file')(UPLOAD_ARGS, APPROVED_META([
+      { path: 'memory:input-0', name: 'report.txt', size: 8, ...PIN, base64: 'invalid' },
+    ]));
+    expect(sent).toHaveLength(0);
+    expect(result.content[0].text).toContain('no approved file list');
+  });
   /**
    * The refusal that makes the whole `_meta` design worth having. Without it
    * the tool would be a file-read primitive addressable by the model.

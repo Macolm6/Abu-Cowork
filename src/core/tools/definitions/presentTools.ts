@@ -152,11 +152,11 @@ export const presentFilesTool: ToolDefinition = {
           rejected.push({ path: resolved, reason: 'notAuthorized' });
           continue;
         }
-        if (!(await exists(resolved))) {
+        if (!(await (context?.files ? context.files.exists(resolved) : exists(resolved)))) {
           rejected.push({ path: resolved, reason: 'notFound' });
           continue;
         }
-        if (!(await stat(resolved)).isFile) {
+        if (!(await (context?.files ? context.files.stat(resolved) : stat(resolved))).isFile) {
           rejected.push({ path: resolved, reason: 'notAFile' });
           continue;
         }

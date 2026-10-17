@@ -6,8 +6,8 @@
  * a file leaves a revertable "before" state. Follows the competitor consensus
  * (Claude Code / WorkBuddy / TRAE — see
  * docs/2026-07-19-ai-edit-version-history-design.md): snapshot on FIRST touch
- * per turn, full content, fail-open (a snapshot failure must never block the
- * edit itself).
+ * per turn, full content. Snapshot storage failures allow the edit to continue;
+ * authorization refusals terminate the file operation.
  */
 
 import { exists, readTextFile, stat } from '@tauri-apps/plugin-fs';
@@ -15,6 +15,7 @@ import { normalizePath, snapshotVersion } from '@/utils/canvasVersions';
 import { getMessageText } from '@/core/context/contextUtils';
 import { useChatStore } from '@/stores/chatStore';
 import { captureBefore } from '@/core/session/turnChanges';
+import { FileOperationDenied, type ToolFileAccess } from '@/core/tools/fileOperation';
 
 /** Files larger than this are not read into memory in the stat-then-read
  *  branch below — guards against loading a huge file just to snapshot it.
@@ -88,41 +89,45 @@ function latestUserMessageLabel(conversationId?: string): string | undefined {
 /**
  * Keeps `path` as it is now for the turn's change record
  * (`core/session/turnChanges.ts`). Call it before an AI tool writes or removes
- * the file. NEVER throws: the record is a side write, and a failure in it must
- * not stop the tool.
+ * the file. Storage failures are non-blocking; authorization refusals propagate.
  */
-export async function captureTurnFileBefore(path: string, loopId: string | undefined): Promise<void> {
+export async function captureTurnFileBefore(path: string, loopId: string | undefined, files?: ToolFileAccess): Promise<void> {
   if (!loopId) return;
   try {
-    await captureBefore(loopId, path);
+    await files?.assertCurrent();
+    await (files ? captureBefore(loopId, path, files) : captureBefore(loopId, path));
+    await files?.assertCurrent();
   } catch (err) {
+    if (err instanceof FileOperationDenied) throw err;
     console.warn('[aiEditSnapshots] turn capture failed (non-blocking)', path, err);
   }
 }
 
 /**
  * What a file tool running in this process calls before it overwrites `path`:
- * the turn capture, then the version-history snapshot. NEVER throws.
+ * the turn capture, then the version-history snapshot. Authorization refusals propagate.
  */
 export async function snapshotBeforeAiEdit(
   path: string,
-  opts: { loopId?: string; conversationId?: string; knownContent?: string }
+  opts: { loopId?: string; conversationId?: string; knownContent?: string; files?: ToolFileAccess }
 ): Promise<void> {
-  await captureTurnFileBefore(path, opts.loopId);
+  await captureTurnFileBefore(path, opts.loopId, opts.files);
   await snapshotVersionBeforeAiEdit(path, opts);
 }
 
 /**
  * Snapshot the current on-disk content of `path` before an AI tool overwrites
  * it. First-touch-per-loop semantics; new files (nothing on disk yet) and
- * oversize files are skipped. NEVER throws.
+ * oversize files are skipped. Storage failures are non-blocking; authorization refusals propagate.
  */
 export async function snapshotVersionBeforeAiEdit(
   path: string,
-  opts: { loopId?: string; conversationId?: string; knownContent?: string }
+  opts: { loopId?: string; conversationId?: string; knownContent?: string; files?: ToolFileAccess }
 ): Promise<void> {
   const key = normalizePath(path);
+  const io = opts.files ?? { exists, stat, readTextFile };
   try {
+    await opts.files?.assertCurrent();
     // Missing loopId (not expected in practice) degrades to attempting every
     // time — the store's content dedupe keeps history from growing.
     if (opts.loopId && !markTouched(opts.loopId, key)) return;
@@ -131,16 +136,16 @@ export async function snapshotVersionBeforeAiEdit(
     // to compute its diff), skip the existence check entirely — it would
     // just be a second IPC round trip to confirm something the caller has
     // already proven by having the content in hand.
-    if (opts.knownContent === undefined && !(await exists(path))) return; // new file — no "before" to capture
+    if (opts.knownContent === undefined && !(await io.exists(path))) return; // new file — no "before" to capture
 
     let content = opts.knownContent;
     if (content === undefined) {
-      const info = await stat(path);
+      const info = await io.stat(path);
       if (info.size > MAX_SNAPSHOT_BYTES) {
         console.warn('[aiEditSnapshots] skip oversize file', path, info.size);
         return;
       }
-      content = await readTextFile(path);
+      content = await io.readTextFile(path);
     }
     // Note: no oversize check for the knownContent branch here — the caller
     // already has the content in memory (it just read/produced it), and
@@ -148,10 +153,13 @@ export async function snapshotVersionBeforeAiEdit(
     // so every path into version history is covered by one authoritative
     // check instead of duplicating it here.
 
-    await snapshotVersion(path, content, {
+    await opts.files?.assertCurrent();
+    const snapshotOptions = {
       source: 'ai',
       label: latestUserMessageLabel(opts.conversationId),
-    });
+    } as const;
+    await (opts.files ? snapshotVersion(path, content, snapshotOptions, opts.files) : snapshotVersion(path, content, snapshotOptions));
+    await opts.files?.assertCurrent();
   } catch (err) {
     // Unmark so the next tool call touching this path in this loop retries —
     // a transient failure (stat/readTextFile/snapshotVersion all throw here)
@@ -160,6 +168,7 @@ export async function snapshotVersionBeforeAiEdit(
     // file, oversize file) return above before ever reaching this catch, so
     // they correctly stay marked (same-turn semantics unchanged for those).
     if (opts.loopId) touchedByLoop.get(opts.loopId)?.delete(key);
+    if (err instanceof FileOperationDenied) throw err;
     console.warn('[aiEditSnapshots] snapshot failed (non-blocking)', path, err);
   }
 }

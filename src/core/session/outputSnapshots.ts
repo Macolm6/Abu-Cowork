@@ -39,7 +39,10 @@ import { createConversationPaths, isConversationId, type ConversationPaths } fro
 import { extractFileOutputs } from '@/utils/workflowExtractor';
 import { base64ToUint8Array } from '@/utils/base64';
 import { RESULT_IMAGE_EXTENSIONS } from '@/utils/imageMediaTypes';
-import type { ToolCall } from '@/types';
+import type { ToolCall, ToolExecutionContext } from '@/types';
+import { canRecoverUnownedFiles, captureFilePlanningGuard, requiresHostFileOperations } from '../tools/operationAuthorization';
+import { openAuthorizedFileOperation } from '../tools/authorizedFileOperation';
+import { FileOperationDenied, runFileOperationStage, type FileOperationGuard } from '../tools/fileOperation';
 import type { ToolResultImage } from '../tools/toolResultContent';
 import { createLogger } from '../logging/logger';
 
@@ -81,6 +84,8 @@ export type SnapshotSource = 'tool-output' | 'user-upload' | 'code-save';
 type SnapshotSkipReason = 'oversized' | 'copy-failed' | 'write-failed';
 
 export interface SnapshotEntry {
+  /** Identifies one controlled capture independently of its source path. */
+  captureId?: string;
   /** Normalized original path or stable tool-result:// identity (manifest index key). */
   originalPath: string;
   /** Filename for display */
@@ -137,7 +142,7 @@ interface SnapshotMeta {
  */
 type ManifestLogRecord =
   | { op: 'set'; entry: SnapshotEntry }
-  | { op: 'remove'; originalPath: string; snapshottedAt: number };
+  | { op: 'remove'; originalPath: string; snapshottedAt: number; captureId?: string };
 
 interface CachedManifest {
   manifest: OutputManifest;
@@ -302,7 +307,8 @@ function applyRecord(entries: Record<string, SnapshotEntry>, record: ManifestLog
     entries[record.entry.originalPath] = record.entry;
     return;
   }
-  if (entries[record.originalPath]?.snapshottedAt === record.snapshottedAt) {
+  if (entries[record.originalPath]?.snapshottedAt === record.snapshottedAt
+    && (record.captureId === undefined || entries[record.originalPath]?.captureId === record.captureId)) {
     delete entries[record.originalPath];
   }
 }
@@ -428,6 +434,14 @@ async function recordEntry(convId: string, entry: SnapshotEntry): Promise<Snapsh
   return entry;
 }
 
+/** Caller holds the conversation lock while checking references and removing copies. */
+async function removeUnreferencedCopy(convId: string, outputsDir: string, relPath: string): Promise<void> {
+  const manifest = await loadManifest(convId);
+  if (Object.values(manifest.entries).some(current => current.snapshotRelPath === relPath)) return;
+  const path = joinPath(outputsDir, relPath);
+  if (await exists(path)) await remove(path);
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Copy limits
 // ────────────────────────────────────────────────────────────────────────────
@@ -450,11 +464,24 @@ function evictableRelPath(entry: SnapshotEntry): string | null {
 
 /** The original is still where it was, with the size and mtime the copy was taken at. */
 async function originalUnchanged(entry: SnapshotEntry): Promise<boolean> {
-  if (!(await exists(entry.originalPath))) return false;
-  const st = await stat(entry.originalPath);
-  return st.isFile
-    && st.size === entry.size
-    && (st.mtime ? st.mtime.getTime() : 0) === entry.originalMtime;
+  if (!canRecoverUnownedFiles()) return false;
+  const planning = captureFilePlanningGuard();
+  try {
+    const inspect = async <T>(operation: () => Promise<T>): Promise<T> => {
+      planning.assertCurrent();
+      if (!canRecoverUnownedFiles()) throw new FileOperationDenied('Unowned file recovery is unavailable');
+      const result = await operation();
+      planning.assertCurrent();
+      if (!canRecoverUnownedFiles()) throw new FileOperationDenied('Unowned file recovery is unavailable');
+      return result;
+    };
+    if (!(await inspect(() => exists(entry.originalPath)))) return false;
+    const st = await inspect(() => stat(entry.originalPath));
+    return st.isFile && st.size === entry.size
+      && (st.mtime ? st.mtime.getTime() : 0) === entry.originalMtime;
+  } finally {
+    planning.dispose();
+  }
 }
 
 interface CopyInConversation {
@@ -490,10 +517,10 @@ async function inEvictionOrder(copies: CopyInConversation[]): Promise<CopyInConv
  */
 async function evictCopy(convId: string, entry: SnapshotEntry): Promise<boolean> {
   const current = (await loadManifest(convId)).entries[entry.originalPath];
-  if (!current || current.snapshottedAt !== entry.snapshottedAt) return false;
+  if (!current || current.snapshottedAt !== entry.snapshottedAt || current.captureId !== entry.captureId) return false;
   const relPath = evictableRelPath(current);
   if (!relPath) return false;
-  await appendRecord(convId, { op: 'remove', originalPath: entry.originalPath, snapshottedAt: entry.snapshottedAt });
+  await appendRecord(convId, { op: 'remove', originalPath: entry.originalPath, snapshottedAt: entry.snapshottedAt, captureId: entry.captureId });
   if ((await loadManifest(convId)).entries[entry.originalPath]) return true;
   const fullPath = joinPath(await getOutputsDir(convId), relPath);
   if (await exists(fullPath)) await remove(fullPath);
@@ -599,12 +626,20 @@ async function snapshotFileNormalized(
   if (!st || !st.isFile) return null;
 
   const mtimeMs = st.mtime ? st.mtime.getTime() : 0;
+  const previous = (await loadManifest(convId)).entries[identityPath];
+  const recordSnapshotEntry = async (entry: SnapshotEntry): Promise<SnapshotEntry> => {
+    await recordEntry(convId, entry);
+    const previousPath = previous?.captureId && evictableRelPath(previous);
+    if (previousPath && previousPath !== entry.snapshotRelPath) {
+      await removeUnreferencedCopy(convId, outputsDir, previousPath);
+    }
+    return entry;
+  };
 
   // Oversized check
   if (st.size > MAX_FILE_BYTES) {
     logger.info('snapshot skipped: oversized', { convId, path: normalized, size: st.size });
-    return await recordEntry(
-      convId,
+    return await recordSnapshotEntry(
       buildEntry(identityPath, st.size, mtimeMs, meta, '', {
         basename: targetBasename,
         skipReason: 'oversized',
@@ -623,8 +658,7 @@ async function snapshotFileNormalized(
     await copyFile(normalized, dest);
   } catch (e) {
     logger.warn('snapshot copy failed', { convId, src: normalized, err: e });
-    return await recordEntry(
-      convId,
+    return await recordSnapshotEntry(
       buildEntry(identityPath, st.size, mtimeMs, meta, '', {
         basename: targetBasename,
         skipReason: 'copy-failed',
@@ -632,8 +666,7 @@ async function snapshotFileNormalized(
     );
   }
 
-  const kept = await recordEntry(
-    convId,
+  const kept = await recordSnapshotEntry(
     buildEntry(identityPath, st.size, mtimeMs, meta, `files/${identityHash}/${targetBasename}`, {
       basename: targetBasename,
     }),
@@ -657,25 +690,153 @@ async function snapshotFileNormalized(
  * may also be snapshotted. This is accepted as a minor space cost (KB-level)
  * with no functional impact.
  */
+export interface OutputCapture {
+  commit(): Promise<void>;
+  rollback(): Promise<void>;
+}
+
+const captureLeases = new Map<string, Promise<void>>();
+async function acquireCaptureLease(convId: string): Promise<() => void> {
+  const previous = captureLeases.get(convId);
+  let release!: () => void;
+  const current = new Promise<void>(resolve => { release = resolve; });
+  captureLeases.set(convId, current);
+  await previous;
+  return () => {
+    if (captureLeases.get(convId) === current) captureLeases.delete(convId);
+    release();
+  };
+}
+
 export async function snapshotToolOutputs(
   convId: string,
   toolCall: { id: string; name: string; input: Record<string, unknown>; result: string },
   workspacePath?: string | null,
-): Promise<void> {
+  context?: ToolExecutionContext,
+  operationGuard?: FileOperationGuard,
+): Promise<OutputCapture | void> {
   const outputs = extractFileOutputs([toolCall as ToolCall], { mode: 'deliverables', includeReads: false });
   const targets = outputs.filter((o) => o.operation === 'create' || o.operation === 'write');
   if (targets.length === 0) return;
 
+  const releaseCapture = requiresHostFileOperations() ? await acquireCaptureLease(convId) : undefined;
+  const captures: OutputCapture[] = [];
+  let completed = false;
+  let settled = false;
+  const settle = async (action: 'commit' | 'rollback') => {
+    if (settled) return;
+    settled = true;
+    try {
+    const results = await Promise.allSettled([...captures].reverse().map(capture => capture[action]()));
+    const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
+    if (errors.length) throw new AggregateError(errors, 'Output capture cleanup failed');
+    } finally { releaseCapture?.(); }
+  };
+  try {
   for (const { path } of targets) {
     // Resolve relative paths against the workspace so snapshotFile can stat them.
     const resolvedPath = (!isAbsolutePath(path) && workspacePath)
       ? joinPath(workspacePath, path)
       : path;
-    await snapshotFile(convId, resolvedPath, {
+    const meta: SnapshotMeta = {
       source: 'tool-output',
       refId: toolCall.id,
       refKind: toolCall.name,
-    });
+    };
+    if (requiresHostFileOperations()) {
+      if (!context || !operationGuard) throw new FileOperationDenied('Output capture requires its operation owner');
+      const capture = await snapshotAuthorizedOutput(convId, context.files?.originalPathIfKnown?.(resolvedPath) ?? resolvedPath, meta, context, operationGuard);
+      if (capture) captures.push(capture);
+    } else {
+      await snapshotFile(convId, resolvedPath, meta);
+    }
+  }
+  await operationGuard?.assertCurrent();
+  operationGuard?.assertActive();
+  completed = true;
+  if (captures.length) return { commit: () => settle('commit'), rollback: () => settle('rollback') };
+  releaseCapture?.();
+  } finally {
+    if (!completed) await settle('rollback');
+  }
+}
+
+async function snapshotAuthorizedOutput(
+  convId: string, path: string, meta: SnapshotMeta,
+  context: ToolExecutionContext, operationGuard: FileOperationGuard,
+): Promise<OutputCapture | void> {
+  let capture: OutputCapture | undefined;
+  let completed = false;
+  try {
+  await runFileOperationStage(operationGuard, async () => {
+    const files = await openAuthorizedFileOperation('read_file', { path }, context);
+    if (!files) throw new FileOperationDenied('Controlled output capture is unavailable');
+    try {
+      const normalized = String(files.executionInput.path);
+      const identityPath = files.originalPath(normalized);
+      if (!(await files.exists(normalized))) return;
+      const info = await files.stat(normalized);
+      if (!info.isFile) return;
+      const guard: FileOperationGuard = {
+        assertCurrent: async () => { await operationGuard.assertCurrent(); await files.assertCurrent(); },
+        assertActive: () => { operationGuard.assertActive(); files.assertActive(); },
+      };
+      const bytes = info.size <= MAX_FILE_BYTES ? await files.readFile(normalized) : undefined;
+      if (bytes) {
+        const current = await files.stat(normalized);
+        if (bytes.byteLength !== info.size || current.size !== info.size
+          || current.mtime?.getTime() !== info.mtime?.getTime()) {
+          throw new FileOperationDenied('Error: output changed during capture');
+        }
+      }
+      await withConvLock(convId, async () => {
+        const outputsDir = await getOutputsDir(convId);
+        const captureId = crypto.randomUUID();
+        const previous = (await loadManifest(convId)).entries[identityPath];
+        const basename = getBaseName(identityPath);
+        const relPath = bytes ? `files/${hashPath(identityPath)}/${captureId}/${basename}` : '';
+        const entry = buildEntry(identityPath, info.size, info.mtime?.getTime() ?? 0, meta, relPath,
+          bytes ? {} : { skipReason: 'oversized' });
+        entry.captureId = captureId;
+        let recorded = false;
+        let destination: string | undefined;
+        capture = {
+          rollback: () => withConvLock(convId, async () => {
+            if (recorded && (await loadManifest(convId)).entries[identityPath]?.captureId === captureId) {
+              if (previous) await recordEntry(convId, previous);
+              else await appendRecord(convId, { op: 'remove', originalPath: identityPath, snapshottedAt: entry.snapshottedAt, captureId });
+            }
+            if (destination && await exists(destination)) await remove(destination);
+            const previousPath = previous?.captureId && evictableRelPath(previous);
+            if (previousPath) await removeUnreferencedCopy(convId, outputsDir, previousPath);
+          }),
+          commit: () => withConvLock(convId, async () => {
+            const oldRelPath = previous && evictableRelPath(previous);
+            if (oldRelPath && oldRelPath !== relPath) {
+              await removeUnreferencedCopy(convId, outputsDir, oldRelPath);
+            }
+            if (relPath) await removeUnreferencedCopy(convId, outputsDir, relPath);
+          }),
+        };
+          if (bytes) {
+            const directory = joinPath(outputsDir, 'files', hashPath(identityPath), captureId);
+            await runFileOperationStage(guard, () => mkdir(directory, { recursive: true }));
+            destination = joinPath(outputsDir, relPath);
+            await runFileOperationStage(guard, () => writeFile(destination!, bytes));
+          }
+          guard.assertActive();
+          recorded = true;
+          await runFileOperationStage(guard, () => recordEntry(convId, entry));
+          if (relPath) await runFileOperationStage(guard, () => enforceConversationCopyLimit(convId, entry));
+      });
+    } finally {
+      await files.dispose();
+    }
+  });
+  completed = true;
+  return capture;
+  } finally {
+    if (!completed) await capture?.rollback();
   }
 }
 

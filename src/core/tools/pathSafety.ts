@@ -22,6 +22,8 @@ export type PathCheckResult = {
   permissionIsFolder?: boolean;
   capability?: 'read' | 'write';
   reason?: string;
+  /** A definite local restriction, distinct from an unverifiable path. */
+  denialKind?: 'blocked';
 };
 
 // Cache home directory
@@ -975,7 +977,7 @@ export async function checkReadPath(path: string, scopeId?: AuthorizationScopeId
   // Check blocked paths first
   const blockCheck = await isBlockedPath(normalizedPath);
   if (blockCheck.blocked) {
-    return { allowed: false, reason: blockCheck.reason };
+    return { allowed: false, reason: blockCheck.reason, denialKind: 'blocked' };
   }
 
   const resolved = await resolvePathForPolicy(path);
@@ -987,7 +989,7 @@ export async function checkReadPath(path: string, scopeId?: AuthorizationScopeId
 
   const canonicalBlock = await isBlockedPath(resolved.canonicalPath, canonicalHome);
   if (canonicalBlock.blocked) {
-    return { allowed: false, reason: canonicalBlock.reason };
+    return { allowed: false, reason: canonicalBlock.reason, denialKind: 'blocked' };
   }
 
   // A lexical grant is only valid when the resolved target is also contained
@@ -1085,7 +1087,7 @@ export async function checkWritePath(
   // Check blocked paths first
   const blockCheck = await isBlockedPath(normalizedPath);
   if (blockCheck.blocked) {
-    return { allowed: false, reason: blockCheck.reason };
+    return { allowed: false, reason: blockCheck.reason, denialKind: 'blocked' };
   }
 
   // Abu's own config and state — checked before the authorized-workspace
@@ -1105,7 +1107,7 @@ export async function checkWritePath(
 
   const canonicalBlock = await isBlockedPath(resolved.canonicalPath, canonicalHome);
   if (canonicalBlock.blocked) {
-    return { allowed: false, reason: canonicalBlock.reason };
+    return { allowed: false, reason: canonicalBlock.reason, denialKind: 'blocked' };
   }
   if (await isAbuSelfManagedPath(resolved.canonicalPath, canonicalHome)) {
     return { allowed: false, reason: '禁止写入阿布自身的配置与状态目录' };
@@ -1203,7 +1205,7 @@ export async function checkWritePath(
 /**
  * Check if a path is safe for listing (more permissive than read/write)
  */
-export async function checkListPath(path: string, scopeId?: AuthorizationScopeId): Promise<PathCheckResult> {
+export async function checkListPath(path: string, scopeId?: AuthorizationScopeId, options: { followFinalSymlink?: boolean } = {}): Promise<PathCheckResult> {
   // Block UNC network paths
   if (isUNCPath(path)) {
     return { allowed: false, reason: 'UNC network paths are not supported' };
@@ -1215,10 +1217,10 @@ export async function checkListPath(path: string, scopeId?: AuthorizationScopeId
   // Block sensitive directories from listing too
   const blockCheck = await isBlockedPath(normalizedPath);
   if (blockCheck.blocked) {
-    return { allowed: false, reason: blockCheck.reason };
+    return { allowed: false, reason: blockCheck.reason, denialKind: 'blocked' };
   }
 
-  const resolved = await resolvePathForPolicy(path);
+  const resolved = await resolvePathForPolicy(path, options);
   if (!resolved.ok) return { allowed: false, reason: resolved.reason };
 
   const home = await getHomeDir();
@@ -1227,7 +1229,7 @@ export async function checkListPath(path: string, scopeId?: AuthorizationScopeId
 
   const canonicalBlock = await isBlockedPath(resolved.canonicalPath, canonicalHome);
   if (canonicalBlock.blocked) {
-    return { allowed: false, reason: canonicalBlock.reason };
+    return { allowed: false, reason: canonicalBlock.reason, denialKind: 'blocked' };
   }
 
   const workspaceMatch = await matchAuthorizedWorkspaces(

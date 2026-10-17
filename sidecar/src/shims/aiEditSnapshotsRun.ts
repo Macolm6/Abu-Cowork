@@ -46,6 +46,7 @@
  * not a full elimination — see the report's evaluation.
  */
 import { sendRequest } from '../rpcClient';
+import type { ToolFileAccess } from '@/core/tools/fileOperation';
 import { getCurrentAgentRunContext } from '../agentRunContext';
 import { sidecarRuntimeErrorType, traceSidecarRuntimeEvent } from '../runtimeTrace';
 
@@ -61,7 +62,7 @@ export function snapshotBeforeAiEdit(
  * and takes no version-history snapshot. The shell uses the loop id it holds
  * for this run, so `_loopId` does not travel.
  */
-export function captureTurnFileBefore(path: string, _loopId: string | undefined): Promise<void> {
+export function captureTurnFileBefore(path: string, _loopId: string | undefined, _files?: ToolFileAccess): Promise<void> {
   return requestBeforeAiEdit(path, { captureOnly: true });
 }
 

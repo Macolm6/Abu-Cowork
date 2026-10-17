@@ -3154,8 +3154,16 @@ function readApprovedUploadFile(entry) {
     : null;
   const ino = approvedFileId(entry && entry.ino, 1);
   const dev = approvedFileId(entry && entry.dev, 0);
-  if (!filePath || !name || size < 0) {
+  if (!filePath || !name || !Number.isInteger(size) || size < 0 || size > 20 * 1024 * 1024) {
     throw new Error('Refused: the approved file list for this upload was not readable.');
+  }
+  if (entry.base64 !== undefined) {
+    if (typeof entry.base64 !== 'string' || entry.base64.length > 28 * 1024 * 1024 || size > 20 * 1024 * 1024) {
+      throw new Error('Refused: invalid captured upload bytes.');
+    }
+    const bytes = Buffer.from(entry.base64, 'base64');
+    if (bytes.length !== size || bytes.toString('base64') !== entry.base64) throw new Error('Refused: invalid captured upload bytes.');
+    return { name, size, base64: entry.base64 };
   }
   // Fail closed on a stamp with no identity in it: comparing lengths is what
   // this whole function stopped doing.
@@ -3221,7 +3229,8 @@ function readApprovedUploadFile(entry) {
  */
 async function uploadAutomation(view, payload, beforeDispatch) {
   const declared = Array.isArray(payload.files) ? payload.files : [];
-  if (declared.length === 0) {
+  if (declared.length === 0 || declared.length > 10
+    || declared.reduce((total, entry) => total + Number(entry?.size ?? Infinity), 0) > 40 * 1024 * 1024) {
     throw new Error('Refused: this upload named no approved file, so nothing was sent.');
   }
   const files = [];

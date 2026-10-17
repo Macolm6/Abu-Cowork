@@ -19,7 +19,7 @@ import type { ToolDefinition } from '../../types';
 // there, so this test declares just enough of the shape to inject a fake
 // connected server (bypassing connectServer(), see file header comment).
 interface FakeConnectedServer {
-  config: { name: string };
+  config: { name: string; isAvailable?: () => boolean };
   client: { callTool: ReturnType<typeof vi.fn> };
   transport: unknown;
   tools: Map<string, ToolDefinition>;
@@ -53,6 +53,23 @@ describe('conversationId threading into MCP _meta', () => {
     expect(mockCallTool).not.toHaveBeenCalled();
     expect(manager.getServerTools('test-server')).toEqual([]);
     await expect(manager.connectServer({ name: 'test-server', command: 'example', enabled: true })).rejects.toThrow(/test-server/);
+  });
+
+  it('refuses a cached connection after its runtime owner withdraws access', async () => {
+    let available = true;
+    const server = (manager as unknown as { servers: Map<string, FakeConnectedServer> }).servers.get('test-server')!;
+    server.config.isAvailable = () => available;
+    await manager.callTool('test-server', 'some_tool', {});
+    available = false;
+    await expect(manager.callTool('test-server', 'some_tool', {})).rejects.toThrow(/not authorized/);
+    expect(mockCallTool).toHaveBeenCalledTimes(1);
+    await expect(manager.testConnection(server.config)).resolves.toMatchObject({ success: false });
+  });
+
+  it('refuses connection admission when the runtime owner is unavailable', async () => {
+    const config = { name: 'withdrawn-server', command: 'example', isAvailable: () => false };
+    await expect(manager.connectServer(config)).rejects.toThrow(/unavailable/);
+    expect(manager.getConnectedServers()).not.toContain(config.name);
   });
 
   it('includes _meta with the conversation id when callTool() is given a conversationId', async () => {
@@ -157,6 +174,13 @@ describe('abort signal propagation into MCP callTool', () => {
       undefined,
       { signal: controller.signal, timeout: 30000 }
     );
+  });
+
+  it('checks the operation immediately before SDK dispatch and refuses an invalidated owner', async () => {
+    await expect(manager.callTool('test-server', 'some_tool', {}, {
+      beforeDispatch: () => { throw new Error('operation owner changed'); },
+    })).rejects.toThrow('operation owner changed');
+    expect(mockCallTool).not.toHaveBeenCalled();
   });
 
   // Task B2 (controller addendum): the SDK's own request/response cycle has
