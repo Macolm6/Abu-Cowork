@@ -27,7 +27,7 @@
 //! src/ax.rs, macOS-only).
 
 use std::io::{BufRead, Write};
-use std::sync::{Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, atomic::{AtomicBool, AtomicUsize, Ordering}, mpsc};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(not(target_os = "windows"))]
@@ -44,6 +44,9 @@ mod windows_backend;
 // src-tauri). See src/cu.rs.
 mod cu;
 mod error;
+mod file_name_comparison;
+mod file_operation;
+mod file_operation_platform;
 use error::HelperError;
 
 const HELPER_PROTOCOL_VERSION: u32 = 2;
@@ -83,6 +86,8 @@ fn supported_commands() -> Vec<&'static str> {
         "version",
         "health",
         "ping",
+        "directory_name_comparison",
+        "file_operation",
         "mouse_click",
         "mouse_move",
         "mouse_scroll",
@@ -463,6 +468,8 @@ fn assert_expected_target(params: &Value) -> Result<(), String> {
 fn handle(method: &str, params: &Value) -> Result<Value, HelperError> {
     match method {
         "ping" => Ok(json!({ "pong": true })),
+        "directory_name_comparison" => file_name_comparison::directory_info(&require_str(params, "path")?),
+        "file_operation" => file_operation::handle(params),
         "hello" | "version" => Ok(helper_identity()),
         "health" => {
             let mut identity = helper_identity();
@@ -1197,29 +1204,25 @@ fn handle(method: &str, params: &Value) -> Result<Value, HelperError> {
     }
 }
 
-fn main() {
-    // DPI awareness must be settled before any window or monitor call. The
-    // outcome is declared in hello (contract §2.8) and gates coordinate input.
-    #[cfg(target_os = "windows")]
-    let _ = windows_backend::initialize_dpi_awareness();
-    #[cfg(target_os = "windows")]
-    let _ = windows_backend::initialize_input_monitoring();
-    let _ = started_at_ms();
+const MAX_QUEUED_REQUEST_BYTES: usize = 64 * 1024 * 1024;
+
+fn read_requests(sender: mpsc::SyncSender<(WireRequest, usize)>, queued_bytes: Arc<AtomicUsize>, disconnected: Arc<AtomicBool>) {
     let stdin = std::io::stdin();
-    for line in stdin.lock().lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
-        };
+    let mut input = stdin.lock();
+    loop {
+        let mut line = String::new();
+        let read = std::io::Read::take(&mut input, MAX_QUEUED_REQUEST_BYTES as u64 + 1).read_line(&mut line);
+        if !matches!(read, Ok(count) if count > 0) || line.len() > MAX_QUEUED_REQUEST_BYTES { break; }
+        let size = line.len();
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
         let req: Value = match serde_json::from_str(line) {
             Ok(v) => v,
-            Err(e) => {
+            Err(_) => {
                 emit_json(&json!({
-                    "error": HelperError::not_executed("invalid-params", format!("parse error: {e}")),
+                    "error": HelperError::not_executed("invalid-params", "Invalid JSON request"),
                 }));
                 continue;
             }
@@ -1234,13 +1237,54 @@ fn main() {
                 continue;
             }
         };
-        if let Some(context) = &wire.context {
-            if let Ok(mut active) = ACTIVE_REQUEST_CONTEXT
-                .get_or_init(|| RwLock::new(None))
-                .write()
-            {
-                *active = Some(context.clone());
+        if wire.method == "file_operation" {
+            if let Err(error) = file_operation::ingress(&wire.params) {
+                emit_json(&json!({ "id": wire.id, "error": error }));
+                continue;
             }
+            if wire.params.get("action").and_then(Value::as_str) == Some("cancel") {
+                emit_json(&json!({ "id": wire.id, "result": null }));
+                continue;
+            }
+        }
+        let counted = queued_bytes.fetch_update(Ordering::AcqRel, Ordering::Acquire,
+            |current| current.checked_add(size).filter(|next| *next <= MAX_QUEUED_REQUEST_BYTES));
+        if counted.is_err() {
+            if wire.method == "file_operation" { file_operation::discard_open(&wire.params); }
+            emit_json(&json!({ "id": wire.id, "error": HelperError::not_executed("request-queue-full", "Native request queue capacity reached") }));
+            continue;
+        }
+        if let Err(error) = sender.try_send((wire, size)) {
+            queued_bytes.fetch_sub(size, Ordering::AcqRel);
+            let (wire, _) = match error { mpsc::TrySendError::Full(value) | mpsc::TrySendError::Disconnected(value) => value };
+            if wire.method == "file_operation" { file_operation::discard_open(&wire.params); }
+            emit_json(&json!({ "id": wire.id, "error": HelperError::not_executed("request-queue-full", "Native request queue capacity reached") }));
+        }
+    }
+    file_operation::cancel_all();
+    disconnected.store(true, Ordering::Release);
+}
+
+fn main() {
+    // DPI awareness must be settled before any window or monitor call. The
+    // outcome is declared in hello (contract §2.8) and gates coordinate input.
+    #[cfg(target_os = "windows")]
+    let _ = windows_backend::initialize_dpi_awareness();
+    #[cfg(target_os = "windows")]
+    let _ = windows_backend::initialize_input_monitoring();
+    let _ = started_at_ms();
+    let (sender, receiver) = mpsc::sync_channel(32);
+    let queued_bytes = Arc::new(AtomicUsize::new(0));
+    let disconnected = Arc::new(AtomicBool::new(false));
+    let reader_bytes = Arc::clone(&queued_bytes);
+    let reader_disconnected = Arc::clone(&disconnected);
+    let reader = std::thread::spawn(move || read_requests(sender, reader_bytes, reader_disconnected));
+    while let Ok((wire, size)) = receiver.recv() {
+        queued_bytes.fetch_sub(size, Ordering::AcqRel);
+        file_operation::discard_cancelled();
+        if disconnected.load(Ordering::Acquire) { break; }
+        if let Ok(mut active) = ACTIVE_REQUEST_CONTEXT.get_or_init(|| RwLock::new(None)).write() {
+            *active = wire.context.clone();
         }
         #[cfg(target_os = "windows")]
         if matches!(
@@ -1256,6 +1300,8 @@ fn main() {
         };
         emit_json(&resp);
     }
+    file_operation::close_all();
+    let _ = reader.join();
 }
 
 #[cfg(test)]

@@ -73,6 +73,12 @@ export const processImageTool: ToolDefinition = {
         });
       }
 
+      if (context?.files) {
+        await context.files.processImage(inputPath, outputPath, action, {
+          ...params, width: Number(params.width) || 800, height: Number(params.height) || 600,
+        });
+        return format(getI18n().toolResult.media.imageProcessed, { path: outputPath });
+      }
       await ensureParentDir(outputPath);
 
       let command: string;

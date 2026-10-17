@@ -55,6 +55,7 @@
 'use strict';
 
 const os = require('node:os');
+const path = require('node:path');
 const { shell, clipboard, dialog, powerSaveBlocker, BrowserWindow } = require('electron');
 const { openChromeExtensionsPage } = require('./chromeExtensionsLauncher.cjs');
 const { readChromeExtensionInstallation } = require('./chromeExtensionInstallation.cjs');
@@ -179,7 +180,10 @@ function setPreventSleep(enabled) {
  * @param {string} targetPath
  */
 async function moveToTrash(targetPath) {
-  await shell.trashItem(String(targetPath));
+  if (typeof targetPath !== 'string' || !targetPath.trim() || !path.isAbsolute(targetPath)) {
+    throw new Error('Trash target must be an absolute path');
+  }
+  await shell.trashItem(path.resolve(targetPath));
   return null;
 }
 

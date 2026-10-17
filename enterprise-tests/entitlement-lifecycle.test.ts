@@ -1,12 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
 const moduleFlags = vi.hoisted(() => ({ skills: false, agents: false, mcp: false, kb: false }))
-// Both the entitlement watcher and the default-app landing subscribe; a live
-// session change reaches every subscriber with the store's current state.
-const store = vi.hoisted(() => ({
-  state: { mode: { kind: 'personal' as const } },
-  listeners: new Set<(state: { mode: { kind: 'personal' } }) => void>(),
-}))
 const calls = vi.hoisted(() => ({
   startSkills: vi.fn(), stopSkills: vi.fn(),
   startMcp: vi.fn(), stopMcp: vi.fn(),
@@ -26,15 +20,6 @@ vi.mock('@enterprise-modules/components/MigrationWizard', () => ({}))
 
 vi.mock('@enterprise-modules/core/enterprise/entitlement', () => ({
   isEnterpriseModuleActive: (module: keyof typeof moduleFlags) => moduleFlags[module],
-}))
-vi.mock('@enterprise-modules/stores/enterpriseStore', () => ({
-  useEnterpriseStore: {
-    getState: () => store.state,
-    subscribe: vi.fn((listener: (state: typeof store.state) => void) => {
-      store.listeners.add(listener)
-      return () => { store.listeners.delete(listener) }
-    }),
-  },
 }))
 vi.mock('@enterprise-modules/core/skill/catalog-sync', () => ({
   startCatalogSync: calls.startSkills, stopCatalogSync: calls.stopSkills,
@@ -61,6 +46,7 @@ vi.mock('@enterprise-modules/tools/enterprise-kb-query', () => ({
 }))
 
 import { initEnterpriseModules } from '@enterprise-modules'
+import { useEnterpriseStore } from '@enterprise-modules/stores/enterpriseStore'
 
 describe('enterprise entitlement lifecycle', () => {
   it('starts only licensed modules and retracts them when the live session loses entitlement', async () => {
@@ -83,7 +69,7 @@ describe('enterprise entitlement lifecycle', () => {
     moduleFlags.mcp = false
     moduleFlags.kb = false
     moduleFlags.agents = false
-    store.listeners.forEach((listener) => listener(store.state))
+    useEnterpriseStore.setState({ initialized: true })
 
     await vi.waitFor(() => {
       expect(calls.stopSkills).toHaveBeenCalled()

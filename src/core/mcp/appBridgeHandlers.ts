@@ -29,6 +29,8 @@ import type {
 } from '@modelcontextprotocol/sdk/types.js';
 import type { ToolDefinition, ToolParameter } from '@/types';
 import { utf8ByteLength } from './appResources';
+import { freezeToolInput } from '@/core/tools/operationAuthorization';
+import { finalizeToolApproval } from '@/core/tools/approvalFinalization';
 
 // ---------------------------------------------------------------------------
 // Limits (spec §4.3 / §4.5)
@@ -323,6 +325,18 @@ export interface McpAppAuditEntry {
 export interface AppApprovalDecision {
   decision: 'allow' | 'deny';
   reason?: string;
+  executionInput?: Readonly<Record<string, unknown>>;
+}
+
+interface AppApprovalLifecycle {
+  signal: AbortSignal;
+  finish(): void;
+}
+
+const approvalLifecycles = new WeakMap<AppApprovalDecision, AppApprovalLifecycle>();
+
+export function rememberAppApprovalLifecycle(decision: AppApprovalDecision, lifecycle: AppApprovalLifecycle): void {
+  approvalLifecycles.set(decision, lifecycle);
 }
 
 export interface AppBridgeHandlerDeps {
@@ -338,7 +352,7 @@ export interface AppBridgeHandlerDeps {
    */
   checkApproval(namespacedTool: string, args: Record<string, unknown>): Promise<AppApprovalDecision>;
   /** Execute — must go through `mcpManager.callTool(..., { viaAppBridge: true })`. */
-  callTool(tool: string, args: Record<string, unknown>): Promise<CallToolResult>;
+  callTool(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<CallToolResult>;
   /** `ui://` interface resources (cached, MCP-App profile). */
   readAppResource(uri: string): Promise<{ mimeType: string; text: string }>;
   /** Any other resource of the same server — read-only, uncached, size-capped. */
@@ -536,7 +550,7 @@ export function createAppBridgeHandlers(deps: AppBridgeHandlerDeps): DisposableA
         );
       }
 
-      const args = (params.arguments ?? {}) as Record<string, unknown>;
+      const args = freezeToolInput((params.arguments ?? {}) as Record<string, unknown>);
       const invalid = validateToolArguments(definition.inputSchema, args);
       if (invalid) throw new AppBridgeRpcError(INVALID_PARAMS, invalid);
 
@@ -552,31 +566,54 @@ export function createAppBridgeHandlers(deps: AppBridgeHandlerDeps): DisposableA
       }
 
       const namespaced = `${deps.server}__${toolName}`;
-      const approval = await deps.checkApproval(namespaced, args);
-      if (approval.decision !== 'allow') {
-        const reason = approval.reason ?? `Tool ${toolName} was denied`;
-        audit({ kind: 'tool-call', tool: toolName, args, summary: reason, isError: true });
-        throw new AppBridgeRpcError(DENIED, reason);
-      }
-
+      let approval = await deps.checkApproval(namespaced, args);
+      const lifecycle = approvalLifecycles.get(approval);
       try {
-        const result = await deps.callTool(toolName, args);
-        audit({
-          kind: 'tool-call',
-          tool: toolName,
-          args,
-          summary: summarize(result),
-          isError: result.isError === true,
-        });
-        return result;
-      } catch (error) {
-        // The user sees the real failure in the audit row; the app gets a
-        // generic string. A server's error text routinely carries absolute
-        // paths, internal hostnames or token fragments, and handing that to a
-        // sandboxed page would leak exactly what the sandbox exists to contain.
-        const message = error instanceof Error ? error.message : String(error);
-        audit({ kind: 'tool-call', tool: toolName, args, summary: message, isError: true });
-        throw new AppBridgeRpcError(DENIED, APP_TOOL_FAILURE_MESSAGE);
+        while (true) {
+          if (approval.decision === 'deny') break;
+          if (lifecycle?.signal.aborted) {
+            approval = { decision: 'deny', reason: 'Tool execution was cancelled' };
+            break;
+          }
+          const finalized = finalizeToolApproval(approval);
+          if (finalized instanceof Promise) {
+            approval = await finalized;
+            continue;
+          }
+          approval = finalized;
+          break;
+        }
+        if (approval.decision !== 'allow') {
+          const reason = approval.reason ?? `Tool ${toolName} was denied`;
+          audit({ kind: 'tool-call', tool: toolName, args, summary: reason, isError: true });
+          throw new AppBridgeRpcError(DENIED, reason);
+        }
+
+        const executionInput = approval.executionInput ?? args;
+        try {
+          const result = lifecycle
+            ? await deps.callTool(toolName, executionInput, lifecycle.signal)
+            : await deps.callTool(toolName, executionInput);
+          if (lifecycle?.signal.aborted) throw new AppBridgeRpcError(DENIED, 'Tool execution was cancelled');
+          audit({
+            kind: 'tool-call',
+            tool: toolName,
+            args,
+            summary: summarize(result),
+            isError: result.isError === true,
+          });
+          return result;
+        } catch (error) {
+          // The user sees the real failure in the audit row; the app gets a
+          // generic string. A server's error text routinely carries absolute
+          // paths, internal hostnames or token fragments, and handing that to a
+          // sandboxed page would leak exactly what the sandbox exists to contain.
+          const message = error instanceof Error ? error.message : String(error);
+          audit({ kind: 'tool-call', tool: toolName, args, summary: message, isError: true });
+          throw new AppBridgeRpcError(DENIED, APP_TOOL_FAILURE_MESSAGE);
+        }
+      } finally {
+        lifecycle?.finish();
       }
     },
 

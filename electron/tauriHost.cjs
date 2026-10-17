@@ -53,7 +53,8 @@ const {
 const { updaterDispatch, UPDATER_MISS } = require('./updaterHost.cjs');
 const { createQuitPreparation } = require('./quitPreparation.cjs');
 const { createExitSaveController } = require('./exitSaveController.cjs');
-const { fsDispatch, FS_MISS, canonicalizeForPathPolicy } = require('./fsHost.cjs');
+const { fsDispatch, FS_MISS, canonicalizeForPathPolicy, inspectPathNameComparison } = require('./fsHost.cjs');
+const { FILE_OPERATION_CHANNEL, createFileOperationHost } = require('./fileOperationHost.cjs');
 const { pluginGitDispatch, PLUGIN_GIT_MISS } = require('./pluginGitHost.cjs');
 const { createMarketSourceHost, marketSourceDispatch, MARKET_SOURCE_MISS } = require('./marketSourceHost.cjs');
 const { PLUGIN_SNAPSHOT_CHANNEL, createPluginSnapshotHost } = require('./pluginSnapshotHost.cjs');
@@ -99,6 +100,7 @@ const {
   runtimeState,
 } = require('./runtimeObservability.cjs');
 const FS_CANONICALIZE_FOR_POLICY_CHANNEL = 'abu:fs-canonicalize-for-policy';
+const FS_NAME_COMPARISON_CHANNEL = 'abu:fs-name-comparison';
 const { desktopDispatch, DESKTOP_MISS } = require('./desktopHost.cjs');
 const { popupWindowsMenu, syncMainWindowChromeTheme } = require('./windowChrome.cjs');
 const {
@@ -1797,6 +1799,20 @@ function registerTauriHost(app, options = {}) {
       request?.path,
       request?.followFinalSymlink !== false,
     );
+  });
+
+  ipcMain.handle(FS_NAME_COMPARISON_CHANNEL, async (e, request = {}) => {
+    assertTrustedMainIpcSender(e);
+    if (request?.followFinalSymlink !== undefined && typeof request.followFinalSymlink !== 'boolean') {
+      throw new Error('fs: followFinalSymlink must be a boolean');
+    }
+    return inspectPathNameComparison(request?.path, request?.followFinalSymlink !== false);
+  });
+
+  const fileOperations = createFileOperationHost({ app, trashItem: filePath => require('electron').shell.trashItem(filePath) });
+  ipcMain.handle(FILE_OPERATION_CHANNEL, async (e, payload = {}) => {
+    assertTrustedMainIpcSender(e);
+    return fileOperations(e.sender, payload.action, payload.request);
   });
 
   ipcMain.handle(SAVE_IMAGE_ATTACHMENT_CHANNEL, async (e, request = {}) => {

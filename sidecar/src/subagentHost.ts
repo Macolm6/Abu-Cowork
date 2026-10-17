@@ -71,6 +71,7 @@ function toWireToolContext(context: ToolExecutionContext | undefined): ToolExecu
   if (!context) return undefined;
   const {
     abortSignal: _abortSignal,
+    operationOwner: _operationOwner,
     reportBrowserDenial: _reportBrowserDenial,
     reportBrowserAllow: _reportBrowserAllow,
     ...wireContext

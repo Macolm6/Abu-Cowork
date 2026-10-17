@@ -97,6 +97,8 @@ export interface MediaFilePayload {
   fileName?: string;
   /** Optional text caption sent alongside the file. */
   caption?: string;
+  /** Trusted in-process I/O retained by the originating tool invocation. */
+  files?: Pick<import('@/core/tools/fileOperation').ToolFileAccess, 'assertCurrent' | 'assertActive' | 'readFile'>;
 }
 
 // ── Adapter Interfaces ──

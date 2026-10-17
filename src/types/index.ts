@@ -136,6 +136,8 @@ export interface ComputerStepReport {
 }
 
 export interface ToolExecutionMetadata {
+  /** Trusted host has joined output capture within the original operation. */
+  outputSnapshotsHandled?: boolean;
   sandboxRecovery?: SandboxRecoveryPayload;
   /** Trusted computer tool: how this step ended, for the run report card. */
   computerStep?: ComputerStepReport;
@@ -691,6 +693,10 @@ export interface ToolParameter {
 
 /** Runtime context passed to tool execute(), e.g. the effective workspace for this conversation */
 export interface ToolExecutionContext {
+  /** Trusted host-only access for this invocation; never accepted from the wire. */
+  files?: import('@/core/tools/fileOperation').ToolFileAccess;
+  /** Process-local authority owner; never accepted from model or wire context. */
+  operationOwner?: import('../core/tools/operationAuthorization').ToolOperationOwner;
   /** Resolved workspace path (from IMContext or global store) */
   workspacePath?: string | null;
   /** Loop ID for multi-agent context lookup */
