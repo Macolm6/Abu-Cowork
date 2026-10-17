@@ -75,7 +75,7 @@ describe('DocxPreview', () => {
   it('draws new bytes over the pages on screen without a loading state', async () => {
     const { rerender } = render(<DocxPreview data={bytes('First draft')} />);
     expect(await screen.findByText('First draft')).toBeInTheDocument();
-    expect(screen.queryByRole('status')).toBeNull();
+    await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
 
     rerender(<DocxPreview data={bytes('Second draft')} />);
     expect(screen.queryByRole('status')).toBeNull();

@@ -89,7 +89,7 @@ describe('resolveRun', () => {
     expect(run({ expert: 'enterprise-agent:a2' }, org).owner).toEqual({ status: 'needs-preparation', roleIds: ['enterprise-agent:a2'], label: '条款专家', agent: orgUnready });
     expect(run({ team: 'enterprise-team:t-org-1' }, org).owner).toEqual({ status: 'needs-preparation', roleIds: ['enterprise-agent:a2'], label: 't-org-1' });
     expect(run({ expert: 'enterprise-agent:gone' }, org).owner).toEqual({ status: 'unavailable', label: 'gone' });
-    expect(run({ skill: 'enterprise:clause-check' }, org).skill).toMatchObject({ status: 'ok', name: 'clause-check' });
+    expect(run({ skill: 'enterprise:clause-check' }, org).skill).toMatchObject({ status: 'unavailable', label: 'clause-check' });
   });
 
   it('names an organization expert awaiting preparation by its display name, never its identifier', () => {

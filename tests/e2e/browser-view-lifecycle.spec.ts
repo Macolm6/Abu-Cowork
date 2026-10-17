@@ -598,23 +598,9 @@ async function ensureSidebarExpanded(page: Page): Promise<void> {
   }
 }
 
-/**
- * Click whichever "New Task" control is actually on screen right now: the
- * sidebar's own button, or — while a wide browser tab has auto-collapsed the
- * sidebar — the title bar's icon-only copy of the same action (rendered only
- * while `sidebarCollapsed`, see WindowTitleBar.tsx `showNewTask`). Avoids a
- * race against exactly when the auto-collapse effect fires.
- */
 async function clickNewTask(page: Page): Promise<void> {
-  const sidebarButton = page.locator('[data-sidebar-action="new-task"]');
-  if (await isReallyClickable(sidebarButton)) {
-    await sidebarButton.click();
-    return;
-  }
-  const titleBarButton = page
-    .locator('button[aria-label="新任务"], button[aria-label="New Task"]')
-    .first();
-  await titleBarButton.click();
+  await ensureSidebarExpanded(page);
+  await page.locator('[data-sidebar-action="new-task"]').click();
 }
 
 /** The workspace tab-strip row for the tab currently titled with this fixture's host. */

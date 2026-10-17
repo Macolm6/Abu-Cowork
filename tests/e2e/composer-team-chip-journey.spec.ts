@@ -252,10 +252,10 @@ test.describe('composer team chip journey', () => {
         await box.press('Backspace');
         await expect(atom).toHaveCount(0);
         await expect.poll(readBody).toBe(body);
-        await box.press('Meta+z');
+        await box.press('ControlOrMeta+z');
         await expect(atom).toBeVisible();
         await expect.poll(readBody).toBe(body);
-        await box.press('Meta+Shift+z');
+        await box.press('ControlOrMeta+Shift+z');
         await expect(atom).toHaveCount(0);
       }
       // A typed slash in the middle consumes only its trigger range.
@@ -299,9 +299,9 @@ test.describe('composer team chip journey', () => {
       await box.press('Delete');
       await expect(atom).toHaveCount(0);
       await expect.poll(readBody).toBe(preserved);
-      await box.press('Meta+z');
+      await box.press('ControlOrMeta+z');
       await expect(atom).toBeVisible();
-      await box.press('Meta+a');
+      await box.press('ControlOrMeta+a');
       await cdp.send('Input.imeSetComposition', { text: '替换', selectionStart: 2, selectionEnd: 2 });
       await cdp.send('Input.insertText', { text: '替换' });
       await expect(atom).toHaveCount(0);
@@ -364,7 +364,7 @@ test.describe('composer team chip journey', () => {
       await expect.poll(() => box.evaluate((element) => element.clientHeight)).toBe(threeLines);
 
       // Clearing a box that holds a tag leaves nothing behind.
-      await page.keyboard.press('Meta+a');
+      await page.keyboard.press('ControlOrMeta+a');
       await page.keyboard.press('Backspace');
       await expect(atom).toHaveCount(0);
       await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toHaveValue('');

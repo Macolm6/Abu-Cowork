@@ -38,6 +38,14 @@ describe('appMembers', () => {
     // A team the plugin ships but no scene names is not the app's.
     expect(members.teamIds.has('plugin-team:shop-assistant@market/night-shift')).toBe(false);
   });
+
+  it('excludes resources from the same plugin that no scene references', () => {
+    const members = appMembers(app, catalog);
+    expect(members.agentNames.has('店铺客服顾问')).toBe(false);
+    expect(members.teamIds.has('builtin-team:software-rd')).toBe(false);
+    expect(members.teamIds.has('team-mine')).toBe(false);
+    expect(members.roleIds.size).toBe(0);
+  });
 });
 
 describe('appsUsing', () => {

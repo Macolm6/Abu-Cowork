@@ -45,7 +45,8 @@ function syncManagedAppPages(): () => void {
 }
 
 /** Load the added apps once at launch and keep the page host in step with organization apps. */
-export function initAddedAppsSync(): void {
-  syncManagedAppPages();
+export function initAddedAppsSync(): () => void {
+  const unsubscribe = syncManagedAppPages();
   void refreshAddedApps();
+  return unsubscribe;
 }

@@ -1,28 +1,18 @@
 import { expect } from '@playwright/test';
 import type { ElectronApplication, Page } from 'playwright';
 import path from 'node:path';
+import { configureLocalMockProvider } from './electronHelpers';
 
 export const CU_CHAT = /^(想让阿布帮你做点什么？|What can Abu help you with\?)$/;
 
 export async function configureComputerUseEval(page: Page, baseUrl: string): Promise<void> {
   await expect(page.getByPlaceholder(CU_CHAT)).toBeVisible({ timeout: 60_000 });
-  await page.evaluate(({ baseUrl }) => {
-    const saved = JSON.parse(window.localStorage.getItem('abu-settings')!);
-    const capabilities = { supportsTools: true, supportsImages: false };
-    const providerId = 'desktop-eval';
-    const modelId = 'desktop-eval';
-    Object.assign(saved.state, {
-      providers: [{ id: providerId, source: 'custom', name: 'Isolated desktop evaluation', enabled: true,
-        apiFormat: 'openai-compatible', baseUrl, apiKey: 'test-only-not-a-real-key',
-        models: [{ id: modelId, label: modelId, isCustom: true, declaredCapabilities: capabilities }],
-        defaultModelId: modelId, status: 'verified', sortOrder: 0, userAdded: true, declaredCapabilities: capabilities }],
-      activeModel: { providerId, modelId }, recentModels: [], favoriteModels: [], permissionMode: 'standard',
-      computerUseEnabled: true, guideShown: true, guideOpen: false, hasAcknowledgedDisclaimer: true, hasRunSensitiveAudit_v015: true,
-    });
-    window.localStorage.setItem('abu-settings', JSON.stringify(saved));
-  }, { baseUrl });
-  await page.reload();
-  await expect(page.getByPlaceholder(CU_CHAT)).toBeVisible({ timeout: 60_000 });
+  await configureLocalMockProvider(page, baseUrl, {
+    apiKey: 'test-only-not-a-real-key', providerId: 'desktop-eval', modelId: 'desktop-eval',
+    providerName: 'Isolated desktop evaluation', modelLabel: 'desktop-eval',
+    supportsTools: true, supportsImages: false, supportsReasoning: null, contextWindowSize: null,
+    permissionMode: 'standard', computerUseEnabled: true,
+  });
 }
 
 interface ApprovalState { requested: number; denied: number; held: boolean; release?: () => void }

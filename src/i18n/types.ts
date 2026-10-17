@@ -2311,6 +2311,9 @@ export interface TranslationDict {
 
   /** Sidebar app switcher (product spec §5.1). */
   appSwitcher: {
+    fileAccessFailed: string;
+    empty: string;
+    developmentDocs: string;
     general: string;
     generalDescription: string;
     recent: string;
@@ -2335,6 +2338,7 @@ export interface TranslationDict {
   };
   /** The preview of an app made in 「创建应用」. */
   appDraft: {
+    fixDraftHint: string;
     title: string;
     home: string;
     newExperts: string;
@@ -2356,6 +2360,7 @@ export interface TranslationDict {
     searchPlaceholder: string;
     entryCount: string;
     emptyTitle: string;
+    noMatches: string;
     emptyHint: string;
     use: string;
     enter: string;
@@ -2390,11 +2395,14 @@ export interface TranslationDict {
     marketUnreadable: string;
     remoteNeedsSha: string;
     nameMismatch: string;
+    reservedMarketName: string;
+    originConflict: string;
     entryMismatch: string;
     needsNewerAbu: string;
     pluginNotFound: string;
     pluginTooOld: string;
     pluginLacksReference: string;
+    sceneDependencyMissing: string;
     invalidApp: string;
   };
 
@@ -2411,6 +2419,9 @@ export interface TranslationDict {
     connectorHintConnect: string;
     connectorHintLater: string;
     sceneRunUnavailable: string;
+    sceneOwnerUnavailable: string;
+    sceneSkillUnavailable: string;
+    sceneNeedsExtension: string;
     scenePreparing: string;
     scenePrepareFailed: string;
     /** An app's web page that did not load. */
@@ -2420,6 +2431,7 @@ export interface TranslationDict {
     removedAction: string;
     disabledNotice: string;
     offlineNotice: string;
+    signedOutNotice: string;
   };
 
   toolbox: {
@@ -2542,7 +2554,6 @@ export interface TranslationDict {
     pluginsGoToMarketplace: string;
     /** 「我的」 empty state — the user has authored no plugins yet. */
     pluginsMineEmptyHint: string;
-    pluginsAppEntered: string;
     pluginsDisclosureTeams: string;
     /** Heading of the group for installs whose marketplace is gone. */
     pluginsOrphanGroup: string;
@@ -4201,12 +4212,9 @@ export interface TranslationDict {
     inputTokens: string;
     outputTokens: string;
     cacheHitRate: string;
-    statsOrigin: string;
-    statsOriginEmpty: string;
     unrecorded: string;
     unavailable: string;
     stale: string;
-    unknownUsage: string;
     bySkill: string;
     byModel: string;
     noData: string;

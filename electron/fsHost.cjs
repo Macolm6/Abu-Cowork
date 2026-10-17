@@ -49,6 +49,7 @@
 'use strict';
 
 const fs = require('node:fs');
+const { fstatIdentitySync, lstatIdentitySync, sameIdentity } = require('./fileIdentity.cjs');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
@@ -751,7 +752,10 @@ function fsDispatch(app, cmd, payload) {
         }
         throw err;
       }
+      let written = false;
+      let created;
       try {
+        if (options.createNew) created = fstatIdentitySync(fd, fs);
         // The plugin's `truncate = !append`. Every other path got it from its
         // open flags; create:false could not carry `O_TRUNC` (see above), and
         // an append needs no truncation at all, so this is the only leftover.
@@ -759,8 +763,13 @@ function fsDispatch(app, cmd, payload) {
           fs.ftruncateSync(fd, 0);
         }
         writeAll(fd, buf);
+        written = true;
       } finally {
         fs.closeSync(fd);
+        if (!written && created && fs.existsSync(resolved)) {
+          const current = lstatIdentitySync(resolved, fs);
+          if (sameIdentity(current, created)) fs.unlinkSync(resolved);
+        }
       }
       return null;
     }

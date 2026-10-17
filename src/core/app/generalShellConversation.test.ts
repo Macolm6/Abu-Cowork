@@ -3,12 +3,26 @@ import { GENERAL_APP_ID } from '@/types/app';
 import { useAppStore } from '@/stores/appStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { prepareExpertEntry } from '@/core/team/expertEntry';
 import { SHOP_TEAM_ID, activeConversation, enterShop, holdShopPicks, resetShell, shop } from '@/test/appShellFixtures';
 import { createGeneralShellConversation } from './generalShellConversation';
 
 beforeEach(resetShell);
 
 describe('createGeneralShellConversation', () => {
+  it.each([true, false])('clears an expert chosen before the general-shell activity (leaveApp=%s)', (leaveApp) => {
+    if (!leaveApp) enterShop();
+    prepareExpertEntry({ identity: { key: 'agent:role:analyst', kind: 'agent', name: 'Analyst', agentName: 'analyst' } });
+    expect(useChatStore.getState().pendingAgentName).toBe('analyst');
+
+    createGeneralShellConversation('/work/draft', { leaveApp });
+
+    expect(useChatStore.getState().pendingAgentName).toBeNull();
+    expect(useChatStore.getState().pendingExpertContact).toBeNull();
+    expect(activeConversation()!.teamId).toBeUndefined();
+    expect(activeConversation()!.appBinding).toBeUndefined();
+  });
+
   it('started inside an app: the conversation belongs to no app and the shell is the general one', () => {
     enterShop();
 

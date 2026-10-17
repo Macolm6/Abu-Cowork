@@ -70,7 +70,7 @@ export default function AppDraftCard({ conversationId, toolCallId }: { conversat
     const app = apps.find((item) => item.appId === addedAppId);
     return (
       <div data-testid="app-draft-card" className={cn(CARD, 'text-ui text-label-secondary')}>
-        {format(t.appDraft.added, { name: app ? resolveText(app.name) : addedAppId })}
+        {format(t.appDraft.added, { name: app ? resolveText(app.name) : draft?.appName ?? t.appDraft.title })}
       </div>
     );
   }

@@ -48,6 +48,7 @@ export interface PolicyEnforcerProps extends SlotProps {
   action: string
 }
 export interface AgentMarketProps extends TabSlotProps {
+  scopeRoleIds?: ReadonlySet<string>
   /** Close the host surface after the user starts a conversation. */
   onClose?: () => void
 }
