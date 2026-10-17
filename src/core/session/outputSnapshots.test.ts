@@ -1068,6 +1068,30 @@ describe('outputSnapshots', () => {
         expect(copyExists(unreadable)).toBe(true);
       });
 
+      it('keeps the copy when the path of an unreadable original holds words of a missing file', async () => {
+        const folder = `${DESKTOP}/404 Not Found 排查`;
+        vi.setSystemTime(FIXED_MTIME.getTime() + 500);
+        memFs.addUserFile(`${folder}/a.mov`, 200 * MB);
+        const unreadable = await mod.snapshotFile(CONV_ID, `${folder}/a.mov`, { source: 'tool-output', refId: 'a', refKind: 'write_file' });
+        for (const name of ['b.mov', 'c.mov', 'd.mov', 'e.mov']) {
+          await keep(name, 200 * MB);
+          memFs.files.delete(`${DESKTOP}/${name}`);
+        }
+        const read = stat as ReturnType<typeof vi.fn>;
+        const fromDisk = read.getMockImplementation()!;
+        read.mockImplementation(async (path: string) => {
+          if (path === `${folder}/a.mov`) {
+            throw new Error(`Error invoking remote method 'tauri:invoke': Error: EACCES: permission denied, stat '${path}'`);
+          }
+          return fromDisk(path);
+        });
+
+        await keep('f.mov', 200 * MB);
+
+        expect(copyExists(unreadable)).toBe(true);
+        expect(await keptNames()).toEqual(['a.mov', 'c.mov', 'd.mov', 'e.mov', 'f.mov']);
+      });
+
       it('evicts nothing when no original can be read', async () => {
         for (const name of ['a.mov', 'b.mov', 'c.mov', 'd.mov', 'e.mov']) await keep(name, 200 * MB);
         failReading(['a.mov', 'b.mov', 'c.mov', 'd.mov', 'e.mov'], () => withCode('EIO: i/o error', 'EIO'));
