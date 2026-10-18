@@ -171,9 +171,15 @@ export interface TranslationDict {
     deleteUnreadableMessage: string;
     /** The question before a task with running background commands is deleted. `{count}` is how many run. */
     deleteWithBackgroundCommandsTitle: string;
+    /** Singular of `deleteWithBackgroundCommandsTitle`, for exactly one command. */
+    deleteWithBackgroundCommandsTitleOne: string;
     deleteWithBackgroundCommandsMessage: string;
+    /** Singular of `deleteWithBackgroundCommandsMessage`, for exactly one command. */
+    deleteWithBackgroundCommandsMessageOne: string;
     /** Both at once: the record cannot be read and background commands run. `{name}` is the task's title. */
     deleteUnreadableWithBackgroundCommandsMessage: string;
+    /** Singular of `deleteUnreadableWithBackgroundCommandsMessage`, for exactly one command. */
+    deleteUnreadableWithBackgroundCommandsMessageOne: string;
     importSession: string;
     renameConversation: string;
     moreActions: string;
@@ -784,8 +790,12 @@ export interface TranslationDict {
     backgroundCommands: {
       /** {count} */
       running: string;
+      /** Singular of `running`, for exactly one command. */
+      runningOne: string;
       /** {count} */
       total: string;
+      /** Singular of `total`, for exactly one command. */
+      totalOne: string;
       statusRunning: string;
       statusStopping: string;
       statusCompleted: string;
@@ -3801,6 +3811,8 @@ export interface TranslationDict {
     quitWhileRunning: string;
     /** Background commands that quitting stops ({count}). */
     backgroundCommandsRunning: string;
+    /** Singular of `backgroundCommandsRunning`, for exactly one command. */
+    backgroundCommandsRunningOne: string;
     quit: string;
     minimize: string;
     rememberChoice: string;

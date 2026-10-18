@@ -7,7 +7,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import ToasterMount from '@/components/common/ToasterMount';
 import { passSettleInterval } from '@/test/dsWindows';
-import { initLanguage } from '@/i18n';
+import { getLanguageSetting, initLanguage, type LanguageSetting } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { useBackgroundCommandStore } from '@/stores/backgroundCommandStore';
 import { useToastStore } from '@/stores/toastStore';
@@ -149,6 +149,58 @@ describe('useDeleteConversation and background commands', () => {
     expect(vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === 'background_command_stop_conversation'))
       .toEqual([['background_command_stop_conversation', { conversationId: id }]]);
     expect(offer()).toBeNull();
+  });
+
+  describe('in English', () => {
+    let previousLanguage: LanguageSetting;
+    beforeEach(() => {
+      previousLanguage = getLanguageSetting();
+      initLanguage('en-US');
+    });
+    afterEach(() => { initLanguage(previousLanguage); });
+
+    it('words one running command in the singular', async () => {
+      const id = useChatStore.getState().createConversation();
+      running.set(id, 1);
+      const { result } = renderDeletion();
+
+      await deleteFromMenu(result.current, id);
+
+      const question = await screen.findByRole('alertdialog');
+      expect(within(question).getByText('1 background command is still running in this conversation')).toBeInTheDocument();
+      expect(within(question).getByText('Deleting stops it. Undo brings back only the conversation.')).toBeInTheDocument();
+    });
+
+    it('words one running command of an unreadable conversation in the singular', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      vi.mocked(conversationStorage.loadMessages).mockRejectedValueOnce(new Error('disk unavailable'));
+      const id = 'c-unreadable';
+      useChatStore.setState({
+        conversationIndex: { [id]: { id, title: 'Quarterly summary', createdAt: 1, updatedAt: 1, messageCount: 2 } },
+      });
+      running.set(id, 1);
+      const { result } = renderDeletion();
+
+      await deleteFromMenu(result.current, id);
+
+      const question = await screen.findByRole('alertdialog');
+      expect(within(question).getByText('1 background command is still running in this conversation')).toBeInTheDocument();
+      expect(within(question).getByText(
+        'The record of "Quarterly summary" can\'t be read right now. Deleting it can\'t be undone, and it also stops this command.',
+      )).toBeInTheDocument();
+    });
+
+    it('words two running commands in the plural', async () => {
+      const id = useChatStore.getState().createConversation();
+      running.set(id, 2);
+      const { result } = renderDeletion();
+
+      await deleteFromMenu(result.current, id);
+
+      const question = await screen.findByRole('alertdialog');
+      expect(within(question).getByText('2 background commands are still running in this conversation')).toBeInTheDocument();
+      expect(within(question).getByText('Deleting stops them. Undo brings back only the conversation.')).toBeInTheDocument();
+    });
   });
 
   it('reads the count again when the question waited for the menu', async () => {

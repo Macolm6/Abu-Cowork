@@ -187,9 +187,15 @@ describe('CloseDialog', () => {
 
   describe('the note about running background commands', () => {
     it('says how many background commands quitting stops', () => {
+      renderQuestion({ commands: 3 });
+      const note = within(question()).getByRole('status');
+      expect(note).toHaveTextContent('3 background commands are still running and will stop when Abu quits');
+    });
+
+    it('words one background command in the singular', () => {
       renderQuestion({ commands: 1 });
       const note = within(question()).getByRole('status');
-      expect(note).toHaveTextContent('1 background commands are still running and will stop when Abu quits');
+      expect(note).toHaveTextContent('1 background command is still running and will stop when Abu quits');
     });
 
     it('leaves it out when no background command runs', () => {

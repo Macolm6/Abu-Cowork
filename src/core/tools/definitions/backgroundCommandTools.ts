@@ -61,6 +61,11 @@ function formatDuration(ms: number): string {
   return `${seconds}s`;
 }
 
+/** The command on one line, so a result's header keeps its fixed line count (see truncation.ts). */
+function oneLine(command: string): string {
+  return command.replace(/\r?\n/g, '\\n');
+}
+
 function listRows(conversationId: string): Promise<BackgroundCommandRow[]> {
   return invoke<BackgroundCommandRow[]>('background_command_list', { conversationId });
 }
@@ -78,7 +83,7 @@ function formatList(rows: BackgroundCommandRow[]): string {
   const now = Date.now();
   const lines = rows.map((row) => {
     const duration = formatDuration((row.finishedAt ?? now) - row.startedAt);
-    return `- ${row.id} · ${describeStatus(row.status, row.exitCode)} · ${duration} · ${row.command}`;
+    return `- ${row.id} · ${describeStatus(row.status, row.exitCode)} · ${duration} · ${oneLine(row.command)}`;
   });
   return `${t.listHeader}\n${lines.join('\n')}`;
 }
@@ -97,7 +102,7 @@ function formatOutput(row: BackgroundCommandRow, output: BackgroundCommandOutput
   const t = getI18n().toolResult.backgroundCommand;
   const parts = [
     `id: ${row.id}`,
-    `command: ${row.command}`,
+    `command: ${oneLine(row.command)}`,
     `status: ${describeStatus(output.status, output.exitCode)}`,
   ];
   if (output.exitCode !== null) parts.push(`exit code: ${output.exitCode}`);

@@ -37,8 +37,9 @@ export function quitQuestion(
   reason: QuitReason,
   text: TranslationDict['windowClose'],
 ): { title: string; message?: string } {
-  const commands = reason.backgroundCommandCount > 0
-    ? format(text.backgroundCommandsRunning, { count: reason.backgroundCommandCount })
+  const count = reason.backgroundCommandCount;
+  const commands = count > 0
+    ? (count === 1 ? text.backgroundCommandsRunningOne : format(text.backgroundCommandsRunning, { count }))
     : undefined;
   if (!reason.runningConversation) {
     if (commands === undefined) throw new Error('quitQuestion: nothing would be interrupted');

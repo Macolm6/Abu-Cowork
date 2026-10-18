@@ -221,8 +221,8 @@ function BackgroundCommandsButton({ conversationId }: { conversationId: string }
 
   const runningCount = rows.filter((row) => isRunning(row.status)).length;
   const label = runningCount > 0
-    ? format(s.running, { count: runningCount })
-    : format(s.total, { count: rows.length });
+    ? (runningCount === 1 ? s.runningOne : format(s.running, { count: runningCount }))
+    : (rows.length === 1 ? s.totalOne : format(s.total, { count: rows.length }));
 
   return (
     <Popover

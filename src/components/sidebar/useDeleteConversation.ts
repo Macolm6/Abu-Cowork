@@ -75,14 +75,19 @@ export function useDeleteConversation(rowFocus: ConversationRowFocus, offersUndo
           // The name is taken before asking; the answer is checked against the store below.
           // One question when both hold: no undo is offered for an unreadable record.
           const name = chat().conversationIndex[convId].title;
+          const one = runningCommands === 1;
           const message = !unreadable
-            ? words.sidebar.deleteWithBackgroundCommandsMessage
+            ? (one ? words.sidebar.deleteWithBackgroundCommandsMessageOne : words.sidebar.deleteWithBackgroundCommandsMessage)
             : runningCommands > 0
-              ? fill(words.sidebar.deleteUnreadableWithBackgroundCommandsMessage, { name })
+              ? fill(one
+                ? words.sidebar.deleteUnreadableWithBackgroundCommandsMessageOne
+                : words.sidebar.deleteUnreadableWithBackgroundCommandsMessage, { name })
               : fill(words.sidebar.deleteUnreadableMessage, { name });
           const confirmed = await ask({
             title: runningCommands > 0
-              ? fill(words.sidebar.deleteWithBackgroundCommandsTitle, { count: runningCommands })
+              ? (one
+                ? words.sidebar.deleteWithBackgroundCommandsTitleOne
+                : fill(words.sidebar.deleteWithBackgroundCommandsTitle, { count: runningCommands }))
               : words.sidebar.deleteUnreadableTitle,
             message,
             confirmLabel: words.common.delete,

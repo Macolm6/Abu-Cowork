@@ -161,6 +161,15 @@ describe('BackgroundCommandsButton', () => {
     expect(screen.getByRole('button', { name: '3 background commands' })).toBeInTheDocument();
   });
 
+  it('words one command in the singular', () => {
+    setRows([row('a'), row('b', { status: 'completed', exitCode: 0, finishedAt: START + 5_000 })]);
+    render(<BackgroundCommandsButton conversationId="c1" />);
+    expect(screen.getByRole('button', { name: '1 background command running' })).toBeInTheDocument();
+
+    setRows([row('b', { status: 'completed', exitCode: 0, finishedAt: START + 5_000 })]);
+    expect(screen.getByRole('button', { name: '1 background command' })).toBeInTheDocument();
+  });
+
   it('groups running rows before finished rows', async () => {
     setRows([
       row('done', { status: 'failed', exitCode: 2, finishedAt: START + 72_000 }),
@@ -193,7 +202,7 @@ describe('BackgroundCommandsButton', () => {
     invokeMock.mockResolvedValue('requested');
     setRows([row('dev')]);
     render(<BackgroundCommandsButton conversationId="c1" />);
-    const list = await openList('1 background commands running');
+    const list = await openList('1 background command running');
 
     fireEvent.click(within(list).getByRole('button', { name: 'Stop' }));
     expect(within(list).getByRole('button', { name: 'Confirm stop' })).toBeInTheDocument();
@@ -225,7 +234,7 @@ describe('BackgroundCommandsButton', () => {
     invokeMock.mockRejectedValue(new Error('kill failed'));
     setRows([row('dev')]);
     render(<BackgroundCommandsButton conversationId="c1" />);
-    const list = await openList('1 background commands running');
+    const list = await openList('1 background command running');
 
     fireEvent.click(within(list).getByRole('button', { name: 'Stop' }));
     fireEvent.click(within(list).getByRole('button', { name: 'Confirm stop' }));
@@ -251,7 +260,7 @@ describe('BackgroundCommandsButton', () => {
     });
     setRows([row('dev')]);
     render(<BackgroundCommandsButton conversationId="c1" />);
-    const list = await openList('1 background commands running');
+    const list = await openList('1 background command running');
     expect(outputCalls()).toHaveLength(0);
 
     fireEvent.click(within(list).getByRole('button', { name: /npm run dev/ }));
@@ -288,7 +297,7 @@ describe('BackgroundCommandsButton', () => {
     });
     setRows([row('yes')]);
     render(<BackgroundCommandsButton conversationId="c1" />);
-    const list = await openList('1 background commands running');
+    const list = await openList('1 background command running');
 
     fireEvent.click(within(list).getByRole('button', { name: /npm run yes/ }));
     await flush();
@@ -316,7 +325,7 @@ describe('BackgroundCommandsButton', () => {
     });
     setRows([row('yes')]);
     render(<BackgroundCommandsButton conversationId="c1" />);
-    const list = await openList('1 background commands running');
+    const list = await openList('1 background command running');
 
     fireEvent.click(within(list).getByRole('button', { name: /npm run yes/ }));
     await flush();
@@ -335,7 +344,7 @@ describe('BackgroundCommandsButton', () => {
     // The buffer holds the whole scrollback (10 000 lines) and a screen of 24 rows.
     terminals.bufferLength = 10_024;
     render(<BackgroundCommandsButton conversationId="c1" />);
-    const list = await openList('1 background commands');
+    const list = await openList('1 background command');
 
     fireEvent.click(within(list).getByRole('button', { name: /npm run long/ }));
     await flush();
@@ -349,7 +358,7 @@ describe('BackgroundCommandsButton', () => {
     invokeMock.mockResolvedValue({ text: '', next: 0, gap: false, status: 'completed', exitCode: 0 });
     setRows([row('quiet', { status: 'completed', exitCode: 0, finishedAt: START + 1_000 })]);
     render(<BackgroundCommandsButton conversationId="c1" />);
-    const list = await openList('1 background commands');
+    const list = await openList('1 background command');
 
     fireEvent.click(within(list).getByRole('button', { name: /npm run quiet/ }));
     await flush();
@@ -385,7 +394,7 @@ describe('BackgroundCommandsButton', () => {
     invokeMock.mockResolvedValue(undefined);
     setRows([row('dev'), row('done', { status: 'completed', exitCode: 0, finishedAt: START + 1_000 })]);
     render(<BackgroundCommandsButton conversationId="c1" />);
-    const list = await openList('1 background commands running');
+    const list = await openList('1 background command running');
 
     fireEvent.click(within(list).getByRole('button', { name: 'Clear' }));
     await flush();
@@ -402,7 +411,7 @@ describe('BackgroundCommandsButton', () => {
     });
     setRows([row('yes')]);
     render(<BackgroundCommandsButton conversationId="c1" />);
-    const list = await openList('1 background commands running');
+    const list = await openList('1 background command running');
 
     fireEvent.click(within(list).getByRole('button', { name: /npm run yes/ }));
     await flush();

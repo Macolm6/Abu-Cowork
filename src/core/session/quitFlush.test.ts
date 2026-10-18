@@ -113,4 +113,23 @@ describe('quit confirmation with background commands', () => {
     });
     expect(text.backgroundCommandsRunning).toBe('{count} background commands are still running and will stop when Abu quits');
   });
+
+  it('words one command in the singular in English', () => {
+    initLanguage('en-US');
+    const text = getI18n().windowClose;
+    expect(quitQuestion({ runningConversation: false, backgroundCommandCount: 1 }, text)).toEqual({
+      title: '1 background command is still running and will stop when Abu quits',
+    });
+    expect(quitQuestion({ runningConversation: true, backgroundCommandCount: 1 }, text)).toEqual({
+      title: text.quitWhileRunning,
+      message: '1 background command is still running and will stop when Abu quits',
+    });
+  });
+
+  it('words one command the same way in Chinese', () => {
+    const text = getI18n().windowClose;
+    expect(quitQuestion({ runningConversation: false, backgroundCommandCount: 1 }, text)).toEqual({
+      title: '还有 1 个后台命令在运行，退出后会停止',
+    });
+  });
 });

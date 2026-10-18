@@ -1487,11 +1487,6 @@ const NATIVE_INVOKE_ALLOWLIST: ReadonlySet<string> = new Set([
   // still runs shell-side via approval.check, and its catastrophic-target
   // hard-block (root/home) runs in the tool's own execute() before this call.
   'move_to_trash',
-  // Read and stop a background command; the main process checks that the
-  // command belongs to the conversation named in the args.
-  'background_command_output',
-  'background_command_stop',
-  'background_command_list',
 ]);
 
 async function handleNativeInvoke(rawParams: unknown): Promise<unknown> {

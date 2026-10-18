@@ -1550,9 +1550,6 @@ describe('agentLoopRunner', () => {
       'ax_close_session',
       'computer_use_end_task',
       'computer_use_stop_turn',
-      'background_command_output',
-      'background_command_stop',
-      'background_command_list',
     ])(
       'allows %s and forwards to the real Tauri invoke',
       async (cmd) => {
@@ -1571,6 +1568,20 @@ describe('agentLoopRunner', () => {
       ensureHandlersRegistered();
       const handler = handlerFor(onSidecarRequest, 'native.invoke') as (p: unknown) => Promise<unknown>;
       await expect(handler({ runId: 'run-native', cmd: 'delete_everything', args: {} })).rejects.toThrow(MockSidecarRequestError);
+      expect(tauriInvokeMock).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      'background_command_output',
+      'background_command_stop',
+      'background_command_list',
+    ])('does not allowlist %s: the background command tools run in the shell', async (cmd) => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-native', makeSession());
+      const handler = handlerFor(onSidecarRequest, 'native.invoke') as (p: unknown) => Promise<unknown>;
+      await expect(handler({ runId: 'run-native', cmd, args: { conversationId: 'conv-1' } }))
+        .rejects.toThrow(`native.invoke: "${cmd}" is not allowlisted`);
       expect(tauriInvokeMock).not.toHaveBeenCalled();
     });
 

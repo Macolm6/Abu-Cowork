@@ -89,7 +89,9 @@ export default function CloseDialog({
           {hasRunningAgent && <InlineMessage tone="warning">{t.windowClose.agentRunningWarning}</InlineMessage>}
           {backgroundCommandCount > 0 && (
             <InlineMessage tone="warning">
-              {format(t.windowClose.backgroundCommandsRunning, { count: backgroundCommandCount })}
+              {backgroundCommandCount === 1
+                ? t.windowClose.backgroundCommandsRunningOne
+                : format(t.windowClose.backgroundCommandsRunning, { count: backgroundCommandCount })}
             </InlineMessage>
           )}
         </div>

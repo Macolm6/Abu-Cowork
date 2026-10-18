@@ -210,6 +210,41 @@ describe('background_command_output', () => {
     expect(result).toContain('(no output)');
   });
 
+  it('keeps the final error of 200 long output lines after the result is truncated', async () => {
+    const id = await startInConversation('conv-a', 'npm run build');
+    const lines = Array.from({ length: 199 }, (_, i) => `build step ${i + 1}: ${'z'.repeat(64)}`);
+    write(id, `${lines.join('\n')}\nError: Cannot find module "./missing"\n`);
+    processes.get(id)!.emit('close', 1);
+
+    const result = String(await executeAnyTool('background_command_output', { id }, undefined, undefined, context('conv-a')));
+
+    expect(result).toContain(`id: ${id}`);
+    expect(result).toContain('status: failed (exit code 1)');
+    expect(result).toContain('exit code: 1');
+    expect(result).toContain('lines omitted');
+    expect(result.endsWith('Error: Cannot find module "./missing"')).toBe(true);
+  });
+
+  it('writes a multi-line command on one line, so a truncated result keeps its status and exit code', async () => {
+    const command = 'npm run build \\\n  --verbose\r\nnode -e "\nprocess.exit(1)\n"';
+    const id = await startInConversation('conv-a', command);
+    const lines = Array.from({ length: 199 }, (_, i) => `build step ${i + 1}: ${'z'.repeat(64)}`);
+    write(id, `${lines.join('\n')}\nError: Cannot find module "./missing"\n`);
+    processes.get(id)!.emit('close', 1);
+
+    const result = String(await executeAnyTool('background_command_output', { id }, undefined, undefined, context('conv-a')));
+
+    expect(result).toContain('command: npm run build \\\\n  --verbose\\nnode -e "\\nprocess.exit(1)\\n"\n');
+    expect(result).toContain('status: failed (exit code 1)');
+    expect(result).toContain('exit code: 1');
+    expect(result).toContain('lines omitted');
+    expect(result.endsWith('Error: Cannot find module "./missing"')).toBe(true);
+
+    const listed = String(await executeAnyTool('background_command_output', {}, undefined, undefined, context('conv-a')));
+    expect(listed).toContain(`${id} · failed (exit code 1) · 0s · npm run build \\\\n  --verbose\\nnode -e "\\nprocess.exit(1)\\n"`);
+    expect(listed.split('\n')).toHaveLength(2);
+  });
+
   it('cannot read a command of another conversation', async () => {
     const id = await startInConversation('conv-a', 'npm run dev');
 
