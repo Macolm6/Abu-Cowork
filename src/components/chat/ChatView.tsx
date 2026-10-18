@@ -664,14 +664,27 @@ export default function ChatView({
   // Ids of the compaction rows whose summary is shown. Kept here because the
   // list unmounts rows that scroll far out of view.
   const [expandedCompactIds, setExpandedCompactIds] = useState<ReadonlySet<string>>(() => new Set());
+  const expandedCompactIdsRef = useRef<ReadonlySet<string>>(expandedCompactIds);
+  useLayoutEffect(() => {
+    if (expandedCompactIdsRef.current.size === 0) return;
+    const empty = new Set<string>();
+    expandedCompactIdsRef.current = empty;
+    setExpandedCompactIds(empty);
+  }, [activeConvId]);
   const toggleCompactSummary = useCallback((messageId: string) => {
-    setExpandedCompactIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(messageId)) next.delete(messageId);
-      else next.add(messageId);
-      return next;
-    });
-  }, []);
+    const next = new Set(expandedCompactIdsRef.current);
+    if (next.has(messageId)) {
+      next.delete(messageId);
+    } else {
+      // Expanding counts as reading upward, exactly like an upward scroll: the
+      // bottom lock and any active-turn anchor are released, so the row stays
+      // where it is and the summary opens below it.
+      leaveTurnAnchor('user-scroll-intent');
+      next.add(messageId);
+    }
+    expandedCompactIdsRef.current = next;
+    setExpandedCompactIds(next);
+  }, [leaveTurnAnchor]);
   // Index of the message group at the top of the viewport — what the chapter
   // rail highlights. Measured from the DOM (see the scroll-spy effect below).
   const [firstVisibleGroup, setFirstVisibleGroup] = useState(0);
