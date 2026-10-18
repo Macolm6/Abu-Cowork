@@ -3125,6 +3125,7 @@ const enUS: TranslationDict = {
     message: 'Would you like to quit the app or minimize to system tray?',
     agentRunningWarning: 'An AI task is in progress. Progress will be recoverable on next launch.',
     quitWhileRunning: 'Abu is still working on a task. Quitting now will interrupt it.',
+    backgroundCommandsRunning: '{count} background commands are still running and will stop when Abu quits',
     quit: 'Quit',
     minimize: 'Minimize to Tray',
     rememberChoice: 'Remember my choice',

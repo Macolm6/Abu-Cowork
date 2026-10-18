@@ -318,12 +318,16 @@ function App() {
     Object.values(s.conversations).some((c) => c.status === 'running')
   );
 
+  // Background commands of every conversation running when the close dialog was opened.
+  const [closeDialogCommandCount, setCloseDialogCommandCount] = useState(0);
+
   const handleQuit = useCallback(() => {
     setShowCloseDialog(false);
-    // The close dialog showed its running-task warning: the quit is not asked about again.
-    if (hasRunningAgent) noteQuitConfirmedByUser();
+    // The close dialog showed its running-task or background-command warning: the quit is not
+    // asked about again.
+    if (hasRunningAgent || closeDialogCommandCount > 0) noteQuitConfirmedByUser();
     invoke('app_exit');
-  }, [setShowCloseDialog, hasRunningAgent]);
+  }, [setShowCloseDialog, hasRunningAgent, closeDialogCommandCount]);
 
   const handleMinimize = useCallback(() => {
     setShowCloseDialog(false);
@@ -514,7 +518,11 @@ function App() {
       } else if (action === 'minimize') {
         invoke('window_hide');
       } else {
-        setShowCloseDialog(true);
+        // The count is read before the dialog opens, so its first paint already names them.
+        void invoke<number>('background_command_running_count', {}).then((count) => {
+          setCloseDialogCommandCount(count);
+          setShowCloseDialog(true);
+        });
       }
     }).then((fn) => {
       if (cancelled) fn();
@@ -992,6 +1000,7 @@ function App() {
         <CloseDialog
           open={showCloseDialog}
           hasRunningAgent={hasRunningAgent}
+          backgroundCommandCount={closeDialogCommandCount}
           onQuit={handleQuit}
           onMinimize={handleMinimize}
           onCancel={() => setShowCloseDialog(false)}

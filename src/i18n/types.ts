@@ -3794,6 +3794,8 @@ export interface TranslationDict {
     agentRunningWarning: string;
     /** The question asked when the application is quit while a conversation is running. */
     quitWhileRunning: string;
+    /** Background commands that quitting stops ({count}). */
+    backgroundCommandsRunning: string;
     quit: string;
     minimize: string;
     rememberChoice: string;

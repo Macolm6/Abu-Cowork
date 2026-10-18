@@ -3127,6 +3127,7 @@ const zhCN: TranslationDict = {
     message: '你想要退出应用还是最小化到系统托盘？',
     agentRunningWarning: 'AI 任务正在运行，退出后下次启动可恢复进度。',
     quitWhileRunning: '阿布还在处理任务，现在退出会中断它。',
+    backgroundCommandsRunning: '还有 {count} 个后台命令在运行，退出后会停止',
     quit: '退出',
     minimize: '最小化到托盘',
     rememberChoice: '记住我的选择',

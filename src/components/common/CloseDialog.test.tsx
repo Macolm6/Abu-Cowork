@@ -25,11 +25,14 @@ function answers() {
 
 type Answers = ReturnType<typeof answers>;
 
-function Question({ open = true, running = false, on }: { open?: boolean; running?: boolean; on: Answers }) {
+interface QuestionProps { open?: boolean; running?: boolean; commands?: number }
+
+function Question({ open = true, running = false, commands = 0, on }: QuestionProps & { on: Answers }) {
   return (
     <CloseDialog
       open={open}
       hasRunningAgent={running}
+      backgroundCommandCount={commands}
       onQuit={on.onQuit}
       onMinimize={on.onMinimize}
       onCancel={on.onCancel}
@@ -40,11 +43,11 @@ function Question({ open = true, running = false, on }: { open?: boolean; runnin
 
 // The question takes no pointer press for a moment after it appears; the keyboard is never held.
 // These cases are about what each control answers, so the question has been read when they begin.
-function renderQuestion(props: { open?: boolean; running?: boolean } = {}) {
+function renderQuestion(props: QuestionProps = {}) {
   const on = answers();
   const view = render(<Question {...props} on={on} />, { wrapper: DesignSystemProvider });
   passSettleInterval();
-  return { on, view, rerender: (next: { open?: boolean; running?: boolean }) => view.rerender(<Question {...next} on={on} />) };
+  return { on, view, rerender: (next: QuestionProps) => view.rerender(<Question {...next} on={on} />) };
 }
 
 const quit = () => screen.getByRole('button', { name: 'Quit' });
@@ -179,6 +182,29 @@ describe('CloseDialog', () => {
     it('leaves it out otherwise', () => {
       renderQuestion();
       expect(screen.queryByText(getI18n().windowClose.agentRunningWarning)).toBeNull();
+    });
+  });
+
+  describe('the note about running background commands', () => {
+    it('says how many background commands quitting stops', () => {
+      renderQuestion({ commands: 1 });
+      const note = within(question()).getByRole('status');
+      expect(note).toHaveTextContent('1 background commands are still running and will stop when Abu quits');
+    });
+
+    it('leaves it out when no background command runs', () => {
+      renderQuestion();
+      expect(screen.queryByText(/background commands are still running/)).toBeNull();
+      expect(within(question()).queryByRole('status')).toBeNull();
+    });
+
+    it('shows it together with the warning about a running task', () => {
+      renderQuestion({ running: true, commands: 2 });
+      const notes = within(question()).getAllByRole('status').map((note) => note.textContent);
+      expect(notes).toEqual([
+        getI18n().windowClose.agentRunningWarning,
+        '2 background commands are still running and will stop when Abu quits',
+      ]);
     });
   });
 
@@ -335,6 +361,7 @@ function AppLike({ on }: { on: Answers }) {
     <CloseDialog
       open={open}
       hasRunningAgent={false}
+      backgroundCommandCount={0}
       onQuit={() => { close(); on.onQuit(); }}
       onMinimize={() => { close(); on.onMinimize(); }}
       onCancel={() => { close(); on.onCancel(); }}

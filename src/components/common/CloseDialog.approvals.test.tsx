@@ -60,6 +60,7 @@ function Question() {
     <CloseDialog
       open={open}
       hasRunningAgent
+      backgroundCommandCount={0}
       onQuit={() => close('question: quit')}
       onMinimize={() => close('question: minimize')}
       onCancel={() => close('question: cancel')}

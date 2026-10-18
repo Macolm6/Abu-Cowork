@@ -932,14 +932,13 @@ function dispatch(app, cmd, args) {
 
 /** @param {import('electron').App} app */
 function registerTauriHost(app, options = {}) {
-  installBackgroundCommands(
-    createBackgroundCommands({
-      emit: emitEvent,
-      now: Date.now,
-      randomId: crypto.randomBytes,
-      legacyEncoding: legacyConsoleEncoding,
-    }),
-  );
+  const backgroundCommandTable = createBackgroundCommands({
+    emit: emitEvent,
+    now: Date.now,
+    randomId: crypto.randomBytes,
+    legacyEncoding: legacyConsoleEncoding,
+  });
+  installBackgroundCommands(backgroundCommandTable);
   const pluginOperationSession = createOperationSession(app.getPath('home'));
   const pluginSnapshots = createPluginSnapshotHost({ home: app.getPath('home'), mutate: input => pluginOperationSession.mutate(input) });
   const pluginAuthors = createPluginAuthorHost({ home: app.getPath('home'), session: pluginOperationSession, snapshots: pluginSnapshots });
@@ -1461,6 +1460,7 @@ function registerTauriHost(app, options = {}) {
   let quitConfirmationPending = false;
   quitGate = createQuitGate({
     send: payload => emitWindowEvent(getMainWindow(), 'quit-requested', payload),
+    backgroundCommandCount: () => backgroundCommandTable.runningCount(),
     onProceed: () => app.quit(),
     onCancelled: () => { quitting = false; },
     onUnavailable: () => {
