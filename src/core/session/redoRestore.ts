@@ -110,6 +110,11 @@ function assertLoopIds(loopIds: readonly string[]): void {
   if (new Set(loopIds).size !== loopIds.length) throw new Error('Redo loop ids repeat');
 }
 
+/** Rejects a confirmation that names a file twice. */
+function assertConfirmedPaths(confirmed: readonly string[]): void {
+  if (new Set(confirmed).size !== confirmed.length) throw new Error('Redo confirmed paths repeat');
+}
+
 /** Whether the turn has already undone its change to the entry's file. */
 function undidEntry(record: TurnUndoRecord, entry: TurnUndoEntry): boolean {
   return record.state === 'undone' && entry.last === 'done';
@@ -313,6 +318,7 @@ export async function restoreForRedo(
 ): Promise<TurnUndoResult> {
   assertConversationId(conversationId);
   assertLoopIds(loopIds);
+  assertConfirmedPaths(confirmed);
   const isPresent = options.isConversationPresent ?? (() => true);
   if (!isPresent()) return EMPTY_RESULT;
   if (hasOpenTurn(conversationId)) throw new TurnUndoRefusedError('turn-running');
@@ -338,6 +344,8 @@ export async function restoreForRedo(
         continue;
       }
       if (file.verdict === 'skip') {
+        // A write refused now fails the file, as a refusal inside the write does.
+        if (file.reason === 'not-authorized') results.set(path, 'failed');
         notDone.push({ path, display: file.display, reason: file.reason === 'not-authorized' ? 'not-authorized' : 'write-failed' });
         continue;
       }

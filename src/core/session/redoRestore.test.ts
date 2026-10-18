@@ -553,5 +553,43 @@ describe('redoRestore', () => {
       await expect(restore(['loop-1', 'loop-1'], [`${WS}/a.md`])).rejects.toThrow('Redo loop ids repeat');
       expect(fs.read(`${WS}/a.md`)).toBe('v2');
     });
+
+    it('throws on a confirmed path named twice', async () => {
+      await runThreeTurns();
+
+      await expect(restore(THREE_TURNS, [`${WS}/a.md`, `${WS}/b.md`, `${WS}/a.md`])).rejects.toThrow('Redo confirmed paths repeat');
+      expect(fs.read(`${WS}/a.md`)).toBe('v2');
+      expect(fs.read(`${WS}/b.md`)).toBe('b1');
+    });
+
+    it('leaves a file alone when its write is refused at restore time', async () => {
+      await runThreeTurns();
+      const confirmed = await confirmedOf(THREE_TURNS);
+      authorize.mockImplementation(async (path) => path !== `${WS}/a.md`);
+
+      const result = await restore(THREE_TURNS, confirmed);
+
+      expect(result).toEqual({
+        done: 2,
+        notDone: [{ path: `${WS}/a.md`, display: 'a.md', reason: 'not-authorized' }],
+      });
+      expect(fs.read(`${WS}/a.md`)).toBe('v2');
+      expect(recordOf('loop-2').state).toBe('undone');
+      expect(lastByFile('loop-2')).toEqual({ 'a.md': 'failed', 'b.md': 'done' });
+    });
+
+    it('writes nothing when a before copy no longer holds its recorded content', async () => {
+      await runThreeTurns();
+      const confirmed = await confirmedOf(THREE_TURNS);
+      const record = fs.readJson<{ entries: Array<{ path: string; hash: string }> }>(`${CHANGES}/loop-1/undo.json`);
+      const entry = record.entries.find((item) => item.path === `${WS}/a.md`);
+      if (!entry) throw new Error('loop-1 records no a.md');
+      fs.write(`${CHANGES}/loop-1/before/${entry.hash}`, 'other');
+
+      const result = await restore(THREE_TURNS, confirmed);
+
+      expect(fs.read(`${WS}/a.md`)).toBe('v2');
+      expect(result.notDone).toEqual([{ path: `${WS}/a.md`, display: 'a.md', reason: 'write-failed' }]);
+    });
   });
 });
