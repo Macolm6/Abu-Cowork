@@ -29,7 +29,7 @@ import { useAppDraftStore } from '@/stores/appDraftStore';
 import { useMCPStore } from '@/stores/mcpStore';
 import { useI18n, format } from '@/i18n';
 import { MessageErrorBoundary } from '@/components/common/ErrorBoundary';
-import { useRewindQuestion } from './rewindQuestion';
+import { useRedoTurn } from './redoTurn';
 import { retryTurn } from './retryTurn';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { useBatchProgressStore } from '@/stores/batchProgressStore';
@@ -900,12 +900,12 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
   }, [declaredMode, isLastGroupProp, isAgentDone, onDiskFiles, conversationId, openPreview]);
 
   // The retry of a failed step runs the turn again from its user message and
-  // deletes what follows, so it asks first when later turns exist (retryTurn).
-  const askBeforeRewind = useRewindQuestion();
+  // deletes what follows (retryTurn); the redo question is rendered with the group.
+  const { redo, dialog: redoDialog } = useRedoTurn();
 
   const handleRetry = async () => {
     if (!userMsg || !activeConv?.id) return;
-    await retryTurn({ conversation: activeConv, userMessage: userMsg, askBeforeRewind, chatText: t.chat });
+    await retryTurn({ conversation: activeConv, userMessage: userMsg, entry: 'retry', redo, chatText: t.chat });
   };
 
   // Tool execution steps for this loop. Thinking is rebuilt per-message inside
@@ -1179,6 +1179,8 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
           .flatMap((m) => m.toolCalls ?? [])
           .filter((tc) => tc.name === TOOL_NAMES.ASK_USER_QUESTION && tc.userQuestionAnswers)
       : [];
+    // The retry is a redo of the turn: like the other redo entries it waits until the conversation is at rest.
+    const onRetry = seg.isLastGroup && hasError && !isStreaming && activeConv?.status !== 'running' ? handleRetry : undefined;
 
     return (
       <div key={`steps-${segIdx}`}>
@@ -1187,7 +1189,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
             executionSteps={seg.executionSteps}
             isActive={execIsActive}
             isStopped={isStopped}
-            onRetry={seg.isLastGroup && hasError && !isStreaming ? handleRetry : undefined}
+            onRetry={onRetry}
             fileChanges={fileChanges}
             toolResults={toolResults}
           />
@@ -1196,7 +1198,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
             steps={seg.legacySteps}
             isActive={legacyIsActive}
             isStopped={isStopped}
-            onRetry={seg.isLastGroup && hasError && !isStreaming ? handleRetry : undefined}
+            onRetry={onRetry}
             fileChanges={fileChanges}
           />
         )}
@@ -1482,6 +1484,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
           </div>
         </div>
       )}
+      {redoDialog}
     </div>
   );
 }

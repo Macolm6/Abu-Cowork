@@ -686,8 +686,6 @@ const zhCN: TranslationDict = {
       notifyBlockedTitle: '目标卡住了：{objective}',
       maxTurnsAutoContinue: '目标模式会自动接着做',
     },
-    rewindConfirmTitle: '确认重新生成？',
-    rewindConfirmMessage: '这之后还有 {count} 轮对话，重新生成会一并永久删除它们，且无法恢复。',
   },
 
   share: {

@@ -862,12 +862,6 @@ export interface TranslationDict {
       /** Shown on the max-turns card instead of Continue while goal mode drives the rounds. */
       maxTurnsAutoContinue: string;
     };
-    /** Rewind confirmation (edit-resend / regenerate / retry) — shown only
-     * when the redone turn is not the conversation's last, so later turns
-     * would otherwise be silently and permanently discarded. */
-    rewindConfirmTitle: string;
-    /** Body. {count} = number of later turns that will be discarded. */
-    rewindConfirmMessage: string;
   };
 
   // Share (conversation export / import)
