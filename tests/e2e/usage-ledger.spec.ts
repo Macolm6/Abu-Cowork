@@ -160,6 +160,9 @@ async function seedUsage(page: Page, specs: SeedSpec[]): Promise<unknown[]> {
 }
 
 async function openUsagePage(page: Page): Promise<void> {
+  // 发出第一条消息会收起侧栏，「我」在侧栏里：和用户一样先点「显示侧栏」。
+  const showSidebar = page.getByRole('button', { name: /^(显示侧栏|Show sidebar)$/ });
+  if (await showSidebar.isVisible()) await showSidebar.click();
   // 用键盘打开菜单：进了会话之后输入区会盖住侧栏底部的这个按钮，指针点不到，
   // 而键盘操作在欢迎页和会话页都走得通。
   const me = page.getByRole('button', { name: /^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/ }).first();
@@ -289,7 +292,7 @@ test.describe.serial('用量账本', () => {
         outputTotal: 200,
       },
       {
-        // 用量未知的一次：不能被当成零，页面要如实说有几次没取到。
+        // 输入用量未知的一次：不计入输入合计，也不能当成零。
         attemptId: 'att-e2e-3',
         localDate: localDate(2),
         requestedModel: 'gpt-6-astra',
@@ -309,11 +312,6 @@ test.describe.serial('用量账本', () => {
     await expect(page.getByText('740', { exact: true })).toBeVisible();
     // 命中率只在可比的那一次上算：800 / 2000。
     await expect(page.getByText('40%', { exact: true })).toBeVisible();
-    // 起点、未取到用量的次数都在同一行提示里，卡片上不放这些。
-    await expect(
-      page.getByText(new RegExp(`${localDate(2).replace(/-/g, '\\.')}`)),
-    ).toBeVisible();
-    await expect(page.getByText(/另有 1 次未取到用量|1 more with no usage/)).toBeVisible();
     // 模型与技能分组读的是同一份账本。
     await expect(page.getByText('claude-opus-5', { exact: true })).toBeVisible();
     await expect(page.getByText('gpt-6-astra', { exact: true })).toBeVisible();

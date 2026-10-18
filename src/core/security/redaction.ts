@@ -4,7 +4,7 @@ const WINDOWS_ABSOLUTE_PATH_PATTERN = /\b[A-Za-z]:[\\/][^\s"'`<>]*/g;
 const UNC_ABSOLUTE_PATH_PATTERN = /\\\\[^\s"'`<>]*/g;
 const FILE_URI_ABSOLUTE_PATH_PATTERN = /(file:\/\/)\/[^\s"'`<>]*/gi;
 const ANGLE_ABSOLUTE_PATH_PATTERN = /<(?:(?:\/(?=[^>\r\n]*[\\/]))|(?:[A-Za-z]:[\\/])|(?:\\\\))[^>\r\n]*>/g;
-const GENERIC_UNIX_ABSOLUTE_PATH_PATTERN = /(?<![/\w<])\/(?!\/)[^\s"'`<>]*/g;
+const GENERIC_UNIX_ABSOLUTE_PATH_PATTERN = /(?<![/\p{L}\p{N}\p{M}_<])\/(?!\/)[^\s"'`<>]*/gu;
 
 function redactBase64DataUrls(value: string): string {
   let cursor = 0;

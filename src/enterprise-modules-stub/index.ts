@@ -117,11 +117,21 @@ export function useEnterpriseAppPolicy(): EnterpriseAppPolicy {
   return { defaultAppId: null, allowExit: true }
 }
 
-export function BindToEnterpriseFlow(_props: {
-  onDone: () => void
-  onCancel: () => void
-  initialServerUrl?: string
-}): null { return null }
+export const getEnterpriseAppPolicy = useEnterpriseAppPolicy
+export interface EnterpriseAppSkillState {
+  status: 'ready' | 'needs-preparation' | 'unavailable'
+  name: string
+}
+export function getEnterpriseAppSkillState(name: string): EnterpriseAppSkillState {
+  return { status: 'unavailable', name }
+}
+export function prepareEnterpriseAppSkill(_name: string): Promise<void> {
+  return Promise.reject(new Error('Organization skills require the enterprise build'))
+}
+export function useEnterpriseAppSkillRevision(): unknown { return undefined }
+export type EnterpriseAppAvailability = 'loading' | 'offline' | 'signed-out' | 'unavailable' | 'available'
+export function useEnterpriseAppAvailability(_appId: string): EnterpriseAppAvailability { return 'signed-out' }
+
 export type EnterpriseAccountLoginResult = 'started' | 'configuration_required' | 'failed'
 export function startEnterpriseAccountLogin(): Promise<EnterpriseAccountLoginResult> {
   return Promise.resolve('configuration_required')

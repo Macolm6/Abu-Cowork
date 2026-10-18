@@ -19,6 +19,7 @@
  */
 
 const { spawn } = require('node:child_process');
+const { ownedChildProcesses } = require('./ownedChildProcesses.cjs');
 
 class PluginGitError extends Error {
   constructor(message, code) {
@@ -168,12 +169,14 @@ const GIT_HARDENING = ['-c', 'safe.bareRepository=explicit', '-c', 'protocol.ext
  */
 function runGit(args, { spawnImpl = spawn, env, timeoutMs, cwd } = {}) {
   return new Promise((resolve, reject) => {
+    ownedChildProcesses.assertAdmission();
     const child = spawnImpl('git', [...GIT_HARDENING, ...args], {
       env: cleanGitEnv(env ?? process.env),
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
+    ownedChildProcesses.track(child, () => { if (!child.killed) child.kill('SIGKILL'); });
     let stderr = '';
     let timedOut = false;
     const timer = timeoutMs
@@ -256,9 +259,11 @@ function isAllowedArchiveUrl(url) {
 
 /**
  * GET `url` over https into a Buffer. Follows at most ARCHIVE_MAX_REDIRECTS
- * redirects, each of which must stay on https and on an allowed GitHub host;
- * rejects on any non-200, on a body over `maxBytes`, on idle or wall-clock
- * timeout. Every failure is a PluginGitError with code `archive_failed`.
+ * redirects, each of which must stay on https and pass `isAllowed` (by
+ * default: one of the GitHub archive hosts); rejects on any non-200, on a body
+ * over `maxBytes`, on idle or wall-clock timeout. Every failure is a
+ * PluginGitError with code `archive_failed`; a non-200 answer also carries its
+ * HTTP `status`.
  *
  * `opts.getImpl` (default `https.get`) is a test seam so the redirect policy
  * is exercised against scripted responses, never the network.
@@ -269,9 +274,10 @@ function downloadArchiveHttps(url, opts = {}) {
     maxBytes = ARCHIVE_MAX_BYTES,
     redirectsLeft = ARCHIVE_MAX_REDIRECTS,
     getImpl,
+    isAllowed = isAllowedArchiveUrl,
   } = opts;
   const get = getImpl || require('node:https').get;
-  if (!isAllowedArchiveUrl(url)) {
+  if (!isAllowed(url)) {
     return Promise.reject(new PluginGitError(`archive url not allowed: ${url}`, 'archive_failed'));
   }
   return new Promise((resolve, reject) => {
@@ -297,15 +303,17 @@ function downloadArchiveHttps(url, opts = {}) {
         } catch {
           return fail(`archive redirect is not a valid url: ${res.headers.location}`);
         }
-        if (!isAllowedArchiveUrl(next)) return fail(`archive redirect not allowed: ${next}`);
-        return downloadArchiveHttps(next, { timeoutMs, maxBytes, redirectsLeft: redirectsLeft - 1, getImpl }).then(
+        if (!isAllowed(next)) return fail(`archive redirect not allowed: ${next}`);
+        return downloadArchiveHttps(next, { timeoutMs, maxBytes, redirectsLeft: redirectsLeft - 1, getImpl, isAllowed }).then(
           (b) => finish(resolve, b),
           (e) => finish(reject, e),
         );
       }
       if (status !== 200) {
         res.resume();
-        return fail(`archive HTTP ${status}`);
+        const error = new PluginGitError(`archive HTTP ${status}`, 'archive_failed');
+        error.status = status;
+        return finish(reject, error);
       }
       const declared = Number(res.headers['content-length']);
       if (Number.isFinite(declared) && declared > maxBytes) {

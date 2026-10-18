@@ -16,6 +16,7 @@ const enterpriseConfig = mergeConfig(
     resolve: {
       alias: {
         '@enterprise-modules': path.resolve(__dirname, '../Abu-enterprise-modules/src'),
+        '@tauri-apps/api/core': path.resolve(__dirname, 'node_modules/@tauri-apps/api/core.js'),
         '@tauri-apps/api/path': path.resolve(__dirname, 'node_modules/@tauri-apps/api/path.js'),
         '@tauri-apps/plugin-deep-link': path.resolve(__dirname, 'node_modules/@tauri-apps/plugin-deep-link/dist-js/index.js'),
         '@tauri-apps/plugin-fs': path.resolve(__dirname, 'node_modules/@tauri-apps/plugin-fs/dist-js/index.js'),
@@ -24,6 +25,7 @@ const enterpriseConfig = mergeConfig(
         // Private component tests are authored in the enterprise repository but
         // intentionally execute with the public host's single React/test stack.
         '@testing-library/react': path.resolve(__dirname, 'node_modules/@testing-library/react/dist/index.js'),
+        '@testing-library/user-event': path.resolve(__dirname, 'node_modules/@testing-library/user-event/dist/esm/index.js'),
         'react/jsx-dev-runtime': path.resolve(__dirname, 'node_modules/react/jsx-dev-runtime.js'),
         'react/jsx-runtime': path.resolve(__dirname, 'node_modules/react/jsx-runtime.js'),
         react: path.resolve(__dirname, 'node_modules/react/index.js'),
@@ -31,6 +33,9 @@ const enterpriseConfig = mergeConfig(
         '@noble/curves/ed25519': path.resolve(__dirname, 'node_modules/@noble/curves/esm/ed25519.js'),
         '@noble/hashes/sha2': path.resolve(__dirname, 'node_modules/@noble/hashes/esm/sha2.js'),
         fflate: path.resolve(__dirname, 'node_modules/fflate/esm/browser.js'),
+        xlsx: path.resolve(__dirname, 'node_modules/xlsx/xlsx.mjs'),
+        minimatch: path.resolve(__dirname, 'node_modules/minimatch/dist/esm/index.js'),
+        refa: path.resolve(__dirname, 'node_modules/refa/index.js'),
         'zustand/react/shallow': path.resolve(__dirname, 'node_modules/zustand/esm/react/shallow.mjs'),
         'zustand/middleware/immer': path.resolve(__dirname, 'node_modules/zustand/esm/middleware/immer.mjs'),
         'zustand/middleware': path.resolve(__dirname, 'node_modules/zustand/esm/middleware.mjs'),

@@ -64,6 +64,10 @@ export async function flushWrites(): Promise<void> {
   await writer.flushWrites();
 }
 
+export async function checkpointMessages(convId: string, messages: Message[], signal?: AbortSignal): Promise<void> {
+  await writer.checkpointMessages(convId, messages, signal);
+}
+
 /**
  * Flush the write queue and report the ledger's size in bytes — the offset up
  * to which every line is durable and complete, which is what makes it usable
@@ -465,6 +469,7 @@ export function buildMeta(conv: {
   scheduledTaskId?: string;
   triggerId?: string;
   teamId?: string;
+  goal?: import('@/core/goal/goalTypes').GoalState;
   appBinding?: import('@/types/app').ConversationAppBinding;
   projectId?: string;
   readOnly?: boolean;
@@ -484,6 +489,7 @@ export function buildMeta(conv: {
     scheduledTaskId: conv.scheduledTaskId,
     triggerId: conv.triggerId,
     teamId: conv.teamId,
+    ...(conv.goal ? { goal: conv.goal } : {}),
     appBinding: conv.appBinding,
     projectId: conv.projectId,
     readOnly: conv.readOnly,

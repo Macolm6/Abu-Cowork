@@ -6,6 +6,7 @@ import type { ToolExecutionContext } from '../../../types';
 import { initPlatform, isWindows } from '../../../utils/platform';
 import { extractUsername } from '../../../utils/pathUtils';
 import { invokeTaskCommand, isTaskCommandAbortedError } from './scopedCommand';
+import { FileOperationDenied } from '@/core/tools/fileOperation';
 
 export interface CommandOutput {
   stdout: string;
@@ -92,6 +93,7 @@ export async function resizeImageIfNeeded(bytes: Uint8Array, maxWidth: number, c
     return { data: uint8ArrayToBase64(new Uint8Array(resized)), resized: true };
   } catch (err) {
     if (isTaskCommandAbortedError(err)) throw err;
+    if (err instanceof FileOperationDenied) throw err;
     /* fall through to original */
   }
 
@@ -125,10 +127,10 @@ export const ARCHIVE_EXTENSIONS = new Set(['.zip', '.tar', '.tar.gz', '.tgz', '.
  */
 export async function extractOfficeText(filePath: string, ext: string, context?: ToolExecutionContext): Promise<string> {
   if (ext === '.xlsx' || ext === '.xls') {
-    return extractXlsxText(filePath);
+    return extractXlsxText(filePath, context);
   }
   if (ext === '.docx') {
-    return extractDocxText(filePath);
+    return extractDocxText(filePath, context);
   }
   if (ext === '.pptx') {
     return extractPptxViaPython(filePath, context);
@@ -137,9 +139,9 @@ export async function extractOfficeText(filePath: string, ext: string, context?:
 }
 
 /** Extract Excel text using the xlsx npm package (already in dependencies) */
-async function extractXlsxText(filePath: string): Promise<string> {
+async function extractXlsxText(filePath: string, context?: ToolExecutionContext): Promise<string> {
   try {
-    const data = new Uint8Array(await readBinFile(filePath));
+    const data = new Uint8Array(await (context?.files?.readFile(filePath) ?? readBinFile(filePath)));
     const XLSX = await import('xlsx');
     const workbook = XLSX.read(data, { type: 'array' });
     const lines: string[] = [];
@@ -158,14 +160,15 @@ async function extractXlsxText(filePath: string): Promise<string> {
     }
     return lines.join('\n');
   } catch (err) {
+    if (err instanceof FileOperationDenied) throw err;
     return `Error reading Excel file: ${err instanceof Error ? err.message : String(err)}`;
   }
 }
 
 /** Extract Word document text by parsing the docx XML structure (docx = zip of XML files) */
-async function extractDocxText(filePath: string): Promise<string> {
+async function extractDocxText(filePath: string, context?: ToolExecutionContext): Promise<string> {
   try {
-    const data = new Uint8Array(await readBinFile(filePath));
+    const data = new Uint8Array(await (context?.files?.readFile(filePath) ?? readBinFile(filePath)));
     // docx is a zip file — use fflate to decompress and read word/document.xml
     const { unzipSync } = await import('fflate');
     const unzipped = unzipSync(data);
@@ -200,6 +203,7 @@ async function extractDocxText(filePath: string): Promise<string> {
     }
     return lines.join('\n');
   } catch (err) {
+    if (err instanceof FileOperationDenied) throw err;
     return `Error reading Word file: ${err instanceof Error ? err.message : String(err)}`;
   }
 }
@@ -221,7 +225,9 @@ async function extractPptxViaPython(filePath: string, context?: ToolExecutionCon
   const pyBin = isWindows() ? 'python' : 'python3';
 
   try {
-    const output = await invokeTaskCommand<CommandOutput>('run_argv_command', {
+    const output = context?.files
+      ? await context.files.runProcessor(filePath, pyBin, ['-c', PPTX_SCRIPT, null])
+      : await invokeTaskCommand<CommandOutput>('run_argv_command', {
       program: pyBin,
       args: ['-c', PPTX_SCRIPT, filePath],
       timeout: 30,
@@ -234,6 +240,7 @@ async function extractPptxViaPython(filePath: string, context?: ToolExecutionCon
     }
     return `Error extracting pptx: ${output.stderr?.slice(0, 500) || 'Unknown error'}`;
   } catch (err) {
+    if (err instanceof FileOperationDenied) throw err;
     if (isTaskCommandAbortedError(err)) return 'Error: PowerPoint extraction was aborted.';
     return `Error: Python3 not available. Install Python and python-pptx to read .pptx files.`;
   }
@@ -243,6 +250,20 @@ async function extractPptxViaPython(filePath: string, context?: ToolExecutionCon
  * List contents of an archive file using system commands.
  */
 export async function listArchiveContents(filePath: string, ext: string, context?: ToolExecutionContext): Promise<string> {
+  if (context?.files) {
+    if (ext === '.gz') {
+      const output = await context.files.runProcessor(filePath, 'file', [null]);
+      return output.code === 0 ? output.stdout : `Error listing archive: ${output.stderr}`;
+    }
+    const script = ext === '.zip'
+      ? "import sys,zipfile\nwith zipfile.ZipFile(sys.argv[1]) as archive:\n for entry in archive.infolist(): print(entry.filename, entry.file_size)"
+      : "import sys,tarfile\nwith tarfile.open(sys.argv[1]) as archive:\n for entry in archive: print(entry.name, entry.size)";
+    if (!['.zip', '.tar', '.tar.gz', '.tgz'].includes(ext)) {
+      return `Archive listing not supported for ${ext}. Use run_command to extract.`;
+    }
+    const output = await context.files.runProcessor(filePath, isWindows() ? 'python' : 'python3', ['-c', script, null]);
+    return output.code === 0 ? output.stdout || 'Archive is empty.' : `Error listing archive: ${output.stderr}`;
+  }
   // Windows zip uses a complex inline .NET PowerShell pipeline; keep that
   // path on run_shell_command with the existing '' quoting until argv-based
   // PowerShell invocations are wired up. The Unix zip / tar / file paths

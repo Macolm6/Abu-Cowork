@@ -1,6 +1,9 @@
 ---
 name: trigger
 description: 创建和管理触发器 - 设置事件驱动的自动化任务
+display-description:
+  zh-CN: 创建和管理监听：事件发生或文件变化时自动执行任务
+  en-US: Create and manage listeners that run a task when an event fires
 trigger: 用户要求监听、触发、事件驱动执行某个操作，或想设置自动响应外部事件的任务；用户要求监听文件变化、目录变化
 do-not-trigger: 用户只是讨论事件或通知概念，不涉及自动化处理；用户要求定时任务（应使用 schedule 技能）
 user-invocable: true

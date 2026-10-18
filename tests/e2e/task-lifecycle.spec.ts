@@ -221,7 +221,7 @@ test.describe.serial('Electron product task lifecycle', () => {
     const secondPage = await app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForApp(secondPage);
 
-    await secondPage.getByTitle(/显示侧栏|Show sidebar/).click();
+    await secondPage.getByRole('button', { name: /^(显示侧栏|Show sidebar)$/ }).click();
     const recentConversation = secondPage.getByRole('button', { name: recentTitle }).first();
     await expect(recentConversation).toBeVisible({ timeout: READY_TIMEOUT });
     await recentConversation.click();
@@ -455,7 +455,7 @@ test.describe.serial('Electron product task lifecycle', () => {
     const secondPage = await app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForApp(secondPage);
 
-    await secondPage.getByTitle(/显示侧栏|Show sidebar/).click();
+    await secondPage.getByRole('button', { name: /^(显示侧栏|Show sidebar)$/ }).click();
     const recentConversation = secondPage.getByRole('button', { name: recentTitle }).first();
     await expect(recentConversation).toBeVisible({ timeout: READY_TIMEOUT });
     await recentConversation.click();
@@ -528,15 +528,16 @@ test.describe.serial('Electron product task lifecycle', () => {
     const secondPage = await app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForApp(secondPage);
 
-    await secondPage.getByTitle(/显示侧栏|Show sidebar/).click();
+    await secondPage.getByRole('button', { name: /^(显示侧栏|Show sidebar)$/ }).click();
     const recentConversation = secondPage.getByRole('button', { name: recentTitle }).first();
     await expect(recentConversation).toBeVisible({ timeout: READY_TIMEOUT });
     await recentConversation.click();
     await expect(secondPage.getByText(prompt, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(secondPage.getByText(partial, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
-    await expect(secondPage.getByText(/上次对话.*等待模型响应时中断/)).toBeVisible({
+    await expect(secondPage.getByText('上次关闭应用时，这一轮没有做完。', { exact: true })).toBeVisible({
       timeout: READY_TIMEOUT,
     });
+    await expect(secondPage.getByText('发送失败')).toHaveCount(0);
 
     const restoredInput = secondPage.getByPlaceholder(CHAT_PLACEHOLDER);
     await expect(restoredInput).toBeEditable({ timeout: READY_TIMEOUT });

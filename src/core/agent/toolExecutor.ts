@@ -41,6 +41,7 @@ import { matchesToolPattern, matchesToolName } from '../skill/toolFilter';
 import { groupToolCallsByConcurrency, resolveToolConcurrencySafety } from './toolConcurrency';
 import { isMacOS } from '../../utils/platform';
 import { isToolResultError } from './toolResultErrors';
+import { TOOL_RESULT_CANCELLED_MARKER, TOOL_RESULT_HOOK_BLOCKED_MARKER } from './toolResultMarkers';
 import { batchSummaryHasNonSuccess } from './batchTerminalSummary';
 import { getExecutionPort } from './ports/executionPort';
 import { firstImageContent } from '../tools/toolResultContent';
@@ -48,16 +49,7 @@ import { snapshotResultImage } from '../session/outputSnapshots';
 
 const logger = createLogger('toolExecutor');
 
-/**
- * Result markers for tool calls that never actually executed. Written with
- * error:false (they are not model mistakes), so consumers that need to
- * distinguish "skipped" from "succeeded" must compare against these
- * constants — e.g. ShowWidgetCard renders a muted "cancelled" row instead
- * of mounting the widget. Pre-existing literal values kept verbatim (they
- * are persisted in conversation history).
- */
-export const TOOL_RESULT_CANCELLED_MARKER = '[已取消]';
-export const TOOL_RESULT_HOOK_BLOCKED_MARKER = '[被 hook 拦截]';
+export { TOOL_RESULT_CANCELLED_MARKER, TOOL_RESULT_HOOK_BLOCKED_MARKER };
 
 /** Human-readable description of a computer use action for the status bar. */
 function actionToDescription(action: string, input: Record<string, unknown>): string {
@@ -193,6 +185,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
 
   // Expose loop context for delegate_to_agent tool (per-loop, supports concurrent agents)
   setLoopContext(loopId, {
+    ...(toolContext.operationOwner ? { operationOwner: toolContext.operationOwner } : {}),
     commandConfirmCallback: confirmCb,
     filePermissionCallback: filePermCb,
     signal: abortController.signal,
@@ -649,7 +642,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       // Uses the un-offloaded toolResult so extractFileOutputs can still parse stdout.
       if (!error && matchedTc) {
         const workspacePath = getConversationReader().getConversation(conversationId)?.workspacePath ?? null;
-        import('../session/outputSnapshots').then(({ snapshotToolOutputs }) => {
+        if (!metadata?.outputSnapshotsHandled) import('../session/outputSnapshots').then(({ snapshotToolOutputs }) => {
           snapshotToolOutputs(conversationId, {
             id,
             name: matchedTc.name,
@@ -663,9 +656,9 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
           // A scoped/background run must not re-read a user path after its
           // authority owner can be released. Persist the immutable bytes the
           // tool already returned and join that internal write before the
-          // batch settles. Foreground runs retain the existing non-blocking
-          // path-copy behavior.
-          const sourcePath = !isScopedRun
+          // batch settles. Runs without host output capture retain the
+          // existing non-blocking path-copy behavior.
+          const sourcePath = !isScopedRun && !metadata?.outputSnapshotsHandled
             && matchedTc.name === TOOL_NAMES.READ_FILE
             && typeof matchedTc.input.path === 'string'
             ? matchedTc.input.path
@@ -676,7 +669,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
           if (!isPersistedExplicitScreenshot) {
             const snapshotPromise = snapshotResultImage(conversationId, id, image, sourcePath)
               .catch((e) => logger.warn('snapshot tool result image failed', { tool: matchedTc.name, err: e }));
-            if (isScopedRun) {
+            if (isScopedRun || metadata?.outputSnapshotsHandled) {
               await snapshotPromise;
             } else {
               void snapshotPromise;

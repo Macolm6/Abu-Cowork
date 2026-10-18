@@ -12,6 +12,7 @@ import { useTaskExecutionStore } from './taskExecutionStore';
 import { clearInputQueue } from '../core/agent/userInputQueue';
 import { clearSkillHooksByConversation } from '../core/tools/builtins';
 import { clearPlanMode } from '../core/agent/planMode';
+import { clearGoalActivation } from '../core/goal/goalActivation';
 import { setComputerUseActive } from '../core/agent/computerUseStatus';
 import { isConversationRunningInSidecar } from '../core/agent/sidecarRunPredicate';
 import type { ConversationMeta } from '../core/session/conversationStorage';
@@ -61,6 +62,8 @@ import { usePreviewStore } from './previewStore';
 import { clearBrowserReclaim, disposeOwnedBrowserViews } from '../core/browser/browserViewLifecycle';
 import { appendBoundedSubagentToolCall } from '../core/session/durableToolResultContent';
 import { normalizeUpstreamErrorDetails } from '../core/llm/adapter';
+import { redactFailureText } from '../core/diagnostic/scrub';
+import { parseFileChange } from '../core/files/fileChangeBudget';
 import {
   ACTIVE_RUN_STATES,
   RUN_FAILURE_STATES,
@@ -71,9 +74,11 @@ import {
   sanitizeLoadedLedgerMessages,
   sanitizeRunErrorKind,
   sanitizeRunErrorText,
+  sanitizeRunInterruptCause,
   type LoadedMessageSanitizerText,
 } from '../core/session/loadedMessageSanitizer';
 import { clearBrowserToolTrackers } from '../core/observability/browserSignals';
+import { sanitizeGoalState, type GoalState } from '../core/goal/goalTypes';
 
 enableMapSet();
 
@@ -119,10 +124,9 @@ function toolCallHasNonSuccessMetadata(tc: ToolCall): boolean {
     || batchSummaryHasNonSuccess(tc.batchTerminalSummary);
 }
 
-/** The two strings the shared sanitiser writes into a row, in the UI's locale. */
+/** The string the shared sanitiser writes into a row, in the UI's locale. */
 function loadedMessageSanitizerText(): LoadedMessageSanitizerText {
-  const { chat } = getI18n();
-  return { runRecoveredAfterRestart: chat.runRecoveredAfterRestart, errorEmptyBody: chat.errorEmptyBody };
+  return { errorEmptyBody: getI18n().chat.errorEmptyBody };
 }
 
 function sanitizeRunError(value: unknown, errorDetails?: UpstreamErrorDetails): string | undefined {
@@ -154,11 +158,13 @@ export function sanitizeImportedMessage(msg: Message, answeredLoopIds?: Readonly
       const {
         sandboxRecovery: _sandboxRecovery,
         sandboxRecoveryAction: _sandboxRecoveryAction,
+        fileChange: untrustedFileChange,
         ...safeToolCall
       } = tc;
-      return { ...safeToolCall, isExecuting: false };
+      const fileChange = parseFileChange(untrustedFileChange);
+      return { ...safeToolCall, ...(fileChange ? { fileChange } : {}), isExecuting: false };
     }),
-  }, { recoveredText: getI18n().chat.runRecoveredAfterRestart, answeredLoopIds }));
+  }, { answeredLoopIds }));
 }
 
 /**
@@ -269,11 +275,23 @@ interface ConversationPersistenceState {
 }
 
 const pendingConversationPersistence = new Map<string, ConversationPersistenceState>();
+const conversationPersistenceRevisions = new Map<string, symbol>();
+
+export function getConversationPersistenceRevision(convId: string): symbol | undefined {
+  return conversationPersistenceRevisions.get(convId);
+}
+
+export function acknowledgeConversationPersistence(convId: string, revision: symbol): void {
+  if (conversationPersistenceRevisions.get(convId) === revision) {
+    conversationPersistenceRevisions.delete(convId);
+  }
+}
 
 function trackConversationPersistence(
   convId: string,
   operation: () => Promise<unknown>,
 ): void {
+  conversationPersistenceRevisions.set(convId, Symbol());
   const state = pendingConversationPersistence.get(convId) ?? {
     tail: Promise.resolve(),
   };
@@ -323,9 +341,9 @@ function persistMessageReplacement(convId: string, message: Message): void {
  * Write a conversation's index entry to `index.json` through that
  * conversation's serial persistence queue. `updateIndexEntry` alone only
  * updates the in-memory index and arms a two-second debounce, so the flush is
- * explicit: a permission mode the user just lowered has to be on disk before
- * the write reports done, or a quit inside that window leaves the higher mode
- * for the next start. A rejection is kept by the queue and ends the
+ * explicit: a permission mode the user just lowered, or a model the user just
+ * picked, has to be on disk before the write reports done, or a quit inside
+ * that window leaves the earlier value for the next start. A rejection is kept by the queue and ends the
  * conversation's next dispatch at its durability barrier
  * (`waitForConversationPersistence`) like any other failed write.
  */
@@ -339,6 +357,12 @@ function persistConversationIndexEntry(convId: string): void {
       await flushIndex();
     }),
   );
+}
+
+/** The goal `loadConversation` takes from an index entry — validated, since index.json is untrusted input. */
+function restoredGoal(meta: ConversationMeta): Pick<Conversation, 'goal'> {
+  const goal = sanitizeGoalState(meta.goal);
+  return goal ? { goal } : {};
 }
 
 /** The permission mode `loadConversation` takes from an index entry: the one the setter would accept now, or none. */
@@ -369,6 +393,38 @@ export async function waitForConversationPersistence(convId: string): Promise<vo
     if (state.firstError !== undefined) throw state.firstError;
     return;
   }
+}
+
+/**
+ * Wait until the persistence every conversation has started is settled: the
+ * barrier before the application leaves. A write that failed was reported to
+ * the dispatch that owns it (`waitForConversationPersistence`); here it only
+ * has to be over, so the remaining conversations are still waited for.
+ */
+export async function waitForAllConversationPersistence(): Promise<void> {
+  await Promise.allSettled(
+    [...pendingConversationPersistence.keys()].map((convId) => waitForConversationPersistence(convId)),
+  );
+}
+
+/**
+ * Hand every reply that is still streaming to the stream snapshot as it
+ * stands, buffered tokens included. The loop's own snapshot runs on a timer;
+ * a quit between two of them would otherwise leave the next start with an
+ * older copy of the reply, or none.
+ */
+export async function snapshotStreamingMessagesForExit(): Promise<void> {
+  const { snapshotMessageRevision } = await import('../core/session/conversationStorage');
+  flushTokenBuffer();
+  const snapshots: Promise<void>[] = [];
+  for (const [convId, conversation] of Object.entries(useChatStore.getState().conversations)) {
+    for (const message of conversation.messages) {
+      if (message.role === 'assistant' && message.isStreaming) {
+        snapshots.push(snapshotMessageRevision(convId, message));
+      }
+    }
+  }
+  await Promise.all(snapshots);
 }
 
 // ── Streaming token buffer (RAF-based debounce) ──
@@ -575,6 +631,10 @@ interface ChatState {
   /** Active/loaded conversations with full messages — NOT persisted.
    *  Only contains the active conversation + LRU cache of recent ones (~5). */
   conversations: Record<string, Conversation>;
+  /** Conversations whose record is on disk and could not be read — NOT persisted.
+   *  Such a conversation is held in `conversations` under no form: an unread
+   *  record is unknown, never empty. A read that succeeds removes the entry. */
+  loadFailures: Record<string, true>;
   activeConversationId: string | null;
   /** Per-conversation live agent state. Ephemeral; never persisted. */
   agentStates: Map<string, ConversationAgentState>;
@@ -588,6 +648,9 @@ interface ChatState {
   // ChatInput. Used only by the inline-widget `window.sendPrompt` bridge —
   // kept separate from command-aware prefills so widget text stays literal.
   pendingInputAppend: string | null;
+  // Bumped to move the caret into the composer without touching its draft
+  // (a card asking the user to say what to change). Ephemeral.
+  composerFocusRequest: number;
   // Pending agent name — set when starting a chat from an agent surface (toolbox
   // detail panel, agent selector, etc.) so the welcome screen can render an
   // agent-themed intro. Cleared on next startNewConversation or when a real
@@ -626,6 +689,8 @@ interface ChatState {
   /** Team picked in the composer before a conversation exists (welcome page);
    *  consumed by createConversation, mirrors pendingPermissionMode. */
   pendingTeamId: string | undefined;
+  /** Whether the welcome owner follows the app default or an explicit selection. */
+  pendingOwnerSource: 'app' | 'user' | undefined;
   /** The app (mode / scene) the welcome page is showing, captured onto the next
    *  conversation the way pendingTeamId is. Ephemeral, not persisted. */
   pendingAppBinding: ConversationAppBinding | undefined;
@@ -637,10 +702,16 @@ interface ChatActions {
   switchConversation: (id: string) => Promise<void>;
   setConversationWorkspace: (convId: string, path: string | null) => void;
   setConversationProject: (convId: string, projectId: string | undefined) => void;
-  setConversationModel: (convId: string, model: { providerId: string; modelId: string } | undefined) => void;
+  setConversationModel: (
+    convId: string,
+    model: { providerId: string; modelId: string } | undefined,
+    options?: { durable?: boolean },
+  ) => void;
   /** Pin / clear the team whose leader runs this conversation (persisted in the index). */
   setConversationTeamId: (convId: string, teamId: string | undefined) => void;
-  setPendingTeamId: (teamId: string | undefined) => void;
+  /** Goal mode: write the conversation's goal (undefined clears it). Callers go through goalService. */
+  setConversationGoal: (convId: string, goal: GoalState | undefined) => void;
+  setPendingTeamId: (teamId: string | undefined, source?: 'app' | 'user') => void;
   setPendingAppBinding: (binding: ConversationAppBinding | undefined) => void;
   setConversationPermissionMode: (convId: string, mode: PermissionMode | undefined) => void;
   setPendingPermissionMode: (mode: PermissionMode | undefined) => void;
@@ -698,6 +769,8 @@ interface ChatActions {
       error?: string;
       errorDetails?: UpstreamErrorDetails;
       errorKind?: Message['runErrorKind'];
+      /** Kept only with `state: 'interrupted'`. */
+      interruptCause?: Message['runInterruptCause'];
       content?: Message['content'];
       skill?: Message['skill'];
       delegateAgent?: Message['delegateAgent'];
@@ -785,6 +858,7 @@ interface ChatActions {
   setPendingInput: (text: string | null, options?: { startsTask?: boolean }) => void;
   setPendingSearchJump: (v: { convId: string; query: string } | null) => void;
   appendPendingInput: (text: string | null) => void;
+  requestComposerFocus: () => void;
   addPendingReference: (ref: ChatReference) => void;
   clearPendingReferences: () => void;
   addPendingAttachment: (request: PendingAttachmentRequest) => void;
@@ -811,10 +885,12 @@ interface ChatActions {
   // Export/Import
   exportConversation: (convId: string) => string | null;
   /**
-   * `keepPermissionMode` is for JSON this session produced itself (the undo of
-   * a delete). Without it a raw conversation JSON never sets a permission mode.
+   * `restoringDeleted` marks JSON this session produced itself (the undo of a
+   * delete): the conversation comes back with its workspace, permission mode
+   * and other local bindings. Without it a raw conversation JSON is a file
+   * from disk and carries none of them.
    */
-  importConversation: (json: string, options?: { keepPermissionMode?: boolean }) => string | null;
+  importConversation: (json: string, options?: { restoringDeleted?: boolean }) => string | null;
   /**
    * Build a redacted, portable share bundle for the given conversation.
    * Returns null if the conversation does not exist. Caller is responsible
@@ -832,6 +908,9 @@ interface ChatActions {
 
   // Persistence — load conversation from disk on demand
   loadConversation: (convId: string) => Promise<void>;
+  /** Read again a conversation whose record could not be read. Calls made while
+   *  a read is in flight share that read. */
+  retryLoadConversation: (convId: string) => Promise<void>;
   unloadOldConversations: () => void;
 }
 
@@ -840,11 +919,15 @@ export type ChatStore = ChatState & ChatActions;
 // Monotonic counter to discard stale switchConversation results on rapid clicks
 let switchSeq = 0;
 
+/** Retry reads in flight, one per conversation: the re-entry check of `retryLoadConversation`. */
+const loadRetries = new Map<string, Promise<void>>();
+
 export const useChatStore = create<ChatStore>()(
   persist(
     immer((set, get) => ({
       conversationIndex: {} as Record<string, ConversationMeta>,
       conversations: {},
+      loadFailures: {},
       activeConversationId: null,
       agentStates: new Map(),
       currentUsage: null,
@@ -852,6 +935,7 @@ export const useChatStore = create<ChatStore>()(
       pendingInput: null,
       pendingInputStartsTask: false,
       pendingInputAppend: null,
+      composerFocusRequest: 0,
       pendingAgentName: null,
       pendingExpertContact: null,
       stagedExpertContacts: {},
@@ -861,6 +945,7 @@ export const useChatStore = create<ChatStore>()(
       pendingAttachmentRequests: [],
       pendingPermissionMode: undefined,
       pendingTeamId: undefined,
+      pendingOwnerSource: undefined,
       pendingAppBinding: undefined,
 
       createConversation: (workspacePath, options) => {
@@ -918,6 +1003,7 @@ export const useChatStore = create<ChatStore>()(
           ...(initialModel ? { model: initialModel } : {}),
           ...(initialPermissionMode ? { permissionMode: initialPermissionMode } : {}),
         };
+        conversationPersistenceRevisions.set(id, Symbol());
         set((state) => {
           state.conversations[id] = {
             ...meta,
@@ -931,6 +1017,7 @@ export const useChatStore = create<ChatStore>()(
           if (consumePendingPicks) {
             state.pendingPermissionMode = undefined;
             state.pendingTeamId = undefined;
+            state.pendingOwnerSource = undefined;
             state.pendingAppBinding = undefined;
           }
         });
@@ -957,6 +1044,7 @@ export const useChatStore = create<ChatStore>()(
           state.activeConversationId = null;
           state.pendingAgentName = null;
           state.pendingTeamId = undefined;
+          state.pendingOwnerSource = undefined;
           state.pendingAppBinding = undefined;
           state.pendingExpertContact = null;
         });
@@ -1045,10 +1133,12 @@ export const useChatStore = create<ChatStore>()(
       },
 
       // Pin a model to a conversation (undefined = clear → inherit global).
-      // Mirrors setConversationProject: updates both the loaded conversation and
-      // the index entry, then persists to disk. agentLoop reads conv.model first
-      // and pins on first run; the ModelSelector writes it on explicit pick.
-      setConversationModel: (convId, model) => {
+      // Updates both the loaded conversation and the index entry, then persists
+      // the entry. agentLoop reads conv.model first and pins on first run: that
+      // write is best effort and stays out of the conversation's durability
+      // barrier, so it cannot end the run that made it. A pick by the user
+      // (`durable`) is on disk before its write reports done.
+      setConversationModel: (convId, model, options) => {
         set((state) => {
           const conv = state.conversations[convId];
           if (conv) {
@@ -1058,7 +1148,30 @@ export const useChatStore = create<ChatStore>()(
             state.conversationIndex[convId].model = model;
           }
         });
-        // Persist to disk index
+        if (options?.durable) {
+          persistConversationIndexEntry(convId);
+          return;
+        }
+        import('../core/session/conversationStorage').then(({ updateIndexEntry }) => {
+          const meta = get().conversationIndex[convId];
+          if (meta) updateIndexEntry(meta).catch(() => {});
+        });
+      },
+
+      setConversationGoal: (convId, goal) => {
+        set((state) => {
+          const conv = state.conversations[convId];
+          if (conv) {
+            if (goal) conv.goal = goal;
+            else delete conv.goal;
+          }
+          const meta = state.conversationIndex[convId];
+          if (meta) {
+            if (goal) meta.goal = goal;
+            else delete meta.goal;
+          }
+        });
+        // Persist to disk index (same path as the per-conversation team pin)
         import('../core/session/conversationStorage').then(({ updateIndexEntry }) => {
           const meta = get().conversationIndex[convId];
           if (meta) updateIndexEntry(meta).catch(() => {});
@@ -1084,9 +1197,10 @@ export const useChatStore = create<ChatStore>()(
 
       setPendingAppBinding: (binding) => set((state) => { state.pendingAppBinding = binding; }),
 
-      setPendingTeamId: (teamId) => {
+      setPendingTeamId: (teamId, source = 'user') => {
         set((state) => {
           state.pendingTeamId = teamId;
+          state.pendingOwnerSource = source;
           if (state.pendingExpertContact?.identity.key !== `team:${teamId}`) state.pendingExpertContact = null;
         });
       },
@@ -1119,6 +1233,7 @@ export const useChatStore = create<ChatStore>()(
       },
 
       deleteConversation: (id) => {
+        conversationPersistenceRevisions.delete(id);
         // P1-3c-2 (design doc §3 change 3 / P1-3C-SCOUT-REPORT.md §5
         // "secondary finding"): this abort MUST run before the `conversations`/
         // `conversationIndex` deletion below — verified still true, not just
@@ -1208,6 +1323,8 @@ export const useChatStore = create<ChatStore>()(
         // Clear plan mode state to prevent the module-level Map from leaking
         // an entry for a conversation that no longer exists.
         clearPlanMode(id);
+        // Same for the goal-mode armed flag (process-local, never persisted).
+        clearGoalActivation(id);
         const wasActive = get().activeConversationId === id;
         // Compute the successor BEFORE the deletion mutates state, so the
         // helper can see the deleted entry's scope (projectId / scheduledTaskId
@@ -1219,6 +1336,7 @@ export const useChatStore = create<ChatStore>()(
         const nextAgentStates = removeConversationAgentState(get().agentStates, id);
         set((state) => {
           delete state.conversations[id];
+          delete state.loadFailures[id];
           delete state.stagedExpertContacts[id];
           delete state.conversationIndex[id];
           state.agentStates = nextAgentStates;
@@ -1262,6 +1380,9 @@ export const useChatStore = create<ChatStore>()(
       },
 
       renameConversation: (id, title) => {
+        if (get().conversationIndex[id] || get().conversations[id]) {
+          conversationPersistenceRevisions.set(id, Symbol());
+        }
         set((state) => {
           if (state.conversations[id]) {
             state.conversations[id].title = title;
@@ -1298,9 +1419,16 @@ export const useChatStore = create<ChatStore>()(
       },
 
       addMessage: (convId, message) => {
+        // The record of this conversation is on disk and could not be read.
+        // Nothing is added to it, in memory or on disk, until a read succeeds:
+        // a line written now would follow, or take the place of, a history
+        // this process has never seen.
+        if (get().loadFailures[convId]) return;
         let newTitle: string | undefined;
         let welcome: Message | undefined;
-        let persistedMessage = message;
+        let persistedMessage: Message = message.role === 'assistant' && message.fileCards === undefined
+          ? { ...message, fileCards: 'declared' }
+          : message;
         set((state) => {
           // Clear expert intro banner once the conversation has any real
           // content — welcome screen is gone, banner has nothing to render on.
@@ -1440,7 +1568,10 @@ export const useChatStore = create<ChatStore>()(
             state.conversations[convId]?.messages,
             msgId ?? FALLBACK_LAST,
           );
-          if (target) target.isStreaming = false;
+          if (target) {
+            target.isStreaming = false;
+            if (target.role === 'assistant') target.streamEnded = true;
+          }
           state.agentStates = nextAgentStates;
         });
         // Persist the final completed message to disk.
@@ -1482,6 +1613,7 @@ export const useChatStore = create<ChatStore>()(
               if (hideScreenshot != null) tc.hideScreenshot = hideScreenshot;
               tc.isExecuting = false;
               if (metadata?.computerStep) tc.computerStep = metadata.computerStep;
+              if (metadata?.fileChange) tc.fileChange = metadata.fileChange;
               if (
                 metadata?.subagentStopReason
                 && !(tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed' && metadata.subagentStopReason === 'completed')
@@ -1547,6 +1679,7 @@ export const useChatStore = create<ChatStore>()(
           const tc = msg?.toolCalls?.find((t) => t.id === toolCallId);
           if (!tc) return;
           if (metadata.computerStep) tc.computerStep = metadata.computerStep;
+          if (metadata.fileChange) tc.fileChange = metadata.fileChange;
           if (
             metadata.subagentStopReason
             && !(tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed' && metadata.subagentStopReason === 'completed')
@@ -1760,6 +1893,11 @@ export const useChatStore = create<ChatStore>()(
           const errorKind = isFailure ? sanitizeRunErrorKind(patch.errorKind) : undefined;
           if (errorKind) message.runErrorKind = errorKind;
           else delete message.runErrorKind;
+          const interruptCause = patch.state === 'interrupted'
+            ? sanitizeRunInterruptCause(patch.interruptCause)
+            : undefined;
+          if (interruptCause) message.runInterruptCause = interruptCause;
+          else delete message.runInterruptCause;
           if ('content' in patch && patch.content !== undefined) message.content = patch.content;
           if ('skill' in patch) message.skill = patch.skill;
           if ('delegateAgent' in patch) message.delegateAgent = patch.delegateAgent;
@@ -2379,6 +2517,12 @@ export const useChatStore = create<ChatStore>()(
         });
       },
 
+      requestComposerFocus: () => {
+        set((state) => {
+          state.composerFocusRequest += 1;
+        });
+      },
+
       addPendingReference: (ref) => {
         set((state) => {
           state.pendingReferences.push(ref);
@@ -2418,6 +2562,7 @@ export const useChatStore = create<ChatStore>()(
       setPendingAgent: (agentName) => {
         set((state) => {
           state.pendingAgentName = agentName;
+          if (agentName !== null) state.pendingOwnerSource = 'user';
           if (state.pendingExpertContact?.identity.agentName !== agentName) state.pendingExpertContact = null;
         });
       },
@@ -2495,13 +2640,17 @@ export const useChatStore = create<ChatStore>()(
         // Live-freshness write-through (message-storage hybrid P2): turn-end
         // is the moment a conversation's messages are settled for this round,
         // so re-index its catalog row + FTS body now instead of waiting for
-        // the next startup reconcile. Fire-and-forget, matches the existing
-        // dynamic-import + .catch(()=>{}) pattern used elsewhere in this
-        // store — never await inside the reducer.
+        // the next startup reconcile. The reindex reads messages.jsonl in the
+        // main process, so it rides the conversation's serial persistence
+        // queue: every write this turn already queued there (finishStreaming's
+        // checkpoint of the final reply among them) reaches the file first.
         if (shouldReindex) {
-          import('../core/session/conversationStorage').then(({ catalogReindexConversation }) => {
-            catalogReindexConversation(convId).catch(() => {});
-          });
+          trackConversationPersistence(
+            convId,
+            () => import('../core/session/conversationStorage').then(({ catalogReindexConversation }) =>
+              catalogReindexConversation(convId)
+            ),
+          );
         }
       },
 
@@ -2604,6 +2753,10 @@ export const useChatStore = create<ChatStore>()(
             const bundle = parsed as ShareBundle;
             if (!Array.isArray(bundle.messages) || !bundle.conversation) return null;
             const { conv, meta } = buildImportedFromShareBundle(bundle);
+            trackConversationPersistence(conv.id, async () => {
+              const { migrateConversation } = await import('../core/session/conversationStorage');
+              await migrateConversation(conv);
+            });
 
             set((state) => {
               state.conversations[conv.id] = conv;
@@ -2619,10 +2772,7 @@ export const useChatStore = create<ChatStore>()(
               ? bundle.attachments
               : null;
             (async () => {
-              try {
-                const { migrateConversation } = await import('../core/session/conversationStorage');
-                await migrateConversation(conv);
-              } catch { /* non-fatal */ }
+              await waitForConversationPersistence(conv.id).catch(() => undefined);
               if (attachmentsToInstall) {
                 try {
                   const { installSharedAttachments } = await import('../core/session/outputSnapshots');
@@ -2638,22 +2788,52 @@ export const useChatStore = create<ChatStore>()(
             return conv.id;
           }
 
-          // ── Legacy raw conversation path (undo-delete) ──────────────────
+          // ── Raw conversation path (undo-delete, or a file picked from disk) ──
           const conv = parsed as Conversation;
           if (!conv.id || !conv.messages) return null;
 
           // A permission mode is kept only for JSON this session produced
           // itself (the undo of a delete), and only if the setter would
-          // accept it. A file picked from disk never sets one.
-          const { permissionMode: rawPermissionMode, ...rawConversation } = conv;
-          const keptPermissionMode = options?.keepPermissionMode
+          // accept it. The same import drops every binding to this machine
+          // (the share bundle path drops the same set): a file from disk
+          // names a workspace the user never chose here.
+          const {
+            permissionMode: rawPermissionMode,
+            workspacePath: rawWorkspacePath,
+            projectId: rawProjectId,
+            scheduledTaskId: rawScheduledTaskId,
+            triggerId: rawTriggerId,
+            imChannelId: rawImChannelId,
+            imPlatform: rawImPlatform,
+            activeSkills: rawActiveSkills,
+            enabledMCPServers: rawEnabledMCPServers,
+            // An app binding carries text that joins the system prompt.
+            appBinding: rawAppBinding,
+            ...rawConversation
+          } = conv;
+          const restoringDeleted = options?.restoringDeleted === true;
+          const keptPermissionMode = restoringDeleted
             ? acceptConversationPermissionMode(rawPermissionMode)
             : undefined;
+          const keptBindings: Partial<Conversation> = restoringDeleted
+            ? {
+              ...(rawWorkspacePath !== undefined ? { workspacePath: rawWorkspacePath } : {}),
+              ...(rawProjectId !== undefined ? { projectId: rawProjectId } : {}),
+              ...(rawScheduledTaskId !== undefined ? { scheduledTaskId: rawScheduledTaskId } : {}),
+              ...(rawTriggerId !== undefined ? { triggerId: rawTriggerId } : {}),
+              ...(rawImChannelId !== undefined ? { imChannelId: rawImChannelId } : {}),
+              ...(rawImPlatform !== undefined ? { imPlatform: rawImPlatform } : {}),
+              ...(rawActiveSkills !== undefined ? { activeSkills: rawActiveSkills } : {}),
+              ...(rawEnabledMCPServers !== undefined ? { enabledMCPServers: rawEnabledMCPServers } : {}),
+              ...(rawAppBinding !== undefined ? { appBinding: rawAppBinding } : {}),
+            }
+            : {};
 
           // Generate new ID to avoid conflicts
           const newId = generateId();
           const imported: Conversation = {
             ...rawConversation,
+            ...keptBindings,
             ...(keptPermissionMode ? { permissionMode: keptPermissionMode } : {}),
             id: newId,
             status: 'idle',
@@ -2670,12 +2850,12 @@ export const useChatStore = create<ChatStore>()(
             createdAt: imported.createdAt,
             updatedAt: imported.updatedAt,
             messageCount: imported.messages.length,
-            workspacePath: imported.workspacePath,
-            imChannelId: imported.imChannelId,
-            imPlatform: imported.imPlatform,
-            scheduledTaskId: imported.scheduledTaskId,
-            triggerId: imported.triggerId,
-            projectId: imported.projectId,
+            ...(imported.workspacePath !== undefined ? { workspacePath: imported.workspacePath } : {}),
+            ...(imported.imChannelId !== undefined ? { imChannelId: imported.imChannelId } : {}),
+            ...(imported.imPlatform !== undefined ? { imPlatform: imported.imPlatform } : {}),
+            ...(imported.scheduledTaskId !== undefined ? { scheduledTaskId: imported.scheduledTaskId } : {}),
+            ...(imported.triggerId !== undefined ? { triggerId: imported.triggerId } : {}),
+            ...(imported.projectId !== undefined ? { projectId: imported.projectId } : {}),
             readOnly: imported.readOnly,
             importedFrom: imported.importedFrom,
             ...(keptPermissionMode ? { permissionMode: keptPermissionMode } : {}),
@@ -2687,9 +2867,10 @@ export const useChatStore = create<ChatStore>()(
             state.activeConversationId = newId;
           });
           // Write messages to disk + update index
-          import('../core/session/conversationStorage').then(async ({ migrateConversation }) => {
+          trackConversationPersistence(newId, async () => {
+            const { migrateConversation } = await import('../core/session/conversationStorage');
             await migrateConversation(imported);
-          }).catch(() => {});
+          });
           // Sync workspace to imported conversation
           const ws = useWorkspaceStore.getState();
           if (imported.workspacePath) {
@@ -2729,17 +2910,24 @@ export const useChatStore = create<ChatStore>()(
 
         try {
           const { loadMessages, replaceMessageById } = await import('../core/session/conversationStorage');
-          const loadedMessages = await loadMessages(convId);
+          // Strict: a record that is on disk and cannot be read rejects. A
+          // record that is not on disk is an empty conversation and a damaged
+          // line is skipped, as in a tolerant read.
+          const loadedMessages = await loadMessages(convId, { strictRead: true });
           const messages = sanitizeLoadedMessages(loadedMessages);
           const meta = get().conversationIndex[convId];
           if (!meta) return;
 
-          const recoveredMessages = messages.filter((message, index) => (
+          // Rows whose stale active state the sanitiser settled, matched by id:
+          // the sanitiser drops ghost rows, so positions differ between the two lists.
+          const loadedRunStates = new Map(loadedMessages.map((message) => [message.id, message.runState]));
+          const recoveredMessages = messages.filter((message) => (
             message.role === 'user'
-            && message.runState === 'failed'
-            && ACTIVE_RUN_STATES.has(loadedMessages[index]?.runState)
+            && !ACTIVE_RUN_STATES.has(message.runState)
+            && ACTIVE_RUN_STATES.has(loadedRunStates.get(message.id))
           ));
           set((state) => {
+            delete state.loadFailures[convId];
             state.conversations[convId] = {
               id: meta.id,
               title: meta.title,
@@ -2754,6 +2942,7 @@ export const useChatStore = create<ChatStore>()(
               scheduledTaskId: meta.scheduledTaskId,
               triggerId: meta.triggerId,
               teamId: meta.teamId,
+              ...restoredGoal(meta),
               appBinding: meta.appBinding,
               projectId: meta.projectId,
               readOnly: meta.readOnly,
@@ -2767,39 +2956,42 @@ export const useChatStore = create<ChatStore>()(
           // fails (for example, a transient permission or I/O error). A
           // failed repair must never fall through to the outer load catch
           // and replace a successfully-read conversation with an empty one.
-          await Promise.allSettled(
-            recoveredMessages.map((message) => replaceMessageById(convId, message)),
+          if (recoveredMessages.length > 0) {
+            trackConversationPersistence(convId, () => Promise.allSettled(
+              recoveredMessages.map((message) => replaceMessageById(convId, message)),
+            ));
+            await waitForConversationPersistence(convId).catch(() => undefined);
+          }
+        } catch (err) {
+          // The record is on disk and could not be read. No conversation is
+          // put in memory for it: an empty one would say "this conversation
+          // has no messages", and every later write would act on that. The
+          // chat page shows the failure with a retry (`loadFailures`).
+          // The host's text can carry a path and whatever a server put in an
+          // error, so it goes to the log only, as redacted text.
+          console.warn(
+            '[chatStore] loadConversation failed:',
+            redactFailureText(err instanceof Error ? err.message : String(err)),
           );
-        } catch {
-          // Load failed — create an empty conversation so the chat view still
-          // renders (instead of falling through to the welcome page)
-          const meta = get().conversationIndex[convId];
-          if (meta) {
+          // A conversation deleted while the read was in flight, or read by a
+          // concurrent call meanwhile, has no failure to show.
+          if (get().conversationIndex[convId] && !get().conversations[convId]) {
             set((state) => {
-              state.conversations[convId] = {
-                id: meta.id,
-                title: meta.title,
-                createdAt: meta.createdAt,
-                updatedAt: meta.updatedAt,
-                messages: [],
-                status: 'idle',
-                workspacePath: meta.workspacePath,
-                model: meta.model,
-                imChannelId: meta.imChannelId,
-                imPlatform: meta.imPlatform,
-                scheduledTaskId: meta.scheduledTaskId,
-                triggerId: meta.triggerId,
-                teamId: meta.teamId,
-                appBinding: meta.appBinding,
-                projectId: meta.projectId,
-                readOnly: meta.readOnly,
-                importedFrom: meta.importedFrom,
-                ...restoredPermissionMode(meta),
-              };
+              state.loadFailures[convId] = true;
             });
           }
         }
 
+      },
+
+      retryLoadConversation: (convId: string) => {
+        const inFlight = loadRetries.get(convId);
+        if (inFlight) return inFlight;
+        const running = get().loadConversation(convId).finally(() => {
+          if (loadRetries.get(convId) === running) loadRetries.delete(convId);
+        });
+        loadRetries.set(convId, running);
+        return running;
       },
 
       unloadOldConversations: () => {
@@ -2840,7 +3032,7 @@ export const useChatStore = create<ChatStore>()(
     })),
     {
       name: 'abu-chat',
-      version: 15,
+      version: 16,
       migrate: (persisted, version) => {
         const state = persisted as Record<string, unknown>;
         // v1 → v2: added executionSteps on Message (optional field, no-op migration)
@@ -2887,6 +3079,9 @@ export const useChatStore = create<ChatStore>()(
         // field; absent = general shell, present = the app the conversation was
         // started in. Nothing to transform for pre-app conversations).
         if (version < 15) { /* no transform needed */ }
+        // v15 → v16: added goal (goal mode) on Conversation/ConversationMeta
+        // (optional field; absent = no goal. Activation is never persisted).
+        if (version < 16) { /* no transform needed */ }
         // v3 → v4: migrate conversations from localStorage to file system
         if (version < 4) {
           // Mark for async migration in onRehydrateStorage

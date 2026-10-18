@@ -34,6 +34,7 @@ const os = require('node:os');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn, spawnSync, execFileSync } = require('node:child_process');
+const { ownedChildProcesses } = require('./ownedChildProcesses.cjs');
 const { resourceRoot, REPO_ROOT } = require('./appEnv.cjs');
 const {
   resolveBundledProgram,
@@ -845,7 +846,9 @@ function ensureCommandHostLifecycleHooks(app) {
   lifecycleHooksRegistered = true;
   const cleanup = () => teardownCommandHost();
   process.once('exit', cleanup);
-  app?.once?.('before-quit', cleanup);
+  // 'will-quit' comes once the quit is certain; 'before-quit' also fires for a
+  // quit the user calls off, and commands in flight have to outlive that one.
+  app?.once?.('will-quit', cleanup);
 }
 
 function __resetCommandHostForTests() {
@@ -860,6 +863,7 @@ function __resetCommandHostForTests() {
  * Object with KILL_ON_JOB_CLOSE inside the launcher.
  */
 function spawnForeground(app, spec, opts, timeoutSecs, commandId) {
+  ownedChildProcesses.assertAdmission();
   return new Promise((resolve) => {
     const { file, args, env } = spec;
     const launcherPath = sandboxLauncherPathFor(app);
@@ -869,6 +873,7 @@ function spawnForeground(app, spec, opts, timeoutSecs, commandId) {
       return;
     }
     const spawnEnv = { ...process.env, ...(env || {}), ...(opts.envOverride || {}) };
+    opts.assertCurrent?.();
 
     let child;
     try {
@@ -884,6 +889,9 @@ function spawnForeground(app, spec, opts, timeoutSecs, commandId) {
     }
 
     const entry = { commandId, child, completed: false, killed: false, forceKillTimer: null };
+    ownedChildProcesses.track(child, () => killProcessTree(entry));
+    opts.onConsumerStarted?.(() => killProcessTree(entry));
+    child.once('close', () => opts.onConsumerClosed?.());
     addActiveCommand(entry);
 
     const stdoutC = makeCappedCollector();
@@ -939,6 +947,7 @@ function spawnForeground(app, spec, opts, timeoutSecs, commandId) {
  * The 3s return semantics and placeholder string match Tauri.
  */
 function spawnBackground(app, spec, opts, commandId) {
+  ownedChildProcesses.assertAdmission();
   return new Promise((resolve) => {
     const { file, args, env } = spec;
     const launcherPath = sandboxLauncherPathFor(app);
@@ -963,6 +972,7 @@ function spawnBackground(app, spec, opts, commandId) {
     }
 
     const entry = { commandId, child, completed: false, killed: false, forceKillTimer: null };
+    ownedChildProcesses.track(child, () => killProcessTree(entry));
     addActiveCommand(entry);
 
     const stdoutC = makeCappedCollector();
@@ -1057,7 +1067,7 @@ async function runShellCommand(app, args) {
 }
 
 /** No background mode: argv tools are always foreground with a timeout (matches Rust). */
-async function runArgvCommand(app, args) {
+async function runArgvCommand(app, args, internalOptions = {}) {
   ensureCommandHostLifecycleHooks(app);
   const a = args || {};
   const program = String(a.program ?? '');
@@ -1085,7 +1095,7 @@ async function runArgvCommand(app, args) {
   const result = await spawnForeground(
     app,
     spec,
-    { cwd, envOverride, sandboxEnabled },
+    { cwd, envOverride, sandboxEnabled, ...internalOptions },
     timeoutSecs,
     commandId
   );
@@ -1148,12 +1158,12 @@ function getEnvVars(args) {
  * @param {string} cmd
  * @param {Record<string, unknown>} args
  */
-async function commandDispatch(app, cmd, args) {
+async function commandDispatch(app, cmd, args, internalOptions) {
   switch (cmd) {
     case 'run_shell_command':
       return runShellCommand(app, args);
     case 'run_argv_command':
-      return runArgvCommand(app, args);
+      return runArgvCommand(app, args, internalOptions);
     case 'abort_command':
       return abortCommand((args || {}).commandId);
     case 'get_env_vars':

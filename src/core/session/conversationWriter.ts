@@ -93,6 +93,8 @@ export interface ConversationMeta {
   scheduledTaskId?: string;
   triggerId?: string;
   teamId?: string;
+  /** Goal mode objective. Armed/disarmed is process-local and never stored. */
+  goal?: import('@/core/goal/goalTypes').GoalState;
   appBinding?: import('@/types/app').ConversationAppBinding;
   projectId?: string;
   totalCost?: number;
@@ -188,6 +190,7 @@ export interface ConversationWriter {
   appendTruncateEvent(convId: string, fromMessageId: string, opts: { pid?: string; removedIds: string[] }): Promise<boolean>;
   replaceMessageById(convId: string, message: Message): Promise<void>;
   replaceMessageByIdStrict(convId: string, message: Message): Promise<void>;
+  checkpointMessages(convId: string, messages: Message[], signal?: AbortSignal): Promise<void>;
   updateLastMessage(convId: string, message: Message): Promise<void>;
   loadMessages(convId: string, options?: { strictRead?: boolean }): Promise<Message[]>;
   /**
@@ -1061,7 +1064,7 @@ export function createConversationWriter(deps: {
    * attempt promotes them. The snapshot file is rewritten only after the ledger
    * holds the revisions, so no crash window has neither copy.
    */
-  async function promoteStreamSnapshots(convId: string): Promise<number> {
+  async function promoteStreamSnapshots(convId: string, signal?: AbortSignal): Promise<number> {
     // The early return below answers before any path is built, so the grammar
     // runs here; the containment check comes with `ensureConversation` on the
     // path that reaches a file.
@@ -1087,6 +1090,7 @@ export function createConversationWriter(deps: {
       })),
     );
     // Observed before the flush so a rejected write always has a handler.
+    signal?.throwIfAborted();
     const outcome = Promise.allSettled(
       promoted.map(({ entry, line }) => queueSnapshotPromotion(convId, entry.message, line)),
     );
@@ -1586,7 +1590,7 @@ export function createConversationWriter(deps: {
    * This is what `loadMessages` has always done as a side effect of reading;
    * `forgetConversation` relies on it as the one way state comes back.
    */
-  async function deriveFromDisk(convId: string, options?: { strictRead?: boolean }): Promise<Message[]> {
+  async function deriveFromDisk(convId: string, options?: { strictRead?: boolean; signal?: AbortSignal }): Promise<Message[]> {
     // A release while this read is in flight hands the conversation to another
     // process: everything read here then describes the conversation as it was
     // before the hand-over. `stillOurs` is what keeps such a read from putting
@@ -1594,7 +1598,7 @@ export function createConversationWriter(deps: {
     // leave the writer believing stale facts, which is the whole failure
     // `forgetConversation` exists to remove.
     const generation = conversationGeneration(convId);
-    const stillOurs = (): boolean => conversationGeneration(convId) === generation;
+    const stillOurs = (): boolean => conversationGeneration(convId) === generation && !options?.signal?.aborted;
     await ensureConversation(convId);
     const path = paths!.messagesPath(convId);
     if (!(await fs.exists(path))) {
@@ -1623,7 +1627,18 @@ export function createConversationWriter(deps: {
     try {
       raw = await fs.readTextFile(path);
     } catch (err) {
-      if (options?.strictRead) throw err;
+      if (options?.strictRead) {
+        // A ledger that is on disk and could not be read is unknown, not empty.
+        // Counting the conversation as forgotten makes every write entry take
+        // its own strict read first (`ensureDerived`), so nothing is written to
+        // a record this process has not read; the block lifts with the first
+        // read that succeeds. The mark is set here only: when the host's read of
+        // the record itself fails. A strict read that rejects earlier (the
+        // existence probe, the containment check) sets none, and a record whose
+        // folder cannot be probed reads as missing above.
+        forgotten.add(convId);
+        throw err;
+      }
       console.warn(
         `[conversationStorage] loadMessages(${convId}) readTextFile failed:`,
         err,
@@ -1696,6 +1711,87 @@ export function createConversationWriter(deps: {
    */
   async function loadMessages(convId: string, options?: { strictRead?: boolean }): Promise<Message[]> {
     return deriveFromDisk(convId, options);
+  }
+
+  /** Save the complete loaded history, including requested removals. Caller holds write admission. */
+  async function checkpointMessages(convId: string, messages: Message[], signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    await flushWrites();
+    let persistedMessages = await deriveFromDisk(convId, { strictRead: true, signal });
+    signal?.throwIfAborted();
+    if (await promoteStreamSnapshots(convId, signal) > 0) {
+      persistedMessages = await deriveFromDisk(convId, { strictRead: true, signal });
+    }
+    const persisted = new Map(persistedMessages.map(message => [message.id, message]));
+    const desiredIds = new Set(messages.map(message => message.id));
+    const removed = persistedMessages.filter(message => !desiredIds.has(message.id));
+    const firstMissing = messages.findIndex(message => !persisted.has(message.id));
+    const repairOrder = firstMissing >= 0 && messages.slice(firstMissing + 1).some(message => persisted.has(message.id));
+    const revisions = await Promise.all(messages.map(async (message, index) => {
+      const previous = persisted.get(message.id);
+      const merged = preservePersistedSandboxRecoveryActions(message, persistedSandboxActions.get(message.id));
+      const allowDehydration = hasInlineToolResultImages(merged)
+        ? await refreshOutputManifestForToolResultImages(convId) : true;
+      const options = diskOptions(allowDehydration);
+      const pid = previous ? parentIdByMessage.get(message.id) : messages[index - 1]?.id;
+      const line = serializeLedgerPut(convId, merged, pid, options);
+      return { message: merged, pid, line, added: !previous,
+        changed: !previous || (repairOrder && index >= firstMissing) || serializeLedgerPut(convId, previous, pid, options) !== line };
+    }));
+    signal?.throwIfAborted();
+    const path = paths!.messagesPath(convId);
+    if (repairOrder) {
+      const reordered = messages.slice(firstMissing).filter(message => persisted.has(message.id));
+      const tombs = [...removed, ...reordered].map(message => JSON.stringify(createLedgerEvent('msg.tomb', {
+        id: generateEventId('tomb'), timestamp: env.now(), target: message.id,
+      })) + '\n').join('');
+      const suffix = tombs + revisions.filter(revision => revision.changed).map(revision => revision.line).join('');
+      await withFileLock(path, async () => {
+        const raw = await fs.readTextFile(path);
+        const append = await repairTornTail(path, suffix);
+        noteTailFromRead(path, raw);
+        signal?.throwIfAborted();
+        await fs.atomicWriteText(path, raw + append);
+        ledgerCharsByConv.set(convId, raw.length + append.length);
+        noteTailFromRead(path, raw + append);
+      });
+      for (const message of removed) {
+        releaseWritten(convId, message.id);
+        await dropStreamSnapshotEntry(convId, message.id);
+      }
+      for (const revision of revisions.filter(revision => revision.changed)) {
+        claimWritten(convId, revision.message.id);
+        if (revision.pid !== undefined) parentIdByMessage.set(revision.message.id, revision.pid);
+        rememberPersistedMessage(revision.message);
+        await dropStreamSnapshotEntry(convId, revision.message.id);
+      }
+      lastMessageIdByConv.set(convId, messages.at(-1)!.id);
+      return;
+    }
+    const writes = removed.map(message => enqueueWrite(path, JSON.stringify(createLedgerEvent('msg.tomb', {
+      id: generateEventId('tomb'), timestamp: env.now(), target: message.id,
+    })) + '\n').then(async () => {
+      releaseWritten(convId, message.id);
+      await dropStreamSnapshotEntry(convId, message.id);
+    }));
+    // Every asynchronous serialization completes before any put enters the queue.
+    for (const revision of revisions.filter(revision => revision.changed)) {
+      if (revision.pid !== undefined) parentIdByMessage.set(revision.message.id, revision.pid);
+      writes.push(enqueueWrite(path, revision.line, revision.message.id).then(async () => {
+        claimWritten(convId, revision.message.id);
+        rememberPersistedMessage(revision.message);
+        await dropStreamSnapshotEntry(convId, revision.message.id);
+        if (revision.added && env.catalogBumpCount) {
+          void env.catalogBumpCount(convId, 1, revision.message.timestamp ?? env.now(), revision.message.id);
+        }
+      }));
+    }
+    if (messages.length > 0) lastMessageIdByConv.set(convId, messages.at(-1)!.id);
+    else lastMessageIdByConv.delete(convId);
+    const outcome = Promise.allSettled(writes);
+    await flushWrites();
+    const failed = (await outcome).find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failed) throw failed.reason;
   }
 
   // ════════════════════════════════════════════════════════════
@@ -1990,6 +2086,7 @@ export function createConversationWriter(deps: {
     replaceMessageByIdStrict: (convId, message) => tracked(convId, () => replaceMessageByIdStrict(convId, message)),
     updateLastMessage: (convId, message) => tracked(convId, () => updateLastMessage(convId, message)),
     loadMessages,
+    checkpointMessages: (convId, messages, signal) => tracked(convId, () => checkpointMessages(convId, messages, signal)),
     forgetConversation,
     deleteConversationFiles,
     dailyBackup,

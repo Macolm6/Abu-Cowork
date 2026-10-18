@@ -9,6 +9,9 @@ import type {
   BrowserAllowConsent,
   BrowserDenialKind,
 } from '@/core/agent/browserDenialTracker';
+import type { FileChange } from './fileChange';
+
+export type { FileChange, FileChangeHunk } from './fileChange';
 
 // --- Messages & Conversations ---
 
@@ -133,6 +136,8 @@ export interface ComputerStepReport {
 }
 
 export interface ToolExecutionMetadata {
+  /** Trusted host has joined output capture within the original operation. */
+  outputSnapshotsHandled?: boolean;
   sandboxRecovery?: SandboxRecoveryPayload;
   /** Trusted computer tool: how this step ended, for the run report card. */
   computerStep?: ComputerStepReport;
@@ -147,6 +152,8 @@ export interface ToolExecutionMetadata {
     | 'computer-outcome-unknown-new-turn';
   subagentStopReason?: SubagentStopReason;
   batchTerminalSummary?: BatchTerminalSummary;
+  /** write_file, edit_file, delete_file: what the call did to its file. */
+  fileChange?: FileChange;
 }
 
 /** Payload for a "save this as a skill?" proposal card. */
@@ -314,6 +321,8 @@ export interface ToolCall {
   subagentStopReason?: SubagentStopReason;
   /** Minimal persisted terminal summary for run_agent_batch. */
   batchTerminalSummary?: BatchTerminalSummary;
+  /** Line counts and hunks of a write_file, edit_file or delete_file call. */
+  fileChange?: FileChange;
   /**
    * MCP Apps interface for this step (extension `io.modelcontextprotocol/ui`).
    *
@@ -425,6 +434,13 @@ export interface Message {
   content: string | MessageContent[];
   timestamp: number;
   isStreaming?: boolean;
+  /**
+   * Set when the reply's stream ended and the reply was finished
+   * (`finishStreaming`). A ledger row written while the reply was still
+   * streaming, such as a periodic stream snapshot, does not carry it; on disk
+   * `isStreaming` is false either way.
+   */
+  streamEnded?: true;
   /** Persisted terminal reason for an assistant turn that the user stopped. */
   stopReason?: 'user';
   /**
@@ -444,7 +460,11 @@ export interface Message {
   runErrorDetails?: UpstreamErrorDetails;
   /** Why a run failed before the sidecar accepted it (#549); drives the failed-row UI. */
   runErrorKind?: 'payload_too_large' | 'sidecar_unavailable' | 'dispatch_failed';
+  /** Set on an interrupted run that the application closed on; a run the user stopped carries none. */
+  runInterruptCause?: 'app_exit';
   toolCalls?: ToolCall[];
+  /** Set on assistant messages created after present_files shipped; file cards read declarations instead of inferring from tool calls. */
+  fileCards?: 'declared';
   // Extended thinking content
   thinking?: string;
   // Thinking duration in seconds
@@ -474,6 +494,10 @@ export interface Message {
   plannedSteps?: import('./execution').PlannedStep[];
   // System-injected messages (e.g. max_tokens recovery) — hidden from chat UI
   isSystem?: boolean;
+  // Goal mode: set on the (isSystem) user message that opens an automatic goal
+  // round, so the UI can render a round marker and the goal tool can tell an
+  // automatic round from a human-initiated run.
+  goalRound?: { goalId: string; revision: number; round: number };
   // Crash-recovery notices remain internal for context/export purposes, but
   // must be visible so the user understands why an earlier task stopped.
   isRecoveryNotice?: boolean;
@@ -566,6 +590,7 @@ export interface Conversation {
   scheduledTaskId?: string;  // If set, this conversation was created by a scheduled task
   triggerId?: string;  // If set, this conversation was created by a trigger
   teamId?: string;      // If set, the main loop runs as this team's leader (in-conversation team, 2026-09-04); cleared = ordinary chat
+  goal?: import('../core/goal/goalTypes').GoalState;  // Goal mode: the conversation's persistent objective (absent = no goal)
   appBinding?: import('./app').ConversationAppBinding;  // The app (and mode / scene) this conversation was started in; absent = general shell
   imChannelId?: string;  // If set, this conversation was created by an IM channel
   imPlatform?: string;  // IM platform name (dchat/feishu/dingtalk/wecom/slack)
@@ -668,6 +693,10 @@ export interface ToolParameter {
 
 /** Runtime context passed to tool execute(), e.g. the effective workspace for this conversation */
 export interface ToolExecutionContext {
+  /** Trusted host-only access for this invocation; never accepted from the wire. */
+  files?: import('@/core/tools/fileOperation').ToolFileAccess;
+  /** Process-local authority owner; never accepted from model or wire context. */
+  operationOwner?: import('../core/tools/operationAuthorization').ToolOperationOwner;
   /** Resolved workspace path (from IMContext or global store) */
   workspacePath?: string | null;
   /** Loop ID for multi-agent context lookup */
@@ -948,7 +977,11 @@ export type SkillUXCategory =
 
 export interface SkillMetadata {
   name: string;
+  /** What the model reads to decide when to use the skill. */
   description: string;
+  /** Per-locale description for the interface (`display-description` in SKILL.md).
+   *  The interface shows `displayDescription[locale] ?? description`; the model never sees it. */
+  displayDescription?: Partial<Record<AgentLocale, string>>;
   source?: SkillSource;       // Where this skill was discovered (set by loader)
   trigger?: string;           // When to auto-invoke, e.g. "用户要求深度调研某个主题"
   doNotTrigger?: string;      // When NOT to auto-invoke, e.g. "用户只是随口问个简单问题"
@@ -985,7 +1018,7 @@ export interface Skill extends SkillMetadata {
 
 /** Locale code used for i18n overrides. Mirrors SupportedLocale from i18n/types.ts
  *  — declared inline here to avoid pulling the i18n module into core agent code. */
-type AgentLocale = 'zh-CN' | 'en-US';
+export type AgentLocale = 'zh-CN' | 'en-US';
 
 /** Metadata attached to definitions supplied by a runtime extension. The host
  * keeps this contract generic; enterprise catalog transport and policy stay in

@@ -128,6 +128,13 @@ const sampleProposalSignal = { kind: 'todo' as const, count: 2 };
 
 const sampleToolExecutionMetadata = {
   sandboxRecovery: { kind: 'app-automation' as const, targetApp: 'Notes' },
+  fileChange: {
+    path: '/work/plan.md',
+    kind: 'modify' as const,
+    added: 1,
+    deleted: 1,
+    hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b'] }],
+  },
 };
 
 const sampleExecutionStep = {

@@ -30,7 +30,8 @@ vi.mock('../../stores/workspaceStore', () => ({
 
 const mockClaudeChat = vi.fn();
 vi.mock('../llm/claude', () => ({ ClaudeAdapter: class { chat = mockClaudeChat; } }));
-vi.mock('../llm/openai-compatible', () => ({ OpenAICompatibleAdapter: class { chat = vi.fn(); } }));
+const mockOpenAIChat = vi.fn();
+vi.mock('../llm/openai-compatible', () => ({ OpenAICompatibleAdapter: class { chat = mockOpenAIChat; } }));
 
 const mockExecuteAnyTool = vi.fn();
 const mockGetAllTools = vi.fn().mockReturnValue([]);
@@ -72,7 +73,7 @@ const mockGetActiveProvider = vi.fn(
 const mockResolveAgentModel = vi.hoisted(() => vi.fn(() => 'claude-opus-4-8'));
 vi.mock('../../stores/settingsStore', () => ({
   readConfirmedBrowserPermissionConfig: vi.fn(() => null),
-  useSettingsStore: { getState: () => ({ agentMaxTurns: 200, maxOutputTokens: undefined, contextWindowSize: undefined }) },
+  useSettingsStore: { getState: () => ({ agentMaxTurns: 200, maxOutputTokens: undefined, contextWindowSize: undefined, activeModel: { providerId: 'p1', modelId: 'test-model' }, providers: [] }) },
 }));
 
 // subagentLoop.ts imports getActiveProvider/getActiveApiKey/resolveAgentModel
@@ -84,6 +85,9 @@ vi.mock('../../utils/settingsSelectors', () => ({
   getActiveProvider: (...args: unknown[]) => mockGetActiveProvider(...args),
   getActiveApiKey: () => 'sk-test',
   resolveAgentModel: (...args: unknown[]) => mockResolveAgentModel(...args),
+  // The run model stays usable here; refusing an unusable one has its own tests.
+  getModelUnavailableReason: () => null,
+  getModelDisplayLabel: (_settings: unknown, ref: { modelId: string }) => ref.modelId,
 }));
 
 vi.mock('../../stores/discoveredCapabilitiesStore', () => ({
@@ -126,6 +130,7 @@ const trustedDelegatedOrigin = {
 describe('subagent max_tokens recovery (integration)', () => {
   beforeEach(() => {
     mockClaudeChat.mockReset();
+    mockOpenAIChat.mockReset();
     mockExecuteAnyTool.mockReset();
     mockExecuteAnyTool.mockResolvedValue('tool output');
     mockEmitHook.mockReset();
@@ -1448,6 +1453,77 @@ describe('subagent max_tokens recovery (integration)', () => {
     const result = await runSubagentLoop({ agent, task: 'do the thing' });
 
     expect(result.tokenUsage).toEqual({ input: 100, output: 20 });
+  });
+
+  it('counts cached prompt tokens in the input total on the Anthropic protocol', async () => {
+    // Anthropic 的 inputTokens 不含缓存读写。开了提示缓存之后，一轮里绝大部分输入都在缓存的两项里，
+    // 只累加 inputTokens 会让成员卡片上的 token 数少掉这一大块。
+    mockClaudeChat
+      .mockImplementationOnce(emits([
+        { type: 'tool_use', id: 't1', name: 'read_file', input: { path: '/a' } } as StreamEvent,
+        {
+          type: 'done',
+          stopReason: 'tool_use',
+          usage: {
+            inputTokens: 600,
+            outputTokens: 25,
+            cacheReadInputTokens: 48_000,
+            cacheCreationInputTokens: 1_400,
+          },
+        } as StreamEvent,
+      ]))
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'done' } as StreamEvent,
+        {
+          type: 'done',
+          stopReason: 'end_turn',
+          usage: {
+            inputTokens: 200,
+            outputTokens: 30,
+            cacheReadInputTokens: 49_400,
+            cacheCreationInputTokens: 400,
+          },
+        } as StreamEvent,
+      ]));
+
+    const events: Array<{ type: string; usage?: { inputTokens: number; outputTokens: number } }> = [];
+    const result = await runSubagentLoop({ agent, task: 'do the thing', onProgress: (event) => events.push(event) });
+
+    expect(events.find((event) => event.type === 'turn-complete')).toMatchObject({
+      usage: { inputTokens: 50_000, outputTokens: 25 },
+    });
+    expect(result.tokenUsage).toEqual({ input: 100_000, output: 55 });
+  });
+
+  it('counts prompt_tokens as the input total on the OpenAI-compatible protocol', async () => {
+    // OpenAI 兼容协议的 inputTokens 取自 prompt_tokens，已经包含缓存读，不能再加一次。
+    mockGetActiveProvider.mockReturnValue({ id: 'p1', apiFormat: 'openai-compatible', baseUrl: undefined, models: [] });
+    mockOpenAIChat
+      .mockImplementationOnce(emits([
+        { type: 'tool_use', id: 't1', name: 'read_file', input: { path: '/a' } } as StreamEvent,
+        {
+          type: 'done',
+          stopReason: 'tool_use',
+          usage: { inputTokens: 1_000, outputTokens: 25, cacheReadInputTokens: 800 },
+        } as StreamEvent,
+      ]))
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'done' } as StreamEvent,
+        {
+          type: 'done',
+          stopReason: 'end_turn',
+          usage: { inputTokens: 1_200, outputTokens: 30, cacheReadInputTokens: 1_000 },
+        } as StreamEvent,
+      ]));
+
+    const events: Array<{ type: string; usage?: { inputTokens: number; outputTokens: number } }> = [];
+    const result = await runSubagentLoop({ agent, task: 'do the thing', onProgress: (event) => events.push(event) });
+
+    expect(mockClaudeChat).not.toHaveBeenCalled();
+    expect(events.find((event) => event.type === 'turn-complete')).toMatchObject({
+      usage: { inputTokens: 1_000, outputTokens: 25 },
+    });
+    expect(result.tokenUsage).toEqual({ input: 2_200, output: 55 });
   });
 
   it.each([

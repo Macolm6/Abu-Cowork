@@ -73,6 +73,7 @@ import {
 } from '../subagent/delegatedUserTurnMaterializer';
 import { createSubagentController } from './subagentAbort';
 import { ActiveToolResultAdmission } from './activeToolResultContent';
+import { replyEntryForTurnOwnerToolCall } from './turnOwnerToolCalls';
 import {
   allToolsUnparseable,
   MAX_NO_PROGRESS_TURNS,
@@ -95,19 +96,20 @@ import {
 } from './userInputQueue';
 import { snapshotExecutionSteps } from './executionSnapshot';
 import { emitHook } from './lifecycleHooks';
-import { getI18n, format } from '../../i18n';
+import { getI18n, getLocale, format } from '../../i18n';
 import { clearSkillHooksByLoop } from '../tools/builtins';
 import { agentToolPolicyForRoute, resolveAgentToolNames } from './agentToolPolicy';
 import { executeToolBatch } from './toolExecutor';
 import { startConversationTrace, endConversationTrace, startGeneration } from '../observability/langfuse';
 import { calculateTurnCost } from '../llm/costTracker';
 import { formatPlannedStepsForPrompt } from './plannedStepsPrompt';
+import { formatGoalForPrompt } from '../goal/goalPrompt';
 import { getBuiltinSearchConfig } from '../capabilities';
 import { resolveAgentModelCapabilities, resolveCapabilities, computeReasoningParams, type ModelCapabilities } from '../llm/modelCapabilities';
 import { positiveInteger, resolveContextWindow } from '../llm/contextWindow';
 import { probeContextWindow } from '../llm/contextWindowProbe';
 import { localServerKind } from '../llm/localProvider';
-import { adapterKindFor } from '../llm/adapterKind';
+import { adapterKindFor, usageProtocolFor } from '../llm/adapterKind';
 import { contextTooSmallMessage } from './contextWindowMessages';
 import { learnContextWindowAfterOverflow } from './contextOverflowRecovery';
 import { resolveImagePolicy } from '../llm/imagePolicy';
@@ -356,6 +358,19 @@ export function skillBlockedTools(
   return [...new Set(patterns)];
 }
 
+/**
+ * The skills whose tools load this turn. A skill reached by `/name` is the
+ * route and is not in activeSkills yet, so the tools it needs
+ * (read_skill_file, its own tools) would otherwise wait for the next turn.
+ */
+export function prefetchSkills(
+  routedSkill: PrefetchContext['activeSkills'][number] | undefined,
+  activeSkills: PrefetchContext['activeSkills'],
+): PrefetchContext['activeSkills'] {
+  if (!routedSkill || activeSkills.some((skill) => skill.name === routedSkill.name)) return activeSkills;
+  return [routedSkill, ...activeSkills];
+}
+
 export function resolveTools(
   toolInvoker: ToolInvoker,
   route: RouteResult,
@@ -508,6 +523,7 @@ function sanitizeTailBody(text: string): string {
 }
 
 export function buildVolatileContextTail(parts: {
+  goalState?: string;
   todoState?: string;
   relevantMemoriesSection?: string;
   compressionApplied?: boolean;
@@ -516,6 +532,7 @@ export function buildVolatileContextTail(parts: {
   if (parts.compressionApplied) {
     body.push('[The earlier conversation history has been compressed and older details summarized. If the user mentions early details you are unsure about, say so honestly and ask them to confirm — do not fabricate.]');
   }
+  if (parts.goalState) body.push(parts.goalState);
   if (parts.todoState) body.push(parts.todoState);
   if (parts.relevantMemoriesSection) body.push(parts.relevantMemoriesSection);
   if (body.length === 0) return undefined;
@@ -544,6 +561,8 @@ function deactivateAllSkills(conversationId: string, loopId: string): void {
 }
 
 export interface AgentLoopOptions {
+  /** Process-local authority owner captured at dispatch; omitted from wire options. */
+  operationOwner?: import('../tools/operationAuthorization').ToolOperationOwner;
   /** Trusted UI selection for this specific retry turn; not accepted from the wire. */
   teamConfirmationRetryId?: string;
   /** Trusted UI flag: this run continues the conversation's current team task. Never sent to the sidecar. */
@@ -630,6 +649,13 @@ export interface AgentLoopOptions {
    * the conversation snapshot instead of appending a duplicate.
    */
   prePersistedUserMessageId?: string;
+  /**
+   * Goal mode: this run is an automatic goal round started by goalDriver. Its
+   * opening user message is written as an internal (`isSystem`) row carrying
+   * this metadata, so the chat shows a round marker instead of a user bubble
+   * and the goal tool can tell it apart from a human-initiated run.
+   */
+  goalRound?: { goalId: string; revision: number; round: number };
   /** Process-local structured diagnostics hook. The shell and sidecar inject
    * their own sinks; it is deliberately omitted from the wire contract. */
   runtimeEvent?: (event: string, attributes: {
@@ -928,7 +954,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     addScratchpadEntry: (entry) => {
       getScratchpadPort().addEntry(entry);
     },
-  });
+  }, getLocale());
 
   // Enterprise mode bypasses personal key requirement — gateway provides the key.
   const { forceOpenAiCompatible: _startForce } = (() => {
@@ -1032,6 +1058,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     initiatedBy: options?.initiatedBy,
   });
   const precomputeToolContext: ToolExecutionContext = {
+    operationOwner: options?.operationOwner,
+    abortSignal: abortController.signal,
     workspacePath: precomputeWorkspacePath,
     conversationId,
     loopId,
@@ -1120,6 +1148,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     abortController.abort(new Error('Run stopped after consecutive browser denials'));
   });
   const toolContext: ToolExecutionContext = {
+    operationOwner: options?.operationOwner,
     workspacePath: resolveToolContextWorkspacePath(
       options,
       _convForContext,
@@ -1248,6 +1277,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         name: route.delegateAgent.name,
         description: route.delegateAgent.description,
       } : undefined,
+      ...(options?.goalRound ? { isSystem: true, goalRound: options.goalRound } : {}),
     });
     options?.onMessageTaken?.(userMessageId);
   }
@@ -1303,7 +1333,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     // Build onProgress to visualize subagent tools
     const childIdMap = new Map<string, string>();
     const childInputById = new Map<string, Record<string, unknown>>();
-    // Image-bearing subagent tool calls, collected for post-hoc persistence:
+    // Subagent tool calls the reply keeps — the image-bearing ones and the
+    // ones its file cards and file names read (turnOwnerToolCalls.ts) —
+    // collected for post-hoc persistence:
     // on THIS route the assistant message is only created AFTER the delegate
     // completes, so completeChildStep's own appendMessageToolCall (which
     // targets the loop's last assistant message) silently no-ops during the
@@ -1353,6 +1385,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 // pairing; only the budgeted rich payload is releasable.
                 delete pendingCall.resultContent;
               });
+            } else {
+              // The expert is the one answering the user on this route: the
+              // reply's file cards and file names read these calls back.
+              const replyEntry = replyEntryForTurnOwnerToolCall({
+                id: event.id, toolName: event.toolName, input: childInput, result: event.result, error: event.error,
+              });
+              if (replyEntry) pendingSubagentToolCalls.push(replyEntry);
             }
           }
         }
@@ -1408,10 +1447,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // way to escape it.
         reportBrowserDenial: toolContext.reportBrowserDenial,
         reportBrowserAllow: toolContext.reportBrowserAllow,
+        operationOwner: options?.operationOwner,
         parentLoopId: loopId,
         parentUserMessageId: delegatedUserTurn.origin.messageId,
         parentConversationId: conversationId,
         persistParentToolImages: true,
+        // The expert runs the whole turn and its result is the reply.
+        ownsUserTurn: true,
         settingsReader: entrySettingsReader,
       }, {
         // The `@agent` route reaches runSubagent WITHOUT passing through
@@ -1831,12 +1873,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // also strips tools from the request body as belt-and-suspenders.
       const noTools = modelDeclared?.supportsTools === false;
       // Build prefetch context for conditional tool loading
+      const conv = getConversationReader().getConversation(conversationId);
       const activeSkillObjects = getConversationReader().getActiveSkills(conversationId);
       const prefetchCtx = {
         userInput: userMessage,
         computerUseEnabled: freshSettings.computerUseEnabled ?? false,
-        activeSkills: activeSkillObjects,
+        activeSkills: prefetchSkills(route.type === "skill" ? route.skill : undefined, activeSkillObjects),
         turnCount,
+        hasGoal: conv?.goal !== undefined,
       };
 
       // What the roster was filtered by, carried to the execution boundary so
@@ -1992,6 +2036,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       //   context tail appended after the history instead (see
       //   buildVolatileContextTail below).
       const todoState = formatPlannedStepsForPrompt(conversationId);
+      const goalState = formatGoalForPrompt(conversationId, loopId);
       const dynamicSections: PromptSection[] = [];
       if (dynamicCapabilities) {
         dynamicSections.push({ name: 'mcp-capabilities', text: dynamicCapabilities, cacheable: true });
@@ -2111,6 +2156,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // append it AFTER placing the history cache breakpoint, so the stored
       // prefix stays fully cached and only this small tail is re-billed.
       const volatileContextTail = buildVolatileContextTail({
+        goalState,
         todoState,
         relevantMemoriesSection,
         compressionApplied,
@@ -2727,13 +2773,16 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           model: effectiveModelId,
           input: lastProviderMessages,
           startTime: new Date(genStartTime),
+          protocol: usageProtocolFor(adapterKind),
         }).end({
           output: {
             content: turnMsg?.content,
             toolCalls: collectedToolCalls.map(tc => ({ name: tc.name, input: tc.input })),
           },
           usage: finalUsage,
-          costUsd: finalUsage ? calculateTurnCost(effectiveModelId, finalUsage) : undefined,
+          costUsd: finalUsage
+            ? calculateTurnCost(effectiveModelId, finalUsage, usageProtocolFor(adapterKind))
+            : undefined,
         });
       }
 
@@ -2746,7 +2795,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // 开了提示缓存之后它可以只有几百，直接拿去校准会把估算比例拉到接近零。
         calibrateFromUsage(
           estimatedInput,
-          promptTokensOf(adapterKind === 'claude' ? 'anthropic' : 'openai-compatible', finalUsage),
+          promptTokensOf(usageProtocolFor(adapterKind), finalUsage),
         );
       }
 

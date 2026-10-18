@@ -1162,6 +1162,21 @@ describe('agentLoopHost', () => {
       );
     });
 
+    it('requires the approved input path to agree with the canonical execution path', async () => {
+      hasLocalToolMock.mockReturnValue(true);
+      sendRequestMock.mockImplementation((method: unknown) => {
+        if (method === 'approval.check') return Promise.resolve({
+          decision: 'allow', executionPath: '/approved/report.md', executionInput: { path: '/unapproved/report.md' },
+        });
+        if (method === 'tool.invoke') return Promise.resolve('fresh reverse approval');
+        return Promise.resolve(undefined);
+      });
+      const result = await withToolInvoker(toolInvoker => toolInvoker.executeAnyTool('read_file', { path: '/original/link.md' }));
+      expect(result).toBe('fresh reverse approval');
+      expect(executeLocalToolMock).not.toHaveBeenCalled();
+      expect(sendRequestMock).toHaveBeenCalledWith('tool.invoke', expect.objectContaining({ input: { path: '/original/link.md' } }));
+    });
+
     it('does not start a local tool when Stop wins after the allow ACK was requested', async () => {
       hasLocalToolMock.mockReturnValue(true);
       isLocalToolReadOnlyMock.mockReturnValue(false);
@@ -1465,6 +1480,87 @@ describe('agentLoopHost', () => {
 
       expect(result).toBe('partial report');
       expect(reportMetadata).toHaveBeenCalledWith({ subagentStopReason: 'max_turns' });
+    });
+
+    it('preserves the trusted host output-capture receipt across reverse tool invocation', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      mockSendRequest({ toolInvokeResult: { result: 'captured', metadata: { outputSnapshotsHandled: true } } });
+      const reportMetadata = vi.fn();
+      await withToolInvoker(invoker => invoker.executeAnyTool('run_command', { command: 'report' }, undefined, undefined, { reportMetadata }));
+      expect(reportMetadata).toHaveBeenCalledWith({ outputSnapshotsHandled: true });
+    });
+
+    it('rejects an invalid output-capture receipt', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      mockSendRequest({ toolInvokeResult: { result: 'captured', metadata: { outputSnapshotsHandled: 'true' } } });
+      await expect(withToolInvoker(invoker => invoker.executeAnyTool('run_command', { command: 'report' })))
+        .rejects.toThrow('Invalid output capture metadata');
+    });
+
+    it('replays a validated file change metadata envelope into the original tool context', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      const fileChange = {
+        path: '/w/plan.md',
+        kind: 'modify',
+        added: 1,
+        deleted: 1,
+        hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b'] }],
+      };
+      mockSendRequest({
+        toolInvokeResult: {
+          result: 'Successfully edited /w/plan.md: replaced 1 line(s) with 1 line(s)',
+          metadata: { fileChange: { ...fileChange, unknownField: 'dropped' } },
+        },
+      });
+      const reportMetadata = vi.fn();
+
+      const result = await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool(
+          'edit_file',
+          { path: '/w/plan.md', old_content: 'a', new_content: 'b' },
+          undefined,
+          undefined,
+          { reportMetadata },
+        ),
+      );
+
+      expect(result).toBe('Successfully edited /w/plan.md: replaced 1 line(s) with 1 line(s)');
+      expect(reportMetadata).toHaveBeenCalledWith({ fileChange });
+    });
+
+    it.each([
+      ['a wrong field type', { path: '/w/plan.md', kind: 'modify', added: '1' }],
+      ['an unknown kind', { path: '/w/plan.md', kind: 'rename' }],
+      ['more hunk lines than the saved budget', {
+        path: '/w/plan.md',
+        kind: 'create',
+        hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 401, lines: Array.from({ length: 401 }, () => '+x') }],
+      }],
+      ['a hunk line over the character budget', {
+        path: '/w/plan.md',
+        kind: 'create',
+        hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 1, lines: [`+${'x'.repeat(501)}`] }],
+      }],
+      ['a serialization over the byte budget', {
+        path: '/w/plan.md',
+        kind: 'create',
+        hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 400, lines: Array.from({ length: 400 }, () => `+${'文'.repeat(500)}`) }],
+      }],
+    ])('rejects a file change metadata envelope with %s', async (_label, fileChange) => {
+      hasLocalToolMock.mockReturnValue(false);
+      mockSendRequest({ toolInvokeResult: { result: 'Successfully edited', metadata: { fileChange } } });
+      const reportMetadata = vi.fn();
+
+      await expect(withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool(
+          'edit_file',
+          { path: '/w/plan.md', old_content: 'a', new_content: 'b' },
+          undefined,
+          undefined,
+          { reportMetadata },
+        ),
+      )).rejects.toThrow('Invalid tool.invoke file change envelope');
+      expect(reportMetadata).not.toHaveBeenCalled();
     });
 
     it('replays a validated batch terminal summary metadata envelope into the original tool context', async () => {
@@ -1804,7 +1900,7 @@ describe('agentLoopHost', () => {
       expect(handleAgentGetState({ runId: 'ledger-ok' }).state).toBe('accepted');
       const seen = await messagesSeenByTheLoop(params) as { id: string; runState?: string }[];
       expect(seen.map((m) => [m.id, m.runState ?? null])).toEqual([
-        ['u0', 'failed'],
+        ['u0', 'interrupted'],
         ['a0', null],
         ['msg-ledger-ok', 'pending'],
       ]);
@@ -1965,7 +2061,6 @@ describe('agentLoopHost', () => {
             ? testCase.expected
             : [...testCase.expected, { ...currentRow(runId), isStreaming: false }];
           expect(await messagesSeenByTheLoop(params)).toEqual(expectedForText(expected, {
-            runRecoveredAfterRestart: enUS.chat.runRecoveredAfterRestart,
             errorEmptyBody: enUS.chat.errorEmptyBody,
           }));
         });

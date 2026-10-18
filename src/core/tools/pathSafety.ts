@@ -6,6 +6,8 @@
 import { homeDir, tempDir } from '@tauri-apps/api/path';
 import { lstat } from '@tauri-apps/plugin-fs';
 import { canonicalizeElectronPathForPolicy } from '../../utils/electronHost';
+import { isMissingPathError } from '../../utils/fsErrors';
+import { normalizeLexicalPath, normalizeSeparators } from '../../utils/pathUtils';
 import { isMacOS, isWindows } from '../../utils/platform';
 import { createLogger } from '../logging/logger';
 
@@ -21,6 +23,8 @@ export type PathCheckResult = {
   permissionIsFolder?: boolean;
   capability?: 'read' | 'write';
   reason?: string;
+  /** A definite local restriction, distinct from an unverifiable path. */
+  denialKind?: 'blocked';
 };
 
 // Cache home directory
@@ -229,12 +233,26 @@ export function hasFullShellAuthorizationScope(scopeId: AuthorizationScopeId | u
   return authorizationScopePolicies.get(scopeId)?.shell === 'full';
 }
 
+/**
+ * The one spelling a workspace grant is keyed by: `.` segments, duplicate and
+ * trailing separators are folded away, so every spelling of one folder maps
+ * to one table entry for authorize, lookup and revoke alike.
+ */
 function normalizeWorkspacePath(path: string): string {
-  return path.replace(/\\/g, '/').replace(/\/+$/, '');
+  return normalizeLexicalPath(path);
 }
 
+/**
+ * A grant that would cover a whole filesystem root (`/`, `C:/`, a bare UNC
+ * prefix) or that climbs with a `..` segment never enters the table. Every
+ * legitimate producer hands over a plain absolute folder, so a climbing
+ * spelling is refused outright.
+ */
 function isBlankWorkspaceGrant(path: string): boolean {
-  return path.trim().length === 0;
+  const normalized = normalizeWorkspacePath(path);
+  if (normalized.trim().length === 0 || normalized === '/' || normalized === '//') return true;
+  if (/^[A-Za-z]:\/?$/.test(normalized)) return true;
+  return normalizeSeparators(path).split('/').includes('..');
 }
 
 function getAuthorizationMap(
@@ -592,14 +610,6 @@ async function isBlockedPath(path: string, homeOverride?: string): Promise<{ blo
   }
 
   return { blocked: false };
-}
-
-function isMissingPathError(error: unknown): boolean {
-  const code = typeof error === 'object' && error !== null && 'code' in error
-    ? String((error as { code?: unknown }).code ?? '')
-    : '';
-  if (code === 'ENOENT' || code === 'ENOTDIR') return true;
-  return /enoent|enotdir|not found|no such file|cannot find/i.test(String(error));
 }
 
 function pathComponentPrefixes(path: string, trustedRoot?: string): string[] {
@@ -960,7 +970,7 @@ export async function checkReadPath(path: string, scopeId?: AuthorizationScopeId
   // Check blocked paths first
   const blockCheck = await isBlockedPath(normalizedPath);
   if (blockCheck.blocked) {
-    return { allowed: false, reason: blockCheck.reason };
+    return { allowed: false, reason: blockCheck.reason, denialKind: 'blocked' };
   }
 
   const resolved = await resolvePathForPolicy(path);
@@ -972,7 +982,7 @@ export async function checkReadPath(path: string, scopeId?: AuthorizationScopeId
 
   const canonicalBlock = await isBlockedPath(resolved.canonicalPath, canonicalHome);
   if (canonicalBlock.blocked) {
-    return { allowed: false, reason: canonicalBlock.reason };
+    return { allowed: false, reason: canonicalBlock.reason, denialKind: 'blocked' };
   }
 
   // A lexical grant is only valid when the resolved target is also contained
@@ -1070,7 +1080,7 @@ export async function checkWritePath(
   // Check blocked paths first
   const blockCheck = await isBlockedPath(normalizedPath);
   if (blockCheck.blocked) {
-    return { allowed: false, reason: blockCheck.reason };
+    return { allowed: false, reason: blockCheck.reason, denialKind: 'blocked' };
   }
 
   // Abu's own config and state — checked before the authorized-workspace
@@ -1090,7 +1100,7 @@ export async function checkWritePath(
 
   const canonicalBlock = await isBlockedPath(resolved.canonicalPath, canonicalHome);
   if (canonicalBlock.blocked) {
-    return { allowed: false, reason: canonicalBlock.reason };
+    return { allowed: false, reason: canonicalBlock.reason, denialKind: 'blocked' };
   }
   if (await isAbuSelfManagedPath(resolved.canonicalPath, canonicalHome)) {
     return { allowed: false, reason: '禁止写入阿布自身的配置与状态目录' };
@@ -1188,7 +1198,7 @@ export async function checkWritePath(
 /**
  * Check if a path is safe for listing (more permissive than read/write)
  */
-export async function checkListPath(path: string, scopeId?: AuthorizationScopeId): Promise<PathCheckResult> {
+export async function checkListPath(path: string, scopeId?: AuthorizationScopeId, options: { followFinalSymlink?: boolean } = {}): Promise<PathCheckResult> {
   // Block UNC network paths
   if (isUNCPath(path)) {
     return { allowed: false, reason: 'UNC network paths are not supported' };
@@ -1200,10 +1210,10 @@ export async function checkListPath(path: string, scopeId?: AuthorizationScopeId
   // Block sensitive directories from listing too
   const blockCheck = await isBlockedPath(normalizedPath);
   if (blockCheck.blocked) {
-    return { allowed: false, reason: blockCheck.reason };
+    return { allowed: false, reason: blockCheck.reason, denialKind: 'blocked' };
   }
 
-  const resolved = await resolvePathForPolicy(path);
+  const resolved = await resolvePathForPolicy(path, options);
   if (!resolved.ok) return { allowed: false, reason: resolved.reason };
 
   const home = await getHomeDir();
@@ -1212,7 +1222,7 @@ export async function checkListPath(path: string, scopeId?: AuthorizationScopeId
 
   const canonicalBlock = await isBlockedPath(resolved.canonicalPath, canonicalHome);
   if (canonicalBlock.blocked) {
-    return { allowed: false, reason: canonicalBlock.reason };
+    return { allowed: false, reason: canonicalBlock.reason, denialKind: 'blocked' };
   }
 
   const workspaceMatch = await matchAuthorizedWorkspaces(

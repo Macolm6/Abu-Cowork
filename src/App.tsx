@@ -1,13 +1,15 @@
-import { useEffect, useState, useCallback, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useCallback, useSyncExternalStore } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 
 import { invoke } from '@tauri-apps/api/core';
 import { isTauriEnv } from '@/utils/tauriEnv';
+import { followSystemColorScheme } from '@/styles/colorScheme';
 import { ErrorBoundary } from '@/components/common/ErrorBoundary';
 import { traceErrorBoundaryCatch } from '@/core/observability/runtimeTrace';
 import { subscribeShellCrashReports } from '@/core/observability/shellCrashReports';
 import Sidebar from '@/components/sidebar/Sidebar';
+import { SidebarColumn } from '@/components/sidebar/SidebarColumn';
 import ChatView from '@/components/chat/ChatView';
 import ImageLightbox from '@/components/chat/ImageLightbox';
 import AutomationView from '@/components/automation/AutomationView';
@@ -17,7 +19,8 @@ import CapabilitySetupDialog from '@/components/settings/CapabilitySetupDialog';
 import ExtensionsView from '@/components/settings/ToolboxModal';
 import TeamView from '@/components/team/TeamView';
 import AppPageView from '@/components/app/AppPageView';
-import AppMarketDialog from '@/components/toolbox/plugins/AppMarketDialog';
+import AppMarketDialog from '@/components/app/AppMarketDialog';
+import AppAddConfirmDialog from '@/components/app/AppAddConfirmDialog';
 import TodoView from '@/components/todos/TodoView';
 import InboxView from '@/components/inbox/InboxView';
 import { useLabsFlag, resolveLabsFlag } from '@/core/labs/resolve';
@@ -25,10 +28,16 @@ import { LABS_TODOS_INBOX, LABS_PET } from '@/core/labs/registry';
 import { resolvePetBootAction } from '@/core/pet/petBoot';
 import { setPetVisible, hidePet } from '@/core/pet/petVisibility';
 import { PET_POSITION_EVENT, parsePetPosition } from '@/core/pet/petPositionSync';
+import { petMessageConversation } from '@/core/pet/petQuickMessage';
+import { useEnterpriseAppPolicy } from '@/core/enterprise/appPolicy';
 import RightPanel from '@/components/panel/RightPanel';
-import { isTabVisibleFor, useHasTabs, usePreviewStore } from '@/stores/previewStore';
+import { isTabVisibleFor, isWideTab, useHasTabs, usePreviewStore } from '@/stores/previewStore';
 import { resolveChatWidth, useViewportWidth } from '@/components/panel/panelWidths';
-import ToastContainer from '@/components/common/ToastContainer';
+import ToasterMount from '@/components/common/ToasterMount';
+import QuitRequestListener from '@/components/common/QuitRequestListener';
+import { noteQuitConfirmedByUser } from '@/core/session/quitFlush';
+import { isConversationRunningInSidecar } from '@/core/agent/sidecarRunPredicate';
+import { setToastPlacesForDecision } from '@/stores/toastStore';
 import WindowTitleBar from '@/components/window/WindowTitleBar';
 import { registerBuiltinTools } from '@/core/tools/builtins';
 import { initPlatform } from '@/utils/platform';
@@ -36,6 +45,7 @@ import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import { initNetworkProxy } from '@/core/sandbox/config';
 import { startSidecar } from '@/core/sidecar/sidecarManager';
+import { startClientLifecycle } from '@/core/app/clientLifecycle';
 
 // Initialize platform detection at module load time (before any component renders)
 // so that isWindows()/isMacOS() return correct values immediately
@@ -57,7 +67,7 @@ const platformInitialization = initPlatform().then((detectedPlatform) => {
   return 'unknown';
 });
 import { useSettingsStore, bootstrapSecrets } from '@/stores/settingsStore';
-import { TooltipProvider } from '@/components/ui/tooltip';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import ConversationSearchModal from '@/components/sidebar/ConversationSearchModal';
 import { isMacOS, isWindows } from '@/utils/platform';
 import { hasElectronCommandHost } from '@/utils/electronHost';
@@ -73,6 +83,7 @@ import { drainInbox } from '@/core/notice/inbox';
 import { startPetStatusBridge, resyncPetStatus } from '@/core/pet/petStatusBridge';
 import { schedulerEngine } from '@/core/scheduler/scheduler';
 import { startTeamStallWatchdog } from '@/core/team/stallWatchdog';
+import { installGoalDriver } from '@/core/goal/goalDriver';
 import { resumeTeamRunAfterRestart } from '@/core/team/resumeAfterRestart';
 import { triggerEngine } from '@/core/trigger/triggerEngine';
 import { imChannelRouter } from '@/core/im/channelRouter';
@@ -97,8 +108,7 @@ import SensitiveAuditDialog from '@/components/settings/SensitiveAuditDialog';
 import { checkForUpdate } from '@/core/updates/checker';
 import { usePingCadence } from '@/hooks/usePingCadence';
 import { fetchUnseenAnnouncements, markSeen, type AnnouncementItem } from '@/utils/consoleAnnouncement';
-import AnnouncementBanner from '@/components/common/AnnouncementBanner';
-import DisclaimerBanner from '@/components/common/DisclaimerBanner';
+import CornerBanners from '@/components/common/CornerBanners';
 import { pushDiagnosticSnapshot } from '@/utils/consoleDiagnostic';
 import { useDiagnosticStore } from '@/stores/diagnosticStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
@@ -161,7 +171,6 @@ function App() {
   const viewMode = useSettingsStore((s) => s.viewMode);
   const setViewMode = useSettingsStore((s) => s.setViewMode);
   const startNewConversation = useChatStore((s) => s.startNewConversation);
-  const setFileTreeMode = usePreviewStore((s) => s.setFileTreeMode);
   // Preview split (TRAE-style): when the workspace panel has WIDE content
   // (preview/browser/terminal — not the narrow summary tab), the chat column
   // takes a stable, resizable width and the workspace flex-fills the rest.
@@ -169,7 +178,11 @@ function App() {
   // in the store but must not size or reveal THIS conversation's panel.
   const hasAnyTab = useHasTabs();
   const hasWideContent = usePreviewStore(
-    (s) => s.tabs.some((t) => t.kind !== 'summary' && isTabVisibleFor(t, s.currentConversationId)),
+    (s) => s.tabs.some((t) => isWideTab(t) && isTabVisibleFor(t, s.currentConversationId)),
+  );
+  // The user opened this conversation's panel before it had a message or a tab.
+  const emptyPanelShown = usePreviewStore(
+    (s) => s.currentConversationId !== null && s.emptyPanelShown[s.currentConversationId] === true,
   );
   const chatWidth = usePreviewStore((s) => s.chatWidth);
   const viewportWidth = useViewportWidth();
@@ -256,24 +269,41 @@ function App() {
       root.classList.toggle('dark', dark);
     };
     if (theme === 'system') {
-      const mq = window.matchMedia('(prefers-color-scheme: dark)');
-      apply(mq.matches);
+      // The same rule the pet window follows (styles/colorScheme.ts).
+      const stopFollowing = followSystemColorScheme(root);
       syncNativeTheme(null);
-      const handler = (e: MediaQueryListEvent) => apply(e.matches);
-      mq.addEventListener('change', handler);
-      return () => mq.removeEventListener('change', handler);
+      return stopFollowing;
     } else {
       apply(theme === 'dark');
       syncNativeTheme(theme === 'dark' ? 'dark' : 'light');
     }
   }, [theme]);
 
-  // Right panel toggle only when there's an active conversation with messages
-  // The overlay panel toggle is now ONLY the "reopen panel" affordance: when the right
+  // Whether the right panel actually sits BESIDE the chat — mirrors RightPanel's own
+  // render gate: the conversation has a message or a tab, or a workspace whose panel
+  // the user asked for. Drives the chat's right margin: a tight 4px gutter between
+  // the two cards, vs 8px to the window edge when chat is alone.
+  const conversationHasMessages = (activeConv?.messages?.length ?? 0) > 0;
+  const conversationHasWorkspace = !!activeConv?.workspacePath;
+  const rightPanelBeside =
+    viewMode === 'chat' &&
+    !rightPanelCollapsed &&
+    (conversationHasMessages || hasAnyTab || (conversationHasWorkspace && emptyPanelShown));
+  // The overlay panel toggle is ONLY the "open the panel" affordance: when the right
   // panel is open it carries its own collapse button in the workspace tab strip, so the
-  // overlay would just double it up. Show the overlay only while the panel is collapsed
-  // (and there's a conversation to show a panel for).
-  const showRightPanelToggle = viewMode === 'chat' && ((activeConv?.messages?.length ?? 0) > 0 || hasAnyTab) && rightPanelCollapsed;
+  // overlay would just double it up. Show the overlay only while the panel is off the
+  // page and the conversation has something a panel can show: a message, a tab, or a
+  // workspace folder whose files it can list.
+  const showRightPanelToggle =
+    viewMode === 'chat' &&
+    !rightPanelBeside &&
+    (conversationHasMessages || hasAnyTab || conversationHasWorkspace);
+  // A conversation with no message and no tab has its panel off the page whatever the
+  // collapse setting says; opening it there is a request of its own.
+  const openRightPanel = () => {
+    if (conversationHasMessages || hasAnyTab) toggleRightPanel();
+    else usePreviewStore.getState().showEmptyPanel();
+  };
   // Lives in previewStore (not local state) so BrowserTab can hide the native
   // browser webview while the dialog is up — otherwise the webview paints over
   // it and the user cannot see or click the close confirmation.
@@ -282,14 +312,17 @@ function App() {
   const [searchModalOpen, setSearchModalOpen] = useState(false);
   const [pendingAnnouncements, setPendingAnnouncements] = useState<AnnouncementItem[]>([]);
   useDeepLinkEnroll();
+  useEffect(() => startClientLifecycle(), []);
   const hasRunningAgent = useChatStore((s) =>
     Object.values(s.conversations).some((c) => c.status === 'running')
   );
 
   const handleQuit = useCallback(() => {
     setShowCloseDialog(false);
+    // The close dialog showed its running-task warning: the quit is not asked about again.
+    if (hasRunningAgent) noteQuitConfirmedByUser();
     invoke('app_exit');
-  }, [setShowCloseDialog]);
+  }, [setShowCloseDialog, hasRunningAgent]);
 
   const handleMinimize = useCallback(() => {
     setShowCloseDialog(false);
@@ -382,19 +415,16 @@ function App() {
     };
   }, []);
 
-  // Pet window sends a message to the currently active conversation
+  // Pet window sends a message; `petMessageConversation` names the conversation it goes to.
+  const { allowExit } = useEnterpriseAppPolicy();
+  const allowExitRef = useRef(allowExit);
+  useEffect(() => { allowExitRef.current = allowExit; }, [allowExit]);
   useEffect(() => {
     let unlistenFn: (() => void) | null = null;
     let cancelled = false;
     listen('pet-send-message', (event) => {
       const { text, conversationId } = event.payload as { text: string; conversationId?: string | null };
-      const store = useChatStore.getState();
-      // A waiting-state inline reply targets the conversation the notice
-      // pointed at; a plain quick message falls back to the active one.
-      const convId =
-        (conversationId && store.conversations[conversationId] ? conversationId : null) ??
-        store.activeConversationId ??
-        store.createConversation(null);
+      const convId = petMessageConversation(conversationId, { leaveApp: allowExitRef.current });
       runAgentLoopDispatched(convId, text, { initiatedBy: 'user' }).catch((err) => {
         console.warn('[pet-send-message] runAgentLoopDispatched error:', err);
       });
@@ -599,6 +629,7 @@ function App() {
       triggerEngine.start();
       imChannelRouter.start();
       startTeamStallWatchdog();
+      installGoalDriver();
       reconcileIMSessions();
       // Migrate old memory systems (entries.json / memory.md) to memdir (.md files),
       // then run the one-shot secret sweep over existing memories — global dir,
@@ -651,27 +682,22 @@ function App() {
               },
             });
           }
-          // Load conversation from disk so messages are available
+          // Load conversation from disk so messages are available. Loading
+          // settles the interrupted turn's user row, which is where the
+          // conversation says what happened to it.
           await useChatStore.getState().loadConversation(cp.conversationId);
-          // Add a system message indicating the interruption
-          const statusText = cp.status === 'tool_executing'
-            ? `执行工具时中断` : `等待模型响应时中断`;
-          useChatStore.getState().addMessage(cp.conversationId, {
-            id: `recovery-${Date.now().toString(36)}`,
-            role: 'assistant',
-            content: `⚠️ 上次对话在第 ${cp.turnCount} 轮${statusText}。你可以继续发送消息恢复工作。`,
-            timestamp: Date.now(),
-            isSystem: true,
-            isRecoveryNotice: true,
-          });
           await clearCheckpoint(cp.conversationId);
           // A team run continues on its own from where it stopped (block R);
           // an ordinary conversation still waits for the user.
           void resumeTeamRunAfterRestart(cp.conversationId, cp.turnCount);
           // Do NOT auto-navigate — app always starts on welcome screen.
-          // The recovery message is visible when user clicks the conversation in sidebar.
         }
       }).catch(() => {});
+      // Hold the kept copies of all conversations under their total limit.
+      // A failure is left unhandled so it reaches the console.
+      void import('@/core/session/outputSnapshots').then(({ enforceTotalCopyLimit }) => (
+        enforceTotalCopyLimit(isConversationRunningInSidecar)
+      ));
       // Give unattended runs a way to ask. Until this is installed the
       // confirmation seam keeps its fail-closed default ("nobody to ask, so
       // no"), so this must run alongside the inbound dispatcher that delivers
@@ -833,13 +859,6 @@ function App() {
   // on the summary tab the chat flex-fills and the panel is a fixed details column.
   const previewSplit = viewMode === 'chat' && hasWideContent && !rightPanelCollapsed;
   const previewChatWidth = resolveChatWidth(chatWidth, viewportWidth, !sidebarCollapsed);
-  // Whether the right panel actually sits BESIDE the chat (either tab) — mirrors
-  // RightPanel's own render gate. Drives the chat's right margin: a tight 4px
-  // gutter between the two cards, vs 8px to the window edge when chat is alone.
-  const rightPanelBeside =
-    viewMode === 'chat' &&
-    !rightPanelCollapsed &&
-    (((activeConv?.messages?.length ?? 0) > 0) || hasAnyTab);
 
   const windowTitleBarProps = {
     platform: desktopPlatform,
@@ -848,15 +867,14 @@ function App() {
     showSearch: viewMode !== 'settings',
     showNewTask: sidebarCollapsed && viewMode !== 'settings',
     showRightPanelToggle,
-    rightPanelCollapsed,
+    rightPanelCollapsed: !rightPanelBeside,
     onToggleSidebar: toggleSidebar,
     onOpenSearch: () => setSearchModalOpen(true),
     onNewTask: () => {
       startNewConversation();
       setViewMode('chat');
-      setFileTreeMode(false);
     },
-    onToggleRightPanel: toggleRightPanel,
+    onToggleRightPanel: openRightPanel,
     onOpenWindowMenu: (
       group: 'edit' | 'window' | 'help',
       anchor: { x: number; y: number },
@@ -877,10 +895,11 @@ function App() {
 
   return (
     <ErrorBoundary onError={traceAppRootRenderError}>
-    <TooltipProvider delayDuration={200}>
+    {/* A dialog or question on screen hides the native browser view, which paints above the page. */}
+    <DesignSystemProvider onModalChange={usePreviewStore.getState().setDsModalOpen} onDecisionChange={setToastPlacesForDecision}>
       <div
         data-abu-app-shell
-        className="relative flex h-full w-full flex-col overflow-hidden bg-[var(--abu-bg-canvas)]"
+        className="relative flex h-full w-full flex-col overflow-hidden bg-desk"
       >
         {/* Chromium builds the OS drag region by walking the layout tree in
             DOCUMENT order, unioning `drag` rects and subtracting `no-drag`
@@ -894,19 +913,11 @@ function App() {
 
         <div
           data-abu-app-layout
-          className="flex min-h-0 w-full flex-1 overflow-hidden bg-[var(--abu-bg-canvas)]"
+          className="flex min-h-0 w-full flex-1 overflow-hidden"
         >
-          {/* Sidebar - width changes are always instant (no slide animation). */}
-          <div
-            className="flex shrink-0 flex-col overflow-hidden"
-            style={{
-              width: sidebarCollapsed ? 0 : 260,
-            }}
-          >
-            <div className="min-h-0 flex-1">
-              <Sidebar windowsWorkspaceHeader={windowsWorkspaceHeader} />
-            </div>
-          </div>
+          <SidebarColumn collapsed={sidebarCollapsed}>
+            <Sidebar windowsWorkspaceHeader={windowsWorkspaceHeader} />
+          </SidebarColumn>
 
           <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
             {/* Only the exposed canvas gutters are draggable. The raised cards
@@ -919,8 +930,8 @@ function App() {
               <main
                 data-electron-no-drag
                 className={cn(
-                  'relative bg-[var(--abu-bg-base)]',
-                  'mt-2 mb-2 ml-2 rounded-[var(--abu-radius-panel)] border border-[var(--abu-border)] shadow-[var(--abu-shadow-card)] overflow-hidden',
+                  'relative bg-surface',
+                  'mt-2 mb-2 ml-2 rounded-panel shadow-panel overflow-hidden',
                   previewSplit ? 'shrink-0' : 'flex-1 min-w-0',
                   // Right panel beside chat (preview OR summary): tighter 4px gutter; otherwise 8px to the window edge.
                   rightPanelBeside ? 'mr-1' : 'mr-2',
@@ -949,7 +960,7 @@ function App() {
 
         {mac && <WindowTitleBar {...windowTitleBarProps} />}
 
-        <ToastContainer />
+        <ToasterMount />
 
         <ImageLightbox />
 
@@ -957,6 +968,8 @@ function App() {
 
         {/* 应用市场 — one dialog for the whole shell, self-gates on appStore. */}
         <AppMarketDialog />
+        {/* The add / update / preview confirmation of a flow started outside the app market (the app home). */}
+        <AppAddConfirmDialog within="page" />
 
         {/* System settings — overlay dialog, self-gates on systemSettingsOpen */}
         <SystemSettingsDialog />
@@ -966,6 +979,8 @@ function App() {
 
         {/* Task-local capability setup — suspends the exact requesting tool call. */}
         <CapabilitySetupDialog />
+
+        <QuitRequestListener />
 
         <CloseDialog
           open={showCloseDialog}
@@ -981,28 +996,22 @@ function App() {
             hasRunSensitiveAudit_v015 settings flag. */}
         <SensitiveAuditDialog />
 
-        {/* First-launch disclaimer banner — shows once until dismissed.
-            Self-gates on hasAcknowledgedDisclaimer in settingsStore. */}
-        <DisclaimerBanner />
-
-        {/* Enterprise policy confirmation modal (z-[60], above all overlays).
-            Only appears when the tool dispatcher detects a require_confirmation policy. */}
+        {/* Enterprise policy confirmation: an approval layer since batch 9; renders nothing in the OSS build. */}
         <PolicyConfirmModal />
 
-        {/* Cloud announcement banner — shows the first unseen announcement */}
-        {pendingAnnouncements.length > 0 && pendingAnnouncements[0] && (
-          <AnnouncementBanner
-            item={pendingAnnouncements[0]}
-            onDismiss={() => {
-              const id = pendingAnnouncements[0]?.id;
-              if (id != null) markSeen(id);
-              setPendingAnnouncements((prev) => prev.slice(1));
-            }}
-          />
-        )}
+        {/* The corner banners, one at a time: the first-launch disclaimer until it is
+            acknowledged, then the first unseen cloud announcement. */}
+        <CornerBanners
+          announcement={pendingAnnouncements[0]}
+          onDismissAnnouncement={() => {
+            const id = pendingAnnouncements[0]?.id;
+            if (id != null) markSeen(id);
+            setPendingAnnouncements((prev) => prev.slice(1));
+          }}
+        />
 
       </div>
-    </TooltipProvider>
+    </DesignSystemProvider>
     </ErrorBoundary>
   );
 }

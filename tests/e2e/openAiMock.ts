@@ -23,7 +23,8 @@ export interface MockRequest {
 }
 
 export type MockReplyPlan =
-  | { kind: 'complete'; responseText: string }
+  /** `chunks`: how many streamed deltas carry the text (default 2). */
+  | { kind: 'complete'; responseText: string; chunks?: number }
   | {
       arguments: Record<string, unknown>;
       kind: 'tool-call';
@@ -145,7 +146,11 @@ export async function startOpenAiMock(
         'content-type': 'application/json; charset=utf-8',
       });
       if (replyPlan.kind === 'hold-open') {
-        res.end(JSON.stringify({ error: 'hold-open replies require a streaming request' }));
+        // Tool-enabled requests are non-streaming, so there is no partial
+        // text to send: hold the response until the client aborts it.
+        res.once('close', () => {
+          mockRequest.responseAborted = !res.writableEnded;
+        });
         return;
       }
       const message = replyPlan.kind === 'tool-call'
@@ -197,14 +202,14 @@ export async function startOpenAiMock(
       return;
     }
 
-    const { responseText } = replyPlan;
-    const splitAt = Math.ceil(responseText.length / 2);
-    res.write(sseChunk(responseText.slice(0, splitAt), null));
+    const { responseText, chunks = 2 } = replyPlan;
+    const chunkLength = Math.ceil(responseText.length / chunks);
     // Normal streaming providers deliver several deltas before their terminal
     // frame; preserve that ordering across the renderer's RAF token buffer.
-    await new Promise<void>((resolve) => setTimeout(resolve, 50));
-    res.write(sseChunk(responseText.slice(splitAt), null));
-    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    for (let start = 0; start < responseText.length; start += chunkLength) {
+      res.write(sseChunk(responseText.slice(start, start + chunkLength), null));
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    }
     res.write(sseChunk('', 'stop'));
     res.end('data: [DONE]\n\n');
   });

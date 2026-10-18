@@ -253,6 +253,32 @@ describe('buildSystemPrompt - structure', () => {
     expect(sectionText).not.toMatch(/\d{1,2}:\d{2}/);
   });
 
+  it('lists a skill by its description; the display description stays out of the prompt', async () => {
+    const { skillLoader } = await import('../skill/loader');
+    vi.mocked(skillLoader.getAvailableSkills).mockReturnValueOnce([
+      {
+        name: 'alert-sop',
+        description: '自动分析告警信息，按SOP排查问题并生成处理报告',
+        displayDescription: { 'zh-CN': '界面上显示的告警简介', 'en-US': 'Alert summary shown in the interface' },
+        trigger: '收到告警消息需要自动排查处理',
+        content: '', filePath: '/skills/alert-sop/SKILL.md', skillDir: '/skills/alert-sop',
+      },
+      {
+        name: 'docx',
+        description: 'Use this skill whenever the user wants to create Word documents.',
+        displayDescription: { 'zh-CN': '创建、读取和编辑 Word 文档（.docx）', 'en-US': 'Create, read and edit Word documents (.docx)' },
+        content: '', filePath: '/skills/docx/SKILL.md', skillDir: '/skills/docx',
+      },
+    ]);
+    const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
+    expect(prompt).toContain('- alert-sop: 自动分析告警信息，按SOP排查问题并生成处理报告\n    TRIGGER: 收到告警消息需要自动排查处理');
+    expect(prompt).toContain('- /docx — Use this skill whenever the user wants to create Word documents.');
+    expect(prompt).not.toContain('界面上显示的告警简介');
+    expect(prompt).not.toContain('Alert summary shown in the interface');
+    expect(prompt).not.toContain('Create, read and edit Word documents (.docx)');
+    expect(prompt).not.toContain('创建、读取和编辑 Word 文档（.docx）');
+  });
+
   it('includes workspace path', async () => {
     const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
     expect(prompt).toContain('/test/workspace');
@@ -273,7 +299,7 @@ describe('buildSystemPrompt - structure', () => {
 
   it('keeps generated previews inside Abu unless the user explicitly requests an external browser', async () => {
     const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
-    expect(prompt).toContain("let Abu's side preview/file card handle it");
+    expect(prompt).toContain('- Hand a finished file to the user → when the present_files tool is available, call it with the file near the end of the turn; Abu shows it as a file card under your reply and opens the side preview. Do not run macOS `open`');
     expect(prompt).toContain('Do not run macOS `open`');
     expect(prompt).toContain('explicitly asks for an external/system browser');
   });

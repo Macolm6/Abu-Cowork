@@ -1,23 +1,31 @@
-import ReactMarkdown from 'react-markdown';
-import type { PluggableList } from 'unified';
-import remarkGfm from 'remark-gfm';
-import remarkBreaks from 'remark-breaks';
-import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import ReactMarkdown, { defaultUrlTransform, type ExtraProps } from 'react-markdown';
+// The PrismLight module itself: the package root's CommonJS entry, which Vitest
+// resolves, also loads every Prism grammar.
+import SyntaxHighlighter from 'react-syntax-highlighter/dist/esm/prism-light';
 import tsx from 'react-syntax-highlighter/dist/esm/languages/prism/tsx';
 import python from 'react-syntax-highlighter/dist/esm/languages/prism/python';
 import bash from 'react-syntax-highlighter/dist/esm/languages/prism/bash';
 import json from 'react-syntax-highlighter/dist/esm/languages/prism/json';
 import markdown from 'react-syntax-highlighter/dist/esm/languages/prism/markdown';
-import { useState, memo, useMemo, useCallback, Suspense, type ReactNode } from 'react';
-import { Copy, Check, Download, ChevronDown, ChevronUp } from 'lucide-react';
+import { useState, memo, useMemo, useCallback, Suspense, lazy, type ComponentProps, type ReactNode } from 'react';
 import { useI18n, format } from '@/i18n';
-import { useSettingsStore } from '@/stores/settingsStore';
+import { cn } from '@/lib/utils';
 import type { SearchResult } from '@/types';
+import { usePreviewStore } from '@/stores/previewStore';
+import { getBaseName } from '@/utils/pathUtils';
+import type { FileMention } from '@/utils/turnFileMentions';
+import { Button, IconButton } from '@/components/ds/button';
+import { AppIcons } from '@/components/ds/icons';
+import { Link } from '@/components/ds/link';
+import { Pressable } from '@/components/ds/pressable';
+import { Spinner } from '@/components/ds/spinner';
 
 import { getCodeBlockRenderer } from './codeBlockRenderers';
+import { useCodeLanguage } from './codeLanguages';
+import { createMarkdownSplitter, parseMarkdown, type MarkdownBlock } from './markdownBlocks';
+import { REMARK_PLUGINS } from './markdownPlugins';
 import { closeOpenFences } from './markdownUtils';
+import { SYNTAX_THEME } from './syntaxTheme';
 
 SyntaxHighlighter.registerLanguage('tsx', tsx);
 SyntaxHighlighter.registerLanguage('typescript', tsx);
@@ -43,13 +51,13 @@ function CitationBadge({ index, title, onClick }: {
     onClick?.(index);
   };
   return (
-    <span
+    <Pressable
       onClick={handleClick}
-      className="inline-flex items-center justify-center mx-[2px] px-[5px] py-[1px] text-caption text-[var(--abu-clay)] bg-[var(--abu-clay-bg)] rounded cursor-pointer hover:bg-[var(--abu-clay-bg-15)] transition-colors leading-tight align-baseline"
-      title={title}
+      aria-label={title ? `[${index}] ${title}` : String(index)}
+      className="mx-1 inline-flex items-center justify-center rounded-control bg-fill px-1 align-baseline text-caption text-label-secondary transition-colors duration-fast hover:bg-fill-hover"
     >
       {index}
-    </span>
+    </Pressable>
   );
 }
 
@@ -156,12 +164,13 @@ const LANG_EXT_MAP: Record<string, string> = {
 
 const COLLAPSE_THRESHOLD = 15;
 
-export function CollapsibleCodeBlock({ codeString, language }: { codeString: string; language: string | null }) {
+// Memoized: ReactMarkdown rebuilds its tree on every streamed token, and a finished block
+// (with its toolbar tooltips) should not re-render while the text after it grows.
+export const CollapsibleCodeBlock = memo(function CollapsibleCodeBlock({ codeString, language }: { codeString: string; language: string | null }) {
   const { t } = useI18n();
   const [collapsed, setCollapsed] = useState(true);
   const [copied, setCopied] = useState(false);
-  const theme = useSettingsStore(s => s.theme);
-  const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  const highlightLanguage = useCodeLanguage(language);
 
   const lineCount = codeString.split('\n').length;
   const shouldCollapse = lineCount > COLLAPSE_THRESHOLD;
@@ -198,7 +207,7 @@ export function CollapsibleCodeBlock({ codeString, language }: { codeString: str
   }, [codeString, language]);
 
   return (
-    <div className="relative my-3 rounded-lg overflow-hidden max-w-full">
+    <div className="relative my-3 max-w-full overflow-hidden rounded-panel bg-code">
       {/* Code area */}
       <div className="relative">
         <div
@@ -209,18 +218,19 @@ export function CollapsibleCodeBlock({ codeString, language }: { codeString: str
           }
         >
           <SyntaxHighlighter
-            style={isDark ? oneDark : oneLight}
-            language={language || 'text'}
+            style={SYNTAX_THEME}
+            language={highlightLanguage}
             PreTag="div"
             wrapLongLines={true}
             customStyle={{
               margin: 0,
               borderRadius: 0,
-              fontSize: 'var(--text-minor)', /* token-driven — aligns code blocks with the 12px content tier */
               padding: '12px 16px',
               overflowX: 'auto',
               maxWidth: '100%',
-              background: 'var(--abu-bg-muted)',
+              background: 'var(--ds-code)',
+              fontSize: 'var(--text-mono)',
+              lineHeight: 'var(--text-mono--line-height)',
             }}
             codeTagProps={{ style: { background: 'transparent' } }}
           >
@@ -229,52 +239,45 @@ export function CollapsibleCodeBlock({ codeString, language }: { codeString: str
         </div>
         {/* Gradient overlay when collapsed */}
         {isCollapsed && (
-          <div className="absolute bottom-0 left-0 right-0 h-20 bg-gradient-to-t from-[var(--abu-bg-muted)] to-transparent flex items-end justify-center pb-2">
-            <button
-              onClick={() => setCollapsed(false)}
-              className="flex items-center gap-1 px-3 py-1 rounded-full bg-black/5 hover:bg-black/10 text-minor text-[var(--abu-text-secondary)] transition-colors"
-            >
-              <ChevronDown className="h-3.5 w-3.5" />
+          <div className="absolute bottom-0 left-0 right-0 flex h-20 items-end justify-center bg-gradient-to-t from-code to-transparent pb-2">
+            <Button variant="secondary" size="sm" icon={AppIcons.expand} onClick={() => setCollapsed(false)}>
               {format(t.chat.codeBlockExpand, { lines: String(lineCount) })}
-            </button>
+            </Button>
           </div>
         )}
       </div>
       {/* Bottom toolbar — always visible */}
-      <div className="flex items-center justify-between px-3 py-1.5 bg-[var(--abu-bg-active)] text-minor text-[var(--abu-text-tertiary)] border-t border-[var(--abu-border-subtle)]">
+      <div className="flex items-center justify-between border-t border-separator bg-code px-3 py-1 text-ui-sm text-label-secondary">
         <div className="flex items-center gap-2">
           {language && <span>{language}</span>}
           {shouldCollapse && !isCollapsed && (
-            <button
-              onClick={() => setCollapsed(true)}
-              className="flex items-center gap-0.5 hover:text-[var(--abu-text-primary)] transition-colors"
-            >
-              <ChevronUp className="h-3.5 w-3.5" />
+            <Button variant="plain" size="sm" icon={AppIcons.collapse} onClick={() => setCollapsed(true)}>
               {t.chat.codeBlockCollapse}
-            </button>
+            </Button>
           )}
         </div>
         <div className="flex items-center gap-1">
-          <button
+          <IconButton
+            size="sm"
+            icon={copied ? AppIcons.done : AppIcons.copy}
+            label={t.chat.copy}
             onClick={handleCopy}
-            className="p-1 rounded hover:bg-black/5 transition-colors"
-            title={copied ? '✓' : 'Copy'}
-          >
-            {copied ? (
-              <Check className="h-3.5 w-3.5 text-[var(--abu-success)]" />
-            ) : (
-              <Copy className="h-3.5 w-3.5" />
-            )}
-          </button>
-          <button
-            onClick={handleSaveAs}
-            className="p-1 rounded hover:bg-black/5 transition-colors"
-            title={t.chat.codeBlockSaveAs}
-          >
-            <Download className="h-3.5 w-3.5" />
-          </button>
+            className={cn(copied && 'text-success hover:text-success')}
+          />
+          <IconButton size="sm" icon={AppIcons.download} label={t.chat.codeBlockSaveAs} onClick={handleSaveAs} />
         </div>
       </div>
+    </div>
+  );
+});
+
+// Placeholder while a diagram or widget renderer chunk loads. A component of its own
+// because the markdown `code` override is a plain function and cannot call hooks.
+function CodeRendererLoading() {
+  const { t } = useI18n();
+  return (
+    <div className="my-3 flex justify-center rounded-panel bg-code p-6">
+      <Spinner label={t.common.loading} />
     </div>
   );
 }
@@ -282,46 +285,90 @@ export function CollapsibleCodeBlock({ codeString, language }: { codeString: str
 // closeOpenFences moved to ./markdownUtils.ts so non-component utilities can
 // be imported and unit-tested without tripping react-refresh/only-export-components.
 
-// Stable references — avoid recreating on every render.
-// `singleTilde: false` — a lone `~` must NOT become strikethrough. Chinese
-// chat text uses `~` as a casual tone softener ("好的~", "操作了~"), and
-// remark-gfm's default (`singleTilde: true`) turns any two of them in one
-// message into a <del> span over the text between them. Require `~~` for
-// strikethrough instead.
-const remarkPluginsStable: PluggableList = [[remarkGfm, { singleTilde: false }], remarkBreaks];
+const MathFormula = lazy(() => import('./MathFormula'));
+
+/**
+ * A TeX formula. Its source shows while KaTeX loads, and stays while `pending`:
+ * a display formula still being streamed has no closing delimiter yet, and
+ * KaTeX would render every half-written frame as an error.
+ */
+function MathBlock({ tex, display, pending = false }: { tex: string; display: boolean; pending?: boolean }) {
+  const source = display
+    ? <div className="my-3 whitespace-pre-wrap font-code text-mono text-label-secondary">{tex}</div>
+    : <code className="font-code text-code-inline text-label-secondary">{tex}</code>;
+  if (pending) return source;
+  return (
+    <Suspense fallback={source}>
+      <MathFormula tex={tex} display={display} />
+    </Suspense>
+  );
+}
+
 const SAFE_URL_PATTERN = /^(https?:\/\/|mailto:|tel:|#)/i;
 
 type MarkdownVariant = 'assistant' | 'user';
+type FileMentionResolver = (text: string) => FileMention | null;
 
-/** Build markdown component overrides, optionally citation-aware */
+// react-markdown reads the drive letter of `C:/…` as a URL scheme and empties the
+// link target; a drive path is kept so it can be matched against the turn's files.
+const WINDOWS_DRIVE_PATH = /^[A-Za-z]:\//;
+function keepLocalPathTargets(url: string): string {
+  return WINDOWS_DRIVE_PATH.test(url) ? url : defaultUrlTransform(url);
+}
+
+/** A file name or path in a reply that opens the file in the side preview. */
+function FileMentionButton({ mention, children }: { mention: FileMention; children?: ReactNode }) {
+  const { t } = useI18n();
+  return (
+    <Pressable
+      onClick={() => usePreviewStore.getState().openPreview(mention.path, { line: mention.line })}
+      aria-label={format(t.chat.openFileInPreview, { name: getBaseName(mention.path) })}
+      className="inline max-w-full break-all rounded-control text-left text-link underline-offset-2 hover:underline"
+    >
+      {children}
+    </Pressable>
+  );
+}
+
+/** Build markdown component overrides, optionally citation-aware and file-mention-aware */
 function buildMarkdownComponents(
   searchResults: SearchResult[] | null,
   onCitationClick?: (index: number) => void,
   variant: MarkdownVariant = 'assistant',
+  resolveFileMention?: FileMentionResolver,
 ) {
   const sr = searchResults && searchResults.length > 0 ? searchResults : null;
   const isUser = variant === 'user';
   return {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     code({ className, children, ...props }: any) {
-      const match = /language-(\w+)/.exec(className || '');
+      const match = /language-(\S+)/.exec(className || '');
       const codeString = String(children).replace(/\n$/, '');
+
+      // `$…$`, `\(…\)` and inline `$$…$$` arrive as `math-inline`; `$$` and `\[`
+      // blocks as `math-display`, and a ```math fence as plain `language-math`.
+      if (match?.[1] === 'math') {
+        return <MathBlock tex={codeString} display={!/\bmath-inline\b/.test(className)} />;
+      }
+
       const isInline = !match && !codeString.includes('\n');
 
       if (isInline) {
+        const mention = resolveFileMention ? resolveFileMention(codeString) : null;
+        if (mention) {
+          return (
+            <FileMentionButton mention={mention}>
+              <code className="rounded-control bg-code px-1 font-code text-code-inline text-link">{children}</code>
+            </FileMentionButton>
+          );
+        }
         // Detect hex color codes and show a swatch
         const hexMatch = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.exec(codeString.trim());
         return (
-          <code
-            className={isUser
-              ? 'px-1 py-0.5 rounded bg-[var(--abu-bg-pressed)] text-[var(--abu-text-primary)] text-[0.9em]'
-              : 'px-1 py-0.5 rounded bg-[var(--abu-bg-active)] text-[var(--abu-text-secondary)] text-[0.9em]'
-            }
-            {...props}
-          >
+          <code className="rounded-control bg-code px-1 font-code text-code-inline text-label" {...props}>
             {hexMatch && (
               <span
-                className="inline-block w-3 h-3 rounded-sm mr-1 align-middle border border-black/10"
+                className="mr-1 inline-block size-3 rounded-full border border-separator align-middle"
                 style={{ backgroundColor: hexMatch[0] }}
               />
             )}
@@ -334,7 +381,7 @@ function buildMarkdownComponents(
       if (renderer) {
         const BlockComponent = renderer.component;
         return (
-          <Suspense fallback={<div className="my-3 rounded-lg bg-[var(--abu-bg-muted)] p-6 text-center text-body text-[var(--abu-text-muted)]">…</div>}>
+          <Suspense fallback={<CodeRendererLoading />}>
             <BlockComponent code={codeString} />
           </Suspense>
         );
@@ -348,20 +395,29 @@ function buildMarkdownComponents(
       );
     },
 
+    // A display formula comes as <pre><code class="language-math">: it is no code
+    // block, so it is not set in the block's preformatted box.
+    pre({ node, children, ...props }: ComponentProps<'pre'> & ExtraProps) {
+      const code = node?.children[0];
+      const classes = code?.type === 'element' ? code.properties.className : undefined;
+      if (Array.isArray(classes) && classes.includes('language-math')) return <>{children}</>;
+      return <pre {...props}>{children}</pre>;
+    },
+
     img() {
       return null;
     },
     p({ children }: { children?: ReactNode }) {
-      return <p className={isUser ? 'my-1 leading-relaxed text-body' : 'my-2 leading-7 text-body text-[var(--abu-text-secondary)]'}>{processChildren(children, sr, onCitationClick)}</p>;
+      return <p className={isUser ? 'my-1 text-body text-label' : 'my-2 text-body text-label'}>{processChildren(children, sr, onCitationClick)}</p>;
     },
     h1({ children }: { children?: ReactNode }) {
-      return <h1 className="text-h-md font-semibold mt-5 mb-2 text-[var(--abu-text-primary)]">{children}</h1>;
+      return <h1 className="mt-5 mb-2 text-h1 text-label">{children}</h1>;
     },
     h2({ children }: { children?: ReactNode }) {
-      return <h2 className="text-h-sm font-semibold mt-4 mb-2 text-[var(--abu-text-primary)]">{children}</h2>;
+      return <h2 className="mt-4 mb-2 text-h2 text-label">{children}</h2>;
     },
     h3({ children }: { children?: ReactNode }) {
-      return <h3 className="text-h-xs font-semibold mt-3 mb-1 text-[var(--abu-text-primary)]">{children}</h3>;
+      return <h3 className="mt-3 mb-1 text-h3 text-label">{children}</h3>;
     },
     ul({ children }: { children?: ReactNode }) {
       return <ul className="my-2 pl-6 list-outside list-disc space-y-1">{children}</ul>;
@@ -370,45 +426,52 @@ function buildMarkdownComponents(
       return <ol className="my-2 pl-6 list-outside list-decimal space-y-1">{children}</ol>;
     },
     li({ children }: { children?: ReactNode }) {
-      return <li className={isUser ? 'leading-relaxed text-body' : 'leading-7 text-body text-[var(--abu-text-secondary)]'}>{processChildren(children, sr, onCitationClick)}</li>;
+      return <li className="text-body text-label">{processChildren(children, sr, onCitationClick)}</li>;
     },
     blockquote({ children }: { children?: ReactNode }) {
       return (
-        <blockquote className="my-3 pl-3 border-l-2 italic border-[var(--abu-clay)] text-[var(--abu-text-tertiary)]">
+        <blockquote className="my-3 border-l-2 border-control-border pl-3 text-label-secondary">
           {children}
         </blockquote>
       );
     },
     a({ href, children }: { href?: string; children?: ReactNode }) {
-      const isLocalPath = /^(\/|[A-Za-z]:[/\\]|~\/)/.test(href ?? '');
+      // A target that is no web address may be a local path of this turn's files.
+      const mention = resolveFileMention && href && !SAFE_URL_PATTERN.test(href) ? resolveFileMention(href) : null;
+      if (mention) return <FileMentionButton mention={mention}>{children}</FileMentionButton>;
       const safeHref = SAFE_URL_PATTERN.test(href ?? '') ? href : undefined;
       return (
-        <a href={safeHref} target="_blank" rel="noopener noreferrer" className={isUser ? 'underline decoration-[var(--abu-text-tertiary)]' : isLocalPath ? 'text-[var(--abu-text-tertiary)] hover:underline hover:text-[var(--abu-text-secondary)]' : 'text-[var(--abu-text-tertiary)] hover:underline hover:text-[var(--abu-text-secondary)]'}>
+        <Link
+          href={safeHref}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={isUser ? 'text-label underline decoration-control-border' : undefined}
+        >
           {children}
-        </a>
+        </Link>
       );
     },
     strong({ children }: { children?: ReactNode }) {
-      return <strong className="font-semibold text-[var(--abu-text-primary)]">{children}</strong>;
+      return <strong className="font-semibold text-label">{children}</strong>;
     },
     table({ children }: { children?: ReactNode }) {
       return (
-        <div className="my-3 overflow-x-auto rounded-lg bg-[var(--abu-bg-muted)] border border-[var(--abu-border-subtle)]">
+        <div className="my-3 overflow-x-auto rounded-panel border border-separator">
           <table className="min-w-full text-body">{children}</table>
         </div>
       );
     },
     thead({ children }: { children?: ReactNode }) {
-      return <thead className="bg-[var(--abu-bg-muted)]">{children}</thead>;
+      return <thead className="bg-code">{children}</thead>;
     },
     th({ children }: { children?: ReactNode }) {
-      return <th className="px-3 py-2 min-w-[5rem] align-top text-left font-medium text-[var(--abu-text-secondary)]">{children}</th>;
+      return <th className="min-w-20 px-3 py-2 text-left align-top font-medium text-label">{children}</th>;
     },
     td({ children }: { children?: ReactNode }) {
-      return <td className="px-3 py-2 min-w-[5rem] align-top text-[var(--abu-text-secondary)]">{children}</td>;
+      return <td className="min-w-20 border-t border-separator px-3 py-2 align-top text-label">{children}</td>;
     },
     hr() {
-      return <hr className="my-4 border-[var(--abu-border)]" />;
+      return <hr className="my-4 border-separator" />;
     },
   };
 }
@@ -417,27 +480,110 @@ function buildMarkdownComponents(
 const defaultAssistantComponents = buildMarkdownComponents(null, undefined, 'assistant');
 const defaultUserComponents = buildMarkdownComponents(null, undefined, 'user');
 
+type MarkdownComponents = ReturnType<typeof buildMarkdownComponents>;
+type UrlTransform = typeof keepLocalPathTargets | undefined;
+
+/** One top-level block of a streaming reply, rendered again only when its own text changes. */
+const MarkdownBlockView = memo(function MarkdownBlockView({ block, components, urlTransform }: {
+  block: MarkdownBlock;
+  components: MarkdownComponents;
+  urlTransform: UrlTransform;
+}) {
+  if (block.pendingMath !== undefined) return <MathBlock tex={block.pendingMath} display pending />;
+  if (block.code) {
+    // Drawn the way react-markdown draws a code node (mdast-util-to-hast's `code`
+    // handler), so the block keeps its elements while its fence is open and after
+    // it closes; an open fence grows here without the block being parsed again.
+    const { lang, value, open } = block.code;
+    if (lang === 'math') return <MathBlock tex={value} display pending={open} />;
+    return <pre>{components.code({ className: lang ? `language-${lang}` : undefined, children: value ? `${value}\n` : undefined })}</pre>;
+  }
+  return (
+    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={components} urlTransform={urlTransform}>
+      {closeOpenFences(block.source)}
+    </ReactMarkdown>
+  );
+}, (before, after) =>
+  before.components === after.components
+  && before.urlTransform === after.urlTransform
+  && before.block.source === after.block.source
+  && before.block.pendingMath === after.block.pendingMath
+  && before.block.code?.value === after.block.code?.value
+  && before.block.code?.lang === after.block.code?.lang
+  && before.block.code?.open === after.block.code?.open);
+
+/** The whole reply as one document, with an unfinished display formula at its end set apart. */
+function WholeReply({ content, pendingMath, components, urlTransform }: {
+  content: string;
+  pendingMath: { start: number; tex: string } | null;
+  components: MarkdownComponents;
+  urlTransform: UrlTransform;
+}) {
+  const document = (
+    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={components} urlTransform={urlTransform}>
+      {closeOpenFences(pendingMath ? content.slice(0, pendingMath.start) : content)}
+    </ReactMarkdown>
+  );
+  // One shape with and without the formula, so the document keeps its elements when it closes.
+  return <>{document}{pendingMath && '\n'}{pendingMath && <MathBlock tex={pendingMath.tex} display pending />}</>;
+}
+
 interface MarkdownRendererProps {
   content: string;
   searchResults?: SearchResult[];
   onCitationClick?: (index: number) => void;
   variant?: MarkdownVariant;
+  /**
+   * Names the file of the turn that an inline code span or a link target refers
+   * to; such a span or link opens that file in the side preview. Pass a stable
+   * function: a new one rebuilds every rendered node.
+   */
+  resolveFileMention?: FileMentionResolver;
+  /**
+   * The reply is still arriving. From then on, for as long as this renderer is
+   * mounted, the reply renders block by block and a block whose text did not
+   * change is neither parsed nor rendered again; the finished reply therefore
+   * keeps the elements it streamed into.
+   */
+  streaming?: boolean;
 }
 
-export default memo(function MarkdownRenderer({ content, searchResults, onCitationClick, variant = 'assistant' }: MarkdownRendererProps) {
+export default memo(function MarkdownRenderer({ content, searchResults, onCitationClick, variant = 'assistant', resolveFileMention, streaming = false }: MarkdownRendererProps) {
   const components = useMemo(
-    () => (searchResults && searchResults.length > 0)
-      ? buildMarkdownComponents(searchResults ?? null, onCitationClick, variant)
+    () => ((searchResults && searchResults.length > 0) || resolveFileMention)
+      ? buildMarkdownComponents(searchResults ?? null, onCitationClick, variant, resolveFileMention)
       : variant === 'user' ? defaultUserComponents : defaultAssistantComponents,
-    [searchResults, onCitationClick, variant]
+    [searchResults, onCitationClick, variant, resolveFileMention]
   );
+  const urlTransform = resolveFileMention ? keepLocalPathTargets : undefined;
+
+  const [splitter] = useState(() => createMarkdownSplitter(parseMarkdown));
+  const [blockMode, setBlockMode] = useState(streaming);
+  if (streaming && !blockMode) setBlockMode(true);
+  const split = useMemo(() => (blockMode ? splitter(content) : null), [blockMode, splitter, content]);
+
+  if (split?.mode === 'blocks') {
+    const children: ReactNode[] = [];
+    split.blocks.forEach((block, index) => {
+      if (index > 0) children.push('\n');
+      children.push(
+        <MarkdownBlockView
+          key={block.key}
+          block={block}
+          components={components}
+          urlTransform={urlTransform}
+        />,
+      );
+    });
+    return <>{children}</>;
+  }
 
   return (
-    <ReactMarkdown
-      remarkPlugins={remarkPluginsStable}
+    <WholeReply
+      content={content}
+      pendingMath={split?.mode === 'whole' ? split.pendingMath : null}
       components={components}
-    >
-      {closeOpenFences(content)}
-    </ReactMarkdown>
+      urlTransform={urlTransform}
+    />
   );
 });

@@ -62,6 +62,7 @@ import type { Conversation, Message, AgentStatus, ToolCall } from '@/types';
 import type { ConversationMeta } from '@/core/session/conversationStorage';
 import type { ActiveSkillInfo } from '@/core/skill/activeSkillInstructions';
 import { appendBoundedSubagentToolCall } from '@/core/session/durableToolResultContent';
+import { sanitizeGoalState, type GoalState } from '@/core/goal/goalTypes';
 
 export interface ConversationRunMirrorSeed {
   conversation: Conversation;
@@ -77,6 +78,8 @@ export interface ConversationPatch {
   /** Travels with every `activeSkills` change: the same names, shell-resolved. */
   activeSkillInfo?: ActiveSkillInfo[];
   model?: { providerId: string; modelId: string };
+  /** Goal mode state; `null` = the goal was cleared. */
+  goal?: GoalState | null;
 }
 
 export interface ConversationRunMirror {
@@ -209,6 +212,7 @@ export function createConversationRunMirror(
           if (isError) tc.isError = true;
           if (hideScreenshot != null) tc.hideScreenshot = hideScreenshot;
           if (metadata?.computerStep) tc.computerStep = metadata.computerStep;
+          if (metadata?.fileChange) tc.fileChange = metadata.fileChange;
           if (tc.name === 'run_command' && metadata?.sandboxRecovery) {
             tc.sandboxRecovery = metadata.sandboxRecovery;
             tc.isError = true;
@@ -245,6 +249,7 @@ export function createConversationRunMirror(
         const tc = msg?.toolCalls?.find((t) => t.id === toolCallId);
         if (!tc) break;
         if (metadata.computerStep) tc.computerStep = metadata.computerStep;
+        if (metadata.fileChange) tc.fileChange = metadata.fileChange;
         if (
           metadata.subagentStopReason
           && !(tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed' && metadata.subagentStopReason === 'completed')
@@ -349,6 +354,12 @@ export function createConversationRunMirror(
     if (Object.prototype.hasOwnProperty.call(patch, 'model')) {
       conversation.model = patch.model;
       if (indexEntry) indexEntry = { ...indexEntry, model: patch.model };
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'goal')) {
+      // Validate: the patch crosses a process boundary.
+      const goal = sanitizeGoalState(patch.goal);
+      if (goal) conversation.goal = goal;
+      else delete conversation.goal;
     }
   }
 

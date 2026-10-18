@@ -32,7 +32,8 @@ import { describe, it, expect } from 'vitest';
 const REPO_ROOT = path.resolve(__dirname, '../..');
 const SCAN_DIRS = ['src', 'electron', 'sidecar', 'scripts', 'tests'];
 const SOURCE_EXT = new Set(['.ts', '.tsx', '.js', '.cjs', '.mjs', '.json']);
-const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.git', 'coverage']);
+// Bundled runtimes and Cargo output are generated artifacts.
+const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.git', 'coverage', '.runtime', 'target']);
 
 function collectSourceFiles(dir: string, out: string[] = []): string[] {
   let entries: fs.Dirent[];

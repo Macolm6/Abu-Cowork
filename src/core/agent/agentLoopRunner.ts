@@ -36,7 +36,13 @@ import { taskIdFor, useTeamConfirmationStore } from '@/stores/teamConfirmationSt
  */
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
 import { checkToolApproval, type ToolApprovalDecision } from '../tools/registry';
-import type { ToolExecutionContext, Conversation, Message, MessageContent, ToolExecutionMetadata, UpstreamErrorDetails } from '../../types';
+import { finalizeToolApproval } from '../tools/approvalFinalization';
+import { captureToolOperationOwner } from '../tools/operationAuthorization';
+import { requiresHostFileExecution } from '../tools/fileToolTargets';
+import { TOOL_NAMES } from '../tools/toolNames';
+import { withResponseFinalizer } from '../sidecar/responseFinalization';
+import type { ToolExecutionContext, Conversation, ConversationStatus, Message, MessageContent, ToolExecutionMetadata, UpstreamErrorDetails } from '../../types';
+import type { GoalState } from '../goal/goalTypes';
 import type { ComputerUseModelTier } from '../llm/modelCapabilities';
 import {
   onSidecarNotification,
@@ -53,6 +59,7 @@ import { CAPABILITY_AGENT_START_HISTORY_FROM_LEDGER } from '../sidecar/sidecarPr
 import { takeLedgerHistoryPoint } from '../session/ledgerHistoryPoint';
 import { parseHistoryUnavailableError, type HistoryUnavailableData } from '../ipc/historyUnavailable';
 import { applyDeltaFrames, type PortFrame } from './frameApplier';
+import { ACTIVE_RUN_STATES } from '../session/loadedMessageSanitizer';
 import { getExecutionPort } from './ports/executionPort';
 import { getChatDelta } from './ports/chatDelta';
 import { getConversationReader } from './ports/conversationReader';
@@ -143,7 +150,8 @@ import {
 } from './userInputQueue';
 import { registerSidecarRunPredicate } from './sidecarRunPredicate';
 import { bindWorkspaceFromWrite } from './defaultWorkspace';
-import { snapshotBeforeAiEdit } from '../../utils/aiEditSnapshots';
+import { captureTurnFileBefore, snapshotVersionBeforeAiEdit } from '../../utils/aiEditSnapshots';
+import { beginTurn as beginTurnChanges, endTurn as endTurnChanges } from '../session/turnChanges';
 import { getAuthorizedWritablePaths } from '../tools/pathSafety';
 import { deriveRunInteractionMode, type RunInitiator } from './runInteractionMode';
 import {
@@ -310,6 +318,7 @@ function rendererRuntimeOptions(
 // only needs these two.
 
 export interface AgentLoopRunOptions {
+  operationOwner?: import('../tools/operationAuthorization').ToolOperationOwner;
   requestCommandConfirmation?: (info: ConfirmationInfo, loopId?: string) => Promise<boolean>;
   requestFilePermission?: FilePermissionCallback;
   blockedTools?: string[];
@@ -424,6 +433,24 @@ export interface RunSession {
    * race each other and the final response can resolve before disk frames.
    */
   frameApplyTail?: Promise<void>;
+  /**
+   * The status the sidecar's loop gave the conversation when it ended, held
+   * back until this run's terminal state is in the ledger. The conversation
+   * stays `running` in between, so a composer that shows Send means the turn
+   * is saved: a quit at that moment loses nothing. Released by the
+   * dispatcher's teardown; a failed or stopped run sets its own status and
+   * drops this one.
+   */
+  heldFinalStatus?: ConversationStatus;
+  /** Armed by a Stop pressed while `heldFinalStatus` is held; see `onShellAbort`. */
+  heldStopTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * The application is leaving and this run's user row says so
+   * (`closeRunningRunsForExit`). An active state reported after that no
+   * longer reaches the row; a terminal state still does, so a run that ends
+   * while the last writes go out is recorded as it ended.
+   */
+  closedOnExit?: boolean;
   /** Dedicated cancellation for the long-lived `agent.run` transport. The
    * UI AbortController must not cancel it immediately: we first wait for the
    * sidecar's ordered abort ACK, then fence frames and end the transport. */
@@ -685,6 +712,38 @@ export function summarizeFramesForLog(
   });
 }
 
+const CONVERSATION_STATUSES: ReadonlySet<unknown> = new Set<ConversationStatus>([
+  'idle', 'running', 'completed', 'error',
+]);
+
+/**
+ * Take the frame that ends the run's `running` status out of a batch and keep
+ * its status on the session (`RunSession.heldFinalStatus`). A later `running`
+ * frame of the same run means the loop went on: it is applied and the held
+ * status dropped.
+ */
+function holdFinalStatusFrames(session: RunSession, frames: PortFrame[]): PortFrame[] {
+  return frames.filter((frame) => {
+    if (frame.p !== 'chat' || frame.m !== 'setConversationStatus') return true;
+    if (frame.a[0] !== session.conversationId || !CONVERSATION_STATUSES.has(frame.a[1])) return true;
+    const status = frame.a[1] as ConversationStatus;
+    if (status === 'running') {
+      session.heldFinalStatus = undefined;
+      return true;
+    }
+    session.heldFinalStatus = status;
+    return false;
+  });
+}
+
+/** Give the conversation the status its loop ended on, once, after the run's terminal state is saved. */
+function releaseHeldFinalStatus(session: RunSession): void {
+  const status = session.heldFinalStatus;
+  if (status === undefined) return;
+  session.heldFinalStatus = undefined;
+  getChatDelta().setConversationStatus(session.conversationId, status);
+}
+
 /** `agent.delta` (NOTIFICATION) → {runId, frames} → applyDeltaFrames. Unknown runId → silent drop (3a discipline, matches handleSubagentAbort's unknown-runId no-op). */
 function handleAgentDelta(rawParams: unknown): void {
   const params = rawParams as { runId?: unknown; frames?: unknown } | null;
@@ -719,13 +778,15 @@ function handleAgentDelta(rawParams: unknown): void {
       });
     }
   }
+  const framesToApply = holdFinalStatusFrames(session, frames);
+  if (framesToApply.length === 0) return;
   const previous = session.frameApplyTail ?? Promise.resolve();
   // P3: degrade, don't drop. A batch that trips the raw-media guard used to
   // be dropped wholesale, which stranded the settle frames it carried (a
   // dispatch stuck at "executing" forever). Now each offending frame is
   // redacted in place and its tool call settled as a transport failure,
   // while every clean frame in the same batch applies untouched.
-  const { frames: safeFrames, degradedIndexes } = degradeDeltaFramesForMediaFailure(frames);
+  const { frames: safeFrames, degradedIndexes } = degradeDeltaFramesForMediaFailure(framesToApply);
   if (degradedIndexes.length > 0) {
     logger.warn('agent.delta degraded unsafe media payload', {
       runId: params.runId,
@@ -826,15 +887,36 @@ function updateSessionMessageState(
   errorDetails?: UpstreamErrorDetails,
 ): void {
   if (!session.userMessageId) return;
+  if (session.closedOnExit && ACTIVE_RUN_STATES.has(state)) return;
   useChatStore.getState().updateUserMessageRun(
     session.conversationId,
     session.userMessageId,
     {
       state,
+      ...(state === 'interrupted' && session.shellAbortController.signal.reason === 'app-quit'
+        ? { interruptCause: 'app_exit' as const } : {}),
       ...(error ? { error } : {}),
       ...(errorDetails ? { errorDetails } : {}),
     },
   );
+}
+
+/**
+ * The application is about to leave: every run that has not reached its
+ * terminal gets `interrupted` with the cause `app_exit` on its user row, so
+ * the next start shows what happened to it. Frames keep applying until the
+ * process is gone.
+ */
+export function closeRunningRunsForExit(): void {
+  for (const session of sessions.values()) {
+    if (session.terminal || session.closedOnExit || !session.userMessageId || session.shellAbortController.signal.aborted) continue;
+    session.closedOnExit = true;
+    useChatStore.getState().updateUserMessageRun(
+      session.conversationId,
+      session.userMessageId,
+      { state: 'interrupted', interruptCause: 'app_exit' },
+    );
+  }
 }
 
 async function finalizePreDispatchInterruptedRun(
@@ -843,9 +925,11 @@ async function finalizePreDispatchInterruptedRun(
   runId: string,
   stage: 'params_build_aborted' | 'before_dispatch' | 'waiting_for_sidecar',
   runtimeStartedAt: number,
+  signal: AbortSignal,
 ): Promise<AgentLoopDispatchResult> {
   useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
     state: 'interrupted',
+    ...(signal.reason === 'app-quit' ? { interruptCause: 'app_exit' as const } : {}),
   });
   getAbortRegistry().clearAbortController(conversationId);
   getChatDelta().setConversationStatus(conversationId, 'idle');
@@ -1007,6 +1091,7 @@ async function finalizeFailedRun(
 
   session.failureFinalizationPromise = (async () => {
     session.dropFrames = true;
+    session.heldFinalStatus = undefined;
     updateSessionMessageState(session, state, displayMessage, errorDetails);
     await (session.frameApplyTail ?? Promise.resolve());
     try {
@@ -1048,6 +1133,7 @@ async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog
   session.abortFinalizationPromise = (async () => {
     try {
       session.dropFrames = true;
+      session.heldFinalStatus = undefined;
       updateSessionMessageState(session, 'interrupted');
       if (session.abortWatchdog) {
         clearTimeout(session.abortWatchdog);
@@ -1420,6 +1506,9 @@ async function handleNativeInvoke(rawParams: unknown): Promise<unknown> {
     || params.cmd === 'ax_close_session'
     || params.cmd === 'computer_use_end_task';
   const assertMayStart = (): void => {
+    if (params.cmd === 'move_to_trash' && requiresHostFileExecution(TOOL_NAMES.DELETE_FILE)) {
+      throw new SidecarRequestError(-32000, 'File deletion requires host-owned tool execution');
+    }
     if (owner.signal?.aborted && !cleanupAfterAbort) {
       throw new SidecarRequestError(-32000, `Run is stopping; native.invoke denied: ${params.cmd}`);
     }
@@ -1573,6 +1662,8 @@ function contextForSession(
   const browserDenials = browserDenialsForSession(session);
   const trustedContext: ToolExecutionContext = {
     ...incoming,
+    operationOwner: session.options.operationOwner,
+    files: undefined,
     conversationId: session.conversationId,
     loopId: session.loopId,
     authorizationScopeId: session.options.authorizationScopeId,
@@ -1700,6 +1791,7 @@ function assertRunNotStopping(session: RunSession, runId: string): void {
     sessions.get(runId) !== session
     || session.abortRequested
     || session.shellAbortController.signal.aborted
+    || session.options.operationOwner?.isCurrent() === false
   ) {
     throw new SidecarRequestError(-32000, `Agent-loop run is stopping: ${runId}`);
   }
@@ -1835,7 +1927,7 @@ async function handleMainLoopToolInvoke(rawParams: unknown): Promise<unknown> {
  * sidecar-local side effect did not happen, so automatic whole-run replay is
  * forbidden.
  */
-async function handleApprovalCheck(rawParams: unknown): Promise<ToolApprovalDecision> {
+async function handleApprovalCheck(rawParams: unknown): Promise<ToolApprovalDecision | { decision: 'host' }> {
   const params = rawParams as {
     runId?: unknown;
     toolName?: unknown;
@@ -1857,6 +1949,9 @@ async function handleApprovalCheck(rawParams: unknown): Promise<ToolApprovalDeci
   }
   assertRunToolAllowed(session, params.toolName, (params.input as Record<string, unknown>) ?? {});
 
+  // Old sidecar metadata may omit the route. Choose it before any confirmation.
+  if (requiresHostFileExecution(params.toolName)) return { decision: 'host' };
+
   const decision = await checkToolApproval(
     params.toolName,
     (params.input as Record<string, unknown>) ?? {},
@@ -1868,15 +1963,27 @@ async function handleApprovalCheck(rawParams: unknown): Promise<ToolApprovalDeci
   // concurrently. Never return a stale allow ACK that would let the sidecar
   // begin a new local side effect after this run crossed its abort barrier.
   assertRunNotStopping(session, params.runId);
-  if (decision.decision === 'allow' && !isToolCallReplaySafe(params.toolName, params.input)) {
+  const approvalSession = session;
+  const approvalRunId = params.runId;
+  const approvalToolName = params.toolName;
+  const originalInput = params.input;
+  function finalize(current: ToolApprovalDecision): ToolApprovalDecision | Promise<ToolApprovalDecision> {
+    assertRunNotStopping(approvalSession, approvalRunId);
+    const checked = finalizeToolApproval(current);
+    if (checked instanceof Promise) {
+      return checked.then(value => withResponseFinalizer(value, () => finalize(value)));
+    }
+    if (checked.decision === 'allow' && !isToolCallReplaySafe(approvalToolName, checked.executionInput ?? originalInput)) {
     // The sidecar executes this tool locally immediately after this ACK. From
     // this point onward a transport failure cannot prove whether the local
     // side effect happened, so the whole run must never be auto-replayed.
     // Mark before returning the allow ACK: a crash between ACK receipt and the
     // first delta is deliberately treated as "possibly committed".
-    session.committed = true;
+      approvalSession.committed = true;
+    }
+    return checked;
   }
-  return decision;
+  return withResponseFinalizer(decision, () => finalize(decision));
 }
 
 function isToolCallReplaySafe(toolName: string, input: unknown): boolean {
@@ -1980,10 +2087,13 @@ function handleWorkspaceBindFromWrite(rawParams: unknown): void {
  * to settle first, matching the real function's own "capture the 'before'
  * state before the write lands" contract.
  *
- * Calls the REAL `snapshotBeforeAiEdit` (`utils/aiEditSnapshots.ts`,
- * unmoved) — the exact same function a shell-executed write/edit would call
- * directly — so a locally-executed write/edit leaves the identical
- * revertable "before" state in `canvasVersions` version history.
+ * Runs the two steps a shell-executed write/edit runs through
+ * `snapshotBeforeAiEdit` (`utils/aiEditSnapshots.ts`): the turn capture
+ * (`captureTurnFileBefore`, under this session's loop id) and the version
+ * snapshot (`snapshotVersionBeforeAiEdit`), so a locally-executed write/edit
+ * leaves the identical revertable "before" state in `canvasVersions` version
+ * history. A request with `opts.captureOnly` (`delete_file`) runs the capture
+ * alone.
  *
  * Session lookup mirrors `handleApprovalCheck`'s discipline (unknown runId
  * or a since-deleted conversation → throw, refusing to answer) — but unlike
@@ -2008,12 +2118,23 @@ async function handleSnapshotBeforeAiEdit(rawParams: unknown): Promise<null> {
     throw new SidecarRequestError(-32000, `Conversation no longer exists for agent-loop runId: ${runId}`);
   }
 
+  if (requiresHostFileExecution(TOOL_NAMES.WRITE_FILE)) {
+    throw new SidecarRequestError(-32000, 'File snapshots require host-owned tool execution');
+  }
+
   const rawOpts = (params.opts && typeof params.opts === 'object' ? params.opts : {}) as Record<string, unknown>;
-  await session.resourceSettlement!.run(() => snapshotBeforeAiEdit(path, {
-    loopId: typeof rawOpts.loopId === 'string' ? rawOpts.loopId : undefined,
-    conversationId: typeof rawOpts.conversationId === 'string' ? rawOpts.conversationId : undefined,
-    knownContent: typeof rawOpts.knownContent === 'string' ? rawOpts.knownContent : undefined,
-  }));
+  await session.resourceSettlement!.run(async () => {
+    // The turn's change record names a directory after the loop id, so the
+    // capture takes the id this renderer registered for the run, never the
+    // one in the request.
+    await captureTurnFileBefore(path, session.loopId);
+    if (rawOpts.captureOnly === true) return;
+    await snapshotVersionBeforeAiEdit(path, {
+      loopId: typeof rawOpts.loopId === 'string' ? rawOpts.loopId : undefined,
+      conversationId: typeof rawOpts.conversationId === 'string' ? rawOpts.conversationId : undefined,
+      knownContent: typeof rawOpts.knownContent === 'string' ? rawOpts.knownContent : undefined,
+    });
+  });
   return null;
 }
 
@@ -2199,12 +2320,14 @@ function pushSettingsNow(): void {
   });
 }
 
-/** The 4 scalar fields diffed per-conversation for `state.convPatch` — see design doc §5's emitter bullet. */
+/** The fields diffed per-conversation for `state.convPatch` — see design doc §5's emitter bullet. */
 interface ConvPatchSnapshot {
   workspacePath?: string | null;
   title?: string;
   activeSkills?: string[];
   model?: { providerId: string; modelId: string };
+  /** Goal mode: written shell-side by the goal tool / UI mid-run; `null` on the wire = cleared. */
+  goal?: GoalState | null;
 }
 
 /** A `state.convPatch` payload: the changed fields, plus `activeSkillInfo` (the
@@ -2224,6 +2347,7 @@ function snapshotConv(conversationId: string): ConvPatchSnapshot | undefined {
     title: conv.title,
     activeSkills: conv.activeSkills,
     model: state.conversationIndex[conversationId]?.model,
+    goal: conv.goal ?? null,
   };
 }
 
@@ -2252,6 +2376,11 @@ function diffConvSnapshot(prev: ConvPatchSnapshot | undefined, next: ConvPatchSn
   }
   if (!prev || prev.model?.providerId !== next.model?.providerId || prev.model?.modelId !== next.model?.modelId) {
     patch.model = next.model;
+    changed = true;
+  }
+  // Every goal write bumps `revision`, so id + revision identify its content.
+  if (!prev || prev.goal?.id !== next.goal?.id || prev.goal?.revision !== next.goal?.revision) {
+    patch.goal = next.goal ?? null;
     changed = true;
   }
   return changed ? patch : undefined;
@@ -2514,6 +2643,7 @@ export function installShellLoopContext(runId: string, session: RunSession): voi
   const browserDenials = browserDenialsForSession(session);
 
   setLoopContext(session.loopId, {
+    ...(session.options.operationOwner ? { operationOwner: session.options.operationOwner } : {}),
     commandConfirmCallback: session.options.requestCommandConfirmation ?? requestCommandConfirmation,
     filePermissionCallback: session.options.requestFilePermission ?? requestFilePermission,
     signal: session.shellAbortController.signal,
@@ -2988,6 +3118,8 @@ async function buildAgentRunParams(
   // resolveEntryModel.ts's doc for why this is the third (not a fourth,
   // hand-copied) caller of the same pure formula.
   const precomputeToolContext = attachTrustedSkillCommandApproval({
+    operationOwner: options?.operationOwner,
+    abortSignal,
     workspacePath: resolveToolContextWorkspacePath(
       options,
       initialConversationSnapshot,
@@ -3280,12 +3412,37 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     browserDenialStreaksByTask.delete(teamTask.retiredTaskId);
   }
   useTeamConfirmationStore.getState().beginRetry(conversationId, ownedLoopId, options.teamConfirmationRetryId);
+  // The record of what this turn changes on disk is a side write, handled like
+  // the output snapshots in toolExecutor.ts: a failure is logged and never
+  // decides whether or how the turn runs. Each venue awaits it once its run is
+  // registered and before the run can write, so the workspace is listed first
+  // and nothing is awaited between the concurrency guard and the registration.
+  const turnChangesScopeId = options.authorizationScopeId;
+  const beginTurnRecord = (): Promise<void> => beginTurnChanges(
+    conversationId,
+    ownedLoopId,
+    entryConversation?.workspacePath ?? null,
+    {
+      scopeId: turnChangesScopeId,
+      operationOwner: options.operationOwner,
+      isConversationPresent: () => Boolean(useChatStore.getState().conversations[conversationId]),
+    },
+  ).catch((error: unknown) => {
+    logger.warn('turn changes: begin failed', {
+      conversationId,
+      runId: ownedLoopId,
+      errorType: runtimeErrorType(error),
+    });
+  });
   try {
   if (inProcessEnvironment) {
     // Environment choice (web preview / unit tests): there is no desktop
     // process bridge, so the loop runs in this renderer. Not a failure
     // fallback — Electron never reaches this branch (#549).
     await ensureBuiltinBrowserRuntime();
+    // The loop registers its own run, so this venue begins the record last
+    // before handing over to it.
+    await beginTurnRecord();
     let localUserMessageId: string | undefined;
     try {
       const result = await runAgentLoop(
@@ -3377,6 +3534,9 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     content: userMessage,
     timestamp: runtimeStartedAt,
     loopId: runId,
+    // Goal mode: an automatic round opens with an internal row, rendered as a
+    // round marker rather than a user bubble (see AgentLoopOptions.goalRound).
+    ...(options?.goalRound ? { isSystem: true, goalRound: options.goalRound } : {}),
   });
   ownership.messageTaken = true;
   // The documented onMessageTaken contract ("invoked once the initial user
@@ -3384,6 +3544,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
   // the shell row was just added above.
   options?.onMessageTaken?.(clientMessageId);
   shellChatDelta.setConversationStatus(conversationId, 'running');
+  await beginTurnRecord();
   try {
     await waitForConversationPersistence(conversationId);
   } catch (error) {
@@ -3436,6 +3597,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         runId,
         'waiting_for_sidecar',
         runtimeStartedAt,
+        shellAbortController.signal,
       );
     }
     return finalizePreAcceptFailure({
@@ -3493,6 +3655,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         runId,
         'params_build_aborted',
         runtimeStartedAt,
+        shellAbortController.signal,
       );
     }
     // Failed before any dispatch. Nothing ran in either venue (#549), so the
@@ -3530,6 +3693,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       runId,
       'before_dispatch',
       runtimeStartedAt,
+      shellAbortController.signal,
     );
   }
 
@@ -3561,6 +3725,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     payloadDigest: params.payloadDigest,
     options: {
       requestCommandConfirmation: options?.commandConfirmCallback,
+      operationOwner: options?.operationOwner,
       requestFilePermission: options?.filePermissionCallback,
       blockedTools: options?.blockedTools,
       allowedTools: options?.allowedTools,
@@ -3604,6 +3769,17 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     // A click racing with renderer cleanup must not rewrite that first-wins
     // outcome from completed to aborted.
     if (session.terminal) return;
+    // The loop has given the conversation its final status and Stop is on
+    // screen only until the turn is saved: the terminal is due at once, and a
+    // click has no run left to stop. A sidecar that still has not sent it
+    // after the abort grace period is stopped like any other.
+    if (session.heldFinalStatus !== undefined) {
+      session.heldStopTimer = setTimeout(() => {
+        session.heldStopTimer = undefined;
+        if (!session.terminal) void requestSidecarRunAbort(session);
+      }, AGENT_ABORT_FORCE_FINALIZE_MS);
+      return;
+    }
     void requestSidecarRunAbort(session);
   };
   session.onShellAbort = onShellAbort;
@@ -4019,6 +4195,10 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         : {}),
     };
   } finally {
+    // Every return above has awaited the ledger write of the run's terminal
+    // state; only now does the conversation leave `running`.
+    releaseHeldFinalStatus(session);
+    if (session.heldStopTimer) clearTimeout(session.heldStopTimer);
     if (session.firstFrameStallTimer) clearTimeout(session.firstFrameStallTimer);
     // From here the dispatcher, not the UI, owns teardown. Remove the Stop
     // forwarder before aborting a scoped controller for normal resource
@@ -4093,6 +4273,18 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     // A team task's bounds outlive this run and are retired when the next
     // task starts; only a run outside a task owns its own entry.
     if (!teamTask) clearRunBounds(ownedLoopId);
+    // Every way a dispatched run ends — finished, failed, round limit, Stop,
+    // in this renderer or in the sidecar — leaves through here. Keep the run's
+    // local authorization scope alive until its file record has settled.
+    await endTurnChanges(ownedLoopId, {
+      workspacePath: getConversationReader().getConversation(conversationId)?.workspacePath ?? null,
+    }).catch((error: unknown) => {
+      logger.warn('turn changes: settle failed', {
+        conversationId,
+        runId: ownedLoopId,
+        errorType: runtimeErrorType(error),
+      });
+    });
   }
 }
 
@@ -4124,7 +4316,55 @@ async function runSingleAgentLoopDispatched(
  * sender receives `{ reason: 'enqueued' }` immediately; the owner of the active
  * run performs the FIFO handoff once its session has been fully unregistered.
  */
-export async function runAgentLoopDispatched(
+const dispatchBarriers = new Set<symbol>();
+const activeDispatches = new Map<symbol, { conversationId: string; controller?: AbortController; settled: Promise<void> }>();
+
+/** Hold admission and wait for every dispatch, including preparation and final output. */
+export function acquireAgentDispatchBarrier(): { wait: () => Promise<void>; release: () => void } {
+  const key = Symbol();
+  dispatchBarriers.add(key);
+  for (const entry of activeDispatches.values()) entry.controller?.abort('app-quit');
+  return {
+    wait: async () => { await Promise.all([...activeDispatches.values()].map(entry => entry.settled)); },
+    release: () => { dispatchBarriers.delete(key); },
+  };
+}
+
+export function runAgentLoopDispatched(
+  conversationId: string,
+  userMessage: string,
+  options?: AgentLoopOptions,
+): Promise<AgentLoopDispatchResult> {
+  if (dispatchBarriers.size > 0) return Promise.reject(new Error('Agent dispatch is unavailable during application exit'));
+  const key = Symbol();
+  let finish!: () => void;
+  const entry = { conversationId, settled: new Promise<void>(resolve => { finish = resolve; }), controller: undefined as AbortController | undefined };
+  const operationOwner = options?.operationOwner ?? captureToolOperationOwner();
+  const unsubscribeOwner = operationOwner?.onInvalidated?.(() => {
+    entry.controller?.abort('operation-owner-changed');
+  });
+  activeDispatches.set(key, entry);
+  let controllerDelivered = false;
+  return runAgentLoopDispatchedInternal(conversationId, userMessage, {
+    ...options,
+    ...(operationOwner ? { operationOwner } : {}),
+    onAbortControllerReady: controller => {
+      entry.controller = controller;
+      if (dispatchBarriers.size > 0) controller.abort('app-quit');
+      if (operationOwner?.isCurrent() === false) controller.abort('operation-owner-changed');
+      if (!controllerDelivered) {
+        controllerDelivered = true;
+        options?.onAbortControllerReady?.(controller);
+      }
+    },
+  }).finally(() => {
+    unsubscribeOwner?.();
+    activeDispatches.delete(key);
+    finish();
+  });
+}
+
+async function runAgentLoopDispatchedInternal(
   conversationId: string,
   userMessage: string,
   options?: AgentLoopOptions,
@@ -4166,6 +4406,35 @@ export async function runAgentLoopDispatched(
   }
 }
 
+/**
+ * Called once per dispatch, after the initial run AND every queued user
+ * follow-up it handed off to have finished — i.e. when the conversation has
+ * nothing left to run. `result` is the LAST run's result (what the
+ * conversation is left with). Goal mode's round driver hangs off this seam;
+ * registration keeps this module free of a static dependency on it.
+ */
+export type DispatchSettledListener = (conversationId: string, result: AgentLoopDispatchResult) => void;
+
+const dispatchSettledListeners = new Set<DispatchSettledListener>();
+
+export function onDispatchSettled(listener: DispatchSettledListener): () => void {
+  dispatchSettledListeners.add(listener);
+  return () => { dispatchSettledListeners.delete(listener); };
+}
+
+function notifyDispatchSettled(conversationId: string, result: AgentLoopDispatchResult): void {
+  for (const listener of dispatchSettledListeners) {
+    try {
+      listener(conversationId, result);
+    } catch (error) {
+      logger.warn('dispatch-settled listener failed', {
+        conversationId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
 async function runDispatchedTurns(
   conversationId: string,
   userMessage: string,
@@ -4177,11 +4446,11 @@ async function runDispatchedTurns(
   let queuedInputInFlight: ReturnType<typeof dequeueNextUserInput>;
 
   try {
-    while (
+    while (dispatchBarriers.size === 0 && (
       previousResult.reason === 'completed'
       || previousResult.reason === 'max_turns'
       || previousResult.reason === 'no_progress'
-    ) {
+    )) {
       const queuedInput = dequeueNextUserInput(conversationId);
       if (!queuedInput) break;
       queuedInputInFlight = queuedInput;
@@ -4197,7 +4466,9 @@ async function runDispatchedTurns(
         // reach this dequeue path (`dequeueNextUserInput` skips them). What
         // they ARE is human-typed, so the handoff run is user-initiated.
         { initiatedBy: 'user', teamConfirmationRetryId: queuedInput.teamConfirmationRetryId,
-          continuesTeamTask: queuedInput.continuesTeamTask },
+          continuesTeamTask: queuedInput.continuesTeamTask,
+          operationOwner: options?.operationOwner,
+          onAbortControllerReady: options?.onAbortControllerReady },
       );
       if (handoffResult.reason === 'error' && !handoffResult.messageTaken) {
         restoreDequeuedUserInput(conversationId, queuedInput);
@@ -4218,6 +4489,11 @@ async function runDispatchedTurns(
       pauseUserInputQueue(conversationId);
     }
   } catch (error) {
+    notifyDispatchSettled(conversationId, {
+      reason: 'error',
+      error: error instanceof Error ? error.message : String(error),
+      messageTaken: error instanceof AgentLoopDispatchError ? error.messageTaken : initialMessageTaken,
+    });
     if (queuedInputInFlight) {
       if (!(error instanceof AgentLoopDispatchError) || !error.messageTaken) {
         restoreDequeuedUserInput(conversationId, queuedInputInFlight);
@@ -4234,5 +4510,6 @@ async function runDispatchedTurns(
     throw wrapAgentLoopDispatchError(error, true);
   }
 
+  notifyDispatchSettled(conversationId, previousResult);
   return initialResult;
 }

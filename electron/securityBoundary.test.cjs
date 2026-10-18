@@ -724,9 +724,11 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
     'authorizeUserAttachment',
     'canonicalizePathForPolicy',
     'deepLinkScheme',
+    'fileOperation',
     'getPathForFile',
     'getRuntimeDiagnostics',
     'getSidecarBridgeSnapshot',
+    'inspectPathNameComparison',
     'mainSupervisesSidecar',
     'microphone',
     'persistDelegatedMedia',
@@ -737,13 +739,23 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
     'readDelegatedMedia',
     'readUserAttachment',
     'recordRuntimeEvent',
+    'registerQuitParticipant',
     'releaseUserAttachment',
     'saveImageAttachment',
     'selectUserAttachments',
     'speech',
     'subscribeSidecarEvents',
     'subscribeSpeechEvents',
+    'windowMaterial',
   ]);
+  await shellBridge.fileOperation('read', { session: 'file-session', reference: 'file-reference' });
+  assert.deepEqual(JSON.parse(JSON.stringify(invoked.pop())), {
+    channel: 'abu:file-operation',
+    payload: {
+      action: 'read',
+      request: { session: 'file-session', reference: 'file-reference' },
+    },
+  });
   // Voice input: the renderer names an action, never a URL or a permission.
   await shellBridge.microphone('status');
   assert.equal(invoked.at(-1).channel, 'abu:microphone');
@@ -764,6 +776,8 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
   // must never depend on a Node global. Without the launch flag the scheme
   // stays on the production default rather than throwing at preload eval.
   assert.equal(shellBridge.deepLinkScheme, 'abu');
+  // Without the launch flag there is no system material behind the page.
+  assert.equal(shellBridge.windowMaterial, 'none');
   assert.equal(
     await shellBridge.canonicalizePathForPolicy('/native/report.png'),
     '/canonical/native/report.png',
@@ -1069,4 +1083,44 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
     type: 'close', payload: '', sequence: 3, generation: 1,
   });
   assert.equal(sidecarEvents.length, 1);
+});
+
+// Evaluates preload.cjs with the given launch arguments and returns the shell bridge.
+function loadShellBridgeWithArgv(argv) {
+  const exposed = new Map();
+  const context = {
+    process: { argv },
+    require(id) {
+      assert.equal(id, 'electron');
+      return {
+        contextBridge: { exposeInMainWorld: (key, value) => exposed.set(key, value) },
+        ipcRenderer: {
+          invoke: async () => undefined,
+          on: () => {},
+          send: () => {},
+          sendSync: () => null,
+        },
+        webUtils: { getPathForFile: () => '' },
+      };
+    },
+  };
+  context.globalThis = context;
+  const preloadSource = fs.readFileSync(path.join(__dirname, 'preload.cjs'), 'utf8');
+  vm.runInNewContext(preloadSource, context, { filename: 'preload.cjs' });
+  return exposed.get('__ABU_SHELL__');
+}
+
+test('preload reports the window material main passed on the command line', () => {
+  for (const material of ['vibrancy', 'mica', 'none']) {
+    const bridge = loadShellBridgeWithArgv(['electron', '.', `--abu-window-material=${material}`]);
+    assert.equal(bridge.windowMaterial, material);
+  }
+  assert.equal(loadShellBridgeWithArgv(['electron', '.']).windowMaterial, 'none');
+});
+
+test('preload refuses a window material main never sends', () => {
+  assert.throws(
+    () => loadShellBridgeWithArgv(['electron', '.', '--abu-window-material=acrylic']),
+    /Unknown window material: acrylic/,
+  );
 });

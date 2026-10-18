@@ -29,19 +29,28 @@ convention in [`RELEASING.md`](./RELEASING.md). This page is the actionable sour
 - [ ] Write this version's entry in **both** changelogs (same version + structure, one language each — never mixed):
   - `CHANGELOG.md` — **English only**
   - `CHANGELOG.zh-CN.md` — **Chinese only**
-- [ ] If this release adds a plugin/app manifest field, give it `X.Y.Z` in the
+- [ ] If this release adds a plugin manifest field, give it `X.Y.Z` in the
       "最低 Abu 版本" columns of [`docs/plugin-spec.md`](./docs/plugin-spec.md), and
       have every package that uses the new field declare `minAbuVersion: X.Y.Z`
       (the packages in `builtin-plugin-market/`, `examples/plugin-market/` and
       `tests/fixtures/plugin-market-broken/`). A package keeps the version it was
       written for; `npm run market:check` refuses one that asks for an Abu newer
       than this checkout.
+- [ ] For a new application field, document its minimum supported version beside
+      the field in [`docs/app-spec.md`](./docs/app-spec.md), and declare that version
+      in each application's `minAbuVersion`. Run `market:check` for the official
+      and example markets.
 - [ ] Commit to `dev`.
 
 ## 2. Verify — fail here, not after tagging
 
+- [ ] For an enterprise release that changes applications, run `npm run test:e2e:apps`
+      in the paired private enterprise repository against the real Console and
+      enterprise Electron build. Record the command, revision and report path.
+      The report must contain passing tests with zero failures, skips or retries.
+
 ```bash
-npm run release:check      # version match across 5 files + both changelog sections in the right language
+npm run release:check      # version match across 5 files + both changelog sections in the right language + no sidecar shim classified feature-gap
 npm run build              # gen:models:check + tsc + vite build
 npm run lint
 npm test

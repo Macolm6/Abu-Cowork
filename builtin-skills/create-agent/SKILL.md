@@ -1,6 +1,9 @@
 ---
 name: create-agent
 description: AI 推荐并创建自定义专家或专家团
+display-description:
+  zh-CN: 推荐并创建自定义专家或专家团
+  en-US: Recommend and create a custom expert or expert team
 user-invocable: true
 disable-auto-invoke: true
 tags: [agent, team, create, wizard]

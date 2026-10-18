@@ -49,6 +49,7 @@
 'use strict';
 
 const fs = require('node:fs');
+const { fstatIdentitySync, lstatIdentitySync, sameIdentity } = require('./fileIdentity.cjs');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
@@ -108,7 +109,7 @@ function openForPluginWrite(resolved, options) {
   return fs.openSync(resolved, append ? 'a' : 'w', mode);
 }
 
-function openExclusiveSibling(parent, prefix) {
+function openExclusiveSibling(parent, prefix, fileMode = 0o600) {
   const flags =
     fs.constants.O_WRONLY |
     fs.constants.O_CREAT |
@@ -117,7 +118,7 @@ function openExclusiveSibling(parent, prefix) {
   for (let attempt = 0; attempt < 32; attempt++) {
     const candidate = path.join(parent, `${prefix}.${crypto.randomBytes(16).toString('hex')}`);
     try {
-      return { path: candidate, fd: fs.openSync(candidate, flags, 0o600) };
+      return { path: candidate, fd: fs.openSync(candidate, flags, fileMode) };
     } catch (err) {
       if (!err || err.code !== 'EEXIST') throw err;
     }
@@ -209,6 +210,72 @@ function writeAtomic(target, content) {
       fs.rmSync(tmp.path, { force: true });
     } catch {
       /* temp may not exist */
+    }
+    throw err;
+  }
+}
+
+/**
+ * Publishes `content` as the whole of `target`: it is written to a sibling
+ * temp file and synced, then made the target in one step, so a reader sees the
+ * file as it was or with all of `content`, never a part.
+ *   - 'replace': `target` must be a regular file now that this process may
+ *     write; the new file keeps its permission bits and takes its place by
+ *     rename.
+ *   - 'create': nothing may be at `target`. Once the content is synced, the
+ *     name is taken with an exclusive create, which fails with EEXIST when a
+ *     file appeared meanwhile and works on every file system (a hard link
+ *     does not on FAT and exFAT), and the temp file is renamed over it. The
+ *     file gets the permissions a newly created file gets.
+ * On any failure before that step the temp file, and a name this call took,
+ * are removed and `target` is left as it was.
+ * @param {string} target absolute, already scope-checked
+ * @param {Buffer} content
+ * @param {'replace' | 'create'} mode
+ */
+function writeFileAtomic(target, content, mode) {
+  const parent = path.dirname(target);
+  let keptMode;
+  if (mode === 'replace') {
+    const info = fs.lstatSync(target);
+    if (!info.isFile()) throw new Error(`fs: not a regular file: ${target}`);
+    // A rename needs write access to the folder only; a file that cannot be written stays as it is.
+    fs.accessSync(target, fs.constants.W_OK);
+    keptMode = info.mode & 0o7777;
+  }
+  // 0o666 is the mode open() asks for a new file; the process umask applies to it.
+  const tmp = openExclusiveSibling(parent, `.${path.basename(target)}.tmp.${process.pid}`, keptMode ?? 0o666);
+  let tookName = false;
+  try {
+    writeAll(tmp.fd, content);
+    if (keptMode !== undefined) fs.fchmodSync(tmp.fd, keptMode);
+    fs.fsyncSync(tmp.fd);
+    fs.closeSync(tmp.fd);
+    tmp.fd = undefined;
+    if (mode === 'create') {
+      fs.closeSync(fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | noFollowFlag()));
+      tookName = true;
+    }
+    fs.renameSync(tmp.path, target);
+  } catch (err) {
+    if (tmp.fd !== undefined) {
+      try {
+        fs.closeSync(tmp.fd);
+      } catch {
+        /* already closed */
+      }
+    }
+    try {
+      fs.rmSync(tmp.path, { force: true });
+    } catch {
+      /* temp may not exist */
+    }
+    if (tookName) {
+      try {
+        fs.rmSync(target, { force: true });
+      } catch {
+        /* the empty file this call made stays; the error below is the one to report */
+      }
     }
     throw err;
   }
@@ -341,6 +408,52 @@ function canonicalizeForPathPolicy(rawPath, followFinalSymlink = true) {
   // still see junction/reparse-point targets rather than the lexical spelling.
   if (process.platform === 'win32') return canonicalizeForScope(norm, followFinalSymlink);
   return assertAllowed(norm, { followFinalSymlink });
+}
+
+/** Inspect names only after the complete target passed the existing host scope. */
+async function inspectPathNameComparison(rawPath, followFinalSymlink = true) {
+  const canonicalPath = canonicalizeForPathPolicy(rawPath, followFinalSymlink);
+  const lexicalPath = resolveValidatedPath(rawPath);
+  const { readDirectoryNameComparison } = require('./nativeHelperManager.cjs');
+  const directories = new Map();
+  async function describe(targetPath) {
+    const root = path.parse(targetPath).root;
+    const names = targetPath.slice(root.length).split(path.sep).filter(Boolean);
+    const components = [];
+    let parent = root;
+    for (const name of names) {
+      let facts = directories.get(parent);
+      if (!facts) {
+        facts = fs.existsSync(parent)
+          ? await readDirectoryNameComparison(parent)
+          : { caseMode: 'unknown', directoryIdentity: null, platform: process.platform, filesystem: null, reason: 'missing-parent' };
+        directories.set(parent, facts);
+      }
+      components.push({ name, parentPath: parent, ...facts });
+      parent = path.join(parent, name);
+    }
+    return { path: targetPath, root, components };
+  }
+  const lexical = await describe(lexicalPath);
+  const canonical = await describe(canonicalPath);
+  for (const [directory, observed] of directories) {
+    const present = fs.existsSync(directory);
+    if (observed.caseMode === 'unknown') {
+      if (present) throw new Error('fs: directory appeared while reading name comparison');
+      continue;
+    }
+    if (!present) throw new Error('fs: directory disappeared while reading name comparison');
+    const current = await readDirectoryNameComparison(directory);
+    if (current.directoryIdentity !== observed.directoryIdentity || current.caseMode !== observed.caseMode
+      || current.filesystem !== observed.filesystem) {
+      throw new Error('fs: directory changed while reading name comparison');
+    }
+  }
+  // The path must still resolve to the target whose names were inspected.
+  if (canonicalizeForPathPolicy(rawPath, followFinalSymlink) !== canonicalPath) {
+    throw new Error('fs: target changed while reading name comparison');
+  }
+  return { lexical, canonical };
 }
 
 /**
@@ -639,7 +752,10 @@ function fsDispatch(app, cmd, payload) {
         }
         throw err;
       }
+      let written = false;
+      let created;
       try {
+        if (options.createNew) created = fstatIdentitySync(fd, fs);
         // The plugin's `truncate = !append`. Every other path got it from its
         // open flags; create:false could not carry `O_TRUNC` (see above), and
         // an append needs no truncation at all, so this is the only leftover.
@@ -647,8 +763,13 @@ function fsDispatch(app, cmd, payload) {
           fs.ftruncateSync(fd, 0);
         }
         writeAll(fd, buf);
+        written = true;
       } finally {
         fs.closeSync(fd);
+        if (!written && created && fs.existsSync(resolved)) {
+          const current = lstatIdentitySync(resolved, fs);
+          if (sameIdentity(current, created)) fs.unlinkSync(resolved);
+        }
       }
       return null;
     }
@@ -672,6 +793,13 @@ function fsDispatch(app, cmd, payload) {
         resolveScoped(app, a.path, undefined),
         Buffer.isBuffer(body) ? body : String(a.content),
       );
+      return null;
+    }
+
+    case 'write_file_atomic': {
+      // securityBoundary.validateAtomicFileWrite gave the decoded path, the
+      // mode and the bytes as a Buffer.
+      writeFileAtomic(resolveScoped(app, a.path, undefined), body, a.mode);
       return null;
     }
 
@@ -804,5 +932,6 @@ module.exports = {
   assertAllowed,
   canonicalizeForScope,
   canonicalizeForPathPolicy,
+  inspectPathNameComparison,
   toFileInfo,
 };

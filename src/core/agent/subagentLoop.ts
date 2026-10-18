@@ -17,7 +17,15 @@ import type { ConfirmationInfo } from '../tools/commandSafety';
 // so this file stays sidecar-bundle-safe: settingsStore.ts's module-level
 // zustand create()/persist/secrets-bootstrap graph must never load in the
 // sidecar process. See settingsSelectors.ts's module doc.
-import { getActiveApiKey, getActiveProvider, resolveAgentModel } from '../../utils/settingsSelectors';
+import {
+  getActiveApiKey,
+  getActiveProvider,
+  getModelDisplayLabel,
+  getModelUnavailableReason,
+  resolveAgentModel,
+} from '../../utils/settingsSelectors';
+import { describeModelUnavailable } from '../../utils/modelUnavailableCopy';
+import type { SettingsState } from '../../stores/settingsStore';
 import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
 import {
   resolveCapabilities,
@@ -31,7 +39,8 @@ import { isWindows } from '../../utils/platform';
 import { positiveInteger, resolveContextWindow } from '../llm/contextWindow';
 import { probeContextWindow } from '../llm/contextWindowProbe';
 import { localServerKind } from '../llm/localProvider';
-import { adapterKindFor } from '../llm/adapterKind';
+import { adapterKindFor, usageProtocolFor } from '../llm/adapterKind';
+import { promptTokensOf } from '../llm/usageAccounting';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { getCapsPort, type CapsPort } from './ports/capsPort';
 import { getWorkspaceReader, type WorkspaceReader } from './ports/workspaceReader';
@@ -60,8 +69,10 @@ import { isToolResultError } from './toolResultErrors';
 import { scanMemoryFiles, loadMemoryIndex } from '../memdir/scan';
 import { deriveRunInteractionMode } from './runInteractionMode';
 import { createMalformedToolCallGuard, MALFORMED_TOOL_CALL_NUDGE } from './malformedToolCallGuard';
-import { resolveSubagentToolRoster, checkDispatchToolBoundary } from './subagentToolRoster';
+import { resolveSubagentToolRoster, checkDispatchToolBoundary, type SubagentRunStanding } from './subagentToolRoster';
 import { browserNarrationSection } from './browserNarrationRules';
+import { PRESENT_FILES_RULE } from './prompts/presentFilesGuidance';
+import { TOOL_NAMES } from '../tools/toolNames';
 import {
   appendPreloadedSkills,
   normalizeDeclaredSkills,
@@ -318,6 +329,42 @@ export function findMissingSubagentMcpRequirements(
   return missing;
 }
 
+/**
+ * Refuse a subagent whose model can no longer be used. `runSettings` fixes the
+ * model (the parent run's entry snapshot, so a delegate follows its
+ * conversation's model); `liveSettings` decides usability, so a provider the
+ * user removed or turned off after the parent run started is never called.
+ * Nothing switches to another model. The enterprise gateway supplies its own
+ * credentials and its pins have no personal provider entry, so neither is
+ * checked here — same rule as agentLoop's entry check.
+ */
+export function buildSubagentModelUnavailableFailure(
+  agent: Pick<SubagentDefinition, 'name' | 'model'>,
+  runSettings: Readonly<SettingsState>,
+  liveSettings: Pick<SettingsState, 'providers'>,
+): SubagentResult | null {
+  const providerId = runSettings.activeModel.providerId;
+  if (providerId === 'enterprise-gateway') return null;
+  const gatewayMode = (() => {
+    try { return resolveEffectiveLlmCreds(getActiveApiKey(runSettings), undefined).forceOpenAiCompatible; }
+    catch { return false; }
+  })();
+  if (gatewayMode) return null;
+
+  const ref = { providerId, modelId: resolveAgentModel(agent.model, runSettings) };
+  const reason = getModelUnavailableReason(liveSettings, ref);
+  if (!reason) return null;
+  logger.warn('subagent refused: model unavailable', { agent: agent.name, reason, ...ref });
+  return new SubagentResult({
+    text: describeModelUnavailable(getI18n().chat, reason, getModelDisplayLabel(runSettings, ref)).inTask,
+    toolCallCount: 0,
+    turnCount: 0,
+    tokenUsage: { input: 0, output: 0 },
+    duration: 0,
+    stopReason: 'error',
+  });
+}
+
 /** Build the structured, localized fail-fast result shared by every entry path. */
 export function buildSubagentMcpPreflightFailure(
   agent: Pick<SubagentDefinition, 'name' | 'tools' | 'disallowedTools' | 'managed'>,
@@ -436,6 +483,7 @@ export function buildSubagentMcpPreflightFailure(
 }
 
 export interface SubagentLoopOptions {
+  operationOwner?: import('../tools/operationAuthorization').ToolOperationOwner;
   teamApprovalDispatch?: { id: string; fingerprint: string };
   agent: SubagentDefinition;
   task: string;
@@ -509,6 +557,13 @@ export interface SubagentLoopOptions {
    * dispatchInput.ts's queue for the key between turns.
    */
   dispatchKey?: string;
+  /**
+   * This run is the user turn itself: the expert of a `delegate` route, whose
+   * result becomes the reply. Set by agentLoop's delegate route only, never
+   * from a tool input; a run with it is offered the tools of the reply
+   * (subagentToolRoster.ts's SubagentRunStanding).
+   */
+  ownsUserTurn?: boolean;
   /** Parent conversation ID for Langfuse parent-child span linking */
   parentConversationId?: string;
   /** Parent loop owner for run-scoped skill hooks activated by delegated work. */
@@ -533,6 +588,12 @@ export interface SubagentLoopOptions {
    * docs/2026-07-19-phase1-p3-loop-migration-staging.md §2 "正式步 3a".
    */
   settingsReader?: SettingsReader;
+  /**
+   * Current settings, read only to decide whether the run model can still be
+   * used (`settingsReader` may be the parent run's entry snapshot). Defaults to
+   * `getSettingsReader()`; the sidecar subagent host passes its own live reader.
+   */
+  liveSettingsReader?: SettingsReader;
   toolInvoker?: ToolInvoker;
   /** Same injectable-port shape as settingsReader/toolInvoker above — added alongside them once the sidecar bundle-graph fail-fast guard (scripts/build-sidecar.mjs) proved subagentLoop.ts's OTHER two bare port calls (getCapsPort/getWorkspaceReader) have the identical "statically bundled even though the fallback is never taken" problem. See P1-3a-REPORT.md's bundle-graph-battles section. */
   capsPort?: CapsPort;
@@ -550,6 +611,7 @@ function warnPatternsWithoutKnownTool(agentName: string, fieldName: 'tools' | 'd
 
 export async function runSubagentLoop(options: SubagentLoopOptions): Promise<SubagentResult> {
   const { agent, task, context, parentConversationSummary, commandConfirmCallback, filePermissionCallback, onProgress } = options;
+  const runStanding: SubagentRunStanding = { ownsUserTurn: options.ownsUserTurn === true };
   const startTime = Date.now();
   let totalToolCalls = 0;
   let totalInputTokens = 0;
@@ -607,6 +669,12 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
   if (mcpPreflightFailure) return mcpPreflightFailure;
 
   const settings = settingsReader.getSnapshot();
+  const modelFailure = buildSubagentModelUnavailableFailure(
+    agent,
+    settings,
+    (options.liveSettingsReader ?? getSettingsReader()).getSnapshot(),
+  );
+  if (modelFailure) return modelFailure;
   const effectiveModelId = resolveAgentModel(agent.model, settings);
   const startupCreds = (() => {
     try { return resolveEffectiveLlmCreds(getActiveApiKey(settings), undefined); } catch { return null; }
@@ -761,6 +829,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       agent,
       options.allowedTools,
       options.blockedTools,
+      runStanding,
     ).map((tool) => adaptComputerToolForTier(tool, agentCapabilities.computerUseTier, isWindows()));
     // The resolver always strips orchestration tools from sub-agents to prevent recursive
     // fan-out (a sub-agent spawning its own batch → unbounded blow-up, since there
@@ -777,6 +846,12 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     // refusals the main loop does, while `buildSystemPromptSections` — where
     // the main loop gets these rules — never runs for a delegation.
     systemPrompt += browserNarrationSection(offeredToolNames);
+
+    // The run that owns the user turn hands its files to the user itself, by
+    // the rule the main loop gets, and only when this roster holds the tool.
+    if (offeredToolNames.has(TOOL_NAMES.PRESENT_FILES)) {
+      systemPrompt += `\n\n## Handing Files to the User\nYour result is shown to the user as the reply. ${PRESENT_FILES_RULE}`;
+    }
 
     // 4. Create LLM adapter
     // Enterprise mode always uses OpenAI-compatible adapter (LiteLLM exposes that interface).
@@ -1077,7 +1152,11 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
           // 事件回调里的赋值编译器看不见，这里按声明的类型读回来。
           const spent = turnUsage.current as TokenUsage | null;
           if (spent) {
-            totalInputTokens += spent.inputTokens ?? 0;
+            // 累加的是整段输入。Anthropic 的 inputTokens 不含缓存读写，要按协议换算。
+            totalInputTokens += promptTokensOf(usageProtocolFor(adapterKind), {
+              ...spent,
+              inputTokens: spent.inputTokens ?? 0,
+            });
             totalOutputTokens += spent.outputTokens ?? 0;
           }
           turnUsage.current = null;
@@ -1265,7 +1344,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
           // Name-level roster filtering cannot express input constraints such
           // as run_command(npm run *); enforce those at dispatch time. Shared
           // with the post-hook re-check so both apply the same rules.
-          const boundaryError = checkDispatchToolBoundary(agent, options.allowedTools, tc.name, tc.input);
+          const boundaryError = checkDispatchToolBoundary(agent, options.allowedTools, tc.name, tc.input, runStanding);
           if (boundaryError) return { id: tc.id, result: boundaryError };
           // Denylist checked at execution too, not just when the tool list
           // was assembled: the model can name a tool that was never offered.
@@ -1274,6 +1353,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
           }
 
           const subagentToolContext: ToolExecutionContext = {
+            operationOwner: options.operationOwner,
             workspacePath,
             conversationId: options.parentConversationId,
             // Per-run resources (browser tabs) are owned by the pair
@@ -1329,7 +1409,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
           // input-sensitive allowlist to the value that will actually be
           // executed, otherwise a hook could turn an allowed command into an
           // out-of-bound one after the first check above.
-          const postHookBoundaryError = checkDispatchToolBoundary(agent, options.allowedTools, tc.name, effectiveInput);
+          const postHookBoundaryError = checkDispatchToolBoundary(agent, options.allowedTools, tc.name, effectiveInput, runStanding);
           if (postHookBoundaryError) return { id: tc.id, result: postHookBoundaryError };
 
           const toolStart = Date.now();

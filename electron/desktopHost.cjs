@@ -55,9 +55,11 @@
 'use strict';
 
 const os = require('node:os');
+const path = require('node:path');
 const { shell, clipboard, dialog, powerSaveBlocker, BrowserWindow } = require('electron');
 const { openChromeExtensionsPage } = require('./chromeExtensionsLauncher.cjs');
 const { readChromeExtensionInstallation } = require('./chromeExtensionInstallation.cjs');
+const { createOpener } = require('./openPathPolicy.cjs');
 // Top-level is safe: updaterHost's only load-time require is 'electron' (its
 // tauriHost back-reference is lazy inside quitAndInstallIfPending), so there
 // is no cycle through this module.
@@ -178,7 +180,10 @@ function setPreventSleep(enabled) {
  * @param {string} targetPath
  */
 async function moveToTrash(targetPath) {
-  await shell.trashItem(String(targetPath));
+  if (typeof targetPath !== 'string' || !targetPath.trim() || !path.isAbsolute(targetPath)) {
+    throw new Error('Trash target must be an absolute path');
+  }
+  await shell.trashItem(path.resolve(targetPath));
   return null;
 }
 
@@ -357,25 +362,28 @@ async function dialogMessage(event, a) {
 // ─────────────────────────────────────────────────────────────────────────
 
 /**
+ * Every local path and every URL the renderer asks to open goes through this
+ * opener. It hands a URL to the system only when its scheme is allowed, and it
+ * refuses a target the system would run (see openPathPolicy.cjs).
+ */
+const opener = createOpener({ shell });
+
+/**
  * `open_path` args: `{path, with}`. `with` (an explicit non-default app to
  * open with, e.g. `openPath(p, 'vlc')`) is NOT supported by Electron's
  * `shell.openPath` — it only opens with the OS default handler. Not
  * exercised anywhere in src/ (openWithDefaultApp.ts always calls the
  * 1-arg form), so this is a documented no-op for that param rather than a
- * blocking gap. `shell.openPath` resolves with `''` on success or an error
- * string on failure — thrown here so the invoke rejects like Tauri's
- * `Result<(), String>` would.
+ * blocking gap. A failure or a refusal is thrown, so the invoke rejects like
+ * Tauri's `Result<(), String>` would.
  */
-async function openerOpenPath(a) {
-  const err = await shell.openPath(String((a && a.path) || ''));
-  if (err) throw new Error(err);
-  return null;
+function openerOpenPath(a) {
+  return opener.openPath(a && a.path);
 }
 
 /** `open_url` args: `{url, with}` — same `with` caveat as open_path above. */
-async function openerOpenUrl(a) {
-  await shell.openExternal(String((a && a.url) || ''));
-  return null;
+function openerOpenUrl(a) {
+  return opener.openUrl(String((a && a.url) || ''));
 }
 
 /**
@@ -398,16 +406,6 @@ function openerRevealItemInDir(a) {
 // ─────────────────────────────────────────────────────────────────────────
 
 /**
- * Matches a URI scheme prefix (`scheme:...`) with a scheme at least 2 chars
- * long, so it fires for `http:`, `https:`, `mailto:`, `tel:`, `file:`, etc.
- * but NOT for a bare single-letter Windows drive prefix like `C:\Users\...`
- * (which would otherwise false-positive as a "scheme" under a looser
- * `[a-zA-Z][a-zA-Z0-9+.-]*:` pattern — a drive-letter path has zero chars
- * between the letter and the colon).
- */
-const URL_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]+:/;
-
-/**
  * `plugin:shell|open` args: `{path, with}` (verified against
  * node_modules/@tauri-apps/plugin-shell/dist-js/index.js's `open()`, the
  * ONLY export of this plugin used in src/ — grep confirms every call site
@@ -419,20 +417,13 @@ const URL_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]+:/;
  * `open_path`/`open_url` above; unused in src/ (every `open()` call site
  * passes just the one path/URL arg).
  *
- * `shell.openPath` resolves with `''` on success or an error string on
- * failure — thrown here so the invoke rejects, matching Tauri's
- * `Result<(), String>` surfacing. `shell.openExternal` rejects natively on
- * failure, so no manual throw is needed for the URL branch.
+ * The argument is a URL or a local path; the opener above tells them apart
+ * (a single letter before the colon is a Windows drive). A failure or a
+ * refusal is thrown, so the invoke rejects, matching Tauri's
+ * `Result<(), String>` surfacing.
  */
-async function shellOpen(a) {
-  const p = String((a && a.path) || '');
-  if (URL_SCHEME_RE.test(p)) {
-    await shell.openExternal(p);
-  } else {
-    const err = await shell.openPath(p);
-    if (err) throw new Error(err);
-  }
-  return null;
+function shellOpen(a) {
+  return opener.openUrl(String((a && a.path) || ''));
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -456,7 +447,17 @@ function notificationIsPermissionGranted() {
 // process plugin
 // ─────────────────────────────────────────────────────────────────────────
 
+let restartPending = null;
 function processRestart(app) {
+  if (restartPending) return restartPending;
+  restartPending = processRestartInternal(app).finally(() => { restartPending = null; });
+  return restartPending;
+}
+
+async function processRestartInternal(app) {
+  const { prepareAppExit, cancelAppExitPreparation } = require('./tauriHost.cjs');
+  const { createApplicationExitWait } = require('./applicationExitWait.cjs');
+  await prepareAppExit(true);
   // If a downloaded update is pending (updaterHost's download_and_install
   // completed), restart must apply it: quitAndInstall replaces the app and
   // relaunches. Plain relaunch would boot the OLD version — and note the
@@ -465,13 +466,16 @@ function processRestart(app) {
   // quitting-guard marking + error fallback (see its JSDoc); it returns
   // false when nothing is pending or the install attempt failed, in which
   // case an honest plain relaunch of the current version is correct.
-  if (quitAndInstallIfPending()) return null;
+  const exit = createApplicationExitWait(app, cancelAppExitPreparation);
+  if (quitAndInstallIfPending(exit.fail)) { await exit.wait; return null; }
+  exit.cancel();
   app.relaunch();
   app.exit(0);
   return null;
 }
 
-function processExit(app, a) {
+async function processExit(app, a) {
+  await require('./tauriHost.cjs').prepareAppExit(true);
   app.exit(Number((a && a.code) || 0));
   return null;
 }

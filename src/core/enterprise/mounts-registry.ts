@@ -48,6 +48,7 @@ export interface PolicyEnforcerProps extends SlotProps {
   action: string
 }
 export interface AgentMarketProps extends TabSlotProps {
+  scopeRoleIds?: ReadonlySet<string>
   /** Close the host surface after the user starts a conversation. */
   onClose?: () => void
 }
@@ -70,6 +71,8 @@ export interface EnterpriseMounts {
   pluginTab?: ComponentType<TabSlotProps>
   imConnector?: ComponentType<ImConnectorProps>
   crossUserTasks?: ComponentType<CrossUserTaskProps>
+  /** 设置里用量页顶部提示下方的一行说明。个人版不注册，这个位置不渲染任何内容。 */
+  usageNote?: ComponentType<SlotProps>
 }
 
 /** No-op default that renders null. Used as fallback when a slot is unset. */

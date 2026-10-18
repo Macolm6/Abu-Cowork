@@ -8,8 +8,8 @@
  * does it when it loads a conversation (`chatStore.ts`) — so readers see the
  * same history, and an empty assistant row never reaches a provider.
  *
- * Pure: no store, no i18n, no I/O. The two user-facing strings it writes into
- * a row arrive through `SanitizeLoadedMessagesOptions.text`, because a reader
+ * Pure: no store, no i18n, no I/O. The user-facing string it writes into a
+ * row arrives through `SanitizeLoadedMessagesOptions.text`, because a reader
  * outside the renderer has no locale of its own. Nothing here writes to disk:
  * the renderer persists the rows this module recovered.
  */
@@ -17,8 +17,6 @@ import type { Message, UpstreamErrorDetails } from '@/types';
 import { normalizeUpstreamErrorDetails, sanitizeUntrustedLlmErrorText } from '@/core/llm/adapter';
 
 export interface LoadedMessageSanitizerText {
-  /** `chat.runRecoveredAfterRestart` in the reader's locale. */
-  runRecoveredAfterRestart: string;
   /** `chat.errorEmptyBody` in the reader's locale. */
   errorEmptyBody: string;
 }
@@ -67,29 +65,32 @@ export function sanitizeRunErrorKind(value: unknown): Message['runErrorKind'] {
     : undefined;
 }
 
+/**
+ * The closed set of causes an interrupted user row may carry. The field picks
+ * the notice the row shows, so a value from disk is kept only when it is one
+ * of these.
+ */
+export function sanitizeRunInterruptCause(value: unknown): Message['runInterruptCause'] {
+  return value === 'app_exit' ? 'app_exit' : undefined;
+}
+
 export function recoverInterruptedUserRun(
   msg: Message,
-  options: { recoveredText: string; answeredLoopIds?: ReadonlySet<string>; currentRunMessageId?: string },
+  options: { answeredLoopIds?: ReadonlySet<string>; currentRunMessageId?: string },
 ): Message {
   if (msg.role !== 'user' || !ACTIVE_RUN_STATES.has(msg.runState)) return msg;
   if (options.currentRunMessageId !== undefined && msg.id === options.currentRunMessageId) return msg;
-  // A stale-active row whose loop demonstrably produced a substantive reply
-  // did complete — only its terminal runState revision never reached the
-  // ledger. Branding such a row "发送失败" invites a retry of a turn that
-  // already succeeded.
+  // A stale-active row whose loop demonstrably produced its final reply did
+  // complete: only its terminal runState revision never reached the ledger.
   if (msg.loopId && options.answeredLoopIds?.has(msg.loopId)) {
     return { ...msg, runState: 'completed' };
   }
-  // `runErrorKind` is dropped on purpose (#549): a row branded failed by
-  // restart recovery is not one of the pre-accept causes, so it must not
-  // inherit their affordances (e.g. the oversize 「新建对话」 button) from a
-  // kind that happened to be sitting in the ledger.
-  const { runErrorKind: _recoveredKind, ...withoutKind } = msg;
-  return {
-    ...withoutKind,
-    runState: 'failed',
-    runError: options.recoveredText,
-  };
+  // The process that owned this run ended while the run was active. The row
+  // keeps what the run produced and says the application closed on it; a
+  // failure cause that happened to be sitting in the ledger (`runErrorKind`,
+  // #549) belongs to no interrupted row and is dropped with the other
+  // failure fields by `enforceRunErrorState`.
+  return { ...msg, runState: 'interrupted', runInterruptCause: 'app_exit' };
 }
 
 function safeRunErrorFallback(errorDetails: UpstreamErrorDetails | undefined, emptyBodyText: string): string {
@@ -108,14 +109,18 @@ export function sanitizeRunErrorText(
   return sanitizeUntrustedLlmErrorText(value, safeRunErrorFallback(errorDetails, emptyBodyText));
 }
 
+/** Failure fields stay on failed rows only, and the interrupt cause on interrupted rows only. */
 export function enforceRunErrorState(message: Message): Message {
-  if (RUN_FAILURE_STATES.has(message.runState)) return message;
+  const { runInterruptCause: untrustedCause, ...withoutCause } = message;
+  const cause = message.runState === 'interrupted' ? sanitizeRunInterruptCause(untrustedCause) : undefined;
+  const withCause = (cause ? { ...withoutCause, runInterruptCause: cause } : withoutCause) as Message;
+  if (RUN_FAILURE_STATES.has(message.runState)) return withCause;
   const {
     runError: _runError,
     runErrorDetails: _runErrorDetails,
     runErrorKind: _runErrorKind,
     ...withoutRunError
-  } = message;
+  } = withCause;
   return withoutRunError as Message;
 }
 
@@ -123,28 +128,44 @@ export function enforceRunErrorState(message: Message): Message {
  * by the ghost filter below and the completed-run inference above it. */
 function isSubstantiveAssistant(msg: Message): boolean {
   if (msg.role !== 'assistant') return false;
-  const text = typeof msg.content === 'string'
-    ? msg.content
-    : msg.content.filter(c => c.type === 'text').map(c => (c as { type: 'text'; text: string }).text).join('');
-  return text.trim().length > 0
+  return assistantText(msg).trim().length > 0
     || (msg.toolCalls?.length ?? 0) > 0
     || (msg.toolCallsForContext?.length ?? 0) > 0
     || !!msg.thinking;
 }
 
-/** loopIds whose turn demonstrably finished: a substantive assistant reply
- * bearing `usage`. Substantive text alone is not proof — a stream that died
- * mid-sentence leaves non-empty text too, and inferring 'completed' there
- * would hide the retry affordance behind a half reply. `usage` is only
- * written at a clean stream end (message_stop), so it separates the two:
- * every normally-finished turn carries it, a crashed stream never does.
+function assistantText(msg: Message): string {
+  return typeof msg.content === 'string'
+    ? msg.content
+    : msg.content.filter(c => c.type === 'text').map(c => (c as { type: 'text'; text: string }).text).join('');
+}
+
+/** loopIds whose turn demonstrably finished. Substantive text alone is not
+ * proof: a stream that died mid-sentence leaves non-empty text too, and
+ * inferring 'completed' there would hide the interruption behind a half
+ * reply. Two shapes are proof:
+ *  - a substantive assistant reply bearing `usage`, which is only written at
+ *    a clean stream end (message_stop);
+ *  - the loop's last assistant row as `finishStreaming` writes a final
+ *    answer: `streamEnded`, text, no tool call. A provider that reports no
+ *    usage leaves this shape and no other. A row written mid-stream (a
+ *    stream snapshot) has no `streamEnded`, and a step that called tools is
+ *    followed by another step, so neither proves anything.
  * Shared by the disk-load and import paths so the same ledger sanitizes
  * identically through either. */
 export function collectAnsweredLoopIds(messages: readonly Message[]): ReadonlySet<string> {
   const answeredLoopIds = new Set<string>();
+  const lastAssistantOfLoop = new Map<string, Message>();
   for (const msg of messages) {
-    if (msg.loopId && msg.role === 'assistant' && msg.usage && isSubstantiveAssistant(msg)) {
-      answeredLoopIds.add(msg.loopId);
+    if (!msg.loopId || msg.role !== 'assistant') continue;
+    lastAssistantOfLoop.set(msg.loopId, msg);
+    if (msg.usage && isSubstantiveAssistant(msg)) answeredLoopIds.add(msg.loopId);
+  }
+  for (const [loopId, msg] of lastAssistantOfLoop) {
+    if (msg.streamEnded === true
+      && assistantText(msg).trim().length > 0
+      && (msg.toolCalls?.length ?? 0) === 0) {
+      answeredLoopIds.add(loopId);
     }
   }
   return answeredLoopIds;
@@ -195,7 +216,6 @@ export function sanitizeLoadedLedgerMessages(
         isStreaming: false,
         toolCalls,
       }, {
-        recoveredText: options.text.runRecoveredAfterRestart,
         answeredLoopIds,
         currentRunMessageId: options.currentRunMessageId,
       }));

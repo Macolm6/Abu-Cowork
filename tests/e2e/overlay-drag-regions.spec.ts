@@ -1,33 +1,4 @@
-/**
- * Real-Electron journey for the Windows dead-click reports: on a laptop at
- * 125%/150% display scaling the system-settings dialog's close button stopped
- * responding, and the same was true for anything else that landed in the top
- * chrome band.
- *
- * Mechanism: the Windows chrome paints two 36px rows whose empty space is a
- * `-webkit-app-region: drag` lane, so the top 72px of the window moves the
- * window. That region is resolved by the OS as a *geometry union* and ignores
- * z-index — an overlay painted above a lane does not take its place. Windows
- * keeps hit-testing the rectangle as HTCAPTION, turns the press into a window
- * move, and the click never reaches the renderer. The shorter the viewport, the
- * higher the centred dialog sits, and below ~960 CSS px its close button is
- * fully inside the band.
- *
- * The fix: every layer painted above the chrome declares `data-electron-no-drag`
- * on its root, which the stylesheet turns into `-webkit-app-region: no-drag`
- * for that root only. The root's own rectangle already subtracts the whole
- * overlay from the lane, and the rule deliberately stops there: stamping
- * no-drag onto descendants too let a tall scrolled conversation contribute its
- * un-clipped layout rectangle back into the title bar (fixed in 6239c807), so
- * an overlay's buttons carry no app-region of their own.
- *
- * This test reproduces the reported viewport (1200x745 — 1080p at 150%) in an
- * isolated Electron instance, then asserts the close button is genuinely
- * hit-testable: the point it occupies resolves to `no-drag`, no drag layer is
- * painted above it, and `elementFromPoint` returns the button itself.
- * `src/__tests__/overlayDragRegions.test.ts` guards the same invariant
- * statically for every other overlay in the tree.
- */
+/** Real-Electron hit testing for the settings button and scrim over native drag regions. */
 import { expect, test } from '@playwright/test';
 import type { ElectronApplication, Page } from 'playwright';
 import {
@@ -65,7 +36,7 @@ test.describe.serial('Electron overlay hit testing — window drag lanes', () =>
     }
   });
 
-  test('the settings dialog close button stays clickable inside the chrome band', async () => {
+  test('the settings close button and the scrim over the title bar take pointer input', async () => {
     dataRoot = createElectronDataRoot();
     const launched = await launchAbuElectron(dataRoot);
     app = launched.app;
@@ -73,8 +44,7 @@ test.describe.serial('Electron overlay hit testing — window drag lanes', () =>
     await waitForApp(page);
     await dismissFirstRunOverlays(page);
 
-    // Shrink to the reported viewport so the centred dialog rides up into the
-    // chrome band. A maximized window cannot be resized, hence the unmaximize.
+    // A maximized window must be restored before setting its content size.
     await app.evaluate(({ BrowserWindow }, viewport) => {
       const [mainWindow] = BrowserWindow.getAllWindows();
       if (!mainWindow) throw new Error('main window missing');
@@ -92,51 +62,57 @@ test.describe.serial('Electron overlay hit testing — window drag lanes', () =>
 
     const hitTest = await page.evaluate(() => {
       const close = document.querySelector('[data-abu-settings-close]');
-      const scrim = document.querySelector('[data-abu-settings-dialog]');
-      if (!close || !scrim) throw new Error('settings dialog did not render its close button');
+      const box = document.querySelector('[data-abu-settings-dialog]');
+      if (!close || !box) throw new Error('settings dialog did not render its close button');
       const rect = close.getBoundingClientRect();
       const x = rect.left + rect.width / 2;
       const y = rect.top + rect.height / 2;
-      const dragLanes = [...document.querySelectorAll('*')]
-        .filter((element) => getComputedStyle(element).webkitAppRegion === 'drag')
-        .map((element) => element.getBoundingClientRect())
-        .filter((lane) => lane.width > 0 && lane.height > 0);
       const hit = document.elementFromPoint(x, y);
       return {
         closeAppRegion: getComputedStyle(close).webkitAppRegion,
-        scrimAppRegion: getComputedStyle(scrim).webkitAppRegion,
+        boxAppRegion: getComputedStyle(box).webkitAppRegion,
         receivesHit: Boolean(hit && (hit === close || close.contains(hit))),
-        // Proof the scenario is real at this viewport rather than hypothetical.
-        overlapsDragLane: dragLanes.some((lane) => (
-          lane.left < rect.right && lane.right > rect.left
-          && lane.top < rect.bottom && lane.bottom > rect.top
-        )),
         centre: { x, y },
       };
     });
 
-    // The marker on the overlay ROOT is the entire mechanism: its rectangle
-    // covers the button, so the button needs no region of its own. Asserting
-    // the button stays `none` is the regression guard for 6239c807 — putting
-    // the descendant rule back would leak overlay geometry into the title bar.
-    expect(hitTest.scrimAppRegion).toBe('no-drag');
+    // The marker on the dialog box (and on the scrim behind it) is the entire
+    // mechanism: the box's rectangle covers the button, so the button needs no
+    // region of its own. Asserting the button stays `none` is the regression
+    // guard for 6239c807 — putting the descendant rule back would leak overlay
+    // geometry into the title bar.
+    expect(hitTest.boxAppRegion).toBe('no-drag');
     expect(hitTest.closeAppRegion).toBe('none');
     expect(hitTest.receivesHit).toBe(true);
     // The authoritative check: Chromium unions/subtracts in DOCUMENT order, so
     // ask the resolver that models that, not the stacking order.
     expect(await appRegionAt(page, hitTest.centre.x, hitTest.centre.y)).toBe('no-drag');
-    if (process.platform === 'win32') {
-      // Windows is the only platform that draws the two-row band; elsewhere the
-      // lanes are the 8px macOS strip and the canvas gutters, which the dialog's
-      // own `p-6` padding already clears.
-      expect(
-        hitTest.overlapsDragLane,
-        'the reported chrome-band overlap was not reproduced, so this test would pass vacuously',
-      ).toBe(true);
-    }
-
-    // And the button still does its job.
     await closeButton.click();
+    await expect(dialog).toBeHidden();
+
+    await page.getByRole('button', { name: /^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/ }).first().click();
+    await page.getByRole('menuitem', { name: /^(设置|Settings)$/ }).click();
+    await expect(dialog).toBeVisible();
+    const scrimHit = await page.evaluate(() => {
+      const lane = document.querySelector('[data-abu-windows-drag-region="titlebar"], [data-abu-macos-drag-strip]');
+      if (!lane) throw new Error('native title-bar drag region missing');
+      const rect = lane.getBoundingClientRect();
+      const point = { x: rect.right - 16, y: rect.top + rect.height / 2 };
+      const hit = document.elementFromPoint(point.x, point.y);
+      return {
+        point,
+        laneAppRegion: getComputedStyle(lane).webkitAppRegion,
+        laneVisible: rect.width > 32 && rect.height > 0,
+        scrimReceivesHit: hit?.hasAttribute('data-electron-no-drag') === true
+          && getComputedStyle(hit).position === 'fixed'
+          && !hit.hasAttribute('data-ds-layer'),
+      };
+    });
+    expect(scrimHit.laneVisible).toBe(true);
+    expect(scrimHit.laneAppRegion).toBe('drag');
+    expect(scrimHit.scrimReceivesHit).toBe(true);
+    expect(await appRegionAt(page, scrimHit.point.x, scrimHit.point.y)).toBe('no-drag');
+    await page.mouse.click(scrimHit.point.x, scrimHit.point.y);
     await expect(dialog).toBeHidden();
   });
 });

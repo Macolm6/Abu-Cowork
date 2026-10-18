@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { redactInlineMediaPayloads, redactSensitiveMediaText } from './redaction';
+import zhCN from '../../i18n/locales/zh-CN';
 
 describe('redactInlineMediaPayloads', () => {
   it('redacts base64 data URL payloads without redacting ordinary paths', () => {
@@ -25,6 +26,38 @@ describe('redactInlineMediaPayloads', () => {
 });
 
 describe('redactSensitiveMediaText', () => {
+  it.each([
+    zhCN.toolResult.computer.officeEditingUnavailable,
+    '输入/输出设置',
+    '１/２',
+    'Cafe\u0301/menu',
+    'готово/ожидание',
+  ])('preserves slashes within Unicode text: %s', (text) => {
+    expect(redactSensitiveMediaText(text)).toBe(text);
+  });
+
+  it.each([
+    ['/用户/张三/截图.png', '/用户/张三/截图.png'],
+    ['图片 /用户/张三/截图.png', '/用户/张三/截图.png'],
+    ['路径:/用户/张三/截图.png', '/用户/张三/截图.png'],
+    ['路径：/用户/张三/截图.png', '/用户/张三/截图.png'],
+    ['(/用户/张三/截图.png)', '/用户/张三/截图.png'],
+    ['（/用户/张三/截图.png）', '/用户/张三/截图.png'],
+    ['C:\\用户\\张三\\截图.png', 'C:\\用户\\张三\\截图.png'],
+    ['\\\\服务器\\共享\\截图.png', '\\\\服务器\\共享\\截图.png'],
+    ['file:///用户/张三/截图.png', '/用户/张三/截图.png'],
+    ['FILE:///用户/张三/截图.png', '/用户/张三/截图.png'],
+  ])('redacts an absolute Unicode path: %s', (text, path) => {
+    const sanitized = redactSensitiveMediaText(text);
+    expect(sanitized).not.toContain(path);
+    expect(sanitized).toContain('[REDACTED:path]');
+  });
+
+  it('preserves URL paths containing Unicode text', () => {
+    const url = 'https://example.test/用户/截图.png';
+    expect(redactSensitiveMediaText(url)).toBe(url);
+  });
+
   it('redacts parameterized and empty-MIME data URLs plus angle-bracketed local paths without breaking https', () => {
     const dataUrls = [
       'data:image/png;charset=utf-8;base64,QUJDRA==',

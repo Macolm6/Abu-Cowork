@@ -623,6 +623,7 @@ function formatComputerWindowState(input: {
   screenshotId: string | null;
   snapshot: AxSnapshotResult;
   driver?: ComputerDriverCapabilities | null;
+  observationNote?: string;
 }): string {
   const graph = formatWindowGraph(
     input.snapshot.window_graph,
@@ -635,6 +636,7 @@ function formatComputerWindowState(input: {
     `state_id: ${input.stateId}`,
     input.screenshotId ? `screenshot_id: ${input.screenshotId}` : '',
     input.driver ? formatDriverLine(input.driver) : '',
+    input.observationNote?.trim(),
     formatAxElements(input.snapshot.elements),
     graph,
   ].filter(Boolean).join('\n');
@@ -2007,14 +2009,15 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
               officeEditingUnavailable(snap.elements) ? t.officeEditingUnavailable : '',
             ].filter(Boolean).join('');
             axPart = state
-              ? `${formatComputerWindowState({
+              ? formatComputerWindowState({
                   driver: hostSession?.driver ?? null,
                   label: 'state',
                   target: state.target,
                   stateId: state.stateId,
                   screenshotId: null,
                   snapshot: snap,
-                })}${observationNote}`
+                  observationNote,
+                })
               : format(t.axTreeHeader, {
                   app: snap.app ?? 'unknown',
                   count: snap.elements.length,
@@ -2054,14 +2057,15 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
               },
             );
             if (observedState && observedSnapshot) {
-              axPart = `${formatComputerWindowState({
+              axPart = formatComputerWindowState({
                 driver: hostSession?.driver ?? null,
                 label: 'state',
                 target: observedState.target,
                 stateId: observedState.stateId,
                 screenshotId: screenshotIdForState(runKey, observedState.target, observedState.stateId),
                 snapshot: observedSnapshot,
-              })}${observationNote}`;
+                observationNote,
+              });
             }
             return [
               { type: 'text', text: axPart + t.axSuffixVision + t.axScreenshotSeparator },

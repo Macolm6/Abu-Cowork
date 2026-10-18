@@ -161,6 +161,7 @@ describe('subagentHost', () => {
         'preloadedSkills',
         'initiatedBy',
         'dispatchKey',
+        'ownsUserTurn',
         'locale',
         'uiStrings',
         'settingsSnapshot',
@@ -188,6 +189,7 @@ describe('subagentHost', () => {
         runPermissionCeiling: { version: 1, source: 'im', capability: 'custom' },
       }],
       ['unknown wire field', { ...baseParams(), injectedByRenderer: true }],
+      ['ownsUserTurn not a boolean', { ...baseParams(), ownsUserTurn: 'yes' }],
       ['preloadedSkills not an object', { ...baseParams(), preloadedSkills: 'section' }],
       ['preloadedSkills without text', { ...baseParams(), preloadedSkills: { resolved: [], missing: [], truncated: [] } }],
       ['preloadedSkills with a non-string name list', {
@@ -423,6 +425,23 @@ describe('subagentHost', () => {
         );
 
         expect(capturedReader?.getSnapshot().allowUnattendedBrowser).toBe(false);
+      });
+
+      it('hands the loop the same live reader for the model-usability check', async () => {
+        __resetSettingsMirror();
+        let captured: { settingsReader?: unknown; liveSettingsReader?: { getSnapshot: () => Record<string, unknown> } } | undefined;
+        runSubagentLoopMock.mockImplementation(async (options: typeof captured) => {
+          captured = options;
+          return resultShape('ok');
+        });
+
+        await handleSubagentRun(baseParams({
+          settingsSnapshot: { agentMaxTurns: 200, providers: [{ id: 'p', enabled: true }] },
+        }));
+
+        expect(captured?.liveSettingsReader).toBe(captured?.settingsReader);
+        applySettingsSnapshot({ agentMaxTurns: 200, providers: [] } as never, 0);
+        expect(captured?.liveSettingsReader?.getSnapshot().providers).toEqual([]);
       });
 
       it('still falls back to its own dispatch snapshot when no push has landed yet', async () => {

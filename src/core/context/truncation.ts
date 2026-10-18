@@ -20,6 +20,10 @@ const TRUNCATION_RULES: Record<string, TruncationRule> = {
   [TOOL_NAMES.SEARCH_FILES]: { headLines: 50, tailLines: 0, maxChars: 8000 },
   [TOOL_NAMES.FIND_FILES]: { headLines: 100, tailLines: 0, maxChars: 8000 },
   [TOOL_NAMES.WEB_SEARCH]: { headLines: 0, tailLines: 0, maxChars: 8000 },
+  // The chat reads the presented paths back out of this result line by line,
+  // so it has to arrive whole. The tool caps it at 8 paths; the budget covers
+  // 8 maximum-length paths even at the strongest context-pressure scale.
+  [TOOL_NAMES.PRESENT_FILES]: { headLines: 0, tailLines: 0, maxChars: 200000 },
 };
 
 const DEFAULT_RULE: TruncationRule = { headLines: 0, tailLines: 0, maxChars: 3500 };
@@ -102,6 +106,21 @@ export function getContextPressureScale(contextUsagePercent?: number): number {
   return 0.25;                                // critical — aggressive truncation
 }
 
+/** The line `truncateToolResult` writes where it dropped lines from the middle. */
+export function linesOmittedMarker(count: number): string {
+  return `[... ${count} lines omitted ...]`;
+}
+
+/** The line `truncateToolResult` writes where it dropped characters from the middle. */
+export function charsOmittedMarker(count: number): string {
+  return `[... ${count} characters omitted ...]`;
+}
+
+/** A whole line written by `linesOmittedMarker`, its count captured. */
+export const LINES_OMITTED_LINE = /^\[\.\.\. (\d+) lines omitted \.\.\.\]$/;
+/** A whole line written by `charsOmittedMarker`, its count captured. */
+export const CHARS_OMITTED_LINE = /^\[\.\.\. (\d+) characters omitted \.\.\.\]$/;
+
 /**
  * Truncate a tool result based on the tool type.
  *
@@ -139,7 +158,7 @@ export function truncateToolResult(toolName: string, result: string, contextUsag
       const omitted = lines.length - rule.headLines - rule.tailLines;
       const truncated = [
         ...head,
-        `\n[... ${omitted} lines omitted ...]\n`,
+        `\n${linesOmittedMarker(omitted)}\n`,
         ...tail,
       ].join('\n');
 
@@ -168,5 +187,5 @@ function charTruncate(text: string, maxChars: number): string {
   const tail = text.slice(-tailChars);
   const omitted = text.length - headChars - tailChars;
 
-  return `${head}\n\n[... ${omitted} characters omitted ...]\n\n${tail}`;
+  return `${head}\n\n${charsOmittedMarker(omitted)}\n\n${tail}`;
 }

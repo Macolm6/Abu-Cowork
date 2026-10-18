@@ -23,6 +23,7 @@ const RUNTIME_DIAGNOSTICS_CHANNEL = 'abu:runtime-diagnostics';
 const SIDECAR_EVENT_CHANNEL = 'abu:sidecar-event';
 const SIDECAR_BRIDGE_STATE_CHANNEL = 'abu:sidecar-bridge-state';
 const FS_CANONICALIZE_FOR_POLICY_CHANNEL = 'abu:fs-canonicalize-for-policy';
+const FS_NAME_COMPARISON_CHANNEL = 'abu:fs-name-comparison';
 const SAVE_IMAGE_ATTACHMENT_CHANNEL = 'abu:save-image-attachment';
 const READ_USER_ATTACHMENT_CHANNEL = 'abu:read-user-attachment';
 const RELEASE_USER_ATTACHMENT_CHANNEL = 'abu:release-user-attachment';
@@ -649,11 +650,72 @@ function readDeepLinkScheme() {
   return value === 'abu-dev' || value === 'abu' ? value : 'abu';
 }
 
+// Which system material main gave this window ('vibrancy' | 'mica' | 'none').
+// The preload-surface tests evaluate this file without `process`; no flag there
+// means no material, which is also what a plain browser page has.
+function readWindowMaterial() {
+  const flag = '--abu-window-material=';
+  const argv = typeof process === 'undefined' ? [] : process.argv;
+  const arg = argv.find(a => a.startsWith(flag));
+  if (!arg) return 'none';
+  const value = arg.slice(flag.length);
+  if (value !== 'vibrancy' && value !== 'mica' && value !== 'none') {
+    throw new Error(`Unknown window material: ${value}`);
+  }
+  return value;
+}
+
+let quitParticipant = null;
+let quitRequest = null;
+ipcRenderer.on('abu:quit-prepare', async (_event, id) => {
+  if (!quitParticipant || (quitRequest && !quitRequest.failed)) throw new Error('Exit preparation participant is unavailable');
+  const previous = quitRequest;
+  const request = { id, cancelled: false, failed: false, release: null, cancel: null, inert: previous?.inert ?? document.body.inert };
+  quitRequest = request;
+  document.body.inert = true;
+  const release = () => {
+    request.release?.();
+    if (quitRequest === request) {
+      document.body.inert = request.inert;
+      quitRequest = null;
+    }
+  };
+  const onCancel = callback => {
+    if (typeof callback !== 'function') throw new Error('Exit cancellation requires a callback');
+    request.cancel = callback;
+    if (request.cancelled) callback();
+  };
+  const preparation = quitParticipant(onCancel);
+  // A retry acquires its task barrier before releasing the failed attempt's.
+  previous?.cancel?.();
+  previous?.release?.();
+  const [result] = await Promise.allSettled([preparation]);
+  request.failed = result.status === 'rejected';
+  if (result.status === 'fulfilled') request.release = result.value;
+  if (request.cancelled) { release(); return; }
+  const accepted = await ipcRenderer.invoke('abu:quit-ack', { id, success: result.status === 'fulfilled' });
+  if (!accepted || request.cancelled) { request.cancel?.(); release(); }
+});
+ipcRenderer.on('abu:quit-cancel', (_event, id) => {
+  if (!quitRequest || quitRequest.id !== id) return;
+  quitRequest.cancelled = true;
+  quitRequest.cancel?.();
+  quitRequest.release?.();
+  document.body.inert = quitRequest.inert;
+  quitRequest = null;
+});
+
 contextBridge.exposeInMainWorld('__ABU_SHELL__', {
+  registerQuitParticipant: async (participant, failureMessage, dialogText) => {
+    if (typeof participant !== 'function' || quitParticipant) throw new Error('Invalid exit preparation participant');
+    quitParticipant = participant;
+    await ipcRenderer.invoke('abu:quit-register', failureMessage, dialogText);
+  },
   mainSupervisesSidecar: true,
   deepLinkScheme: readDeepLinkScheme(),
+  windowMaterial: readWindowMaterial(),
   pluginAuthor: (action, request) => ipcRenderer.invoke('abu:plugin-author', { action, request }),
-  // App pages: the renderer names a plugin and a nav item, never a URL (appPageHost.cjs).
+  // App pages: the renderer names an app and a nav item, never a URL (appPageHost.cjs).
   appPage: (action, request) => ipcRenderer.invoke('abu:app-page', { action, request }),
   pluginSnapshot: (action, request) => ipcRenderer.invoke('abu:plugin-snapshot', { action, request }),
   pluginRegistry: (action, request) => ipcRenderer.invoke('abu:plugin-registry', { action, request }),
@@ -663,8 +725,13 @@ contextBridge.exposeInMainWorld('__ABU_SHELL__', {
   speech: invokeSpeech,
   subscribeSpeechEvents,
   pluginOperation: (action, request) => ipcRenderer.invoke('abu:plugin-operation', { action, request }),
+  fileOperation: (action, request) => ipcRenderer.invoke('abu:file-operation', { action, request }),
   canonicalizePathForPolicy: (path, followFinalSymlink = true) => ipcRenderer.invoke(
     FS_CANONICALIZE_FOR_POLICY_CHANNEL,
+    { path, followFinalSymlink },
+  ),
+  inspectPathNameComparison: (path, followFinalSymlink = true) => ipcRenderer.invoke(
+    FS_NAME_COMPARISON_CHANNEL,
     { path, followFinalSymlink },
   ),
   // Chromium no longer exposes File.path. Keep the bridge deliberately narrow:

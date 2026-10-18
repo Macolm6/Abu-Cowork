@@ -1,26 +1,37 @@
-import { useEffect, useMemo, type ReactNode } from 'react';
-import { Link2, ChevronDown } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import type { AppDefinition, AppMode, AppScene } from '@/types/app';
 import { useAppStore } from '@/stores/appStore';
+import { useAppAddFlowStore } from '@/stores/appAddFlowStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useTeamStore } from '@/stores/teamStore';
 import { useMCPStore } from '@/stores/mcpStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
+import { usePluginStore } from '@/stores/pluginStore';
 import { getComposerDraftKey, getComposerDraftScopeForEnterpriseMode, readComposerDraft, writeComposerDraft } from '@/stores/composerDraftStore';
 import { mergeDraftPrefill } from '@/utils/inputCommand';
 import { agentRegistry } from '@/core/agent/registry';
+import { prepareEnterpriseAppSkill, useEnterpriseAppSkillRevision } from '@/core/enterprise/appRuntime';
 import { prepareExpertEntry } from '@/core/team/expertEntry';
 import { expertIdentity, teamIdentity } from '@/core/team/expertContact';
+import { localizedTeam } from '@/core/team/localizedTeam';
 import { appHomeTitle } from '@/core/app/appRegistry';
-import { buildAppBinding, effectiveRun, pickMode, resolveText, runExpertName, runTeamId } from '@/core/app/appBinding';
+import { buildAppBinding, effectiveRun, pickMode, resolveText } from '@/core/app/appBinding';
+import { reportAppFailure } from '@/core/app/appFailure';
+import { resolvedTeamId } from '@/core/app/appHomePicks';
+import { liveRefCatalog, refCatalogFrom, resolveRun, runTargets, targetDisplayName, type ResolvedRun } from '@/core/app/appRefs';
+import { describeSceneRun } from '@/components/app/runLabel';
 import AppLogo from '@/components/app/AppLogo';
 import AgentAvatar from '@/components/common/AgentAvatar';
 import TeamAvatar from '@/components/team/TeamAvatar';
-import { Button } from '@/components/ui/button';
+import { Button } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
+import { BUSY } from '@/components/ds/styles';
 import { PROMPT_GRID_CLASS, PROMPT_ITEM_CLASS } from './promptGrid';
 
 /**
@@ -41,6 +52,26 @@ function useAppHomeState(app: AppDefinition): { mode: AppMode; expandedScene: Ap
   return { mode, expandedScene: mode.scenes.find((scene) => scene.id === expandedSceneId) };
 }
 
+/**
+ * Who each run of the app resolves to right now. Recomputed whenever the
+ * teams, the experts or the plugins change, so a plugin removed or an expert
+ * deleted since the app was added shows on the card at once.
+ */
+function useResolvedRuns(app: AppDefinition): (scene: AppScene | undefined) => ResolvedRun | undefined {
+  useEnterpriseAppSkillRevision();
+  const teams = useTeamStore((s) => s.teams);
+  const managedTeamSources = useTeamStore((s) => s.managedTeamSources);
+  const agents = useDiscoveryStore((s) => s.agents);
+  const skills = useDiscoveryStore((s) => s.skills);
+  const installed = usePluginStore((s) => s.installed);
+  const activations = usePluginStore((s) => s.activationByKey);
+  const catalog = useMemo(() => refCatalogFrom({ installed, activations, teams, managedTeamSources, agents, skills }), [teams, managedTeamSources, agents, skills, installed, activations]);
+  return (scene) => {
+    const run = effectiveRun(app, scene);
+    return run ? resolveRun(app, run, catalog) : undefined;
+  };
+}
+
 export default function AppHome({ app, onPlaceholderChange }: {
   app: AppDefinition;
   onPlaceholderChange: (placeholder: string | null) => void;
@@ -51,40 +82,62 @@ export default function AppHome({ app, onPlaceholderChange }: {
   const dismissConnectorHint = useAppStore((s) => s.dismissConnectorHint);
   const openExtensions = useSettingsStore((s) => s.openExtensions);
   const servers = useMCPStore((s) => s.servers);
+  const installed = usePluginStore((s) => s.installed);
+  const resolved = useResolvedRuns(app);
+  const defaultTeamId = resolvedTeamId(resolved(undefined));
+  const pendingAppBinding = useChatStore((s) => s.pendingAppBinding);
+  const binding = useMemo(() => buildAppBinding(app, mode, expandedScene), [app, mode, expandedScene]);
+  // The home shows with no conversation and nothing holds a binding for the next one: a new
+  // task was started with the home already in view (the sidebar's 新任务, the title bar's, a
+  // project that was just created), which clears what the store held ready.
+  const picksCleared = useChatStore((s) => s.activeConversationId === null && s.pendingAppBinding === undefined);
 
-  // The mode and the expanded scene decide the placeholder and the binding the
-  // next conversation is created with. Text the user writes themselves goes to
-  // the app's default team (product spec §5.4): the pin is restored whenever
-  // the home changes mode or scene, and a template replaces it with whoever
-  // that scene names.
   useEffect(() => {
     const placeholder = expandedScene?.placeholder ?? app.config.composer?.placeholder;
     onPlaceholderChange(placeholder === undefined ? null : resolveText(placeholder));
-    const chat = useChatStore.getState();
-    chat.setPendingAppBinding(buildAppBinding(app, mode, expandedScene));
-    chat.setPendingTeamId(runTeamId(app, app.config.defaultRun));
     return () => onPlaceholderChange(null);
-  }, [app, mode, expandedScene, onPlaceholderChange]);
+  }, [app, expandedScene, onPlaceholderChange]);
 
-  const missingConnectors = useMemo(() => (app.config.requiredConnectors ?? []).filter((name) => servers[name]?.status !== 'connected'), [app.config.requiredConnectors, servers]);
+  // Refresh the app snapshot independently of explicit owner choices. App
+  // defaults can resolve later, after the team directory has loaded.
+  useEffect(() => {
+    const chat = useChatStore.getState();
+    if (chat.activeConversationId !== null) return;
+    const previous = chat.pendingAppBinding;
+    const sameContext = previous !== undefined && binding !== undefined
+      && previous.appId === binding.appId && previous.modeId === binding.modeId && previous.sceneId === binding.sceneId;
+    const hasExplicitOwner = chat.pendingOwnerSource === 'user' || chat.pendingTeamId !== undefined || chat.pendingAgentName !== null;
+    if (previous !== binding) chat.setPendingAppBinding(binding);
+    if (sameContext ? chat.pendingOwnerSource === 'app' : previous || !hasExplicitOwner) {
+      chat.setPendingTeamId(defaultTeamId, 'app');
+    }
+  }, [binding, defaultTeamId, pendingAppBinding, picksCleared]);
+
+  // `requiredConnectors` names `<plugin>/<connector>`; the connector the user
+  // sees is the one that plugin's install registered under that name.
+  const missingConnectors = useMemo(() => (app.config.requiredConnectors ?? []).flatMap((value) => {
+    const [plugin, name] = [value.slice(0, value.indexOf('/')), value.slice(value.indexOf('/') + 1)];
+    const record = installed.find((item) => item.name === plugin && item.contributed.mcpServers.includes(name));
+    return record && servers[name]?.status === 'connected' ? [] : [name];
+  }), [app.config.requiredConnectors, servers, installed]);
 
   return (
     <div data-testid="app-home" data-app-id={app.appId} className="w-full">
       <div className="text-center mb-6">
-        <AppLogo name={app.name} logo={app.logo} logoDark={app.logoDark} size="xl" className="mx-auto mb-4 rounded-2xl" />
-        <h1 className="text-h-xl font-semibold text-[var(--abu-text-primary)] leading-tight mb-2" data-testid="app-home-title">{appHomeTitle(app, locale)}</h1>
-        {app.config.home.header?.slogan && <p className="text-body text-[var(--abu-text-tertiary)]">{resolveText(app.config.home.header.slogan)}</p>}
+        <AppLogo name={resolveText(app.name)} logo={app.logo} logoDark={app.logoDark} icon={app.icon} size="xl" className="mx-auto mb-4 rounded-panel" />
+        <h1 className="mb-2 text-title-lg text-label" data-testid="app-home-title">{appHomeTitle(app, locale)}</h1>
+        {app.config.home.header?.slogan && <p className="text-ui text-label-secondary">{resolveText(app.config.home.header.slogan)}</p>}
       </div>
 
       {missingConnectors.length > 0 && !dismissed && (
-        <div data-testid="app-connector-hint" className="mb-5 flex items-center gap-3 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-subtle)] px-4 py-3">
-          <Link2 className="h-4 w-4 shrink-0 text-[var(--abu-text-muted)]" />
+        <div data-testid="app-connector-hint" className="mb-5 flex items-center gap-3 rounded-panel border border-separator bg-surface px-4 py-3">
+          <Icon icon={AppIcons.link} className="shrink-0 text-label-tertiary" />
           <div className="min-w-0 flex-1">
-            <p className="text-body text-[var(--abu-text-primary)]">{format(t.appHome.connectorHintTitle, { names: missingConnectors.join('、') })}</p>
-            <p className="text-caption text-[var(--abu-text-tertiary)]">{t.appHome.connectorHintBody}</p>
+            <p className="text-ui text-label">{format(t.appHome.connectorHintTitle, { names: missingConnectors.join('、') })}</p>
+            <p className="text-caption text-label-tertiary">{t.appHome.connectorHintBody}</p>
           </div>
-          <Button size="sm" variant="ghost" onClick={() => dismissConnectorHint(app.appId)}>{t.appHome.connectorHintLater}</Button>
-          <Button size="sm" onClick={() => openExtensions('mcp', 'mine')}>{t.appHome.connectorHintConnect}</Button>
+          <Button size="sm" variant="plain" onClick={() => dismissConnectorHint(app.appId)}>{t.appHome.connectorHintLater}</Button>
+          <Button size="sm" variant="primary" onClick={() => openExtensions('mcp', 'mine')}>{t.appHome.connectorHintConnect}</Button>
         </div>
       )}
     </div>
@@ -96,70 +149,136 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
   const { mode, expandedScene } = useAppHomeState(app);
   const selectMode = useAppStore((s) => s.selectMode);
   const setExpandedScene = useAppStore((s) => s.setExpandedScene);
-  const teams = useTeamStore((s) => s.teams);
-  const discoveredAgents = useDiscoveryStore((s) => s.agents);
-  const agentNames = useMemo(() => new Set(discoveredAgents.map((meta) => meta.name)), [discoveredAgents]);
+  const resolvedRun = useResolvedRuns(app);
+  // A scene whose organization expert is being set up, or could not be.
+  const [preparation, setPreparation] = useState<Record<string, { state: 'busy' | 'failed'; name: string }>>({});
+  // The scenes whose template is being handed over: one start per scene at a time.
+  const startingRef = useRef(new Set<string>());
+  const contextRevision = useRef(0);
+  useEffect(() => {
+    contextRevision.current += 1;
+    return () => { contextRevision.current += 1; };
+  }, [app.appId, app.version, mode.modeId, visible]);
 
-  const describeRun = (scene: AppScene): { label: string; avatar: ReactNode } => {
-    const run = effectiveRun(app, scene);
-    if (!run) return { label: t.appHome.sceneRunDefault, avatar: <AppLogo name={app.name} logo={app.logo} logoDark={app.logoDark} size="sm" /> };
-    if ('team' in run) {
-      const team = teams.find((item) => item.id === runTeamId(app, run));
-      return { label: format(t.appHome.sceneRunTeam, { name: team?.name ?? run.team }), avatar: <TeamAvatar avatar={team?.avatar} size="xs" round /> };
-    }
-    if ('expert' in run) {
-      const name = runExpertName(run)!;
-      const agent = agentNames.has(name) ? agentRegistry.getAgent(name) : undefined;
-      return { label: format(t.appHome.sceneRunExpert, { name: agent?.displayNames?.[locale] ?? name }), avatar: <AgentAvatar agent={agent ?? { name }} size="sm" /> };
-    }
-    return { label: format(t.appHome.sceneRunSkill, { name: run.skill }), avatar: <span className="inline-flex h-4 w-4 items-center justify-center rounded bg-[var(--abu-bg-muted)] text-caption text-[var(--abu-text-muted)]">/</span> };
+  const describeRun = (scene: AppScene): { label: string; avatar: ReactNode; unavailable: boolean } => {
+    const resolved = resolvedRun(scene);
+    const { label, unavailable } = describeSceneRun(app, scene, resolved, t, format, locale);
+    const owner = resolved?.owner;
+    const avatar = !resolved
+      ? <AppLogo name={resolveText(app.name)} logo={app.logo} logoDark={app.logoDark} icon={app.icon} size="sm" />
+      : owner?.status === 'ok' && owner.kind === 'team' ? <TeamAvatar avatar={owner.team.avatar} size="xs" round />
+        : owner?.status === 'ok' && owner.kind === 'expert' ? <AgentAvatar agent={owner.agent} size="sm" />
+          : owner ? <TeamAvatar size="xs" round />
+            : <span className="inline-flex h-4 w-4 items-center justify-center rounded-control bg-fill text-caption text-label-secondary">/</span>;
+    return { label, avatar, unavailable };
   };
 
-  const startFromTemplate = (scene: AppScene, prompt: string) => {
+  /**
+   * Hand the prompt to whoever the scene's run resolves to, once everything it
+   * needs is there. Resolved against the live catalog: after a repair this
+   * runs again from the repair's callback, and the plugin it installed has to
+   * count.
+   */
+  const startFromTemplate = async (scene: AppScene, prompt: string, isCurrent: () => boolean): Promise<void> => {
+    if (!isCurrent()) return;
     const run = effectiveRun(app, scene);
+    const resolved = run ? resolveRun(app, run, liveRefCatalog()) : undefined;
     const chat = useChatStore.getState();
-    if (run && 'team' in run) {
-      const teamId = runTeamId(app, run)!;
-      const team = teams.find((item) => item.id === teamId);
-      if (!team) throw new Error(`team "${teamId}" is not available`);
-      prepareExpertEntry({ identity: teamIdentity(team) }, prompt);
-    } else if (run && 'expert' in run) {
-      const name = runExpertName(run)!;
-      const agent = agentRegistry.getAgent(name);
-      if (!agent) throw new Error(`expert "${name}" is not available`);
-      prepareExpertEntry({ identity: expertIdentity(agent, locale) }, prompt);
-    } else if (run && 'skill' in run) {
+    const targets = resolved ? runTargets(resolved) : [];
+    if (targets.some((target) => target.status === 'needs-plugin')) {
+      // A plugin the scene needs was removed since the app was added: the
+      // same confirmation as adding the app, then the scene starts.
+      await useAppAddFlowStore.getState().repair(app, () => { void startFromTemplate(scene, prompt, isCurrent); });
+      return;
+    }
+    const unprepared = targets.find((target) => target.status === 'needs-preparation');
+    if (unprepared?.status === 'needs-preparation') {
+      const name = targetDisplayName(unprepared, locale);
+      setPreparation((current) => ({ ...current, [scene.id]: { state: 'busy', name } }));
+      try {
+        for (const roleId of unprepared.roleIds) await agentRegistry.prepareManagedAgent(roleId);
+        if (unprepared.skillName) await prepareEnterpriseAppSkill(unprepared.skillName);
+      } catch (error) {
+        if (!isCurrent()) return;
+        reportAppFailure('prepare scene', error);
+        setPreparation((current) => ({ ...current, [scene.id]: { state: 'failed', name } }));
+        return;
+      }
+      if (!isCurrent()) return;
+      setPreparation((current) => {
+        const next = { ...current };
+        delete next[scene.id];
+        return next;
+      });
+      await startFromTemplate(scene, prompt, isCurrent);
+      return;
+    }
+    if (targets.some((target) => target.status === 'unavailable')) return;
+
+    const owner = resolved?.owner;
+    const skill = resolved?.skill?.status === 'ok' && resolved.skill.kind === 'skill' ? resolved.skill.name : undefined;
+    const draftKey = () => getComposerDraftKey(null, getComposerDraftScopeForEnterpriseMode(useEnterpriseStore.getState().mode));
+    if (owner?.status === 'ok' && owner.kind === 'team') {
+      prepareExpertEntry({ identity: teamIdentity(localizedTeam(owner.team, locale)) }, prompt);
+    } else if (owner?.status === 'ok' && owner.kind === 'expert') {
+      prepareExpertEntry({ identity: expertIdentity(owner.agent, locale) }, prompt);
+    } else if (skill) {
       // The same draft write `prepareExpertEntry` does, with the skill chip in place of an expert.
-      const key = getComposerDraftKey(null, getComposerDraftScopeForEnterpriseMode(useEnterpriseStore.getState().mode));
-      const draft = readComposerDraft(key);
-      writeComposerDraft(key, { ...draft, text: mergeDraftPrefill(draft.text, prompt), selectedAgent: null, selectedSkill: { name: run.skill, description: '' } });
+      const draft = readComposerDraft(draftKey());
+      writeComposerDraft(draftKey(), { ...draft, text: mergeDraftPrefill(draft.text, prompt), selectedAgent: null });
       chat.startNewConversation();
       chat.setPendingInput(null);
     } else {
       chat.setPendingInput(prompt);
     }
+    // A team or an expert can start with a skill as well: the chip joins the draft the entry just wrote.
+    if (skill) writeComposerDraft(draftKey(), { ...readComposerDraft(draftKey()), selectedSkill: { name: skill, description: '' } });
     // Every route above may have reset the pending state; the binding for the
     // scene the template belongs to goes on last.
     useChatStore.getState().setPendingAppBinding(buildAppBinding(app, mode, scene));
   };
+  const start = (scene: AppScene, prompt: string) => {
+    if (startingRef.current.has(scene.id)) return;
+    startingRef.current.add(scene.id);
+    const revision = contextRevision.current;
+    const selected = useAppStore.getState().selectedAppId;
+    const conversation = useChatStore.getState().activeConversationId;
+    const view = useSettingsStore.getState().viewMode;
+    const isCurrent = () => contextRevision.current === revision
+      && useAppStore.getState().selectedAppId === selected
+      && useChatStore.getState().activeConversationId === conversation
+      && useSettingsStore.getState().viewMode === view;
+    void startFromTemplate(scene, prompt, isCurrent).finally(() => {
+      startingRef.current.delete(scene.id);
+      setPreparation((current) => {
+        if (current[scene.id]?.state !== 'busy') return current;
+        const next = { ...current };
+        delete next[scene.id];
+        return next;
+      });
+    });
+  };
 
   if (!visible) return null;
+  // The expanded scene: whether its owner is gone, and whether its organization expert is being set up.
+  const expandedUnavailable = expandedScene ? describeRun(expandedScene).unavailable : false;
+  const preparing = expandedScene ? preparation[expandedScene.id] : undefined;
+  const working = preparing?.state === 'busy';
   return (
-    <div className="mt-4 w-full">
+    <div className="mb-4 w-full">
       {app.config.home.modes.items.length > 1 && (
         <div className="mb-4 flex flex-wrap items-center justify-center gap-2" role="tablist" aria-label={t.appHome.modes} data-testid="app-home-modes">
           {app.config.home.modes.items.map((item) => (
-            <button
+            <Pressable
               key={item.modeId}
-              type="button"
               role="tab"
               aria-selected={item.modeId === mode.modeId}
               data-testid={`app-home-mode-${item.modeId}`}
               onClick={() => { selectMode(app.appId, item.modeId); setExpandedScene(app.appId, null); }}
-              className={cn('rounded-full px-3 py-1 text-minor transition-colors', item.modeId === mode.modeId ? 'bg-[var(--abu-clay)] text-white' : 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]')}
+              className={cn('h-6 rounded-control px-3 text-ui-sm transition-colors duration-fast', item.modeId === mode.modeId ? 'bg-fill-selected text-label' : 'bg-fill text-label-secondary hover:bg-fill-hover')}
             >
               {resolveText(item.title)}
-            </button>
+            </Pressable>
           ))}
         </div>
       )}
@@ -168,38 +287,48 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
           const run = describeRun(scene);
           const expanded = scene.id === expandedScene?.id;
           return (
-            <button
+            <Pressable
               key={scene.id}
-              type="button"
               aria-expanded={expanded}
               data-testid={`app-home-scene-${scene.id}`}
+              data-unavailable={run.unavailable ? 'true' : undefined}
               onClick={() => setExpandedScene(app.appId, expanded ? null : scene.id)}
-              className={cn('flex items-center gap-2 rounded-xl border px-3 py-2.5 text-left transition-colors', expanded ? 'border-[var(--abu-clay)] bg-[var(--abu-bg-subtle)]' : 'border-[var(--abu-border)] bg-[var(--abu-bg-subtle)] hover:border-[var(--abu-clay-40)]')}
+              className={cn(PROMPT_ITEM_CLASS, 'flex items-center gap-2', expanded && 'border-control-border bg-fill-selected')}
             >
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-body font-medium text-[var(--abu-text-primary)]">{resolveText(scene.title)}</span>
-                <span className="mt-0.5 flex items-center gap-1 text-caption text-[var(--abu-text-tertiary)]">{run.avatar}<span className="truncate">{run.label}</span></span>
+                <span className="block truncate text-ui font-medium text-label">{resolveText(scene.title)}</span>
+                <span className={cn('mt-1 flex items-center gap-1 text-caption', run.unavailable ? 'text-warning' : 'text-label-tertiary')}>{run.avatar}<span className="truncate">{run.label}</span></span>
               </span>
-              <ChevronDown className={cn('h-4 w-4 shrink-0 text-[var(--abu-text-tertiary)] transition-transform', expanded && 'rotate-180')} />
-            </button>
+              <span className={cn('inline-flex shrink-0 text-label-tertiary', expanded && 'rotate-180')}>
+                <Icon icon={AppIcons.expand} />
+              </span>
+            </Pressable>
           );
         })}
       </div>
       {expandedScene && (
         <div className="mt-4" data-testid="app-home-templates">
-          <p className="mb-2 text-center text-caption text-[var(--abu-text-tertiary)]">{t.appHome.templates}</p>
+          <p className="mb-2 text-center text-caption text-label-tertiary">{t.appHome.templates}</p>
+          {preparing && (
+            <p data-testid="app-home-preparing" data-state={preparing.state} role="status" className={cn('mb-2 flex items-center justify-center gap-2 text-caption', preparing.state === 'failed' ? 'text-danger' : 'text-label-tertiary')}>
+              {working && <span data-ds-spinner className="inline-flex animate-spin"><Icon icon={AppIcons.loading} size="sm" /></span>}
+              {format(working ? t.appHome.scenePreparing : t.appHome.scenePrepareFailed, { name: preparing.name })}
+            </p>
+          )}
           <div className={PROMPT_GRID_CLASS}>
             {expandedScene.templates.map((template) => (
-              <button
+              // A template whose scene is being set up keeps the focus it was pressed with.
+              <Pressable
                 key={template.id}
-                type="button"
                 data-testid={`app-home-template-${template.id}`}
-                className={PROMPT_ITEM_CLASS}
+                className={cn(PROMPT_ITEM_CLASS, 'not-aria-disabled:hover:bg-fill-hover', BUSY)}
                 title={resolveText(template.prompt)}
-                onClick={() => startFromTemplate(expandedScene, resolveText(template.prompt))}
+                disabled={expandedUnavailable}
+                aria-disabled={working || undefined}
+                onClick={() => start(expandedScene, resolveText(template.prompt))}
               >
                 {resolveText(template.title)}
-              </button>
+              </Pressable>
             ))}
           </div>
         </div>

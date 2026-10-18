@@ -250,7 +250,7 @@ test.describe('Electron active skill instructions E2E', () => {
 
     await page.getByRole('button', { name: 'E2E Default Skill Project', exact: true })
       .locator('xpath=..')
-      .getByTitle('新任务', { exact: true })
+      .getByRole('button', { name: '新任务', exact: true })
       .click();
     await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible();
     await sendMessage(page, `abu-e2e-default-skill-${randomUUID()}`);

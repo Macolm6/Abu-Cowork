@@ -15,18 +15,23 @@ import {
   FULLSCREEN_EXIT_COOLDOWN_MS,
   FULLSCREEN_GESTURE_REQUIRED_MESSAGE,
   FULLSCREEN_GESTURE_WINDOW_MS,
+  FULLSCREEN_OCCUPIED_MESSAGE,
   TOO_MANY_RESOURCE_READS_MESSAGE,
   MAX_AUDIT_ROWS,
   appendAuditRow,
   auditPoolOf,
   createAppBridgeHandlers,
   createRateLimiter,
+  rememberAppApprovalLifecycle,
   textFromContentBlocks,
   truncateToBytes,
   validateToolArguments,
   type AppBridgeHandlerDeps,
   type McpAppAuditEntry,
 } from './appBridgeHandlers';
+import { rememberToolApproval } from '@/core/tools/approvalFinalization';
+import { freezeToolInput } from '@/core/tools/operationAuthorization';
+import type { ToolApprovalDecision } from '@/core/tools/registry';
 
 function toolDef(overrides: Partial<ToolDefinition> = {}): ToolDefinition {
   return {
@@ -182,6 +187,81 @@ describe('createRateLimiter', () => {
 describe('oncalltool', () => {
   let h: Harness;
   beforeEach(() => { h = harness(); });
+
+  it('consumes the immutable execution input that the shared gate approved', async () => {
+    const input = { query: 'original', nested: { text: 'x'.repeat(300) } };
+    const approved = freezeToolInput({ query: 'approved', nested: { text: 'x'.repeat(300) } });
+    h = harness({ checkApproval: async (_name, received) => {
+      input.nested.text = 'changed by caller';
+      expect((received.nested as { text: string }).text).toHaveLength(300);
+      return { decision: 'allow', executionInput: approved };
+    } });
+    await h.handlers.oncalltool({ name: 'search', arguments: input });
+    expect(h.spies.callTool).toHaveBeenCalledWith('search', approved);
+    expect(Object.isFrozen(approved.nested)).toBe(true);
+  });
+
+  it('rechecks an allow receipt at the bridge execution boundary', async () => {
+    const decision: ToolApprovalDecision = { decision: 'allow' };
+    let current = true;
+    const recordDenial = vi.fn();
+    rememberToolApproval(decision, {
+      input: freezeToolInput({ query: 'a' }),
+      authorization: {
+        inspect: () => ({ decision: 'allow' }),
+        authorize: async () => ({ decision: 'allow' }),
+        authorizeFile: async () => ({ decision: 'allow' }),
+        validate: () => current ? { decision: 'allow' } : { decision: 'deny', reason: 'operation owner changed', denialKind: 'context-changed' },
+      }, recordDenial, reportConsent: vi.fn(),
+    });
+    h = harness({ checkApproval: async () => {
+      queueMicrotask(() => { current = false; });
+      return decision;
+    } });
+    const error = await rpcError(() => h.handlers.oncalltool({ name: 'search', arguments: { query: 'a' } }));
+    expect(error.message).toBe('operation owner changed');
+    expect(h.spies.callTool).not.toHaveBeenCalled();
+    expect(recordDenial).toHaveBeenCalledOnce();
+  });
+
+  it('checks again after asynchronous finalization before calling the server', async () => {
+    const decision: ToolApprovalDecision = { decision: 'allow' };
+    let current = true;
+    rememberToolApproval(decision, {
+      input: freezeToolInput({ query: 'a' }),
+      authorization: {
+        inspect: () => ({ decision: 'allow' }),
+        authorize: async () => { queueMicrotask(() => { current = false; }); return { decision: 'allow' }; },
+        authorizeFile: async () => ({ decision: 'allow' }),
+        validate: () => current ? { decision: 'reauthorize' } : { decision: 'deny', reason: 'operation owner changed', denialKind: 'context-changed' },
+      }, recordDenial: vi.fn(), reportConsent: vi.fn(),
+    });
+    h = harness({ checkApproval: async () => decision });
+    await expect(h.handlers.oncalltool({ name: 'search', arguments: { query: 'a' } })).rejects.toThrow('operation owner changed');
+    expect(h.spies.callTool).not.toHaveBeenCalled();
+  });
+
+  it('finishes an operation cancelled while approval resolves without calling the server', async () => {
+    const controller = new AbortController();
+    const finish = vi.fn();
+    const decision: ToolApprovalDecision = { decision: 'allow' };
+    rememberAppApprovalLifecycle(decision, { signal: controller.signal, finish });
+    h = harness({ checkApproval: async () => { controller.abort(); return decision; } });
+    await expect(h.handlers.oncalltool({ name: 'search', arguments: { query: 'a' } })).rejects.toThrow('cancelled');
+    expect(h.spies.callTool).not.toHaveBeenCalled();
+    expect(finish).toHaveBeenCalledOnce();
+  });
+
+  it('passes the operation signal to the server and finishes after its response', async () => {
+    const controller = new AbortController();
+    const finish = vi.fn();
+    const decision: ToolApprovalDecision = { decision: 'allow' };
+    rememberAppApprovalLifecycle(decision, { signal: controller.signal, finish });
+    h = harness({ checkApproval: async () => decision });
+    await h.handlers.oncalltool({ name: 'search', arguments: { query: 'a' } });
+    expect(h.spies.callTool).toHaveBeenCalledWith('search', { query: 'a' }, controller.signal);
+    expect(finish).toHaveBeenCalledOnce();
+  });
 
   it('runs a same-server tool through the shared permission gate', async () => {
     const result = await h.handlers.oncalltool({ name: 'search', arguments: { query: 'abu' } });
@@ -605,6 +685,84 @@ describe('ui/request-display-mode', () => {
       isError: true,
       summary: FULLSCREEN_GESTURE_REQUIRED_MESSAGE,
     }]);
+  });
+
+  describe('while the user has a window, a question or an approval open', () => {
+    it('refuses fullscreen even with a fresh gesture, and records the refusal', async () => {
+      const state = { occupied: true, gesture: undefined as number | undefined };
+      const h = harness({ pageOccupied: () => state.occupied, lastUserGestureAt: () => state.gesture });
+      state.gesture = h.clock.value;
+
+      const error = await rpcError(() => h.handlers.onrequestdisplaymode({ mode: 'fullscreen' }));
+
+      expect(error.code).toBe(-32000);
+      expect(error.message).toBe(FULLSCREEN_OCCUPIED_MESSAGE);
+      expect(h.spies.setDisplayMode).not.toHaveBeenCalled();
+      expect(h.audit).toMatchObject([{
+        kind: 'display-mode',
+        tool: 'ui/request-display-mode',
+        args: { mode: 'fullscreen' },
+        outcome: 'denied',
+        isError: true,
+        summary: FULLSCREEN_OCCUPIED_MESSAGE,
+      }]);
+    });
+
+    it('spends no grace: the first unprompted request after the page is free is honoured', async () => {
+      const state = { occupied: true };
+      const h = harness({ pageOccupied: () => state.occupied });
+      await rpcError(() => h.handlers.onrequestdisplaymode({ mode: 'fullscreen' }));
+      await rpcError(() => h.handlers.onrequestdisplaymode({ mode: 'fullscreen' }));
+
+      state.occupied = false;
+      await expect(h.handlers.onrequestdisplaymode({ mode: 'fullscreen' })).resolves.toEqual({ mode: 'fullscreen' });
+      expect(h.spies.setDisplayMode).toHaveBeenCalledTimes(1);
+      // That one was the grace: the next unprompted request needs a gesture.
+      const error = await rpcError(() => h.handlers.onrequestdisplaymode({ mode: 'fullscreen' }));
+      expect(error.message).toBe(FULLSCREEN_GESTURE_REQUIRED_MESSAGE);
+    });
+
+    it('starts no cool-down: a gesture right after the page is free is enough', async () => {
+      const state = { occupied: false, gesture: undefined as number | undefined };
+      const h = harness({ pageOccupied: () => state.occupied, lastUserGestureAt: () => state.gesture });
+      // Burn the grace so the gesture is doing the work.
+      await h.handlers.onrequestdisplaymode({ mode: 'fullscreen' });
+      await h.handlers.onrequestdisplaymode({ mode: 'inline' });
+
+      state.occupied = true;
+      state.gesture = h.clock.value;
+      await rpcError(() => h.handlers.onrequestdisplaymode({ mode: 'fullscreen' }));
+
+      state.occupied = false;
+      h.clock.value += 1;
+      await expect(h.handlers.onrequestdisplaymode({ mode: 'fullscreen' })).resolves.toEqual({ mode: 'fullscreen' });
+    });
+
+    it('is checked after the cool-down of a user exit, and before the gesture and the grace', async () => {
+      const state = { occupied: true, exit: undefined as number | undefined, gesture: undefined as number | undefined };
+      const reads: string[] = [];
+      const h = harness({
+        lastUserExitAt: () => { reads.push('exit'); return state.exit; },
+        pageOccupied: () => { reads.push('occupied'); return state.occupied; },
+        lastUserGestureAt: () => { reads.push('gesture'); return state.gesture; },
+      });
+
+      // Occupied, no exit: the page is asked and the gesture is not even read.
+      await rpcError(() => h.handlers.onrequestdisplaymode({ mode: 'fullscreen' }));
+      expect(reads).toEqual(['exit', 'occupied']);
+
+      // Inside the cool-down the cool-down answers, whatever the page holds.
+      reads.length = 0;
+      state.exit = h.clock.value;
+      const cooling = await rpcError(() => h.handlers.onrequestdisplaymode({ mode: 'fullscreen' }));
+      expect(cooling.message).toBe(FULLSCREEN_GESTURE_REQUIRED_MESSAGE);
+      expect(reads).toEqual(['exit']);
+    });
+
+    it('still lets the app go back to inline', async () => {
+      const h = harness({ pageOccupied: () => true });
+      await expect(h.handlers.onrequestdisplaymode({ mode: 'inline' })).resolves.toEqual({ mode: 'inline' });
+    });
   });
 
   it('shares the per-minute action budget with tools/call', async () => {
