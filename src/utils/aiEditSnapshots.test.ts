@@ -117,6 +117,15 @@ describe('snapshotBeforeAiEdit', () => {
     expect(meta.label).toBe('A'.repeat(60) + '…');
   });
 
+  it('records the conversation and loop of the edit as the origin of the snapshot', async () => {
+    await mod.snapshotBeforeAiEdit('/w/a.html', { loopId: 'loop1', conversationId: 'conv1' });
+    await mod.snapshotBeforeAiEdit('/w/b.html', { conversationId: 'conv1' });
+    await mod.snapshotBeforeAiEdit('/w/c.html', { loopId: 'loop1' });
+
+    const origins = snapshotVersionMock.mock.calls.map((call) => (call[2] as { origin?: unknown }).origin);
+    expect(origins).toEqual([{ conversationId: 'conv1', loopId: 'loop1' }, { conversationId: 'conv1' }, undefined]);
+  });
+
   it('never throws — snapshot failure is swallowed (fail-open)', async () => {
     snapshotVersionMock.mockRejectedValue(new Error('disk full'));
     await expect(mod.snapshotBeforeAiEdit('/w/a.html', { loopId: 'loop1' })).resolves.toBeUndefined();

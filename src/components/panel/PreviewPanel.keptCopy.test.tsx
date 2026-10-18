@@ -7,6 +7,7 @@ import { DesignSystemProvider } from '@/components/ds/provider';
 import { getI18n, initLanguage } from '@/i18n';
 import { atomicWrite } from '@/utils/atomicFs';
 import { snapshotVersion } from '@/utils/canvasVersions';
+import { usePreviewStore } from '@/stores/previewStore';
 import PreviewPanel from './PreviewPanel';
 
 // The real editor needs layout; a text box drives the same value/onChange pair and shows `readOnly`.
@@ -151,6 +152,7 @@ describe('PreviewPanel for a file at its own path', () => {
     });
     vi.mocked(atomicWrite).mockClear();
     vi.mocked(snapshotVersion).mockClear();
+    usePreviewStore.setState({ currentConversationId: 'c1' });
   });
 
   afterEach(() => {
@@ -159,6 +161,7 @@ describe('PreviewPanel for a file at its own path', () => {
     vi.mocked(exists).mockReset().mockResolvedValue(false);
     vi.mocked(readTextFile).mockReset().mockResolvedValue('');
     vi.mocked(watch).mockReset().mockResolvedValue(() => {});
+    usePreviewStore.setState({ currentConversationId: null });
   });
 
   it('shows no line about a copy, an editable source view and the version history', async () => {
@@ -170,7 +173,7 @@ describe('PreviewPanel for a file at its own path', () => {
     expect(notice()).toBeNull();
     expect(historyButton()).toBeInTheDocument();
     expect(screen.getByText(getI18n().panel.saved)).toBeInTheDocument();
-    expect(snapshotVersion).toHaveBeenCalledWith(ORIGINAL, 'first line');
+    expect(snapshotVersion).toHaveBeenCalledWith(ORIGINAL, 'first line', { origin: { conversationId: 'c1' } });
   });
 
   it('saves an edit to the file one second after the last change and records the version', async () => {
@@ -184,6 +187,6 @@ describe('PreviewPanel for a file at its own path', () => {
     await act(() => vi.advanceTimersByTimeAsync(AUTOSAVE_DEBOUNCE_MS));
 
     expect(atomicWrite).toHaveBeenCalledWith(ORIGINAL, 'first line, edited');
-    expect(snapshotVersion).toHaveBeenCalledWith(ORIGINAL, 'first line, edited');
+    expect(snapshotVersion).toHaveBeenCalledWith(ORIGINAL, 'first line, edited', { origin: { conversationId: 'c1' } });
   });
 });

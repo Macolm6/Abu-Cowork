@@ -8,7 +8,7 @@ import { buildPreviewUrl } from '@/utils/previewUrl';
 import { atomicWrite } from '@/utils/atomicFs';
 import { reconcileEditorContent } from '@/utils/editorReconcile';
 import { redactFailureText } from '@/core/diagnostic/scrub';
-import { snapshotVersion, revertToVersion } from '@/utils/canvasVersions';
+import { snapshotVersion, revertToVersion, type VersionOrigin } from '@/utils/canvasVersions';
 import { usePreviewStore } from '@/stores/previewStore';
 import { usePreviewFileWatch } from '@/hooks/usePreviewFileWatch';
 import { useToastStore } from '@/stores/toastStore';
@@ -64,6 +64,17 @@ const EDITABLE_TYPES = new Set<RendererType>(['code', 'text', 'html', 'markdown'
 const WINDOWS_FULLSCREEN_STYLE = {
   top: 'calc(env(titlebar-area-y, 0px) + env(titlebar-area-height, 36px))',
 } as const;
+
+/** The conversation the right panel belongs to, as the origin of a version the preview leaves. */
+function previewVersionOrigin(): VersionOrigin | null {
+  const conversationId = usePreviewStore.getState().currentConversationId;
+  return conversationId ? { conversationId } : null;
+}
+
+function previewVersionMeta(): { origin?: VersionOrigin } {
+  const origin = previewVersionOrigin();
+  return origin ? { origin } : {};
+}
 
 function isDataUrl(path: string): boolean {
   return path.startsWith('data:');
@@ -161,7 +172,6 @@ const PreviewToolbar = memo(function PreviewToolbar({
   onViewModeChange,
   showVersionHistory,
   onShowVersionHistoryChange,
-  onRevertVersion,
   onReload,
   onOpenInApp,
   openRefused,
@@ -185,7 +195,6 @@ const PreviewToolbar = memo(function PreviewToolbar({
   onViewModeChange: (mode: 'preview' | 'source') => void;
   showVersionHistory: boolean;
   onShowVersionHistoryChange: (open: boolean) => void;
-  onRevertVersion: (id: string) => Promise<void>;
   onReload: () => void;
   onOpenInApp: () => void;
   /** The main process refused to open this file: only the file manager is offered for it. */
@@ -266,7 +275,6 @@ const PreviewToolbar = memo(function PreviewToolbar({
             open={showVersionHistory}
             onOpenChange={onShowVersionHistoryChange}
             trigger={<IconButton size="sm" tooltipSide="bottom" icon={AppIcons.history} label={t.panel.versionHistory} />}
-            onRevert={onRevertVersion}
           />
         )}
         {toolbarButtons.openInApp && !openRefused && (
@@ -515,7 +523,7 @@ export default function PreviewPanel({
               // autosaves. Fire-and-forget — a history-write failure must
               // never block the editor from loading. snapshotVersion's own
               // dedupe means re-opening an already-snapshotted file is a no-op.
-              snapshotVersion(previewFilePath, text).catch((err) => {
+              snapshotVersion(previewFilePath, text, previewVersionMeta()).catch((err) => {
                 console.warn('[PreviewPanel] Failed to snapshot baseline version:', previewFilePath, err);
               });
             } else {
@@ -746,7 +754,7 @@ export default function PreviewPanel({
           // autosaved revision. Fire-and-forget — a history-write failure
           // must never surface as a save failure (the actual save already
           // succeeded above).
-          snapshotVersion(targetPath, contentToSave).catch((snapErr) => {
+          snapshotVersion(targetPath, contentToSave, previewVersionMeta()).catch((snapErr) => {
             console.warn('[PreviewPanel] Failed to snapshot version after autosave:', targetPath, snapErr);
           });
         })
@@ -805,8 +813,9 @@ export default function PreviewPanel({
   // on disk diverged. Cancelling the pending autosave also stops it from
   // clobbering the just-reverted file (R1/R2). selfEchoRef makes the revert
   // write's own fs-watch echo recognizable as self, not an external change.
-  // The handlers below are stable so the memoized toolbar keeps its props while the user types.
-  const handleRevertVersion = useCallback(async (id: string) => {
+  // Every place that offers the file's version history restores through this
+  // handler while the preview shows the file (`revertFileVersion`).
+  const handleRevertVersion = useCallback(async (id: string, origin: VersionOrigin | null) => {
     if (!previewFilePath) return;
     // Cancel the pending debounced autosave BEFORE awaiting revertToVersion,
     // not after. revertToVersion does its own read + pre-revert safety
@@ -820,12 +829,21 @@ export default function PreviewPanel({
       saveTimerRef.current = null;
     }
     pendingSaveRef.current = null;
-    const content = await revertToVersion(previewFilePath, id);
+    const content = await revertToVersion(previewFilePath, id, origin);
     selfEchoRef.current = content;
     lastSavedRef.current = content;
     setDraft(content);
     setSaveState('saved');
   }, [previewFilePath]);
+
+  const registerVersionReverter = usePreviewStore((s) => s.registerVersionReverter);
+  const offersVersions = Boolean(previewFilePath) && EDITABLE_TYPES.has(rendererType) && !keptCopy;
+  useEffect(() => {
+    if (!offersVersions || !previewFilePath) return;
+    return registerVersionReverter(previewFilePath, handleRevertVersion);
+  }, [offersVersions, previewFilePath, handleRevertVersion, registerVersionReverter]);
+
+  // The handlers below are stable so the memoized toolbar keeps its props while the user types.
 
   const handleOpenInFinder = useCallback(async () => {
     if (previewFilePath) {
@@ -924,7 +942,6 @@ export default function PreviewPanel({
         onViewModeChange={setViewMode}
         showVersionHistory={showVersionHistory}
         onShowVersionHistoryChange={setShowVersionHistory}
-        onRevertVersion={handleRevertVersion}
         onReload={handleReload}
         onOpenInApp={handleOpenInApp}
         openRefused={refusedOpenPath === previewFilePath}
