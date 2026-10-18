@@ -4823,6 +4823,20 @@ describe('agentLoopRunner', () => {
       expect(startParams.options.prePersistedUserMessageId).toBe(startParams.clientMessageId);
     });
 
+    it('agent.start params carry no start hold', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      const { holdConversationStarts } = await import('./conversationStartHold');
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+      const hold = holdConversationStarts('conv-1');
+      expect(hold).not.toBeNull();
+
+      await runAgentLoopDispatched('conv-1', 'hello', { startHold: hold! });
+
+      expect(agentStartRequestMock).toHaveBeenCalledTimes(1);
+      const params = agentStartRequestMock.mock.calls[0][0];
+      expect(JSON.stringify(params)).not.toContain('startHold');
+    });
+
     it('keeps image and PDF base64 off both agent.start and agent.run wire payloads', async () => {
       const { runAgentLoopDispatched } = await importFresh();
       sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
@@ -7180,6 +7194,75 @@ describe('agentLoopRunner', () => {
           error: '当前会话已有任务在运行，请等待结束后再启动新任务。',
           messageTaken: false,
         });
+      });
+    });
+
+    describe('a conversation held while a redo prepares', () => {
+      async function flushMicrotasks(times = 30): Promise<void> {
+        for (let i = 0; i < times; i++) await Promise.resolve();
+      }
+
+      it('a dispatch for a held conversation waits for the release, then joins the run that started', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        const { holdConversationStarts } = await import('./conversationStartHold');
+        const orchestration = deferred<{
+          route: { type: 'general'; name: string; cleanInput: string };
+          systemPromptSections: never[];
+        }>();
+        const agentRun = deferred<{ reason: 'completed' }>();
+        precomputeOrchestrationMock.mockReturnValue(orchestration.promise);
+        sidecarRequestMock.mockReturnValue(agentRun.promise);
+        const hold = holdConversationStarts('conv-1');
+        expect(hold).not.toBeNull();
+
+        const redo = runAgentLoopDispatched('conv-1', 'first', { startHold: hold! });
+        await waitForCall(precomputeOrchestrationMock);
+
+        let otherResult: unknown;
+        const other = runAgentLoopDispatched('conv-1', 'hi').then((result) => { otherResult = result; return result; });
+        await flushMicrotasks();
+        expect(otherResult).toBeUndefined();
+        expect(enqueueUserInputMock).not.toHaveBeenCalled();
+        expect(agentStartRequestMock).not.toHaveBeenCalled();
+
+        orchestration.resolve({
+          route: { type: 'general', name: 'general', cleanInput: 'first' },
+          systemPromptSections: [],
+        });
+        await waitForCall(agentStartRequestMock);
+
+        await expect(other).resolves.toEqual({ reason: 'enqueued' });
+        expect(enqueueUserInputMock).toHaveBeenCalledWith('conv-1', 'hi');
+        expect(agentStartRequestMock).toHaveBeenCalledTimes(1);
+
+        agentRun.resolve({ reason: 'completed' });
+        await expect(redo).resolves.toEqual({ reason: 'completed' });
+        expect(holdConversationStarts('conv-1')).not.toBeNull();
+      });
+
+      it('the dispatch that holds the hold is not made to wait', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        const { holdConversationStarts } = await import('./conversationStartHold');
+        sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+        const hold = holdConversationStarts('conv-1');
+        expect(hold).not.toBeNull();
+
+        await expect(runAgentLoopDispatched('conv-1', 'first', { startHold: hold! })).resolves.toEqual({ reason: 'completed' });
+
+        expect(agentStartRequestMock).toHaveBeenCalledTimes(1);
+        expect(enqueueUserInputMock).not.toHaveBeenCalled();
+      });
+
+      it('releases the hold when the dispatch returns before a run is registered', async () => {
+        const { runAgentLoopDispatched, registerRunSession } = await importFresh();
+        const { holdConversationStarts } = await import('./conversationStartHold');
+        registerRunSession('run-live', makeSession({ conversationId: 'conv-1' }));
+        const hold = holdConversationStarts('conv-1');
+        expect(hold).not.toBeNull();
+
+        await expect(runAgentLoopDispatched('conv-1', 'first', { startHold: hold! })).resolves.toEqual({ reason: 'enqueued' });
+
+        expect(holdConversationStarts('conv-1')).not.toBeNull();
       });
     });
 

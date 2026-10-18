@@ -179,6 +179,7 @@ import { attachTrustedSkillCommandApproval } from './skillCommandApproval';
 import { AgentLoopDispatchError, wrapAgentLoopDispatchError } from './agentLoopDispatchError';
 import { isPayloadTooLargeError } from '../ipc/payloadTooLarge';
 import { paramsBuildDisplayMessage } from './paramsBuildFailure';
+import { waitForConversationStarts } from './conversationStartHold';
 import {
   isInProcessAgentEnvironment,
   waitForSidecarVenue,
@@ -3314,6 +3315,10 @@ async function runSingleAgentLoopDispatchedWithOwnership(
   ownership: { messageTaken: boolean },
   options?: AgentLoopOptions,
 ): Promise<AgentLoopDispatchResult> {
+  // A redo holds the conversation while it restores files and starts its own
+  // run. Every other dispatch waits here first, so the guard below reads the
+  // conversation as it is once the redo's run is registered (or has stopped).
+  await waitForConversationStarts(conversationId, options?.startHold);
   const entryConversation = getConversationReader().getConversation(conversationId);
   const inProcessEnvironment = isInProcessAgentEnvironment();
 
@@ -3777,6 +3782,9 @@ async function runSingleAgentLoopDispatchedWithOwnership(
   shellAbortController.signal.addEventListener('abort', onShellAbort, { once: true });
 
   registerRunSession(runId, session);
+  // The session is now what `findJoinableRunSessionForConversation` returns,
+  // so a dispatch that waited on a redo's hold stages into this run.
+  options?.startHold?.release();
   installShellLoopContext(runId, session);
   markRuntimeRunStage(runId, 'waiting_for_first_delta');
   traceRuntimeEvent('renderer.agent_run_dispatched', {
@@ -4326,7 +4334,10 @@ export function runAgentLoopDispatched(
   userMessage: string,
   options?: AgentLoopOptions,
 ): Promise<AgentLoopDispatchResult> {
-  if (dispatchBarriers.size > 0) return Promise.reject(new Error('Agent dispatch is unavailable during application exit'));
+  if (dispatchBarriers.size > 0) {
+    options?.startHold?.release();
+    return Promise.reject(new Error('Agent dispatch is unavailable during application exit'));
+  }
   const key = Symbol();
   let finish!: () => void;
   const entry = { conversationId, settled: new Promise<void>(resolve => { finish = resolve; }), controller: undefined as AbortController | undefined };
@@ -4349,6 +4360,11 @@ export function runAgentLoopDispatched(
       }
     },
   }).finally(() => {
+    // A dispatch that returned before registering a run (the guard refused or
+    // staged it, the params build failed, the sidecar was unavailable) still
+    // ends the redo's hold here; a release after the registration point does
+    // nothing.
+    options?.startHold?.release();
     unsubscribeOwner?.();
     activeDispatches.delete(key);
     finish();
