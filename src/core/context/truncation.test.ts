@@ -18,6 +18,12 @@ describe('truncation', () => {
       expect(truncateToolResult('unknown_tool', short)).toBe(short);
     });
 
+    it('never cuts use_skill instructions, even under critical context pressure', () => {
+      const instructions = `### docx\n${'rule line\n'.repeat(5000)}`;
+      expect(truncateToolResult('use_skill', instructions)).toBe(instructions);
+      expect(truncateToolResult('use_skill', instructions, 95)).toBe(instructions);
+    });
+
     it('returns result within maxChars as-is', () => {
       // read_file maxChars = 15000, this is under that
       const text = 'x'.repeat(14999);

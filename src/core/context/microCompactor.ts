@@ -24,6 +24,7 @@ const SKIP_COMPACT = new Set<string>([
   'system_notify',     // Notification — very short
   'update_memory',     // Memory write result — very short
   'computer',          // Screenshot results — images, not compactable text
+  'use_skill',         // Skill instructions — the model follows all of them for the whole task
 ]);
 
 /**

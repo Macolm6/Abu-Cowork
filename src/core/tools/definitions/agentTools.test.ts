@@ -7,13 +7,17 @@ import { skillLoader } from '../../skill/loader';
 import { createInProcessExecutionPort, setExecutionPort } from '../../agent/ports/executionPort';
 import type { ExecutionStep, ExecutionStepSnapshot, TaskExecution } from '@/types/execution';
 import {
-  saveAgentTool, delegateToAgentTool, useSkillTool, createSaveItemTool,
+  saveAgentTool, delegateToAgentTool, useSkillTool, createSaveItemTool, clearSkillHooksByLoop,
   DELEGATE_SNAPSHOT_COALESCE_MS, DELEGATE_DRAIN_POLL_MS, DELEGATE_DRAIN_MAX_ATTEMPTS,
 } from './agentTools';
 import { format, getI18n, getLanguageSetting, setLanguage } from '@/i18n';
 
 const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLkwwAAAABJRU5ErkJggg==';
 const materializeDelegatedUserTurnMock = vi.hoisted(() => vi.fn());
+const activateSkillHooksMock = vi.hoisted(() => vi.fn(() => () => {}));
+vi.mock('../../skill/skillHooks', () => ({
+  activateSkillHooks: activateSkillHooksMock,
+}));
 
 // Mock dependencies not covered by global setup
 vi.mock('../../skill/loader', async () => {
@@ -21,7 +25,7 @@ vi.mock('../../skill/loader', async () => {
   const actual = await vi.importActual<typeof import('../../skill/loader')>('../../skill/loader');
   return {
     parseSkillFile: actual.parseSkillFile,
-    skillLoader: { getSkill: vi.fn(), getAvailableSkills: vi.fn().mockReturnValue([]), loadSkill: vi.fn(), refreshSkill: vi.fn(), isBlockedByPolicy: vi.fn().mockReturnValue(false) },
+    skillLoader: { getSkill: vi.fn(), getAvailableSkills: vi.fn().mockReturnValue([]), loadSkill: vi.fn(), refreshSkill: vi.fn(), isBlockedByPolicy: vi.fn().mockReturnValue(false), listSupportingFiles: vi.fn().mockResolvedValue([]) },
   };
 });
 vi.mock('../../agent/registry', async () => {
@@ -1827,4 +1831,83 @@ it('tells the model a blacklisted skill is blocked by the organization, without 
   expect(skillLoader.getAvailableSkills).not.toHaveBeenCalled();
   expect(toggleSkillEnabled).not.toHaveBeenCalled();
   vi.mocked(skillLoader.isBlockedByPolicy).mockReturnValue(false);
+});
+
+describe('use_skill returns the skill instructions', () => {
+  interface SkillConversation {
+    messages: unknown[];
+    activeSkills?: string[];
+    activeSkillArgs?: Record<string, string>;
+  }
+  let conversation: SkillConversation;
+
+  function skill(name: string, overrides: Record<string, unknown> = {}) {
+    return {
+      name,
+      description: `${name} description`,
+      content: `Body of ${name}.`,
+      filePath: `/skills/${name}/SKILL.md`,
+      skillDir: `/skills/${name}`,
+      ...overrides,
+    } as never;
+  }
+
+  beforeEach(async () => {
+    const { useSettingsStore } = await import('@/stores/settingsStore');
+    vi.mocked(useSettingsStore.getState).mockReturnValue({ disabledSkills: [] } as unknown as ReturnType<typeof useSettingsStore.getState>);
+    conversation = { messages: [] };
+    const state = { activeConversationId: 'conv-1', conversations: { 'conv-1': conversation } };
+    vi.mocked(useChatStore.getState).mockReturnValue(state as unknown as ReturnType<typeof useChatStore.getState>);
+    (useChatStore as unknown as { setState: (recipe: (draft: typeof state) => void) => void }).setState = (recipe) => recipe(state);
+    vi.mocked(skillLoader.listSupportingFiles).mockResolvedValue([]);
+    activateSkillHooksMock.mockClear();
+  });
+
+  it('puts the skill body and the ARGUMENTS line in the tool result and records the activation', async () => {
+    vi.mocked(skillLoader.getSkill).mockImplementation((name) => (name === 'mermaid' ? skill('mermaid') : undefined));
+
+    const result = await useSkillTool.execute(
+      { skill_name: 'mermaid', context: 'draw a login flow' },
+      { conversationId: 'conv-1', loopId: 'loop-1' } as never,
+    );
+
+    const t = getI18n().toolResult.agent;
+    expect(result).toBe(
+      format(t.skillLoaded, { name: 'mermaid', description: 'mermaid description' })
+      + format(t.skillContextLine, { context: 'draw a login flow' })
+      + t.skillInstructionsFollow
+      + '\n\n### mermaid\nBody of mermaid.\nARGUMENTS: draw a login flow',
+    );
+    expect(conversation.activeSkills).toEqual(['mermaid']);
+    expect(conversation.activeSkillArgs).toEqual({ mermaid: 'draw a login flow' });
+  });
+
+  it('includes the instructions of chained skills', async () => {
+    vi.mocked(skillLoader.getSkill).mockImplementation((name) => {
+      if (name === 'first') return skill('first', { chain: ['second', 'missing'] });
+      if (name === 'second') return skill('second');
+      return undefined;
+    });
+
+    const result = await useSkillTool.execute({ skill_name: 'first' }, { conversationId: 'conv-1', loopId: 'loop-1' } as never);
+
+    expect(result).toContain('### first\nBody of first.\n\n### second\nBody of second.');
+    expect(conversation.activeSkills).toEqual(['first', 'second']);
+  });
+
+  it('returns the instructions again on a repeated call without activating the hooks twice', async () => {
+    vi.mocked(skillLoader.getSkill).mockImplementation((name) => (
+      name === 'hooked' ? skill('hooked', { hooks: { PreToolUse: [] } }) : undefined
+    ));
+    const context = { conversationId: 'conv-1', loopId: 'loop-1' } as never;
+
+    const first = await useSkillTool.execute({ skill_name: 'hooked' }, context);
+    const second = await useSkillTool.execute({ skill_name: 'hooked' }, context);
+
+    expect(second).toBe(first);
+    expect(second).toContain('### hooked\nBody of hooked.');
+    expect(conversation.activeSkills).toEqual(['hooked']);
+    expect(activateSkillHooksMock).toHaveBeenCalledTimes(1);
+    clearSkillHooksByLoop('loop-1');
+  });
 });

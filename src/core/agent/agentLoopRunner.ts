@@ -127,6 +127,7 @@ import {
   sanitizeUntrustedLlmErrorText,
 } from '../llm/adapter';
 import type { ConversationMeta } from '../session/conversationStorage';
+import { resolveActiveSkillInfo, type ActiveSkillInfo } from '../skill/activeSkillInstructions';
 import { resolveEntryModel } from './resolveEntryModel';
 import { getActiveApiKey, getActiveProvider } from '../../utils/settingsSelectors';
 import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
@@ -2206,6 +2207,10 @@ interface ConvPatchSnapshot {
   model?: { providerId: string; modelId: string };
 }
 
+/** A `state.convPatch` payload: the changed fields, plus `activeSkillInfo` (the
+ *  same names resolved against the skill index) whenever `activeSkills` changes. */
+type ConvPatch = Partial<ConvPatchSnapshot> & { activeSkillInfo?: ActiveSkillInfo[] };
+
 let chatUnsub: (() => void) | undefined;
 /** Last-pushed snapshot per conversationId, so only CHANGED fields are ever pushed. */
 const lastPushedConvSnapshot = new Map<string, ConvPatchSnapshot>();
@@ -2229,8 +2234,8 @@ function shallowArrayEqual(a: string[] | undefined, b: string[] | undefined): bo
   return a.every((v, i) => v === b[i]);
 }
 
-function diffConvSnapshot(prev: ConvPatchSnapshot | undefined, next: ConvPatchSnapshot): Partial<ConvPatchSnapshot> | undefined {
-  const patch: Partial<ConvPatchSnapshot> = {};
+function diffConvSnapshot(prev: ConvPatchSnapshot | undefined, next: ConvPatchSnapshot): ConvPatch | undefined {
+  const patch: ConvPatch = {};
   let changed = false;
   if (!prev || prev.workspacePath !== next.workspacePath) {
     patch.workspacePath = next.workspacePath;
@@ -2242,6 +2247,7 @@ function diffConvSnapshot(prev: ConvPatchSnapshot | undefined, next: ConvPatchSn
   }
   if (!prev || !shallowArrayEqual(prev.activeSkills, next.activeSkills)) {
     patch.activeSkills = next.activeSkills;
+    patch.activeSkillInfo = resolveActiveSkillInfo(next.activeSkills);
     changed = true;
   }
   if (!prev || prev.model?.providerId !== next.model?.providerId || prev.model?.modelId !== next.model?.modelId) {
@@ -2579,6 +2585,8 @@ interface AgentRunParams {
   orchestration: { route: RouteResult; systemPromptSections: PromptSection[] };
   conversationSnapshot: Conversation;
   indexEntrySnapshot?: ConversationMeta;
+  /** The conversation's active skills, resolved here against the skill index (the sidecar has none). */
+  activeSkillInfoSnapshot: ActiveSkillInfo[];
   settingsSnapshot: SettingsState;
   capsSnapshot?: { providerId: string; modelId: string; maxOutputTokens?: number; contextWindow?: number; contextWindowProbe?: number; isReasoningModel?: boolean };
   resolvedCreds: { apiKey: string; baseUrl: string | undefined; forceOpenAiCompatible: boolean };
@@ -3112,6 +3120,7 @@ async function buildAgentRunParams(
           model: settingsForModel.activeModel,
         } as Conversation, abortSignal),
     indexEntrySnapshot: indexEntrySnapshot as ConversationMeta | undefined,
+    activeSkillInfoSnapshot: resolveActiveSkillInfo(conversationSnapshot.activeSkills),
     settingsSnapshot: settingsForModel,
     capsSnapshot,
     resolvedCreds,

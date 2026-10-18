@@ -49,6 +49,7 @@ import type { PlannedStep, TaskExecution } from '@/types/execution';
 import type { RouteResult, IMContext } from '@/core/agent/orchestrator';
 import type { PromptSection } from '@/core/llm/promptSections';
 import type { ConversationMeta } from '@/core/session/conversationStorage';
+import type { ActiveSkillInfo } from '@/core/skill/activeSkillInstructions';
 import type { SettingsState } from '@/stores/settingsStore';
 import type { ExecutionPort } from '@/core/agent/ports/executionPort';
 import type { ChatDelta } from '@/core/agent/ports/chatDelta';
@@ -142,6 +143,8 @@ export interface AgentRunParams {
   orchestration: { route: RouteResult; systemPromptSections: PromptSection[] };
   conversationSnapshot: Conversation;
   indexEntrySnapshot?: ConversationMeta;
+  /** The conversation's active skills, resolved shell-side against the skill index. */
+  activeSkillInfoSnapshot: ActiveSkillInfo[];
   settingsSnapshot: SettingsState;
   capsSnapshot?: CapsSnapshotEntry;
   resolvedCreds: { apiKey: string; baseUrl: string | undefined; forceOpenAiCompatible: boolean };
@@ -219,6 +222,12 @@ function parseAgentRunParams(params: unknown): AgentRunParams {
   }
   if (!isRecord(conversationSnapshot) || typeof (conversationSnapshot as { id?: unknown }).id !== 'string') {
     throw new RpcError(-32602, 'Invalid params: conversationSnapshot must be a Conversation');
+  }
+  if (
+    !Array.isArray(params.activeSkillInfoSnapshot)
+    || !params.activeSkillInfoSnapshot.every((info) => isRecord(info) && typeof info.name === 'string')
+  ) {
+    throw new RpcError(-32602, 'Invalid params: activeSkillInfoSnapshot must be an array of { name }');
   }
   if (!isRecord(settingsSnapshot)) throw new RpcError(-32602, 'Invalid params: settingsSnapshot must be an object');
   if (!isRecord(resolvedCreds)) throw new RpcError(-32602, 'Invalid params: resolvedCreds must be an object');
@@ -1099,6 +1108,7 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
   const mirror = createConversationRunMirror(conversationId, {
     conversation: params.conversationSnapshot,
     indexEntry: params.indexEntrySnapshot,
+    activeSkillInfo: params.activeSkillInfoSnapshot,
   });
 
   const chatDelta = createFrameChatDelta(push, mirror.applyChatDeltaWrite);

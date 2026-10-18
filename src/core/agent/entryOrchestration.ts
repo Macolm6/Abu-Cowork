@@ -71,6 +71,7 @@ import type { RouteResult, IMContext } from './orchestrator';
 import { routeInput, buildSystemPromptSections } from './orchestrator';
 import type { PromptSection } from '../llm/promptSections';
 import { skillLoader } from '../skill/loader';
+import { buildActiveSkillsSection } from '../skill/activeSkillInstructions';
 import { resolvePreloadedSkills } from './prompts/preloadedSkills';
 import { resolveEntryModel } from './resolveEntryModel';
 import { resolveAgentModelCapabilities } from '../llm/modelCapabilities';
@@ -154,6 +155,19 @@ export async function precomputeOrchestration(
     0,
     { ...toolContext, abortSignal, computerUseTier },
   );
+
+  // Skills already active when the run starts (a project's default skills)
+  // are rendered HERE, shell-side, for the same reason as the delegate
+  // preload above: the loop may run in the sidecar, whose skill loader has no
+  // index. A skill the model activates mid-run brings its instructions in the
+  // `use_skill` tool result instead.
+  const entryConversation = getConversationReader().getConversation(conversationId);
+  const activeSkillsSection = await buildActiveSkillsSection(
+    entryConversation?.activeSkills,
+    entryConversation?.activeSkillArgs,
+    conversationId,
+  );
+  if (activeSkillsSection) systemPromptSections.push(activeSkillsSection);
 
   return { route, systemPromptSections };
 }

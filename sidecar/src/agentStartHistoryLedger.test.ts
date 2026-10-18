@@ -80,6 +80,7 @@ function startParams(runId: string, ledgerWatermark: number) {
     options: { prePersistedUserMessageId: clientMessageId },
     orchestration: { route: { type: 'chat', cleanInput: '这一轮的问题' }, systemPromptSections: [] },
     conversationSnapshot: { id: conversationId, title: 'T', messages: [], createdAt: 0, updatedAt: 0, status: 'idle' },
+    activeSkillInfoSnapshot: [],
     settingsSnapshot: { activeModel: { providerId: 'p', modelId: 'm' } },
     resolvedCreds: { apiKey: 'sk-test', baseUrl: undefined, forceOpenAiCompatible: false },
     toolList: [],

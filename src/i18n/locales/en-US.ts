@@ -3703,11 +3703,10 @@ const enUS: TranslationDict = {
       fwUnknownAction: 'Unknown action: {action}',
     },
     agent: {
-      skillAlreadyActive: 'Skill "{skillName}" is already active in this conversation. No need to call it again — continue using the already-injected skill instructions.',
       skillBlockedByPolicy: 'Skill "{skillName}" is blocked by your organization\'s policy and cannot be used. Do not try to use it another way (such as reading its files directly); tell the user this skill is blocked by their organization\'s policy.',
       skillLoaded: 'Loaded skill "{name}": {description}',
       skillContextLine: '\nUser context: {context}',
-      skillInjected: '\nSkill instructions injected into the system prompt for this turn; released automatically when the task ends.',
+      skillInstructionsFollow: '\nFollow the skill instructions below to complete the task:',
       errAgentNotFound: 'Error: expert "{agentName}" not found. Available experts: {available}. You can also use a built-in role via type: {presetList}',
       errNotTeamMember: 'Error: "{agentName}" is not on this expert team. You can only delegate to experts: {roster}',
       errDispatchCapReached: 'Error: this run has reached its hand-off limit ({max}). Do not dispatch again or work around it: give the user a consolidated report of what is done, what is not, and what blocked it.',

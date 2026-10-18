@@ -166,7 +166,8 @@ export const SHIM_TARGETS = [
   // P1-3B-3A finding: P1-3a's assumption ("nothing imports memdir/paths.ts
   // directly once memdir/scan.ts is redirected — memdirScan.ts uses its own
   // sibling memdirPaths.ts helper instead") no longer holds now that
-  // agentLoop.ts's real graph includes `skill/loader.ts`, which imports
+  // the loop's real graph includes `skill/loader.ts` (through
+  // subagentLoop.ts → prompts/preloadedSkills.ts), which imports
   // `sanitizePath` from `core/memdir/paths.ts` DIRECTLY (bypassing scan.ts
   // entirely). Reuses the EXISTING `memdirPaths.ts` sidecar-local helper
   // (already real, fs-backed, byte-identical `sanitizePath` logic — see its

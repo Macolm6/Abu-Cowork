@@ -25,6 +25,13 @@ const TRUNCATION_RULES: Record<string, TruncationRule> = {
 const DEFAULT_RULE: TruncationRule = { headLines: 0, tailLines: 0, maxChars: 3500 };
 
 /**
+ * Tools whose result is never cut, at any context pressure. `use_skill`
+ * returns the skill's instructions: the model has to follow all of them, and
+ * a cut drops rules silently.
+ */
+const UNTRUNCATED_TOOLS = new Set<string>([TOOL_NAMES.USE_SKILL]);
+
+/**
  * Per-tool overrides for MCP servers, matched on the tool suffix of a
  * `server__tool` name.
  *
@@ -106,6 +113,7 @@ export function getContextPressureScale(contextUsagePercent?: number): number {
  */
 export function truncateToolResult(toolName: string, result: string, contextUsagePercent?: number): string {
   if (!result) return result;
+  if (UNTRUNCATED_TOOLS.has(toolName)) return result;
 
   const baseRule = resolveRule(toolName);
   const scale = getContextPressureScale(contextUsagePercent);
