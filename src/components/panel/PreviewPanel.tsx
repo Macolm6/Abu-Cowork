@@ -30,7 +30,7 @@ import { VersionHistoryMenu } from './VersionHistoryMenu';
 import { DocSelectionLayer } from '@/features/reference/DocSelectionLayer';
 import { cn } from '@/lib/utils';
 import { isMacOS, isWindows } from '@/utils/platform';
-import { getToolbarButtons, offersOpenInApp } from './previewToolbarConfig';
+import { getRendererType, getToolbarButtons, offersOpenInApp, SPREADSHEET_EXTENSIONS, type RendererType } from './previewToolbarConfig';
 import { isRunByDefaultRefusal, openWithDefaultApp } from '@/utils/openWithDefaultApp';
 import { createDomElementReference, type BrowserElementPayload } from '@/types/chatReference';
 import { isValidInspectSelection, resolveReferencePath } from '@/utils/inspectMessage';
@@ -45,7 +45,7 @@ const XlsxPreview = lazy(() => import('@/components/preview/XlsxPreview'));
 const CsvPreview = lazy(() => import('@/components/preview/CsvPreview'));
 const PptxPreview = lazy(() => import('@/components/preview/PptxPreview'));
 
-export type RendererType = 'markdown' | 'code' | 'image' | 'text' | 'html' | 'pdf' | 'docx' | 'pptx' | 'xlsx' | 'csv' | 'unsupported';
+export type { RendererType };
 
 /** Types whose preview component draws the file's bytes */
 const BINARY_TYPES = new Set<RendererType>(['pdf', 'docx', 'pptx', 'xlsx']);
@@ -78,29 +78,6 @@ function previewVersionMeta(): { origin?: VersionOrigin } {
 
 function isDataUrl(path: string): boolean {
   return path.startsWith('data:');
-}
-
-/** Workbook formats the spreadsheet preview reads. */
-const SPREADSHEET_EXTENSIONS = ['xlsx', 'xls', 'xlsm', 'xlsb', 'ods', 'fods'];
-
-function getRendererType(filePath: string): RendererType {
-  if (isDataUrl(filePath) && filePath.startsWith('data:image/')) return 'image';
-  const ext = filePath.split('.').pop()?.toLowerCase() || '';
-  if (ext === 'md') return 'markdown';
-  if (ext === 'html' || ext === 'htm') return 'html';
-  if (ext === 'pdf') return 'pdf';
-  if (ext === 'docx') return 'docx';
-  if (ext === 'pptx' || ext === 'ppt') return 'pptx';
-  if (SPREADSHEET_EXTENSIONS.includes(ext)) return 'xlsx';
-  if (ext === 'csv' || ext === 'tsv') return 'csv';
-  if ([
-    'ts', 'tsx', 'js', 'jsx', 'py', 'rs', 'go', 'java', 'cpp', 'c', 'h',
-    'json', 'yaml', 'yml', 'toml', 'xml', 'css', 'scss', 'less',
-    'sh', 'bash', 'zsh', 'sql', 'graphql', 'rb', 'php', 'swift', 'kt'
-  ].includes(ext)) return 'code';
-  if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'bmp'].includes(ext)) return 'image';
-  if (['txt', 'log'].includes(ext)) return 'text';
-  return 'unsupported';
 }
 
 /** File extension, lowercased — used to pick a CodeMirror language extension. */

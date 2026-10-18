@@ -231,6 +231,11 @@ export function useConversationChangedFiles(conversationId: string): { status: '
   }, [index, messageTurns]);
 }
 
+/** The index entry of a turn as last read, for an action taken on it; null when it has not been read. */
+export function cachedTurnChangesEntry(conversationId: string, loopId: string): TurnIndexEntry | null {
+  return indexRecords.get(conversationId)?.[loopId] ?? null;
+}
+
 export interface TurnChangesDetail {
   status: TurnChangesStatus;
   /** The saved turn; null while loading, after an error, and for a turn that saved nothing. */

@@ -16,7 +16,6 @@ import { useEffect, useState, useRef } from 'react';
 import PermissionDialog from '@/components/common/PermissionDialog';
 import InstructionsEditModal from '@/components/common/InstructionsEditModal';
 import MemoryViewModal from '@/components/common/MemoryViewModal';
-import FilesSection from './FilesSection';
 import { cn } from '@/lib/utils';
 import { joinPath } from '@/utils/pathUtils';
 
@@ -267,9 +266,6 @@ export default function WorkspaceSection() {
                 </Button>
               </div>
             )}
-
-            {/* Operated files - always shown */}
-            <FilesSection />
           </>
         )}
       </div>
