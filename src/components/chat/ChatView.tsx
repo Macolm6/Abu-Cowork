@@ -36,6 +36,8 @@ import { compactConversationManually } from '@/core/context/compactionService';
 import { applyGoalCommand, checkGoalCreatable, clearGoalForReplacement, createGoalFromCommand, parseGoalCommand } from '@/core/goal/goalCommand';
 import { useConfirm } from '@/components/ds/confirm-context';
 import { useToastStore } from '@/stores/toastStore';
+import { useBackgroundCommandStore } from '@/stores/backgroundCommandStore';
+import { isTauriEnv } from '@/utils/tauriEnv';
 import { ensureConversationModelUsable } from './sendModelGuard';
 import ChatInput from './ChatInput';
 import { focusComposerAfterPageChange, focusComposerFromWindow } from './composerFocus';
@@ -280,6 +282,10 @@ export default function ChatView({
   // and the next Enter/blur would commit it against the WRONG conversation's id.
   useEffect(() => {
     setIsRenamingTitle(false);
+  }, [activeConvId]);
+  useEffect(() => {
+    if (!activeConvId || !isTauriEnv()) return;
+    void useBackgroundCommandStore.getState().refresh(activeConvId);
   }, [activeConvId]);
   const createConversation = useChatStore((s) => s.createConversation);
   const setConversationTeamId = useChatStore((s) => s.setConversationTeamId);

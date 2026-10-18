@@ -38,6 +38,7 @@ import QuitRequestListener from '@/components/common/QuitRequestListener';
 import { noteQuitConfirmedByUser } from '@/core/session/quitFlush';
 import { isConversationRunningInSidecar } from '@/core/agent/sidecarRunPredicate';
 import { setToastPlacesForDecision } from '@/stores/toastStore';
+import { startBackgroundCommandSync } from '@/stores/backgroundCommandStore';
 import WindowTitleBar from '@/components/window/WindowTitleBar';
 import { registerBuiltinTools } from '@/core/tools/builtins';
 import { initPlatform } from '@/utils/platform';
@@ -413,6 +414,12 @@ function App() {
       cancelled = true;
       unlistenFn?.();
     };
+  }, []);
+
+  // Background command rows follow the main process's change events.
+  useEffect(() => {
+    if (!isTauriEnv()) return; // web / E2E: no Tauri IPC
+    return startBackgroundCommandSync();
   }, []);
 
   // Pet window sends a message; `petMessageConversation` names the conversation it goes to.
