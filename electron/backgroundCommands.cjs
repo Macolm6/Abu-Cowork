@@ -40,6 +40,7 @@ function isUtf8DecodeError(error) {
  * character are kept so the switch re-reads them with the new decoder.
  * The chunk that holds the first invalid byte is decoded whole with the new
  * decoder, as decodeCommandOutput decodes a whole stream.
+ * `legacyEncoding()` names the code page and is called only at that switch.
  */
 function createStreamDecoder(legacyEncoding) {
   // ignoreBOM keeps a leading BOM in the decoded text, so the byte length of
@@ -57,7 +58,7 @@ function createStreamDecoder(legacyEncoding) {
 
   function switchToFallback(pending) {
     strict = null;
-    fallback = new TextDecoder(legacyEncoding ?? 'utf-8');
+    fallback = new TextDecoder(legacyEncoding() ?? 'utf-8');
     held = Buffer.alloc(0);
     atStart = false;
     return fallback.decode(pending, { stream: true });
@@ -163,13 +164,21 @@ function createBackgroundCommands(deps) {
   const emit = requireDependency(deps, 'emit', (value) => typeof value === 'function');
   const now = requireDependency(deps, 'now', (value) => typeof value === 'function');
   const randomId = requireDependency(deps, 'randomId', (value) => typeof value === 'function');
-  const legacyEncoding = requireDependency(
-    deps,
-    'legacyEncoding',
-    (value) => value === null || typeof value === 'string',
-  );
-  // An unsupported label throws a RangeError here, before any command runs.
-  if (legacyEncoding !== null) new TextDecoder(legacyEncoding);
+  const askLegacyEncoding = requireDependency(deps, 'legacyEncoding', (value) => typeof value === 'function');
+  // Asking for the code page can be slow (Windows runs chcp.com), so it is
+  // asked once, when the first stream meets invalid UTF-8.
+  let legacyEncodingLabel;
+  function legacyEncoding() {
+    if (legacyEncodingLabel !== undefined) return legacyEncodingLabel;
+    const label = askLegacyEncoding();
+    if (label !== null && typeof label !== 'string') {
+      throw new TypeError('background command: legacyEncoding() must return an encoding label or null');
+    }
+    // An unsupported label throws a RangeError here.
+    if (label !== null) new TextDecoder(label);
+    legacyEncodingLabel = label;
+    return label;
+  }
 
   const records = new Map();
   let settleSequence = 0;

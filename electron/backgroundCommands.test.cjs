@@ -14,7 +14,7 @@ const {
 // 「错误」 as a Chinese Windows console writes it under code page 936.
 const GBK_ERROR = Buffer.from([0xb4, 0xed, 0xce, 0xf3]);
 
-function fixture({ legacyEncoding = 'gbk' } = {}) {
+function fixture({ legacyEncoding = () => 'gbk' } = {}) {
   const events = [];
   let clock = 1_000;
   let nextId = 0;
@@ -136,7 +136,7 @@ test('keeps a bounded number of segments under many small writes', () => {
 });
 
 test('drops a leading BOM once and keeps it out of a code page switch', () => {
-  const { table } = fixture({ legacyEncoding: null });
+  const { table } = fixture({ legacyEncoding: () => null });
   const { id, child } = start(table);
 
   child.stdout.emit('data', Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('abcdef')]));
@@ -157,7 +157,7 @@ test('decodes a multibyte character split across chunks', () => {
 });
 
 test('switches a stream to the console code page after invalid UTF-8', () => {
-  const { table } = fixture({ legacyEncoding: 'gbk' });
+  const { table } = fixture({ legacyEncoding: () => 'gbk' });
   const { id, child } = start(table);
 
   child.stdout.emit('data', Buffer.from('ok\n', 'utf8'));
@@ -166,6 +166,41 @@ test('switches a stream to the console code page after invalid UTF-8', () => {
   child.stdout.emit('data', Buffer.from('完成', 'utf8'));
 
   assert.equal(table.read('conv-a', id, 0).text, 'ok\n错误完成');
+});
+
+test('asks for the console code page only when invalid UTF-8 arrives, and once', () => {
+  let asked = 0;
+  const { table } = fixture({
+    legacyEncoding: () => {
+      asked += 1;
+      return 'gbk';
+    },
+  });
+  const first = start(table, 'conv-a', 'one');
+
+  first.child.stdout.emit('data', Buffer.from('完成\n', 'utf8'));
+  first.child.stderr.emit('data', Buffer.from('ok\n', 'utf8'));
+  first.child.emit('close', 0);
+  assert.equal(asked, 0, 'valid UTF-8 never asks for the code page');
+
+  const second = start(table, 'conv-a', 'two');
+  second.child.stdout.emit('data', GBK_ERROR);
+  second.child.stderr.emit('data', GBK_ERROR);
+  const third = start(table, 'conv-a', 'three');
+  third.child.stdout.emit('data', GBK_ERROR);
+  third.child.emit('close', 1);
+
+  assert.equal(asked, 1);
+  assert.equal(table.read('conv-a', second.id, 0).text, '错误错误');
+  assert.equal(table.read('conv-a', third.id, 0).text, '错误');
+});
+
+test('throws at the first switch when the code page is not a known encoding', () => {
+  const { table } = fixture({ legacyEncoding: () => 'no-such-code-page' });
+  const { child } = start(table);
+
+  child.stdout.emit('data', Buffer.from('ok\n', 'utf8'));
+  assert.throws(() => child.stdout.emit('data', GBK_ERROR), RangeError);
 });
 
 test('answers already-finished when stop races the exit', () => {
@@ -278,10 +313,10 @@ test('requires every dependency', () => {
     emit: () => {},
     now: () => 0,
     randomId: (size) => Buffer.alloc(size),
-    legacyEncoding: null,
+    legacyEncoding: () => null,
   };
   for (const name of Object.keys(deps)) {
     assert.throws(() => createBackgroundCommands({ ...deps, [name]: undefined }), new RegExp(name));
   }
-  assert.throws(() => createBackgroundCommands({ ...deps, legacyEncoding: 'no-such-code-page' }));
+  assert.throws(() => createBackgroundCommands({ ...deps, legacyEncoding: 'gbk' }), /legacyEncoding/);
 });

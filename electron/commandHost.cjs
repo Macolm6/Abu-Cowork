@@ -586,6 +586,22 @@ const COMMAND_MISS = Symbol('command-dispatch-miss');
 const activeCommands = new Map();
 let commandSeq = 0;
 let lifecycleHooksRegistered = false;
+// The table of background commands (backgroundCommands.cjs), installed once
+// by tauriHost.cjs with the renderer event emitter.
+let backgroundCommands = null;
+
+function installBackgroundCommands(table) {
+  if (!table || typeof table.register !== 'function') {
+    throw new TypeError('installBackgroundCommands: a background command table is required');
+  }
+  if (backgroundCommands) throw new Error('installBackgroundCommands: a table is already installed');
+  backgroundCommands = table;
+}
+
+function requireBackgroundCommands() {
+  if (!backgroundCommands) throw new Error('background commands: no table is installed');
+  return backgroundCommands;
+}
 
 // ── Console output decoding ──
 
@@ -831,7 +847,15 @@ function abortCommand(commandId) {
   if (typeof commandId !== 'string' || commandId.length === 0) return false;
   const set = activeCommands.get(commandId);
   if (!set || set.size === 0) return false;
-  for (const entry of Array.from(set)) killProcessTree(entry);
+  for (const entry of Array.from(set)) {
+    // Marked first, so the row settles as stopped although the launcher exits
+    // with a kill status. A killed entry was already stopped through the table
+    // or its row is gone (stopConversation).
+    if (entry.backgroundCommandId && !entry.killed && !entry.completed) {
+      requireBackgroundCommands().markStopRequested(entry.backgroundCommandId);
+    }
+    killProcessTree(entry);
+  }
   return true;
 }
 
@@ -854,6 +878,7 @@ function ensureCommandHostLifecycleHooks(app) {
 function __resetCommandHostForTests() {
   teardownCommandHost();
   activeCommands.clear();
+  backgroundCommands = null;
 }
 
 /**
@@ -945,18 +970,39 @@ function spawnForeground(app, spec, opts, timeoutSecs, commandId) {
  * collecting initial output OR until the process exits early, then return —
  * keeping the process tracked for abort_command/app teardown if still alive.
  * The 3s return semantics and placeholder string match Tauri.
+ *
+ * The command is also registered in the background command table, which keeps
+ * its output and status after the 3s result; the result carries the row's id.
+ * `opts.onFinished(code)` is called once, when the process really exits or
+ * fails to start.
  */
 function spawnBackground(app, spec, opts, commandId) {
   ownedChildProcesses.assertAdmission();
+  const table = requireBackgroundCommands();
   return new Promise((resolve) => {
+    let finished = false;
+    const finishOnce = (code) => {
+      if (finished) return;
+      finished = true;
+      opts.onFinished(code);
+    };
     const { file, args, env } = spec;
     const launcherPath = sandboxLauncherPathFor(app);
     const hostProblem = preflightCommandHost(launcherPath, opts.cwd);
     if (hostProblem) {
+      finishOnce(-1);
       resolve({ stdout: '', stderr: hostProblem, code: -1 });
       return;
     }
     const spawnEnv = { ...process.env, ...(env || {}), ...(opts.envOverride || {}) };
+
+    // Registered before spawn, so a table that refuses the row leaves no process behind.
+    const registration = table.register({
+      conversationId: opts.conversationId,
+      command: opts.command,
+      cwd: opts.cwd,
+    });
+    const backgroundCommandId = registration.id;
 
     let child;
     try {
@@ -967,13 +1013,18 @@ function spawnBackground(app, spec, opts, commandId) {
         detached: process.platform !== 'win32',
       });
     } catch (e) {
+      table.discard(backgroundCommandId);
+      finishOnce(-1);
       resolve({ stdout: '', stderr: `Failed to spawn command: ${e instanceof Error ? e.message : String(e)}`, code: -1 });
       return;
     }
 
-    const entry = { commandId, child, completed: false, killed: false, forceKillTimer: null };
+    const entry = { commandId, child, completed: false, killed: false, forceKillTimer: null, backgroundCommandId };
     ownedChildProcesses.track(child, () => killProcessTree(entry));
     addActiveCommand(entry);
+    // Attached before the listeners below, so the row has settled by the time
+    // an early exit resolves the result.
+    registration.attach({ child, stop: () => killProcessTree(entry) });
 
     const stdoutC = makeCappedCollector();
     const stderrC = makeCappedCollector();
@@ -993,6 +1044,7 @@ function spawnBackground(app, spec, opts, commandId) {
         stdout: stdoutResult.trim() === '' && stderrResult.trim() === '' ? '服务已在后台启动' : stdoutResult,
         stderr: stderrResult,
         code: 0, // process is still running; 0 = "started successfully" (matches Rust)
+        backgroundCommandId,
       });
       // Deliberately NOT killed — the process continues running in the
       // background (matches Tauri semantics). It remains in activeCommands so
@@ -1006,16 +1058,20 @@ function spawnBackground(app, spec, opts, commandId) {
       removeActiveCommand(entry);
       clearTimeout(waitTimer);
       if (entry.forceKillTimer) clearTimeout(entry.forceKillTimer);
+      // The command never started, so it is not listed.
+      table.discard(backgroundCommandId);
+      finishOnce(-1);
       resolve({ stdout: stdoutC.value, stderr: stderrC.value || String(e.message || e), code: -1 });
     });
     child.once('close', (code) => {
       entry.completed = true;
       removeActiveCommand(entry);
       if (entry.forceKillTimer) clearTimeout(entry.forceKillTimer);
+      finishOnce(code ?? -1);
       if (settled) return;
       settled = true;
       clearTimeout(waitTimer);
-      resolve({ stdout: stdoutC.value, stderr: stderrC.value, code: code ?? -1 });
+      resolve({ stdout: stdoutC.value, stderr: stderrC.value, code: code ?? -1, backgroundCommandId });
     });
   });
 }
@@ -1028,6 +1084,10 @@ async function runShellCommand(app, args) {
   const command = String(a.command ?? '');
   const cwd = typeof a.cwd === 'string' && a.cwd ? a.cwd : undefined;
   const isBackground = !!a.background;
+  const conversationId = a.conversationId;
+  if (isBackground && (typeof conversationId !== 'string' || conversationId === '')) {
+    throw new TypeError('run_shell_command: a background command requires a conversationId');
+  }
   const timeoutSecs = Math.min(Math.max(1, Number(a.timeout ?? 30) || 30), 300); // default 30s, max 300s
   const commandId = typeof a.commandId === 'string' && a.commandId ? a.commandId : makeCommandId('shell');
   const sandboxEnabled = a.sandboxEnabled !== false; // unwrap_or(true)
@@ -1046,24 +1106,37 @@ async function runShellCommand(app, args) {
   const envOverride = bundledRuntimeEnv(app);
 
   const startedAt = Date.now();
-  const result = isBackground
-    ? await spawnBackground(app, spec, { cwd, envOverride, sandboxEnabled }, commandId)
-    : await spawnForeground(app, spec, { cwd, envOverride, sandboxEnabled }, timeoutSecs, commandId);
   // The observability layer redacts and truncates `command` (see
   // runtimeObservability's sanitizeAttributes) — pass the raw caller command.
-  runtimeState.noteCommandFinished({
-    command,
-    exitCode: result.code,
-    durationMs: Date.now() - startedAt,
-    sandboxEnabled,
-    executionPath: isBackground ? 'background' : 'foreground',
-  });
+  const noteFinished = (exitCode) =>
+    runtimeState.noteCommandFinished({
+      command,
+      exitCode,
+      durationMs: Date.now() - startedAt,
+      sandboxEnabled,
+      executionPath: isBackground ? 'background' : 'foreground',
+    });
+  let result;
+  if (isBackground) {
+    // A background command is noted when its process exits, with its real exit code.
+    result = await spawnBackground(
+      app,
+      spec,
+      { cwd, envOverride, sandboxEnabled, conversationId, command, onFinished: noteFinished },
+      commandId,
+    );
+  } else {
+    result = await spawnForeground(app, spec, { cwd, envOverride, sandboxEnabled }, timeoutSecs, commandId);
+    noteFinished(result.code);
+  }
 
-  return {
+  const response = {
     stdout: result.stdout,
     stderr: annotateSandboxViolations(result.stderr, command, sandboxEnabled),
     code: result.code,
   };
+  if (result.backgroundCommandId) response.backgroundCommandId = result.backgroundCommandId;
+  return response;
 }
 
 /** No background mode: argv tools are always foreground with a timeout (matches Rust). */
@@ -1166,6 +1239,25 @@ async function commandDispatch(app, cmd, args, internalOptions) {
       return runArgvCommand(app, args, internalOptions);
     case 'abort_command':
       return abortCommand((args || {}).commandId);
+    // The table checks that the conversation owns the row and throws otherwise.
+    case 'background_command_list':
+      return requireBackgroundCommands().list((args || {}).conversationId);
+    case 'background_command_output': {
+      const a = args || {};
+      return requireBackgroundCommands().read(a.conversationId, a.id, a.since);
+    }
+    case 'background_command_stop': {
+      const a = args || {};
+      return requireBackgroundCommands().requestStop(a.conversationId, a.id);
+    }
+    case 'background_command_clear':
+      requireBackgroundCommands().clear((args || {}).conversationId);
+      return null;
+    case 'background_command_stop_conversation':
+      requireBackgroundCommands().stopConversation((args || {}).conversationId);
+      return null;
+    case 'background_command_running_count':
+      return requireBackgroundCommands().runningCount((args || {}).conversationId);
     case 'get_env_vars':
       return getEnvVars(args);
     default:
@@ -1177,6 +1269,8 @@ module.exports = {
   commandDispatch,
   COMMAND_MISS,
   teardownCommandHost,
+  installBackgroundCommands,
+  legacyConsoleEncoding,
   // exported for the verify harness + potential reuse
   generateSeatbeltProfile,
   buildSandboxedCommandSpec,
