@@ -97,6 +97,7 @@ import {
   updateComposerDraft,
   writeComposerDraft,
   writePersistedComposerText,
+  writeSessionComposerDraft,
   type ComposerDraft,
   type ComposerDraftRuntimeState,
 } from '@/stores/composerDraftStore';
@@ -826,6 +827,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       selectedSkill,
       selectedAgent,
     };
+    writeSessionComposerDraft(currentDraftKeyRef.current, currentDraftRef.current);
   }, [files, images, references, selectedAgent, selectedSkill, text]);
 
   // The agent's question dock leaves the focus with a user who is writing a message: it is told

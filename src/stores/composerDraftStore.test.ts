@@ -18,6 +18,7 @@ import {
   registerComposerDraftResourceDisposer,
   writeComposerDraft,
   writePersistedComposerText,
+  writeSessionComposerDraft,
 } from './composerDraftStore';
 
 function draft(text: string, overrides: Partial<ComposerDraft> = {}): ComposerDraft {
@@ -129,6 +130,19 @@ describe('composerDraftStore', () => {
     expect(readComposerDraft(key)).toEqual(draft('survives reload'));
   });
 
+  it('reads a cleared live draft while its previous text awaits persistence', () => {
+    const key = getComposerDraftKey('live-draft');
+    writeComposerDraft(key, draft('previous text'));
+
+    writeSessionComposerDraft(key, draft(''));
+
+    expect(readComposerDraft(key)).toEqual(draft(''));
+    expect(useComposerDraftStore.getState().drafts[key]?.text).toBe('previous text');
+    writePersistedComposerText(key, '');
+    expect(readComposerDraft(key)).toEqual(draft(''));
+    expect(useComposerDraftStore.getState().drafts[key]).toBeUndefined();
+  });
+
   it('keeps rich content in memory without persisting image bytes or file paths', () => {
     const key = getComposerDraftKey('private-rich-draft');
     writeComposerDraft(key, draft('safe text', {
@@ -178,6 +192,7 @@ describe('composerDraftStore', () => {
 
     clearConversationComposerDraft(conversationId);
     writeComposerDraft(key, draft('late component cleanup'));
+    writeSessionComposerDraft(key, draft('late live edit'));
     writePersistedComposerText(key, 'late debounce');
 
     expect(readComposerDraft(key)).toEqual(draft(''));
