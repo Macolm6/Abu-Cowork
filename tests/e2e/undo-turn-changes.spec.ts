@@ -16,9 +16,6 @@ import path from 'node:path';
 import type { ElectronApplication, Locator, Page } from 'playwright';
 import {
   closeAbuElectron,
-  configureLocalMockProvider,
-  createElectronDataRoot,
-  dismissFirstRunOverlays,
   launchAbuElectron,
   pressWhenSettled,
   removeElectronDataRoot,
@@ -27,15 +24,24 @@ import {
 import {
   CHAT_PLACEHOLDER,
   READY_TIMEOUT,
-  startOpenAiMock,
   waitForApp,
   type MockReplyPlan,
 } from './openAiMock';
-import { persistedStoreVersion } from './storeVersions';
+import {
+  commandCall,
+  deleteFileCall,
+  editFileCall,
+  FINAL_TEXT,
+  finalReply,
+  has,
+  launchInProject as launchProject,
+  notices,
+  read,
+  writeFileCall,
+} from './turnChangesFixtures';
 
 const PROJECT_NAME = 'E2E 撤销改动';
 const PROMPT = '请修改方案';
-const FINAL_TEXT = '已经改好了。';
 const REPLY_TIMEOUT = 60_000;
 const RECORD_TIMEOUT = 30_000;
 const SCREENSHOT_DIR = process.env.ABU_E2E_SCREENSHOT_DIR;
@@ -66,29 +72,6 @@ test.afterEach(async () => {
   if (dataRoot) removeElectronDataRoot(dataRoot);
   dataRoot = undefined;
 });
-
-function writeFileCall(id: string, filePath: string, content: string): MockReplyPlan {
-  return { kind: 'tool-call', toolCallId: id, toolName: 'write_file', arguments: { path: filePath, content } };
-}
-
-function editFileCall(id: string, filePath: string, oldContent: string, newContent: string): MockReplyPlan {
-  return {
-    kind: 'tool-call', toolCallId: id, toolName: 'edit_file',
-    arguments: { path: filePath, old_content: oldContent, new_content: newContent },
-  };
-}
-
-function deleteFileCall(id: string, filePath: string): MockReplyPlan {
-  return { kind: 'tool-call', toolCallId: id, toolName: 'delete_file', arguments: { path: filePath } };
-}
-
-function commandCall(id: string, command: string): MockReplyPlan {
-  return { kind: 'tool-call', toolCallId: id, toolName: 'run_command', arguments: { command } };
-}
-
-function finalReply(): MockReplyPlan {
-  return { kind: 'complete', responseText: FINAL_TEXT };
-}
 
 /** A turn that edits 方案.md and 预算.md and creates 提纲.md. */
 function twoEditsAndOneNewFile(folder: string): MockReplyPlan[] {
@@ -121,46 +104,18 @@ function seedPlanAndDraft(folder: string): void {
 }
 
 /**
- * Launch the app with a project whose folder is `workspace`, the loopback
- * model answering with `plans` in order, and a new task open in that project.
+ * Launch the app in this spec's project, with the loopback model answering with
+ * `plans` in order; `afterEach` closes what it started.
  */
 async function launchInProject(
   plansFor: (workspace: string) => MockReplyPlan[],
   seed: (workspace: string) => void,
 ): Promise<{ page: Page; workspace: string }> {
-  const root = createElectronDataRoot();
-  dataRoot = root;
-  const workspace = path.join(root.rootDir, 'workspace');
-  fs.mkdirSync(workspace, { recursive: true });
-  seed(workspace);
-  const startedMock = await startOpenAiMock(plansFor(workspace));
-  mock = startedMock;
-
-  app = (await launchAbuElectron(root)).app;
-  const page = await app.firstWindow({ timeout: READY_TIMEOUT });
-  await waitForApp(page);
-  await page.evaluate(({ name, workspacePath, version }) => {
-    window.localStorage.setItem('abu-projects', JSON.stringify({
-      state: {
-        projects: {
-          'project-undo': {
-            id: 'project-undo', name, workspacePath, pinned: false, archived: false,
-            createdAt: 1_800_000_000_000, updatedAt: 1_800_000_000_000, lastActiveAt: 1_800_000_000_000,
-          },
-        },
-      },
-      version,
-    }));
-  }, { name: PROJECT_NAME, workspacePath: workspace, version: persistedStoreVersion('abu-projects') });
-  await dismissFirstRunOverlays(page);
-  await configureLocalMockProvider(page, startedMock.baseUrl, { supportsTools: true, permissionMode: 'standard' });
-
-  await page.getByRole('button', { name: PROJECT_NAME, exact: true })
-    .locator('xpath=..')
-    .getByRole('button', { name: '新任务', exact: true })
-    .click();
-  await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible();
-  return { page, workspace };
+  const launched = await launchProject(PROJECT_NAME, plansFor, seed);
+  app = launched.app;
+  dataRoot = launched.dataRoot;
+  mock = launched.mock;
+  return { page: launched.page, workspace: launched.workspace };
 }
 
 /** Send the prompt and wait until its turn has ended and the card of its changed files is there. */
@@ -187,21 +142,9 @@ function willLines(dialog: Locator): Locator {
   return dialog.getByTestId('turn-undo-will').getByRole('listitem');
 }
 
-function notices(page: Page): Locator {
-  return page.getByRole('region', { name: '通知' }).getByRole('listitem');
-}
-
 /** The tab panel in view. */
 function panel(page: Page): Locator {
   return page.locator('[role="tabpanel"]:not([hidden])');
-}
-
-function read(workspace: string, name: string): string {
-  return fs.readFileSync(path.join(workspace, name), 'utf8');
-}
-
-function has(workspace: string, name: string): boolean {
-  return fs.existsSync(path.join(workspace, name));
 }
 
 async function shot(page: Page, name: string): Promise<void> {
