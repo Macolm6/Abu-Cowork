@@ -1184,6 +1184,112 @@ describe('outputSnapshots', () => {
       expect(copyExists(broken)).toBe(true);
     });
 
+    describe('an original that cannot be read', () => {
+      /** Make reading the given originals fail with `error`; every other path reads as before. */
+      function failReading(names: string[], error: () => Error) {
+        const read = stat as ReturnType<typeof vi.fn>;
+        const fromDisk = read.getMockImplementation()!;
+        read.mockImplementation(async (path: string) => {
+          if (names.some((name) => path === `${DESKTOP}/${name}`)) throw error();
+          return fromDisk(path);
+        });
+      }
+
+      function withCode(message: string, code: string): Error {
+        return Object.assign(new Error(message), { code });
+      }
+
+      it('keeps the copy and evicts the others in order', async () => {
+        const unreadable = await keep('a.mov', 200 * MB);
+        for (const name of ['b.mov', 'c.mov', 'd.mov', 'e.mov']) await keep(name, 200 * MB);
+        failReading(['a.mov'], () => withCode('EACCES: permission denied', 'EACCES'));
+
+        await keep('f.mov', 200 * MB);
+
+        expect(await keptNames()).toEqual(['a.mov', 'c.mov', 'd.mov', 'e.mov', 'f.mov']);
+        expect(copyExists(unreadable)).toBe(true);
+      });
+
+      it('keeps the copy when the path of an unreadable original holds words of a missing file', async () => {
+        const folder = `${DESKTOP}/404 Not Found 排查`;
+        vi.setSystemTime(FIXED_MTIME.getTime() + 500);
+        memFs.addUserFile(`${folder}/a.mov`, 200 * MB);
+        const unreadable = await mod.snapshotFile(CONV_ID, `${folder}/a.mov`, { source: 'tool-output', refId: 'a', refKind: 'write_file' });
+        for (const name of ['b.mov', 'c.mov', 'd.mov', 'e.mov']) {
+          await keep(name, 200 * MB);
+          memFs.files.delete(`${DESKTOP}/${name}`);
+        }
+        const read = stat as ReturnType<typeof vi.fn>;
+        const fromDisk = read.getMockImplementation()!;
+        read.mockImplementation(async (path: string) => {
+          if (path === `${folder}/a.mov`) {
+            throw new Error(`Error invoking remote method 'tauri:invoke': Error: EACCES: permission denied, stat '${path}'`);
+          }
+          return fromDisk(path);
+        });
+
+        await keep('f.mov', 200 * MB);
+
+        expect(copyExists(unreadable)).toBe(true);
+        expect(await keptNames()).toEqual(['a.mov', 'c.mov', 'd.mov', 'e.mov', 'f.mov']);
+      });
+
+      it('lets a file authorization that changed during the read throw, and evicts nothing', async () => {
+        const ports = await import('../tools/operationAuthorization');
+        let current = true;
+        ports.setToolAuthorizationProvider({
+          requiresHostFiles: false,
+          captureFileOwner: () => ({ isCurrent: () => current }),
+        } as unknown as Parameters<typeof ports.setToolAuthorizationProvider>[0]);
+        try {
+          for (const name of ['a.mov', 'b.mov', 'c.mov', 'd.mov', 'e.mov']) await keep(name, 200 * MB);
+          // The last copy ranked, so no later inspection would throw in its place.
+          failReading(['e.mov'], () => {
+            current = false;
+            return withCode('EACCES: permission denied', 'EACCES');
+          });
+
+          await expect(keep('f.mov', 200 * MB)).rejects.toThrow('file authorization changed during planning');
+
+          expect(await keptNames()).toEqual(['a.mov', 'b.mov', 'c.mov', 'd.mov', 'e.mov', 'f.mov']);
+        } finally {
+          ports.setToolAuthorizationProvider(null);
+        }
+      });
+
+      it('evicts nothing when no original can be read', async () => {
+        for (const name of ['a.mov', 'b.mov', 'c.mov', 'd.mov', 'e.mov']) await keep(name, 200 * MB);
+        failReading(['a.mov', 'b.mov', 'c.mov', 'd.mov', 'e.mov'], () => withCode('EIO: i/o error', 'EIO'));
+
+        await keep('f.mov', 200 * MB);
+
+        expect(await keptNames()).toEqual(['a.mov', 'b.mov', 'c.mov', 'd.mov', 'e.mov', 'f.mov']);
+      });
+
+      it('treats a missing-file error that lost its code on the way as gone', async () => {
+        const gone = await keep('a.mov', 200 * MB);
+        for (const name of ['b.mov', 'c.mov', 'd.mov', 'e.mov']) await keep(name, 200 * MB);
+        failReading(['b.mov', 'c.mov', 'd.mov', 'e.mov'], () => withCode('EACCES: permission denied', 'EACCES'));
+        failReading(['a.mov'], () => new Error("Error invoking remote method 'tauri:invoke': no such file or directory"));
+
+        await keep('f.mov', 200 * MB);
+
+        expect(await keptNames()).toEqual(['b.mov', 'c.mov', 'd.mov', 'e.mov', 'f.mov']);
+        expect(copyExists(gone)).toBe(false);
+      });
+
+      it('treats a path whose folder became a file as gone', async () => {
+        await keep('a.mov', 200 * MB);
+        for (const name of ['b.mov', 'c.mov', 'd.mov', 'e.mov']) await keep(name, 200 * MB);
+        failReading(['b.mov', 'c.mov', 'd.mov', 'e.mov'], () => withCode('EACCES: permission denied', 'EACCES'));
+        failReading(['a.mov'], () => withCode('ENOTDIR: not a directory', 'ENOTDIR'));
+
+        await keep('f.mov', 200 * MB);
+
+        expect(await keptNames()).toEqual(['b.mov', 'c.mov', 'd.mov', 'e.mov', 'f.mov']);
+      });
+    });
+
     it('keeps an evicted entry gone for a process that reads the log afresh', async () => {
       for (const name of ['a.mov', 'b.mov', 'c.mov', 'd.mov', 'e.mov', 'f.mov']) await keep(name, 200 * MB);
 
