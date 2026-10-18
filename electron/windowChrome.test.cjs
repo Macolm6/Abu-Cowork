@@ -118,7 +118,7 @@ test('macOS retains its application menu and traffic-light overlay', () => {
   assert.deepEqual(mainWindowPlatformOptions('darwin', false, 'vibrancy'), {
     backgroundColor: '#00000000',
     titleBarStyle: 'hidden',
-    trafficLightPosition: { x: 20, y: 27 },
+    trafficLightPosition: { x: 20, y: 22 },
     vibrancy: 'sidebar',
     visualEffectState: 'followWindow',
   });

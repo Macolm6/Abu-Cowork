@@ -40,7 +40,7 @@ app.whenReady().then(async () => {
   const win = new BrowserWindow({
     width: 1280,
     height: 860,
-    ...(process.platform==="darwin"?{titleBarStyle:"hidden",trafficLightPosition:{x:20,y:27}}:{}),
+    ...(process.platform==="darwin"?{titleBarStyle:"hidden",trafficLightPosition:{x:20,y:22}}:{}),
     backgroundColor: '#1a1a1a',
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload.cjs'),
