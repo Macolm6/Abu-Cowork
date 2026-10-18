@@ -5,7 +5,7 @@ import type { SupportedLocale } from '@/i18n';
  *  installer. */
 export const OFFICIAL_WEBSITE_URL = 'https://myabu.cn';
 
-export const APP_DEVELOPMENT_DOCS_URL = 'https://github.com/PM-Shawn/Abu-Cowork/blob/dev/docs/app-spec.md';
+export const APP_DEVELOPMENT_DOCS_URL = 'https://abuwork.com/platform.html';
 
 const HELP_DOCS_URLS = {
   'zh-CN': 'https://myabu.cn/docs.zh-CN.html#user-guide',
