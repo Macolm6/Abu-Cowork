@@ -2548,8 +2548,11 @@ const enUS: TranslationDict = {
     versionHistoryReverted: 'Reverted to this version',
     versionHistoryRevertFailedTitle: 'Revert failed',
     versionHistoryLoadFailed: 'Failed to load version history',
-    versionSourceAi: 'Before AI edit',
-    versionRevertPoint: 'Backup before revert',
+    versionSourceAi: 'Before Abu edited',
+    versionRevertPoint: 'Saved before restore',
+    versionRestoreTitle: 'Restore {name} to how it was at {time}?',
+    versionRestoreMessage: 'The current content is saved as a version, so you can get it back from the version history.',
+    versionRestoreConfirm: 'Restore',
     // FilesSection
     operationRead: 'Read',
     operationModify: 'Modify',

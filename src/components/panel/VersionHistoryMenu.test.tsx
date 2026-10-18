@@ -7,22 +7,28 @@ import { useState } from 'react';
 import { Button } from '@/components/ds/button';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { setLanguage } from '@/i18n';
+import { usePreviewStore } from '@/stores/previewStore';
+import { useToastStore } from '@/stores/toastStore';
+import { passSettleInterval } from '@/test/dsWindows';
 import { REVERT_LABEL } from '@/utils/canvasVersions';
 
 const listVersionsMock = vi.fn();
+const revertToVersionMock = vi.fn();
 vi.mock('@/utils/canvasVersions', async () => {
   const actual = await vi.importActual<typeof import('@/utils/canvasVersions')>('@/utils/canvasVersions');
   return {
     ...actual,
     listVersions: (...args: unknown[]) => listVersionsMock(...args),
+    revertToVersion: (...args: unknown[]) => revertToVersionMock(...args),
   };
 });
 
 import { VersionHistoryMenu } from './VersionHistoryMenu';
+import { formatVersionTime } from './versionTime';
 
 const TIME = /\d{2}:\d{2}:\d{2}/;
 
-function Harness({ onRevert, initialOpen }: { onRevert: (id: string) => Promise<void>; initialOpen: boolean }) {
+function Harness({ initialOpen }: { initialOpen: boolean }) {
   const [open, setOpen] = useState(initialOpen);
   return (
     <VersionHistoryMenu
@@ -30,10 +36,11 @@ function Harness({ onRevert, initialOpen }: { onRevert: (id: string) => Promise<
       open={open}
       onOpenChange={setOpen}
       trigger={<Button>History</Button>}
-      onRevert={onRevert}
     />
   );
 }
+
+const toastTitles = () => useToastStore.getState().toasts.map((toast) => [toast.type, toast.title, toast.message]);
 
 describe('VersionHistoryMenu', () => {
   // happy-dom lacks the pointer-capture and scroll methods Radix menus call.
@@ -46,46 +53,63 @@ describe('VersionHistoryMenu', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    revertToVersionMock.mockResolvedValue('restored');
     setLanguage('zh-CN');
+    useToastStore.setState({ toasts: [] });
+    usePreviewStore.setState({ currentConversationId: 'conv-1' });
   });
 
   afterEach(() => {
     cleanup();
     setLanguage('system');
+    usePreviewStore.setState({ currentConversationId: null });
   });
 
-  function renderMenu({ onRevert = async () => {}, initialOpen = true }: { onRevert?: (id: string) => Promise<void>; initialOpen?: boolean } = {}) {
+  function renderMenu({ initialOpen = true }: { initialOpen?: boolean } = {}) {
     return render(
       <DesignSystemProvider>
-        <Harness onRevert={onRevert} initialOpen={initialOpen} />
+        <Harness initialOpen={initialOpen} />
       </DesignSystemProvider>,
     );
   }
 
-  it('renders the AI source badge and user-message label, but no badge for a manual entry', async () => {
+  async function pickFirstVersion() {
+    const user = userEvent.setup();
+    renderMenu({ initialOpen: false });
+    await user.click(screen.getByRole('button', { name: 'History' }));
+    await user.click((await screen.findAllByRole('menuitem'))[0]);
+    const question = await screen.findByRole('alertdialog');
+    passSettleInterval();
+    return { user, question };
+  }
+
+  it('lists every version of the file', async () => {
+    listVersionsMock.mockResolvedValue([{ id: '1-0', ts: 1, byteSize: 10 }]);
+    renderMenu();
+    await screen.findAllByRole('menuitem');
+    expect(listVersionsMock).toHaveBeenCalledWith('/w/a.html', undefined);
+  });
+
+  it('marks a version Abu left before its edit with the user message, and a version kept before a restore', async () => {
     listVersionsMock.mockResolvedValue([
+      { id: '3-2', ts: 3, byteSize: 10, source: 'manual', label: REVERT_LABEL },
       { id: '2-1', ts: 2, byteSize: 10, source: 'ai', label: '把标题改成蓝色' },
       { id: '1-0', ts: 1, byteSize: 10 },
     ]);
     renderMenu();
-    await waitFor(() => expect(screen.getByText('把标题改成蓝色')).toBeTruthy());
-    expect(screen.getByText('AI 修改前')).toBeTruthy();
-    // The unlabeled, source-less entry gets no badge at all — only AI edits are called out.
-    expect(screen.queryByText('手动')).toBeNull();
-  });
 
-  it('renders the REVERT_LABEL sentinel via i18n as a self-explanatory label, with no badge', async () => {
-    listVersionsMock.mockResolvedValue([
-      { id: '2-1', ts: 2, byteSize: 10, source: 'manual', label: REVERT_LABEL },
-    ]);
-    renderMenu();
-    await waitFor(() => expect(screen.getByText('回退前备份')).toBeTruthy());
+    const items = await screen.findAllByRole('menuitem');
+    expect(within(items[0]).getByText('恢复前另存')).toBeInTheDocument();
+    // A row without a user message is described by its hint alone.
+    expect(items[0]).toHaveAccessibleDescription('恢复到此版本');
+    expect(within(items[1]).getByText('阿布修改前')).toBeInTheDocument();
+    expect(items[1]).toHaveAccessibleDescription('把标题改成蓝色');
+    expect(items[2]).toHaveAccessibleDescription('恢复到此版本');
+    expect(within(items[2]).queryByText(/阿布修改前|恢复前另存/)).toBeNull();
     expect(screen.queryByText(REVERT_LABEL)).toBeNull();
-    expect(screen.queryByText('自动')).toBeNull();
-    expect(screen.queryByText('手动')).toBeNull();
   });
 
-  it('shows one menu item per version: the time as its name, the label and size as its description', async () => {
+  it('shows one menu item per version: the time as its name, no size, and a hint of what choosing it does', async () => {
     listVersionsMock.mockResolvedValue([
       { id: '2-1', ts: 2, byteSize: 2048, source: 'ai', label: '把标题改成蓝色' },
       { id: '1-0', ts: 1, byteSize: 10 },
@@ -95,58 +119,66 @@ describe('VersionHistoryMenu', () => {
     const items = await screen.findAllByRole('menuitem');
     expect(items).toHaveLength(2);
     expect(items[0]).toHaveAccessibleName(TIME);
-    expect(items[0]).toHaveAccessibleDescription('把标题改成蓝色 · 2.0 KB');
     expect(items[1]).toHaveAccessibleName(TIME);
-    expect(items[1]).toHaveAccessibleDescription('10 B');
     expect(screen.getByRole('menu')).toHaveTextContent('历史版本');
-    // The second line stays one line: the label is cut short, the size is never pushed out.
+    expect(screen.getByRole('menu')).not.toHaveTextContent(/KB|\d B/);
     expect(screen.getByText('把标题改成蓝色')).toHaveClass('truncate');
-    expect(screen.getByText(/2\.0 KB/)).toHaveClass('shrink-0');
-    // Choosing a row overwrites the file, and its name is only a time: the hint says what it does.
     for (const item of items) expect(item).toHaveAttribute('title', '恢复到此版本');
-    // Rows with and without the AI tag have the same first-line height (the tag's).
-    expect(screen.getByText('AI 修改前').parentElement).toHaveClass('h-5');
+    // Rows with and without a tag have the same first-line height (the tag's).
+    expect(screen.getByText('阿布修改前').parentElement).toHaveClass('h-5');
     expect(within(items[1]).getByText(TIME).parentElement).toHaveClass('h-5');
-    // The list keeps its own compact height and scrolls inside the menu.
     const list = items[0].parentElement;
     expect(list).toHaveClass('max-h-80');
     expect(list).toHaveClass('overflow-y-auto');
-    expect(list?.parentElement).toBe(screen.getByRole('menu'));
   });
 
-  it('reverts only on Enter: the arrow keys move the highlight', async () => {
-    const user = userEvent.setup();
-    const onRevert = vi.fn().mockResolvedValue(undefined);
-    listVersionsMock.mockResolvedValue([
-      { id: '2-1', ts: 2, byteSize: 10 },
-      { id: '1-0', ts: 1, byteSize: 10 },
-    ]);
-    renderMenu({ onRevert, initialOpen: false });
+  it('asks before restoring, once the menu has gone, and restores nothing on cancel', async () => {
+    listVersionsMock.mockResolvedValue([{ id: '2-1', ts: 2, byteSize: 10 }]);
+    const { user, question } = await pickFirstVersion();
 
-    await user.click(screen.getByRole('button', { name: 'History' }));
-    await screen.findAllByRole('menuitem');
-    await user.keyboard('{ArrowDown}{ArrowDown}');
-    expect(onRevert).not.toHaveBeenCalled();
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    expect(question).toHaveAccessibleName(`把 a.html 恢复到 ${formatVersionTime(2)} 的样子？`);
+    expect(question).toHaveTextContent('现在的内容会另存一份，可以在历史版本里找回。');
+    expect(within(question).getByRole('button', { name: '恢复' })).toBeInTheDocument();
 
-    await user.keyboard('{Enter}');
-    expect(onRevert).toHaveBeenCalledOnce();
-    expect(onRevert).toHaveBeenCalledWith('1-0');
-    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
+    await user.click(within(question).getByRole('button', { name: '取消' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+    expect(revertToVersionMock).not.toHaveBeenCalled();
+    expect(toastTitles()).toEqual([]);
   });
 
-  it('closes on Escape without reverting and returns focus to its button', async () => {
+  it('restores the chosen version for the conversation of the panel and says so', async () => {
+    listVersionsMock.mockResolvedValue([{ id: '2-1', ts: 2, byteSize: 10 }, { id: '1-0', ts: 1, byteSize: 10 }]);
+    const { user, question } = await pickFirstVersion();
+
+    await user.click(within(question).getByRole('button', { name: '恢复' }));
+
+    await waitFor(() => expect(toastTitles()).toEqual([['success', '已恢复到该版本', undefined]]));
+    expect(revertToVersionMock).toHaveBeenCalledExactlyOnceWith('/w/a.html', '2-1', { conversationId: 'conv-1' });
+  });
+
+  it('says that the restore failed, and why', async () => {
+    revertToVersionMock.mockRejectedValue(new Error('磁盘已满'));
+    listVersionsMock.mockResolvedValue([{ id: '2-1', ts: 2, byteSize: 10 }]);
+    const { user, question } = await pickFirstVersion();
+
+    await user.click(within(question).getByRole('button', { name: '恢复' }));
+
+    await waitFor(() => expect(toastTitles()).toEqual([['error', '恢复失败', '磁盘已满']]));
+  });
+
+  it('chooses nothing with the arrow keys, and closes on Escape with focus back on its button', async () => {
     const user = userEvent.setup();
-    const onRevert = vi.fn().mockResolvedValue(undefined);
-    listVersionsMock.mockResolvedValue([{ id: '1-0', ts: 1, byteSize: 10 }]);
-    renderMenu({ onRevert, initialOpen: false });
+    listVersionsMock.mockResolvedValue([{ id: '2-1', ts: 2, byteSize: 10 }, { id: '1-0', ts: 1, byteSize: 10 }]);
+    renderMenu({ initialOpen: false });
 
     const trigger = screen.getByRole('button', { name: 'History' });
     await user.click(trigger);
     await screen.findAllByRole('menuitem');
-    await user.keyboard('{ArrowDown}{Escape}');
+    await user.keyboard('{ArrowDown}{ArrowDown}{Escape}');
 
     await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
-    expect(onRevert).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
   });
 
@@ -167,28 +199,20 @@ describe('VersionHistoryMenu', () => {
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
 
-  it('disables every version while a revert is running', async () => {
+  it('says so when the list cannot be read, and reads it again when the menu opens again', async () => {
     const user = userEvent.setup();
-    let finish: () => void = () => {};
-    const onRevert = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
-    listVersionsMock.mockResolvedValue([
-      { id: '2-1', ts: 2, byteSize: 10 },
-      { id: '1-0', ts: 1, byteSize: 10 },
-    ]);
-    renderMenu({ onRevert, initialOpen: false });
+    listVersionsMock.mockRejectedValueOnce(new Error('EIO')).mockResolvedValue([{ id: '1-0', ts: 1, byteSize: 10 }]);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    renderMenu({ initialOpen: false });
 
     const trigger = screen.getByRole('button', { name: 'History' });
     await user.click(trigger);
-    await user.click((await screen.findAllByRole('menuitem'))[0]);
+    expect(await screen.findByText('加载历史版本失败')).toBeInTheDocument();
+    await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
 
     await user.click(trigger);
-    const items = await screen.findAllByRole('menuitem');
-    for (const item of items) expect(item).toHaveAttribute('aria-disabled', 'true');
-    await user.click(items[1]);
-    expect(onRevert).toHaveBeenCalledOnce();
-
-    finish();
-    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
+    expect(await screen.findAllByRole('menuitem')).toHaveLength(1);
+    expect(listVersionsMock).toHaveBeenCalledTimes(2);
   });
 });

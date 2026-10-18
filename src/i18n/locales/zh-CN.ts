@@ -2550,8 +2550,11 @@ const zhCN: TranslationDict = {
     versionHistoryReverted: '已恢复到该版本',
     versionHistoryRevertFailedTitle: '恢复失败',
     versionHistoryLoadFailed: '加载历史版本失败',
-    versionSourceAi: 'AI 修改前',
-    versionRevertPoint: '回退前备份',
+    versionSourceAi: '阿布修改前',
+    versionRevertPoint: '恢复前另存',
+    versionRestoreTitle: '把 {name} 恢复到 {time} 的样子？',
+    versionRestoreMessage: '现在的内容会另存一份，可以在历史版本里找回。',
+    versionRestoreConfirm: '恢复',
     // FilesSection
     operationRead: '读取',
     operationModify: '修改',

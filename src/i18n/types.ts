@@ -3144,6 +3144,10 @@ export interface TranslationDict {
     versionHistoryLoadFailed: string;
     versionSourceAi: string;
     versionRevertPoint: string;
+    /** {name}, {time} */
+    versionRestoreTitle: string;
+    versionRestoreMessage: string;
+    versionRestoreConfirm: string;
     // FilesSection
     operationRead: string;
     operationModify: string;
