@@ -748,6 +748,9 @@ const zhCN: TranslationDict = {
     showMore: '查看更多',
     collapse: '收起',
     cancelled: '[已取消]',
+    runInBackground: '在后台执行 {command}',
+    readBackgroundCommandOutput: '查看后台命令的输出 {command}',
+    stopBackgroundCommand: '停止后台命令 {command}',
   },
 
   batch: {
@@ -3720,6 +3723,15 @@ const zhCN: TranslationDict = {
     errBusy: '识别任务太多，请稍等。',
   },
   toolResult: {
+    backgroundCommand: {
+      noCommands: '这段对话没有后台命令。',
+      listHeader: '这段对话的后台命令：',
+      earlierOutputDropped: '较早的输出已丢弃，只保留了最近的一段。',
+      noOutput: '（无输出）',
+      outputTail: 'output（最后 {count} 行，共 {total} 行）：',
+      stopRequested: '已请求停止后台命令 {id}（{command}）。',
+      alreadyFinished: '后台命令 {id}（{command}）已经结束：{status}。',
+    },
     goal: {
       noConversation: 'Error: 找不到当前对话，无法管理目标。',
       invalidAction: 'Error: 不支持的目标操作。',

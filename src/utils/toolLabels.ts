@@ -1,5 +1,10 @@
 import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { MEMBER_INSTRUCTION_STEP } from '@/core/agent/dispatchInput';
+import { format } from '@/i18n';
+import zhCN from '@/i18n/locales/zh-CN';
+import enUS from '@/i18n/locales/en-US';
+import type { TranslationDict } from '@/i18n/types';
+import type { BackgroundCommandRef } from '@/types';
 
 /**
  * Shared, locale-aware tool-call label generation.
@@ -34,6 +39,19 @@ function getFileName(path: string): string {
   return segments[segments.length - 1] || path;
 }
 
+function shortCommand(command: string): string {
+  return command.length > 20 ? command.slice(0, 20) + '...' : command;
+}
+
+function dictionary(isZh: boolean): TranslationDict {
+  return isZh ? zhCN : enUS;
+}
+
+/** What a tool call recorded while it ran (`ToolCall` fields), for labels its input cannot give. */
+export interface ToolLabelRecord {
+  backgroundCommand?: BackgroundCommandRef;
+}
+
 /** File names listed in a present_files input, in order. */
 export function presentedFileNames(toolInput: Record<string, unknown>): string[] {
   if (!Array.isArray(toolInput.files)) return [];
@@ -54,7 +72,8 @@ export function presentedFileNames(toolInput: Record<string, unknown>): string[]
 export function getToolLabel(
   toolName: string,
   toolInput: Record<string, unknown>,
-  locale: string = 'zh'
+  locale: string = 'zh',
+  record?: ToolLabelRecord,
 ): { label: string; detail?: string } {
   const isZh = locale.startsWith('zh');
   const path = (toolInput.path || toolInput.file_path || toolInput.filePath) as string | undefined;
@@ -105,10 +124,28 @@ export function getToolLabel(
     case 'execute':
     case 'shell': {
       const cmd = (toolInput.command || toolInput.cmd) as string | undefined;
-      const shortCmd = cmd ? (cmd.length > 20 ? cmd.slice(0, 20) + '...' : cmd) : undefined;
+      const shortCmd = cmd ? shortCommand(cmd) : undefined;
+      if (toolName === TOOL_NAMES.RUN_COMMAND && toolInput.background === true && shortCmd) {
+        return { label: format(dictionary(isZh).task.runInBackground, { command: shortCmd }), detail: cmd };
+      }
       return {
         label: isZh ? (shortCmd ? `执行 ${shortCmd}` : '执行命令') : (shortCmd ? `Run ${shortCmd}` : 'Run command'),
         detail: cmd,
+      };
+    }
+
+    case TOOL_NAMES.BACKGROUND_COMMAND_OUTPUT:
+    case TOOL_NAMES.STOP_BACKGROUND_COMMAND: {
+      // The input names the command by id only; the call records the command text.
+      const command = record?.backgroundCommand?.command
+        ?? (typeof toolInput.id === 'string' ? toolInput.id : '');
+      const task = dictionary(isZh).task;
+      const template = toolName === TOOL_NAMES.BACKGROUND_COMMAND_OUTPUT
+        ? task.readBackgroundCommandOutput
+        : task.stopBackgroundCommand;
+      return {
+        label: format(template, { command: command ? shortCommand(command) : '' }).trim(),
+        detail: command || undefined,
       };
     }
 

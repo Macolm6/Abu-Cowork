@@ -931,6 +931,10 @@ export interface TranslationDict {
     collapse: string;
     /** Shown in tool-call detail when the task was aborted mid-execution */
     cancelled: string;
+    /** Tool-row labels of background commands; {command} is the command text, or its id */
+    runInBackground: string;
+    readBackgroundCommandOutput: string;
+    stopBackgroundCommand: string;
   };
 
   // Notice menubar summaries (noticeMenubarStore.ts)
@@ -4525,6 +4529,16 @@ export interface TranslationDict {
     errBusy: string;
   };
   toolResult: {
+    /** background_command_output / stop_background_command results */
+    backgroundCommand: {
+      noCommands: string;
+      listHeader: string;
+      earlierOutputDropped: string;
+      noOutput: string;
+      outputTail: string;
+      stopRequested: string;
+      alreadyFinished: string;
+    };
     team: {
       invalidInput: string;
       unavailableAgents: string;

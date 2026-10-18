@@ -747,6 +747,9 @@ const enUS: TranslationDict = {
     showMore: 'Show more',
     collapse: 'Collapse',
     cancelled: '[Cancelled]',
+    runInBackground: 'Run {command} in background',
+    readBackgroundCommandOutput: 'Read background command output {command}',
+    stopBackgroundCommand: 'Stop background command {command}',
   },
 
   batch: {
@@ -3718,6 +3721,15 @@ const enUS: TranslationDict = {
     errBusy: 'Too many recordings are waiting. Try again shortly.',
   },
   toolResult: {
+    backgroundCommand: {
+      noCommands: 'No background commands in this conversation.',
+      listHeader: 'Background commands in this conversation:',
+      earlierOutputDropped: 'Earlier output was dropped; only the most recent part is kept.',
+      noOutput: '(no output)',
+      outputTail: 'output (last {count} of {total} lines):',
+      stopRequested: 'Stop requested for background command {id} ({command}).',
+      alreadyFinished: 'Background command {id} ({command}) had already finished: {status}.',
+    },
     goal: {
       noConversation: 'Error: The current conversation was not found, so the goal cannot be managed.',
       invalidAction: 'Error: Unsupported goal action.',

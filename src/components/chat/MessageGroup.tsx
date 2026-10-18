@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
-import type { BatchIdentity, FileChange, Message, MessageContent, ToolCall } from '@/types';
+import type { BackgroundCommandRef, BatchIdentity, FileChange, Message, MessageContent, ToolCall } from '@/types';
 import { makeBatchKey } from '@/types';
 import { TOOL_NAMES, isDisplayHiddenStepBackedTool } from '@/core/tools/toolNames';
 import type { ExecutionStep } from '@/types/execution';
@@ -619,6 +619,14 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     }
     return byToolCallId;
   }, [allToolCalls]);
+  // The command each background-command step acted on; its input holds only the id.
+  const backgroundCommands = useMemo(() => {
+    const byToolCallId = new Map<string, BackgroundCommandRef>();
+    for (const toolCall of allToolCalls) {
+      if (toolCall.backgroundCommand) byToolCallId.set(toolCall.id, toolCall.backgroundCommand);
+    }
+    return byToolCallId;
+  }, [allToolCalls]);
   // Each step's whole result as Abu read it, saved with the conversation.
   const toolResults = useMemo(() => collectToolResultTexts(messages), [messages]);
   const legacyWorkflowToolCalls = useMemo<ToolCall[]>(() => {
@@ -1190,6 +1198,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
             onRetry={seg.isLastGroup && hasError && !isStreaming ? handleRetry : undefined}
             fileChanges={fileChanges}
             toolResults={toolResults}
+            backgroundCommands={backgroundCommands}
           />
         ) : hasLegacySteps && (
           <TaskBlock
@@ -1198,6 +1207,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
             isStopped={isStopped}
             onRetry={seg.isLastGroup && hasError && !isStreaming ? handleRetry : undefined}
             fileChanges={fileChanges}
+            backgroundCommands={backgroundCommands}
           />
         )}
         {segSettledUQCards.map((tc) => (

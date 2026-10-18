@@ -364,6 +364,7 @@ function essentialToolCall(toolCall: ToolCall): ToolCall {
   if (toolCall.subagentStopReason !== undefined) result.subagentStopReason = toolCall.subagentStopReason;
   if (toolCall.batchTerminalSummary !== undefined) result.batchTerminalSummary = toolCall.batchTerminalSummary;
   if (toolCall.fileChange !== undefined) result.fileChange = fileChangeWithoutHunks(toolCall.fileChange);
+  if (toolCall.backgroundCommand !== undefined) result.backgroundCommand = toolCall.backgroundCommand;
   return result;
 }
 

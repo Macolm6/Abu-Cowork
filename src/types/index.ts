@@ -154,6 +154,13 @@ export interface ToolExecutionMetadata {
   batchTerminalSummary?: BatchTerminalSummary;
   /** write_file, edit_file, delete_file: what the call did to its file. */
   fileChange?: FileChange;
+  /** background_command_output, stop_background_command: the command the call acted on. */
+  backgroundCommand?: BackgroundCommandRef;
+}
+
+/** The command a background-command tool call acted on, kept for its tool row. */
+export interface BackgroundCommandRef {
+  command: string;
 }
 
 /** Payload for a "save this as a skill?" proposal card. */
@@ -323,6 +330,8 @@ export interface ToolCall {
   batchTerminalSummary?: BatchTerminalSummary;
   /** Line counts and hunks of a write_file, edit_file or delete_file call. */
   fileChange?: FileChange;
+  /** The command a background_command_output or stop_background_command call acted on. */
+  backgroundCommand?: BackgroundCommandRef;
   /**
    * MCP Apps interface for this step (extension `io.modelcontextprotocol/ui`).
    *

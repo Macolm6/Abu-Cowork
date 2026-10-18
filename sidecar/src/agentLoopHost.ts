@@ -66,6 +66,7 @@ import {
 } from '@/core/agent/agentRunTerminal';
 import { normalizeBatchTerminalSummary } from '@/core/agent/batchTerminalSummary';
 import { parseFileChange } from '@/core/files/fileChange';
+import { parseBackgroundCommandRef } from '@/core/tools/helpers/backgroundCommandRef';
 import { enqueueUserInputWithId } from '@/core/agent/userInputQueue';
 import { applyPlanModeState } from '@/core/agent/planMode';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
@@ -348,6 +349,13 @@ function parseToolExecutionMetadata(
       throw new RpcError(-32603, 'Invalid tool.invoke file change envelope');
     }
     metadata.fileChange = fileChange;
+  }
+  if (value.backgroundCommand !== undefined) {
+    const backgroundCommand = parseBackgroundCommandRef(value.backgroundCommand);
+    if (!backgroundCommand) {
+      throw new RpcError(-32603, 'Invalid tool.invoke background command envelope');
+    }
+    metadata.backgroundCommand = backgroundCommand;
   }
   return Object.keys(metadata).length > 0 ? metadata : undefined;
 }

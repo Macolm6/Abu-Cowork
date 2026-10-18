@@ -64,6 +64,7 @@ import { appendBoundedSubagentToolCall } from '../core/session/durableToolResult
 import { normalizeUpstreamErrorDetails } from '../core/llm/adapter';
 import { redactFailureText } from '../core/diagnostic/scrub';
 import { parseFileChange } from '../core/files/fileChangeBudget';
+import { parseBackgroundCommandRef } from '../core/tools/helpers/backgroundCommandRef';
 import {
   ACTIVE_RUN_STATES,
   RUN_FAILURE_STATES,
@@ -159,10 +160,17 @@ export function sanitizeImportedMessage(msg: Message, answeredLoopIds?: Readonly
         sandboxRecovery: _sandboxRecovery,
         sandboxRecoveryAction: _sandboxRecoveryAction,
         fileChange: untrustedFileChange,
+        backgroundCommand: untrustedBackgroundCommand,
         ...safeToolCall
       } = tc;
       const fileChange = parseFileChange(untrustedFileChange);
-      return { ...safeToolCall, ...(fileChange ? { fileChange } : {}), isExecuting: false };
+      const backgroundCommand = parseBackgroundCommandRef(untrustedBackgroundCommand);
+      return {
+        ...safeToolCall,
+        ...(fileChange ? { fileChange } : {}),
+        ...(backgroundCommand ? { backgroundCommand } : {}),
+        isExecuting: false,
+      };
     }),
   }, { answeredLoopIds }));
 }
@@ -1614,6 +1622,7 @@ export const useChatStore = create<ChatStore>()(
               tc.isExecuting = false;
               if (metadata?.computerStep) tc.computerStep = metadata.computerStep;
               if (metadata?.fileChange) tc.fileChange = metadata.fileChange;
+              if (metadata?.backgroundCommand) tc.backgroundCommand = metadata.backgroundCommand;
               if (
                 metadata?.subagentStopReason
                 && !(tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed' && metadata.subagentStopReason === 'completed')
@@ -1680,6 +1689,7 @@ export const useChatStore = create<ChatStore>()(
           if (!tc) return;
           if (metadata.computerStep) tc.computerStep = metadata.computerStep;
           if (metadata.fileChange) tc.fileChange = metadata.fileChange;
+          if (metadata.backgroundCommand) tc.backgroundCommand = metadata.backgroundCommand;
           if (
             metadata.subagentStopReason
             && !(tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed' && metadata.subagentStopReason === 'completed')

@@ -2,7 +2,7 @@ import type { Message, ToolCall, AgentStatus } from '@/types';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { normalizeSeparators, joinPath, getBaseName } from '@/utils/pathUtils';
 import { parseArgs } from '@/utils/argsParser';
-import { presentedFileNames } from '@/utils/toolLabels';
+import { presentedFileNames, getToolLabel as getLocalizedToolLabel, type ToolLabelRecord } from '@/utils/toolLabels';
 
 /**
  * Check if a tool result indicates a real tool execution error.
@@ -70,7 +70,14 @@ function getFileName(path: string): string {
 }
 
 // Get display label for tool call
-function getToolLabel(toolName: string, input: Record<string, unknown>): { label: string; detail?: string } {
+function getToolLabel(toolName: string, input: Record<string, unknown>, record?: ToolLabelRecord): { label: string; detail?: string } {
+  if (
+    (toolName === TOOL_NAMES.RUN_COMMAND && input.background === true)
+    || toolName === TOOL_NAMES.BACKGROUND_COMMAND_OUTPUT
+    || toolName === TOOL_NAMES.STOP_BACKGROUND_COMMAND
+  ) {
+    return getLocalizedToolLabel(toolName, input, 'zh-CN', record);
+  }
   const path = (input.path || input.file_path || input.filePath) as string | undefined;
   const fileName = path ? getFileName(path) : undefined;
 
@@ -227,7 +234,7 @@ export function extractWorkflowSteps(
     }
 
     const stepType = getStepTypeFromTool(tc.name);
-    const { label, detail } = getToolLabel(tc.name, tc.input);
+    const { label, detail } = getToolLabel(tc.name, tc.input, tc);
 
     let status: WorkflowStep['status'];
     if (tc.isExecuting) {

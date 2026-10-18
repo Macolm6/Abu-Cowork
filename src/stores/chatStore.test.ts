@@ -3244,6 +3244,20 @@ describe('chatStore', () => {
       expect(getToolCall(convId)?.fileChange).toEqual(fileChange);
     });
 
+    it('copies the background command a tool acted on from its metadata', () => {
+      const checkpointed = seedToolCall('stop_background_command');
+      useChatStore.getState().checkpointToolCallMetadata(checkpointed, 'msg-1', 'tc-1', { backgroundCommand: { command: 'npm run dev' } });
+      useChatStore.getState().updateToolCall(checkpointed, 'msg-1', 'tc-1', 'Stop requested for background command bg-0a1b2c3d (npm run dev).');
+      expect(getToolCall(checkpointed)?.backgroundCommand).toEqual({ command: 'npm run dev' });
+
+      const reported = seedToolCall('background_command_output');
+      useChatStore.getState().updateToolCall(
+        reported, 'msg-1', 'tc-1', 'status: running', undefined, false, undefined,
+        { backgroundCommand: { command: 'node worker.js' } },
+      );
+      expect(getToolCall(reported)?.backgroundCommand).toEqual({ command: 'node worker.js' });
+    });
+
     it('accepts trusted AppleScript recovery metadata only for run_command', () => {
       const convId = seedToolCall('run_command');
       const result = [
@@ -3946,6 +3960,22 @@ describe('sanitizeImportedMessage — same completion inference as disk load', (
       undefined,
     ]);
     expect(sanitized.toolCalls?.[1]).not.toHaveProperty('fileChange');
+  });
+
+  it('keeps a well-formed background command of an imported tool call and drops a malformed one', () => {
+    const sanitized = sanitizeImportedMessage({
+      id: 'a-background-command',
+      role: 'assistant',
+      content: '',
+      timestamp: 1,
+      toolCalls: [
+        { id: 't1', name: 'stop_background_command', input: { id: 'bg-0a1b2c3d' }, backgroundCommand: { command: 'npm run dev', extra: 1 } },
+        { id: 't2', name: 'stop_background_command', input: { id: 'bg-0a1b2c3e' }, backgroundCommand: { command: 7 } },
+      ],
+    } as never);
+
+    expect(sanitized.toolCalls?.[0].backgroundCommand).toEqual({ command: 'npm run dev' });
+    expect(sanitized.toolCalls?.[1]).not.toHaveProperty('backgroundCommand');
   });
 
   it('sanitizes a legacy imported JSON runError', () => {
