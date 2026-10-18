@@ -57,6 +57,10 @@ function uncounted(display: string, status: TurnChangedFile['status']): TurnChan
 }
 
 /** Saves one turn the way endTurn would: its file and its index entry. */
+function indexFilesOf(files: TurnChangedFile[]): TurnIndex[string]['files'] {
+  return files.map(({ path, display, status }) => ({ path, display, status }));
+}
+
 function saveTurn(files: TurnChangedFile[], extra: { total?: number; moreFiles?: number } = {}): TurnChanges {
   const total = extra.total ?? files.length;
   const turn: TurnChanges = {
@@ -69,7 +73,7 @@ function saveTurn(files: TurnChangedFile[], extra: { total?: number; moreFiles?:
   };
   const firstFile = files[0].display.slice(files[0].display.lastIndexOf('/') + 1);
   mocks.readTurnIndex.mockResolvedValue({
-    [LOOP_ID]: { total, added: turn.added, deleted: turn.deleted, firstFile },
+    [LOOP_ID]: { total, added: turn.added, deleted: turn.deleted, firstFile, files: indexFilesOf(files) },
   } satisfies TurnIndex);
   mocks.readTurnChanges.mockResolvedValue(turn);
   return turn;
@@ -100,7 +104,7 @@ function saveRestorableTurn(files: TurnChangedFile[], restorable: TurnUndoEntry[
   const firstFile = files[0].display.slice(files[0].display.lastIndexOf('/') + 1);
   mocks.readTurnIndex.mockResolvedValue({
     [LOOP_ID]: {
-      total: turn.total, added: turn.added, deleted: turn.deleted, firstFile,
+      total: turn.total, added: turn.added, deleted: turn.deleted, firstFile, files: indexFilesOf(files),
       restorable: restorable.length, ...(state === 'undone' ? { undone: true } : {}),
     },
   } satisfies TurnIndex);
@@ -514,7 +518,7 @@ describe('ChangedFilesCard', () => {
     ])('titles an undone turn whose copies are gone %s, with no button and no row marks', async (_label, marks, title) => {
       const turn = saveTurn(THREE_FILES);
       mocks.readTurnIndex.mockResolvedValue({
-        [LOOP_ID]: { total: turn.total, added: turn.added, deleted: turn.deleted, firstFile: 'a.md', undone: true, ...marks },
+        [LOOP_ID]: { total: turn.total, added: turn.added, deleted: turn.deleted, firstFile: 'a.md', undone: true, ...marks, files: indexFilesOf(THREE_FILES) },
       } satisfies TurnIndex);
       render(<ChangedFilesCard conversationId={CONVERSATION_ID} loopId={LOOP_ID} />);
 

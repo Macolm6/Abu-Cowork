@@ -833,7 +833,19 @@ describe('turnUndo', () => {
       });
 
       expect(fs.has(`${CHANGES}/loop-1`)).toBe(false);
-      const undoneEntry = { total: 3, added: 2, deleted: 2, firstFile: 'new.md', undone: true, undoneCount: 3 };
+      const undoneEntry = {
+        total: 3,
+        added: 2,
+        deleted: 2,
+        firstFile: 'new.md',
+        files: [
+          { path: `${WS}/new.md`, display: 'new.md', status: 'created' },
+          { path: `${WS}/old.md`, display: 'old.md', status: 'deleted' },
+          { path: `${WS}/plan.md`, display: 'plan.md', status: 'modified' },
+        ],
+        undone: true,
+        undoneCount: 3,
+      };
       const index = await changes.readTurnIndex('conv-1');
       expect(index['loop-1']).toEqual(undoneEntry);
       expect(index['loop-2']).toMatchObject({ restorable: 1 });
