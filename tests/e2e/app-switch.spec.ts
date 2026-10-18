@@ -27,6 +27,7 @@ const READY_TIMEOUT = 45_000;
 const APP_NAME = '店铺运营';
 const APP_ID = 'shop-ops@abu-examples';
 const PLUGIN_NAME = 'shop-assistant';
+const EXPLICIT_TEAM_REQUEST = 'E2E-EXPLICIT-TEAM-ROUTE';
 const EXTENSIONS = /^(扩展|Extensions)(\s.*)?$/;
 const TEAM_NAV = /^(专家|Experts)$/;
 const NEW_TASK = /^(新任务|New task)$/;
@@ -38,20 +39,35 @@ function sse(text: string): string {
   return chunk({ content: text }, null) + chunk({}, 'stop') + 'data: [DONE]\n\n';
 }
 
+function delegateSse(): string {
+  const chunk = (delta: Record<string, unknown>, finish: string | null) => `data: ${JSON.stringify({ id: 'chatcmpl-abu-e2e-app', object: 'chat.completion.chunk', created: 0, model: 'abu-e2e-local-model', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
+  return chunk({ tool_calls: [{
+    index: 0, id: 'call-app-explicit-team', type: 'function',
+    function: { name: 'delegate_to_agent', arguments: JSON.stringify({ agent_name: '数据分析师', task: `Read the supplied request and reply with its marker: ${EXPLICIT_TEAM_REQUEST}` }) },
+  }] }, null) + chunk({}, 'tool_calls') + 'data: [DONE]\n\n';
+}
+
 /** Loopback OpenAI-compatible mock: answers every task with one line and records the prompts. */
 async function startLlmMock(): Promise<{ baseUrl: string; requests: MockRequest[]; close: () => Promise<void> }> {
   const requests: MockRequest[] = [];
   const server = createServer(async (req, res) => {
     let raw = '';
     for await (const chunk of req) raw += String(chunk);
-    const body = JSON.parse(raw) as { messages?: Array<{ role: string; content: unknown }> };
+    const body = JSON.parse(raw) as {
+      messages?: Array<{ role: string; content: unknown }>;
+      tools?: Array<{ function?: { name?: string } }>;
+    };
     const messages = body.messages ?? [];
     const system = messages.filter((m) => m.role === 'system').map((m) => String(m.content)).join('\n');
     const user = messages.filter((m) => m.role === 'user').map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content))).join('\n');
     const background = system.includes('你是一个记忆提取助手') || user.includes('请将以下对话内容压缩为一段简洁的摘要');
     if (!background) requests.push({ system, user });
     res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' });
-    res.end(sse(background ? '[]' : 'Abu E2E app reply.'));
+    const canDelegate = body.tools?.some((tool) => tool.function?.name === 'delegate_to_agent') === true;
+    const hasToolResult = messages.some((message) => message.role === 'tool');
+    res.end(!background && user.includes(EXPLICIT_TEAM_REQUEST) && canDelegate && !hasToolResult
+      ? delegateSse()
+      : sse(background ? '[]' : 'Abu E2E app reply.'));
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as { port: number }).port;
@@ -127,7 +143,7 @@ test.describe.serial('apps', () => {
     page = await app.firstWindow();
     await expect(page.getByTestId('app-switcher-trigger')).toBeVisible({ timeout: READY_TIMEOUT });
     await dismissFirstRunOverlays(page);
-    await configureLocalMockProvider(page, llm.baseUrl);
+    await configureLocalMockProvider(page, llm.baseUrl, { supportsTools: true });
   });
 
   test.afterAll(async () => {
@@ -201,6 +217,48 @@ test.describe.serial('apps', () => {
     await expect(page.getByTestId('app-connector-hint')).toContainText('shop-api');
     await page.getByTestId('app-connector-hint').getByRole('button', { name: /先不连接|Not now/ }).click();
     await expect(page.getByTestId('app-connector-hint')).toHaveCount(0);
+  });
+
+  test('cleared and edited input stays current when choosing templates and switching apps', async () => {
+    await page.getByTestId('app-home-scene-shortlist').click();
+    const composer = page.locator('[data-chat-composer]');
+    const compare = page.getByTestId('app-home-template-compare');
+    const trend = page.getByTestId('app-home-template-trend');
+    const comparePrompt = '对比这三款候选商品的利润、竞争和季节性，给我一个推荐顺序';
+    const trendPrompt = '分析这个品类最近三个月的趋势，判断现在进入是否合适';
+    await compare.click();
+    await expect(composer).toHaveValue(comparePrompt);
+    await composer.fill('');
+    await trend.click();
+    await expect(composer).toHaveValue(trendPrompt);
+    await expect.poll(() => page.evaluate(() => {
+      const stored = JSON.parse(localStorage.getItem('abu-composer-drafts') ?? '{}');
+      return stored.state?.drafts?.['local:welcome']?.text ?? '';
+    })).toBe(trendPrompt);
+
+    await composer.fill('');
+    await expect.poll(() => page.evaluate(() => {
+      const stored = JSON.parse(localStorage.getItem('abu-composer-drafts') ?? '{}');
+      return stored.state?.drafts?.['local:welcome']?.text ?? '';
+    })).toBe('');
+    await compare.click();
+    await expect(composer).toHaveValue(comparePrompt);
+    await composer.fill('当前编辑内容');
+    // The home hides its templates while the user has text in the composer.
+    await expect(page.getByTestId('app-home-templates')).toBeHidden();
+    await expect(composer).toHaveValue('当前编辑内容');
+
+    await openSwitcher(page);
+    await page.getByTestId('app-switcher-item-__general__').click();
+    await expect(page.getByTestId('app-switcher-current')).toHaveText(/发现应用|Discover apps/);
+    await expect(page.getByTestId('app-switcher-menu')).toBeHidden();
+    await expect(composer).toHaveValue('当前编辑内容');
+    await openSwitcher(page);
+    await page.getByTestId(`app-switcher-item-${APP_ID}`).click();
+    await expect(page.getByTestId('app-switcher-current')).toHaveText(APP_NAME);
+    await expect(page.getByTestId('app-switcher-menu')).toBeHidden();
+    await expect(composer).toHaveValue('当前编辑内容');
+    await composer.fill('');
   });
 
   test('the home offers modes, scenes and templates; a template starts a conversation bound to the app', async () => {
@@ -396,22 +454,50 @@ test.describe.serial('apps', () => {
     await expect(page.getByTestId('chat-title-team-badge')).toHaveCount(0);
   });
 
-  test('starting with a different team keeps that team through sending', async () => {
+  for (const scope of ['app', 'general'] as const) test(`starting with a team in ${scope} preserves its identity and dispatches its member`, async () => {
     await showSidebar(page);
+    if (scope === 'general') {
+      await openSwitcher(page);
+      await page.getByTestId('app-switcher-item-__general__').click();
+    }
     await page.getByTestId('sidebar-team').click();
-    await page.getByTestId('team-app-scope').getByRole('radio', { name: '全部', exact: true }).click();
+    if (scope === 'app') await page.getByTestId('team-app-scope').getByRole('radio', { name: '全部', exact: true }).click();
     await page.getByTestId('top-tab-nav').getByRole('button', { name: '专家团', exact: true }).click();
     await page.getByTestId('team-source-market').click();
     await page.getByTestId('team-row-汇报材料专家团').click();
     await page.getByTestId('team-detail-start-chat').click();
     await expect(page.getByTestId('composer-team-chip')).toContainText('汇报材料专家团');
     const composer = page.locator('[data-chat-composer]');
-    await composer.fill('帮我整理一份本月经营汇报');
+    await composer.fill(EXPLICIT_TEAM_REQUEST);
     const before = llm.requests.length;
+    const conversationsBefore = await page.evaluate(() => {
+      const stored = JSON.parse(localStorage.getItem('abu-chat') ?? '{}');
+      return Object.keys(stored.state?.conversationIndex ?? {});
+    });
     await composer.press('Enter');
     await expect.poll(() => llm.requests.length, { timeout: READY_TIMEOUT }).toBeGreaterThan(before);
     await expect(page.getByTestId('chat-title-team-badge')).toContainText('汇报材料专家团');
-    await expect(page.getByTestId('chat-title-app-badge')).toContainText(APP_NAME);
+    if (scope === 'app') await expect(page.getByTestId('chat-title-app-badge')).toContainText(APP_NAME);
+    else await expect(page.getByTestId('chat-title-app-badge')).toHaveCount(0);
+    await expect.poll(() => llm.requests.slice(before).some((request) =>
+      request.system.includes('You are a data analyst with 7 years of experience')
+        && request.user.includes(EXPLICIT_TEAM_REQUEST)), { timeout: READY_TIMEOUT }).toBe(true);
+    await expect(page.getByRole('button', { name: /^(停止|Stop)$/ })).toHaveCount(0, { timeout: READY_TIMEOUT });
+    const created = await page.evaluate((previous) => {
+      const stored = JSON.parse(localStorage.getItem('abu-chat') ?? '{}');
+      return Object.entries(stored.state?.conversationIndex ?? {})
+        .filter(([id]) => !previous.includes(id))
+        .map(([, value]) => value) as Array<{ teamId?: string; appBinding?: { appId: string } }>;
+    }, conversationsBefore);
+    expect(created).toHaveLength(1);
+    expect(created[0].teamId).toBe('builtin-team:reporting');
+    if (scope === 'app') expect(created[0].appBinding?.appId).toBe(APP_ID);
+    else {
+      expect(created[0].appBinding).toBeUndefined();
+      await showSidebar(page);
+      await openSwitcher(page);
+      await page.getByTestId(`app-switcher-item-${APP_ID}`).click();
+    }
   });
 
   test('creating an app from an app home opens an independent creation conversation', async () => {

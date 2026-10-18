@@ -31,6 +31,8 @@ import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { clearInputQueue, getQueuedInputs } from '@/core/agent/userInputQueue';
 import { useToastStore } from '@/stores/toastStore';
+import { prepareExpertEntry } from '@/core/team/expertEntry';
+import { teamIdentity } from '@/core/team/expertContact';
 
 const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
@@ -107,6 +109,10 @@ describe('ChatInput per-conversation drafts', () => {
       activeConversationId: null,
       pendingInput: null,
       pendingInputAppend: null,
+      pendingTeamId: undefined,
+      pendingOwnerSource: undefined,
+      pendingAgentName: null,
+      pendingAppBinding: undefined,
       pendingReferences: [],
       pendingAttachmentRequests: [],
     });
@@ -119,6 +125,36 @@ describe('ChatInput per-conversation drafts', () => {
     useToastStore.setState(useToastStore.getInitialState(), true);
     cleanup();
     vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it.each([0, 400])('uses the cleared live draft for another template after %d ms', async (delay) => {
+    vi.useFakeTimers();
+    const contact = { identity: teamIdentity({ id: 'draft-team', name: 'Draft team' }) };
+    prepareExpertEntry(contact, 'First template');
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+    expect(textarea.value).toBe('First template');
+
+    fireEvent.change(textarea, { target: { value: '' } });
+    await act(() => vi.advanceTimersByTimeAsync(delay));
+    act(() => prepareExpertEntry(contact, 'Second template'));
+
+    expect(textarea.value).toBe('Second template');
+    expect(readComposerDraft(WELCOME_COMPOSER_DRAFT_KEY).text).toBe('Second template');
+  });
+
+  it('keeps current edits when an entry appends a template', () => {
+    vi.useFakeTimers();
+    const contact = { identity: teamIdentity({ id: 'draft-team', name: 'Draft team' }) };
+    prepareExpertEntry(contact, 'First template');
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: 'Current edits' } });
+    act(() => prepareExpertEntry(contact, 'Second template'));
+
+    expect(textarea.value).toBe('Current edits\nSecond template');
   });
 
   it('restores the textarea value after switching A → B → A', async () => {
