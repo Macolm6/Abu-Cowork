@@ -103,6 +103,28 @@ function plan(loopIds: string[]): ReturnType<RedoRestoreModule['planRedoRestore'
   return redo.planRedoRestore('conv-1', loopIds, { authorize });
 }
 
+function restore(loopIds: string[], confirmed: readonly string[]): ReturnType<RedoRestoreModule['restoreForRedo']> {
+  return redo.restoreForRedo('conv-1', loopIds, confirmed, { authorize });
+}
+
+/** The paths the confirmation lists as restored, as the user confirms them. */
+async function confirmedOf(loopIds: string[]): Promise<string[]> {
+  return (await plan(loopIds)).willRestore.map((file) => file.path);
+}
+
+function recordOf(loopId: string): { state: string; entries: Array<{ path: string; last?: string }> } {
+  return fs.readJson(`${CHANGES}/${loopId}/undo.json`);
+}
+
+function lastByFile(loopId: string): Record<string, string | undefined> {
+  return Object.fromEntries(recordOf(loopId).entries.map((entry) => [entry.path.slice(WS.length + 1), entry.last]));
+}
+
+/** Calls of the atomic write for one path. */
+function atomicWritesOf(spy: { mock: { calls: unknown[][] } }, path: string): number {
+  return spy.mock.calls.filter(([written]) => written === path).length;
+}
+
 const THREE_TURNS = ['loop-1', 'loop-2', 'loop-3'];
 
 beforeAll(async () => {
@@ -197,6 +219,41 @@ describe('redoRestore', () => {
         willRestore: [{ path: `${WS}/b.md`, display: 'b.md', action: 'write-before' }],
         wontRestore: [],
       });
+    });
+
+    it('restores across a later turn that already undid the file', async () => {
+      fs.write(`${WS}/a.md`, 'v0');
+      await editTurn('loop-1', { 'a.md': 'v1' });
+      await editTurn('loop-2', { 'a.md': 'v2' });
+      await undo.undoTurn('conv-1', 'loop-2', { authorize });
+      expect(fs.read(`${WS}/a.md`)).toBe('v1');
+
+      await expect(plan(['loop-1', 'loop-2'])).resolves.toEqual({
+        willRestore: [{ path: `${WS}/a.md`, display: 'a.md', action: 'write-before' }],
+        wontRestore: [],
+      });
+    });
+
+    it('restores across a later turn whose undo of the file failed', async () => {
+      fs.write(`${WS}/a.md`, 'v0');
+      fs.write(`${WS}/b.md`, 'b0');
+      await editTurn('loop-1', { 'a.md': 'v1' });
+      await editTurn('loop-2', { 'a.md': 'v2', 'b.md': 'b1' });
+      fs.failNextWrite(`${WS}/a.md`);
+      await undo.undoTurn('conv-1', 'loop-2', { authorize });
+      expect(recordOf('loop-2').state).toBe('undone');
+      expect(lastByFile('loop-2')).toEqual({ 'a.md': 'failed', 'b.md': 'done' });
+
+      await expect(plan(['loop-1', 'loop-2'])).resolves.toEqual({
+        willRestore: [{ path: `${WS}/a.md`, display: 'a.md', action: 'write-before' }],
+        wontRestore: [],
+      });
+    });
+
+    it('throws on a turn named twice', async () => {
+      await runThreeTurns();
+
+      await expect(plan(['loop-1', 'loop-2', 'loop-1'])).rejects.toThrow('Redo loop ids repeat');
     });
 
     it('treats a turn put back after an undo like one never undone', async () => {
@@ -342,6 +399,159 @@ describe('redoRestore', () => {
         redo.planRedoRestore('conv-1', ['loop-1', 'loop-2'], { authorize, isConversationPresent: () => false }),
       ).resolves.toEqual({ willRestore: [], wontRestore: [] });
       expect(authorize).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('restoreForRedo', () => {
+    /** The three-turn example, restored with b.md's write failing. */
+    async function restoreThreeTurnsWithFailedB(): Promise<Awaited<ReturnType<RedoRestoreModule['restoreForRedo']>>> {
+      await runThreeTurns();
+      const confirmed = await confirmedOf(THREE_TURNS);
+      fs.failNextWrite(`${WS}/b.md`);
+      return restore(THREE_TURNS, confirmed);
+    }
+
+    it('restores the three-turn example and writes each file once', async () => {
+      await runThreeTurns();
+      const confirmed = await confirmedOf(THREE_TURNS);
+      const writes = vi.spyOn(host.fs, 'writeFileAtomic');
+
+      await expect(restore(THREE_TURNS, confirmed)).resolves.toEqual({ done: 3, notDone: [] });
+
+      expect(fs.read(`${WS}/a.md`)).toBe('v0');
+      expect(fs.read(`${WS}/b.md`)).toBe('b0');
+      expect(fs.has(`${WS}/c.md`)).toBe(false);
+      expect(atomicWritesOf(writes, `${WS}/a.md`)).toBe(1);
+    });
+
+    it('marks every turn on the way undone', async () => {
+      await runThreeTurns();
+      await restore(THREE_TURNS, await confirmedOf(THREE_TURNS));
+
+      for (const loopId of THREE_TURNS) expect(recordOf(loopId).state).toBe('undone');
+      expect(lastByFile('loop-1')).toEqual({ 'a.md': 'done' });
+      expect(lastByFile('loop-2')).toEqual({ 'a.md': 'done', 'b.md': 'done' });
+      expect(lastByFile('loop-3')).toEqual({ 'c.md': 'done' });
+    });
+
+    it('keeps restoring the others when one write fails and records it', async () => {
+      await expect(restoreThreeTurnsWithFailedB()).resolves.toEqual({
+        done: 2,
+        notDone: [{ path: `${WS}/b.md`, display: 'b.md', reason: 'write-failed' }],
+      });
+
+      expect(fs.read(`${WS}/a.md`)).toBe('v0');
+      expect(fs.read(`${WS}/b.md`)).toBe('b1');
+      expect(fs.has(`${WS}/c.md`)).toBe(false);
+      expect(recordOf('loop-2').state).toBe('undone');
+      expect(lastByFile('loop-2')).toEqual({ 'a.md': 'done', 'b.md': 'failed' });
+    });
+
+    it('leaves each turn able to be put back after a stop', async () => {
+      await restoreThreeTurnsWithFailedB();
+
+      for (const loopId of THREE_TURNS) await undo.reapplyTurn('conv-1', loopId, { authorize });
+
+      expect(fs.read(`${WS}/a.md`)).toBe('v2');
+      expect(fs.read(`${WS}/b.md`)).toBe('b1');
+      expect(fs.read(`${WS}/c.md`)).toBe('c3');
+    });
+
+    it('leaves a turn whose files all failed as it was', async () => {
+      fs.write(`${WS}/a.md`, 'v0');
+      await editTurn('loop-1', { 'a.md': 'v1' });
+      const confirmed = await confirmedOf(['loop-1']);
+      fs.failNextWrite(`${WS}/a.md`);
+
+      await expect(restore(['loop-1'], confirmed)).resolves.toEqual({
+        done: 0,
+        notDone: [{ path: `${WS}/a.md`, display: 'a.md', reason: 'write-failed' }],
+      });
+
+      expect(recordOf('loop-1').state).toBe('applied');
+      expect(recordOf('loop-1').entries.every((entry) => entry.last === undefined)).toBe(true);
+      expect(fs.read(`${WS}/a.md`)).toBe('v1');
+    });
+
+    it('counts a confirmed file changed after the plan as not restored', async () => {
+      await runThreeTurns();
+      const confirmed = await confirmedOf(THREE_TURNS);
+      fs.write(`${WS}/a.md`, 'mine');
+
+      const result = await restore(THREE_TURNS, confirmed);
+
+      expect(result.notDone).toEqual([{ path: `${WS}/a.md`, display: 'a.md', reason: 'write-failed' }]);
+      expect(result.done).toBe(2);
+      expect(fs.read(`${WS}/a.md`)).toBe('mine');
+    });
+
+    it('counts a confirmed file already at its target as restored without writing it', async () => {
+      await runThreeTurns();
+      const confirmed = await confirmedOf(THREE_TURNS);
+      await undo.undoTurn('conv-1', 'loop-3', { authorize });
+      const writes = vi.spyOn(host.fs, 'writeFileAtomic');
+      const trash = vi.spyOn(host.fs, 'moveToTrash');
+
+      const result = await restore(THREE_TURNS, confirmed);
+
+      expect(result).toEqual({ done: 3, notDone: [] });
+      expect(atomicWritesOf(writes, `${WS}/c.md`)).toBe(0);
+      expect(trash).not.toHaveBeenCalledWith(`${WS}/c.md`);
+    });
+
+    it('writes only the confirmed files', async () => {
+      await runThreeTurns();
+
+      await expect(restore(THREE_TURNS, [`${WS}/a.md`])).resolves.toEqual({ done: 1, notDone: [] });
+
+      expect(fs.read(`${WS}/a.md`)).toBe('v0');
+      expect(fs.read(`${WS}/b.md`)).toBe('b1');
+      expect(fs.read(`${WS}/c.md`)).toBe('c3');
+    });
+
+    it('follows a chain through twenty turns', async () => {
+      fs.write(`${WS}/a.md`, 'v0');
+      const loopIds: string[] = [];
+      for (let turn = 1; turn <= 20; turn++) {
+        loopIds.push(`loop-${turn}`);
+        await editTurn(`loop-${turn}`, { 'a.md': `v${turn}` });
+      }
+      const confirmed = await confirmedOf(loopIds);
+      const writes = vi.spyOn(host.fs, 'writeFileAtomic');
+
+      await expect(restore(loopIds, confirmed)).resolves.toEqual({ done: 1, notDone: [] });
+
+      expect(fs.read(`${WS}/a.md`)).toBe('v0');
+      expect(atomicWritesOf(writes, `${WS}/a.md`)).toBe(1);
+    });
+
+    it('refuses while a turn of the conversation runs', async () => {
+      await runThreeTurns();
+      const confirmed = await confirmedOf(THREE_TURNS);
+      await changes.beginTurn('conv-1', 'loop-9', WS);
+
+      await expect(restore(THREE_TURNS, confirmed)).rejects.toMatchObject({ reason: 'turn-running' });
+      expect(fs.read(`${WS}/a.md`)).toBe('v2');
+    });
+
+    it('writes nothing for a conversation that is gone', async () => {
+      await runThreeTurns();
+      const confirmed = await confirmedOf(THREE_TURNS);
+
+      await expect(
+        redo.restoreForRedo('conv-1', THREE_TURNS, confirmed, { authorize, isConversationPresent: () => false }),
+      ).resolves.toEqual({ done: 0, notDone: [] });
+
+      expect(fs.read(`${WS}/a.md`)).toBe('v2');
+      expect(fs.read(`${WS}/b.md`)).toBe('b1');
+      expect(fs.read(`${WS}/c.md`)).toBe('c3');
+    });
+
+    it('throws on a turn named twice', async () => {
+      await runThreeTurns();
+
+      await expect(restore(['loop-1', 'loop-1'], [`${WS}/a.md`])).rejects.toThrow('Redo loop ids repeat');
+      expect(fs.read(`${WS}/a.md`)).toBe('v2');
     });
   });
 });

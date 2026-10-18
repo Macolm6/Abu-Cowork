@@ -11,8 +11,10 @@
  *
  * The work runs in the conversation's settle queue, like an undo.
  */
-import { exists } from '@tauri-apps/plugin-fs';
+import { exists, mkdir, readFile, writeFile } from '@tauri-apps/plugin-fs';
+import { invoke } from '@tauri-apps/api/core';
 import { exists as fileExists } from '@/core/tools/fsBridge';
+import { writeFileAtomic } from '@/utils/atomicFs';
 import { getParentDir } from '@/utils/pathUtils';
 import { assertConversationId } from './conversationPaths';
 import {
@@ -20,24 +22,31 @@ import {
   changesDir,
   enqueue,
   ensureRecovered,
+  hasOpenTurn,
   loadUndoRecord,
   readCurrentSide,
   readTurnChanges,
   readTurnIndex,
+  saveUndoRecord,
   turnCopyPath,
   type FileSide,
 } from './turnChanges';
 import {
+  actionOf,
   compareDisplay,
   holds,
+  TurnUndoRefusedError,
+  withLast,
   type PlannedFile,
   type SkippedFile,
   type TurnUndoAction,
+  type TurnUndoFailure,
   type TurnUndoOptions,
   type TurnUndoPlan,
+  type TurnUndoResult,
   type TurnUndoSkipReason,
 } from './turnUndo';
-import type { TurnUndoEntry, TurnUndoRecord } from './turnUndoRecord';
+import { sha256Hex, type TurnUndoEntry, type TurnUndoRecord } from './turnUndoRecord';
 
 /** What a path held at one end of a turn: a file, with the SHA-256 of its content, or nothing. */
 export interface RecordedSide {
@@ -87,13 +96,28 @@ interface ChainTurn {
 
 type RecordedTurn = ChainTurn & { record: TurnUndoRecord };
 
+type RestoringFile = Extract<RedoFile, { verdict: 'restore' }>;
+
+/** 'changed': the file no longer holds what the last turn left, so it is left as it is. */
+type RedoOutcome = 'done' | 'changed' | 'not-authorized';
+
 const EMPTY_PLAN: TurnUndoPlan = { willRestore: [], wontRestore: [] };
+const EMPTY_RESULT: TurnUndoResult = { done: 0, notDone: [] };
+
+/** Rejects a malformed id, and a list that names a turn twice. */
+function assertLoopIds(loopIds: readonly string[]): void {
+  for (const loopId of loopIds) assertLoopId(loopId);
+  if (new Set(loopIds).size !== loopIds.length) throw new Error('Redo loop ids repeat');
+}
+
+/** Whether the turn has already undone its change to the entry's file. */
+function undidEntry(record: TurnUndoRecord, entry: TurnUndoEntry): boolean {
+  return record.state === 'undone' && entry.last === 'done';
+}
 
 function linkOf(loopId: string, record: TurnUndoRecord, entry: TurnUndoEntry): ChainLink {
   const start: RecordedSide = { kind: entry.before, sha256: entry.beforeSha256 };
-  const end: RecordedSide = record.state === 'undone' && entry.last === 'done'
-    ? start
-    : { kind: entry.after, sha256: entry.afterSha256 };
+  const end: RecordedSide = undidEntry(record, entry) ? start : { kind: entry.after, sha256: entry.afterSha256 };
   return { loopId, record, entry, start, end };
 }
 
@@ -136,7 +160,8 @@ async function judge(
     return skip('changed-since');
   }
   if (!(await authorize(file.path))) return skip('not-authorized');
-  const action: TurnUndoAction = target.kind === 'absent' ? 'trash' : current.state === 'absent' ? 'put-back' : 'write-before';
+  // The file holds what the last link left, so that end is what the write starts from.
+  const action = actionOf('undo', last.end.kind, target.kind);
   return { ...file, verdict: 'restore', action, chain, target, current };
 }
 
@@ -194,7 +219,7 @@ export async function planRedoRestore(
   options: TurnUndoOptions,
 ): Promise<TurnUndoPlan> {
   assertConversationId(conversationId);
-  for (const loopId of loopIds) assertLoopId(loopId);
+  assertLoopIds(loopIds);
   const isPresent = options.isConversationPresent ?? (() => true);
   if (!isPresent()) return EMPTY_PLAN;
   await ensureRecovered(conversationId);
@@ -208,5 +233,141 @@ export async function planRedoRestore(
       if (file.verdict === 'skip') wontRestore.push({ path: file.path, display: file.display, reason: file.reason });
     }
     return { willRestore, wontRestore };
+  });
+}
+
+function bytesOf(side: FileSide): Uint8Array {
+  if (side.state !== 'file') throw new Error('Redo file holds no content');
+  return side.bytes;
+}
+
+/**
+ * Gives one file its target in one write. The file is read again right before
+ * the write and is left as it is unless it still holds what the last link
+ * left. Every link that has not undone its change to the file first keeps
+ * what its turn left under its own `after/`: the last one the content just
+ * read, each earlier one the copy the next link kept before its turn. Putting
+ * any of these turns back later therefore writes what that turn left, as after
+ * undoing them one by one. Each copy written must hold the recorded content.
+ */
+async function restoreChainFile(
+  dir: string,
+  file: RestoringFile,
+  authorize: TurnUndoOptions['authorize'],
+): Promise<RedoOutcome> {
+  const { chain, target } = file;
+  const last = chain[chain.length - 1];
+  const current = await readCurrentSide(file.path);
+  if (!(await holds(current, last.end.kind, last.end.sha256))) return 'changed';
+  if (!(await authorize(file.path))) return 'not-authorized';
+
+  for (let i = 0; i < chain.length; i++) {
+    const link = chain[i];
+    if (undidEntry(link.record, link.entry) || link.end.kind !== 'file') continue;
+    const bytes = i < chain.length - 1
+      ? await readFile(turnCopyPath(dir, chain[i + 1].loopId, 'before', chain[i + 1].entry.hash))
+      : bytesOf(current);
+    if ((await sha256Hex(bytes)) !== link.end.sha256) throw new Error('Redo copy does not hold the recorded content');
+    const kept = turnCopyPath(dir, link.loopId, 'after', link.entry.hash);
+    await mkdir(getParentDir(kept), { recursive: true });
+    await writeFile(kept, bytes);
+  }
+
+  if (file.action === 'trash') {
+    await invoke('move_to_trash', { path: file.path });
+    return 'done';
+  }
+  const first = chain[0];
+  const bytes = await readFile(turnCopyPath(dir, first.loopId, 'before', first.entry.hash));
+  if ((await sha256Hex(bytes)) !== target.sha256) throw new Error('Redo copy does not hold the recorded content');
+  await writeFileAtomic(file.path, bytes, current.state === 'absent' ? 'create' : 'replace');
+  return 'done';
+}
+
+/**
+ * The latest result of one entry after a redo restored at least one file of
+ * its turn: 'done' for a file at its target and for one the turn had already
+ * undone, 'failed' for a file whose write was refused or failed, else
+ * 'skipped'.
+ */
+function lastAfterRedo(record: TurnUndoRecord, entry: TurnUndoEntry, result: 'done' | 'failed' | undefined): TurnUndoEntry['last'] {
+  if (result === 'done' || undidEntry(record, entry)) return 'done';
+  return result === 'failed' ? 'failed' : 'skipped';
+}
+
+/**
+ * Restores the files of a redo: of `loopIds`, in conversation order, the
+ * files in `confirmed` that may still be restored, each with what it held
+ * before the first of these turns changed it, in one write. A confirmed file
+ * that already holds its target counts as restored and is not written; a
+ * file that is no longer listed as restored is not written either. Each
+ * turn with at least one restored file is recorded as undone, once; a turn
+ * with none is left as it was. Rejects with `TurnUndoRefusedError` while a
+ * turn of the conversation runs.
+ */
+export async function restoreForRedo(
+  conversationId: string,
+  loopIds: readonly string[],
+  confirmed: readonly string[],
+  options: TurnUndoOptions,
+): Promise<TurnUndoResult> {
+  assertConversationId(conversationId);
+  assertLoopIds(loopIds);
+  const isPresent = options.isConversationPresent ?? (() => true);
+  if (!isPresent()) return EMPTY_RESULT;
+  if (hasOpenTurn(conversationId)) throw new TurnUndoRefusedError('turn-running');
+  await ensureRecovered(conversationId);
+  return enqueue(conversationId, async () => {
+    if (!isPresent()) return EMPTY_RESULT;
+    if (hasOpenTurn(conversationId)) throw new TurnUndoRefusedError('turn-running');
+    const { dir, records, files } = await assessRedo(conversationId, loopIds, options.authorize);
+    const byPath = new Map(files.map((file) => [file.path, file]));
+
+    const results = new Map<string, 'done' | 'failed'>();
+    const notDone: TurnUndoFailure[] = [];
+    let done = 0;
+    for (const path of confirmed) {
+      const file = byPath.get(path);
+      if (!file) {
+        notDone.push({ path, display: path, reason: 'write-failed' });
+        continue;
+      }
+      if (file.verdict === 'in-place') {
+        done += 1;
+        results.set(path, 'done');
+        continue;
+      }
+      if (file.verdict === 'skip') {
+        notDone.push({ path, display: file.display, reason: file.reason === 'not-authorized' ? 'not-authorized' : 'write-failed' });
+        continue;
+      }
+      // One file at a time; a file that fails leaves the others to run.
+      const [outcome] = await Promise.allSettled([restoreChainFile(dir, file, options.authorize)]);
+      if (outcome.status === 'fulfilled' && outcome.value === 'done') {
+        done += 1;
+        results.set(path, 'done');
+        continue;
+      }
+      if (outcome.status === 'fulfilled' && outcome.value === 'changed') {
+        notDone.push({ path, display: file.display, reason: 'write-failed' });
+        continue;
+      }
+      results.set(path, 'failed');
+      notDone.push({
+        path,
+        display: file.display,
+        reason: outcome.status === 'fulfilled' ? 'not-authorized' : 'write-failed',
+      });
+    }
+
+    for (const record of records.values()) {
+      if (!record.entries.some((entry) => results.get(entry.path) === 'done')) continue;
+      await saveUndoRecord(conversationId, dir, {
+        ...record,
+        state: 'undone',
+        entries: record.entries.map((entry) => withLast(entry, lastAfterRedo(record, entry, results.get(entry.path)))),
+      });
+    }
+    return { done, notDone };
   });
 }

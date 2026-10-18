@@ -127,7 +127,8 @@ export async function holds(current: FileSide, kind: 'file' | 'absent', contentH
   return current.state === 'file' && (await sha256Hex(current.bytes)) === contentHash;
 }
 
-function actionOf(direction: TurnUndoDirection, from: 'file' | 'absent', to: 'file' | 'absent'): TurnUndoAction {
+/** What a direction does to a path that holds `from` and is given `to`. */
+export function actionOf(direction: TurnUndoDirection, from: 'file' | 'absent', to: 'file' | 'absent'): TurnUndoAction {
   if (to === 'absent') return 'trash';
   if (from === 'absent') return 'put-back';
   return direction === 'undo' ? 'write-before' : 'write-after';
@@ -272,7 +273,7 @@ async function restoreFile(
 }
 
 /** `entry` with `last` as its latest result, or with none. */
-function withLast(entry: TurnUndoEntry, last: TurnUndoEntry['last']): TurnUndoEntry {
+export function withLast(entry: TurnUndoEntry, last: TurnUndoEntry['last']): TurnUndoEntry {
   return {
     path: entry.path,
     hash: entry.hash,
