@@ -117,11 +117,12 @@ interface Assessment {
 const EMPTY_PLAN: TurnUndoPlan = { willRestore: [], wontRestore: [] };
 const EMPTY_RESULT: TurnUndoResult = { done: 0, notDone: [] };
 
-function compareDisplay(a: { display: string }, b: { display: string }): number {
+export function compareDisplay(a: { display: string }, b: { display: string }): number {
   return a.display < b.display ? -1 : a.display > b.display ? 1 : 0;
 }
 
-async function holds(current: FileSide, kind: 'file' | 'absent', contentHash: string | undefined): Promise<boolean> {
+/** Whether `current` is `kind`, and for a file, whether its content has the SHA-256 `contentHash`. */
+export async function holds(current: FileSide, kind: 'file' | 'absent', contentHash: string | undefined): Promise<boolean> {
   if (kind === 'absent') return current.state === 'absent';
   return current.state === 'file' && (await sha256Hex(current.bytes)) === contentHash;
 }
