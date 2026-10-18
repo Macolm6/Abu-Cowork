@@ -169,6 +169,11 @@ export interface TranslationDict {
     deleteUnreadableTitle: string;
     /** `{name}` is the task's title. */
     deleteUnreadableMessage: string;
+    /** The question before a task with running background commands is deleted. `{count}` is how many run. */
+    deleteWithBackgroundCommandsTitle: string;
+    deleteWithBackgroundCommandsMessage: string;
+    /** Both at once: the record cannot be read and background commands run. `{name}` is the task's title. */
+    deleteUnreadableWithBackgroundCommandsMessage: string;
     importSession: string;
     renameConversation: string;
     moreActions: string;

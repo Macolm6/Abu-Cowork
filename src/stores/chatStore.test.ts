@@ -286,6 +286,16 @@ describe('chatStore', () => {
       expect(useChatStore.getState().conversations[id]).toBeUndefined();
     });
 
+    it("stops the conversation's background commands on delete", () => {
+      const id = useChatStore.getState().createConversation();
+      vi.mocked(invoke).mockClear();
+
+      useChatStore.getState().deleteConversation(id);
+
+      expect(vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === 'background_command_stop_conversation'))
+        .toEqual([['background_command_stop_conversation', { conversationId: id }]]);
+    });
+
     it('clears the conversation\'s browser-automation observability trackers (fix-wave: prevents an unbounded leak in a long-lived session)', () => {
       const id = useChatStore.getState().createConversation();
       // Manufacture some tracker state for this conversation: a repeat streak
