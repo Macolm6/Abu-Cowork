@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { act, cleanup, render as renderBare, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render as renderBare, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ComponentProps, ReactElement } from 'react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -112,28 +112,38 @@ function setupConversation(): string {
 
 const COMPACT_SUMMARY = 'keep the API stable';
 
-/** One earlier turn, then a compaction marker as its own row. */
-function setupCompactedConversation(): { conversationId: string; markerId: string } {
+/** Per summary: one earlier turn, then a compaction marker as its own row. */
+function setupCompactedConversation(
+  summaries: string[] = [COMPACT_SUMMARY],
+): { conversationId: string; markerId: string } {
   const store = useChatStore.getState();
   const conversationId = store.createConversation();
-  const markerId = `compact-boundary-${conversationId}`;
-  store.addMessage(conversationId, message('user-1', 'user', 'prompt 1', 'loop-1'));
-  store.addMessage(conversationId, message('assistant-1', 'assistant', 'answer 1', 'loop-1'));
-  store.addMessage(conversationId, {
-    id: markerId,
-    role: 'system',
-    content: '',
-    timestamp: 2,
-    compactBoundary: {
-      summaryText: COMPACT_SUMMARY,
-      summarizedFromId: 'user-1',
-      summarizedToId: 'assistant-1',
-      createdAt: 2,
-      source: 'auto',
-    },
+  const markerIds = summaries.map((summaryText, index) => {
+    const turn = index + 1;
+    const markerId = `compact-boundary-${conversationId}-${turn}`;
+    store.addMessage(conversationId, message(`user-${turn}`, 'user', `prompt ${turn}`, `loop-${turn}`));
+    store.addMessage(conversationId, message(`assistant-${turn}`, 'assistant', `answer ${turn}`, `loop-${turn}`));
+    store.addMessage(conversationId, {
+      id: markerId,
+      role: 'system',
+      content: '',
+      timestamp: 2,
+      compactBoundary: {
+        summaryText,
+        summarizedFromId: `user-${turn}`,
+        summarizedToId: `assistant-${turn}`,
+        createdAt: 2,
+        source: 'auto',
+      },
+    });
+    return markerId;
   });
   store.setConversationStatus(conversationId, 'idle');
-  return { conversationId, markerId };
+  return { conversationId, markerId: markerIds[0] };
+}
+
+function compactRows() {
+  return screen.getAllByRole('button', { name: /Context compacted/ });
 }
 
 function compactRow() {
@@ -313,6 +323,31 @@ describe('ChatView frame', () => {
     });
     expect(compactRow()).toHaveAttribute('aria-expanded', 'true');
     expect(await screen.findByText(COMPACT_SUMMARY)).toBeInTheDocument();
+  });
+
+  it('shows each compaction’s own summary under its own row', async () => {
+    const user = setupUser();
+    const secondSummary = 'ship on Friday';
+    setupCompactedConversation([COMPACT_SUMMARY, secondSummary]);
+    render(<ChatView />);
+
+    const [firstRow, secondRow] = compactRows();
+    await user.click(firstRow);
+    await user.click(secondRow);
+
+    expect(firstRow).toHaveAttribute('aria-expanded', 'true');
+    expect(secondRow).toHaveAttribute('aria-expanded', 'true');
+    const firstBox = within(firstRow.parentElement!);
+    const secondBox = within(secondRow.parentElement!);
+    expect(await firstBox.findByText(COMPACT_SUMMARY)).toBeInTheDocument();
+    expect(firstBox.queryByText(secondSummary)).toBeNull();
+    expect(await secondBox.findByText(secondSummary)).toBeInTheDocument();
+    expect(secondBox.queryByText(COMPACT_SUMMARY)).toBeNull();
+
+    await user.click(firstRow);
+    expect(firstRow).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText(COMPACT_SUMMARY)).toBeNull();
+    expect(secondBox.getByText(secondSummary)).toBeInTheDocument();
   });
 
   it('resets expanded summaries when the conversation changes', async () => {
