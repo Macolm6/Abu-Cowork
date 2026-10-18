@@ -192,7 +192,7 @@ async function inWorkspaceSpelling(workspacePath: string | null | undefined, pat
 }
 
 /** A file may be written when the write check allows its path as things stand; nothing is asked. */
-async function mayWrite(conversationId: string, path: string): Promise<boolean> {
+export async function mayWrite(conversationId: string, path: string): Promise<boolean> {
   const workspacePath = useChatStore.getState().conversations[conversationId]?.workspacePath;
   return (await checkWritePath(await inWorkspaceSpelling(workspacePath, path))).allowed;
 }
