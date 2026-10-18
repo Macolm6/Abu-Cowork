@@ -373,6 +373,16 @@ export function writeComposerDraft(key: string, draft: ComposerDraft): void {
   notifyDraftSubscribers(key);
 }
 
+/** Keep live edits available to entry points while persistence is debounced. */
+export function writeSessionComposerDraft(key: string, draft: ComposerDraft): void {
+  if (discardedDraftKeys.has(key)) {
+    disposeComposerDraftResources(draft);
+    return;
+  }
+  // An empty live draft must also take precedence over older persisted text.
+  sessionDrafts.set(key, cloneDraft(draft));
+}
+
 export function updateComposerDraft(
   key: string,
   update: (draft: ComposerDraft) => ComposerDraft,
