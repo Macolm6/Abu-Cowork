@@ -724,9 +724,11 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
     'authorizeUserAttachment',
     'canonicalizePathForPolicy',
     'deepLinkScheme',
+    'fileOperation',
     'getPathForFile',
     'getRuntimeDiagnostics',
     'getSidecarBridgeSnapshot',
+    'inspectPathNameComparison',
     'mainSupervisesSidecar',
     'microphone',
     'persistDelegatedMedia',
@@ -746,6 +748,14 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
     'subscribeSpeechEvents',
     'windowMaterial',
   ]);
+  await shellBridge.fileOperation('read', { session: 'file-session', reference: 'file-reference' });
+  assert.deepEqual(JSON.parse(JSON.stringify(invoked.pop())), {
+    channel: 'abu:file-operation',
+    payload: {
+      action: 'read',
+      request: { session: 'file-session', reference: 'file-reference' },
+    },
+  });
   // Voice input: the renderer names an action, never a URL or a permission.
   await shellBridge.microphone('status');
   assert.equal(invoked.at(-1).channel, 'abu:microphone');

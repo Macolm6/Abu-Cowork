@@ -128,6 +128,7 @@ export function parseCondition(raw: string): Record<string, unknown> {
  * model can neither read nor forge it, exactly like `expectedOrigin`.
  */
 export interface ApprovedUploadFile {
+  base64?: string;
   /** Canonical path, already checked against the user's authorized dirs. */
   path: string;
   /** Base name, which is what the page's `<input>` will report. */
@@ -188,19 +189,29 @@ export function approvedFileId(value: unknown): number | string | undefined {
  */
 export function parseApprovedUploadFiles(raw: unknown): ApprovedUploadFile[] | null {
   const decoded = typeof raw === 'string' ? safeJson(raw) : raw;
-  if (!Array.isArray(decoded) || decoded.length === 0) return null;
+  if (!Array.isArray(decoded) || decoded.length === 0 || decoded.length > 10) return null;
   const out: ApprovedUploadFile[] = [];
+  let total = 0;
   for (const entry of decoded) {
     if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return null;
     const { path, name, size, mtimeMs, ino, dev } = entry as Record<string, unknown>;
     if (typeof path !== 'string' || path === '') return null;
     if (typeof name !== 'string' || name === '') return null;
     if (typeof size !== 'number' || !Number.isFinite(size) || size < 0) return null;
+    total += size;
+    if (size > 20 * 1024 * 1024 || total > 40 * 1024 * 1024) return null;
     // The identity pin is REQUIRED, and a stamp missing it reads as no stamp
     // at all: an upload approved by a build that froze only a size cannot be
     // re-checked here, and refusing is the fail-closed half of F1.
     if (typeof mtimeMs !== 'number' || !Number.isFinite(mtimeMs) || mtimeMs < 0) return null;
     const entryOut: ApprovedUploadFile = { path, name, size, mtimeMs: Math.floor(mtimeMs) };
+    const base64 = (entry as Record<string, unknown>).base64;
+    if (base64 !== undefined) {
+      if (typeof base64 !== 'string' || base64.length > 28 * 1024 * 1024 || size > 20 * 1024 * 1024) return null;
+      const bytes = Buffer.from(base64, 'base64');
+      if (bytes.length !== size || bytes.toString('base64') !== base64) return null;
+      entryOut.base64 = base64;
+    }
     const inoPin = approvedFileId(ino);
     const devPin = approvedFileId(dev);
     if (inoPin !== undefined) entryOut.ino = inoPin;

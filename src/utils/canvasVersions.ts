@@ -22,6 +22,18 @@ import { exists, mkdir, readTextFile, remove } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 import { joinPath, normalizeSeparators } from '@/utils/pathUtils';
 import { atomicWrite } from '@/utils/atomicFs';
+import { FileOperationDenied, type ToolFileAccess } from '@/core/tools/fileOperation';
+
+type SnapshotGuard = Pick<ToolFileAccess, 'assertCurrent' | 'assertActive'>;
+
+async function snapshotIO<T>(guard: SnapshotGuard | undefined, operation: () => Promise<T>): Promise<T> {
+  await guard?.assertCurrent();
+  guard?.assertActive();
+  const result = await operation();
+  await guard?.assertCurrent();
+  guard?.assertActive();
+  return result;
+}
 
 /** Max snapshots retained per file — oldest are evicted beyond this. */
 const MAX_VERSIONS_PER_FILE = 30;
@@ -98,11 +110,11 @@ function snapFileName(id: string): string {
 }
 
 /** Load index.json for a file's history dir. Corrupt/missing → empty history, never throws. */
-async function loadIndex(dir: string, filePath: string): Promise<VersionIndex> {
+async function loadIndex(dir: string, filePath: string, guard?: SnapshotGuard): Promise<VersionIndex> {
   const indexPath = getIndexPath(dir);
   try {
-    if (await exists(indexPath)) {
-      const text = await readTextFile(indexPath);
+    if (await snapshotIO(guard, () => exists(indexPath))) {
+      const text = await snapshotIO(guard, () => readTextFile(indexPath));
       const parsed = JSON.parse(text) as Partial<VersionIndex>;
       if (Array.isArray(parsed.versions)) {
         return {
@@ -113,25 +125,31 @@ async function loadIndex(dir: string, filePath: string): Promise<VersionIndex> {
       }
     }
   } catch (err) {
+    if (err instanceof FileOperationDenied) throw err;
+    await guard?.assertCurrent();
+    guard?.assertActive();
     console.warn('[canvasVersions] index.json load failed, treating as empty history', filePath, err);
   }
   return { path: filePath, seq: 0, versions: [] };
 }
 
-async function saveIndex(dir: string, index: VersionIndex): Promise<void> {
+async function saveIndex(dir: string, index: VersionIndex, guard?: SnapshotGuard): Promise<void> {
   // Atomic (temp + rename) so a crash mid-write can't corrupt index.json and
   // lose the whole file's history; also makes the lock-free read in
   // listVersions torn-read-safe (a reader sees the complete old or new file,
   // never a partial one).
-  await atomicWrite(getIndexPath(dir), JSON.stringify(index, null, 2));
+  await snapshotIO(guard, () => atomicWrite(getIndexPath(dir), JSON.stringify(index, null, 2)));
 }
 
-async function readSnapshotContent(dir: string, id: string): Promise<string | null> {
+async function readSnapshotContent(dir: string, id: string, guard?: SnapshotGuard): Promise<string | null> {
   const path = joinPath(dir, snapFileName(id));
   try {
-    if (!(await exists(path))) return null;
-    return await readTextFile(path);
-  } catch {
+    if (!(await snapshotIO(guard, () => exists(path)))) return null;
+    return await snapshotIO(guard, () => readTextFile(path));
+  } catch (error) {
+    if (error instanceof FileOperationDenied) throw error;
+    await guard?.assertCurrent();
+    guard?.assertActive();
     return null;
   }
 }
@@ -178,14 +196,19 @@ async function withDirLock<T>(dir: string, fn: () => Promise<T>): Promise<T> {
 export async function snapshotVersion(
   filePath: string,
   content: string,
-  meta?: Pick<VersionMeta, 'source' | 'label'>
+  meta?: Pick<VersionMeta, 'source' | 'label'>,
+  guard?: SnapshotGuard,
 ): Promise<void> {
+  await guard?.assertCurrent();
+  guard?.assertActive();
   const dir = await getHistoryDir(filePath);
 
   await withDirLock(dir, async () => {
-    if (!(await exists(dir))) await mkdir(dir, { recursive: true });
+    if (!(await snapshotIO(guard, () => exists(dir)))) {
+      await snapshotIO(guard, () => mkdir(dir, { recursive: true }));
+    }
 
-    const index = await loadIndex(dir, filePath);
+    const index = await loadIndex(dir, filePath, guard);
     const latest = index.versions[index.versions.length - 1];
     const byteSize = new TextEncoder().encode(content).length;
 
@@ -199,7 +222,7 @@ export async function snapshotVersion(
     // .snap back from disk when the sizes actually match — avoids a full-file
     // read on every autosave of changed content.
     if (latest && latest.byteSize === byteSize) {
-      const latestContent = await readSnapshotContent(dir, latest.id);
+      const latestContent = await readSnapshotContent(dir, latest.id, guard);
       if (latestContent !== null && latestContent === content) {
         // Dedupe hit: the state is already captured by `latest`. If the caller
         // brought meta (e.g. the pre-revert REVERT_LABEL) and the existing
@@ -210,7 +233,7 @@ export async function snapshotVersion(
         if (meta && !latest.label && (meta.source || meta.label)) {
           if (meta.source) latest.source = meta.source;
           if (meta.label) latest.label = meta.label;
-          await saveIndex(dir, index);
+          await saveIndex(dir, index, guard);
         }
         return;
       }
@@ -222,7 +245,7 @@ export async function snapshotVersion(
 
     // Atomic so a crash mid-write can't leave a truncated .snap that a later
     // revert would atomicWrite verbatim over the user's live document.
-    await atomicWrite(joinPath(dir, snapFileName(id)), content);
+    await snapshotIO(guard, () => atomicWrite(joinPath(dir, snapFileName(id)), content));
 
     index.seq = seq + 1;
     index.path = filePath;
@@ -245,14 +268,17 @@ export async function snapshotVersion(
       const oldest = index.versions.splice(hasBaseline ? 1 : 0, 1)[0];
       if (oldest) {
         try {
-          await remove(joinPath(dir, snapFileName(oldest.id)));
+          await snapshotIO(guard, () => remove(joinPath(dir, snapFileName(oldest.id))));
         } catch (err) {
+          if (err instanceof FileOperationDenied) throw err;
+          await guard?.assertCurrent();
+          guard?.assertActive();
           console.warn('[canvasVersions] failed to remove evicted snapshot', filePath, oldest.id, err);
         }
       }
     }
 
-    await saveIndex(dir, index);
+    await saveIndex(dir, index, guard);
   });
 }
 

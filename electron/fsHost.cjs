@@ -410,6 +410,52 @@ function canonicalizeForPathPolicy(rawPath, followFinalSymlink = true) {
   return assertAllowed(norm, { followFinalSymlink });
 }
 
+/** Inspect names only after the complete target passed the existing host scope. */
+async function inspectPathNameComparison(rawPath, followFinalSymlink = true) {
+  const canonicalPath = canonicalizeForPathPolicy(rawPath, followFinalSymlink);
+  const lexicalPath = resolveValidatedPath(rawPath);
+  const { readDirectoryNameComparison } = require('./nativeHelperManager.cjs');
+  const directories = new Map();
+  async function describe(targetPath) {
+    const root = path.parse(targetPath).root;
+    const names = targetPath.slice(root.length).split(path.sep).filter(Boolean);
+    const components = [];
+    let parent = root;
+    for (const name of names) {
+      let facts = directories.get(parent);
+      if (!facts) {
+        facts = fs.existsSync(parent)
+          ? await readDirectoryNameComparison(parent)
+          : { caseMode: 'unknown', directoryIdentity: null, platform: process.platform, filesystem: null, reason: 'missing-parent' };
+        directories.set(parent, facts);
+      }
+      components.push({ name, parentPath: parent, ...facts });
+      parent = path.join(parent, name);
+    }
+    return { path: targetPath, root, components };
+  }
+  const lexical = await describe(lexicalPath);
+  const canonical = await describe(canonicalPath);
+  for (const [directory, observed] of directories) {
+    const present = fs.existsSync(directory);
+    if (observed.caseMode === 'unknown') {
+      if (present) throw new Error('fs: directory appeared while reading name comparison');
+      continue;
+    }
+    if (!present) throw new Error('fs: directory disappeared while reading name comparison');
+    const current = await readDirectoryNameComparison(directory);
+    if (current.directoryIdentity !== observed.directoryIdentity || current.caseMode !== observed.caseMode
+      || current.filesystem !== observed.filesystem) {
+      throw new Error('fs: directory changed while reading name comparison');
+    }
+  }
+  // The path must still resolve to the target whose names were inspected.
+  if (canonicalizeForPathPolicy(rawPath, followFinalSymlink) !== canonicalPath) {
+    throw new Error('fs: target changed while reading name comparison');
+  }
+  return { lexical, canonical };
+}
+
 /**
  * Refuse a path that escapes the capability scope either lexically or after
  * resolving symlinks. Checking only path.resolve() is insufficient: an allowed
@@ -886,5 +932,6 @@ module.exports = {
   assertAllowed,
   canonicalizeForScope,
   canonicalizeForPathPolicy,
+  inspectPathNameComparison,
   toFileInfo,
 };

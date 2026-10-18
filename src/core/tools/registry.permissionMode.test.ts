@@ -17,6 +17,7 @@ import { setPluginServerNames, forgetPluginGrants } from '../permissions/pluginT
 import { buildScheduledRunPermissionCeiling, buildTriggerRunPermissionCeiling } from '../permissions/runPermissionCeiling';
 import { checkToolApproval, executeAnyTool, toolRegistry } from './registry';
 import { registerBuiltinTools } from './builtins';
+import { setToolAuthorizationProvider, type OperationAuthorizationDecision, type ToolOperationRequest } from './operationAuthorization';
 import {
   authorizeWorkspace,
   createAuthorizationScope,
@@ -25,22 +26,19 @@ import {
   scopedAuthorizeWorkspace,
 } from './pathSafety';
 
-const policyMocks = vi.hoisted(() => ({
-  checkTool: vi.fn(() => ({ decision: 'allow' as const })),
-  showPolicyConfirm: vi.fn(async () => true),
-}));
+afterEach(() => { setToolAuthorizationProvider(null); });
 
-vi.mock('@/core/enterprise/policy/enforcer', () => ({
-  getCurrentPolicy: () => ({ mode: 'test-policy' }),
-}));
-
-vi.mock('@/core/enterprise/policy/matcher', () => ({
-  checkTool: (...args: unknown[]) => policyMocks.checkTool(...args),
-}));
-
-vi.mock('@/components/enterprise/policyConfirmQueue', () => ({
-  showPolicyConfirm: (...args: unknown[]) => policyMocks.showPolicyConfirm(...args),
-}));
+function authorizationExtension(
+  inspect: () => OperationAuthorizationDecision,
+  authorize: (request: ToolOperationRequest) => Promise<OperationAuthorizationDecision>,
+): void {
+  setToolAuthorizationProvider({ begin: request => ({
+    inspect,
+    authorize: () => authorize(request),
+    authorizeFile: async () => ({ decision: 'allow' }),
+    validate: () => ({ decision: 'allow' }),
+  }) });
+}
 
 vi.mock('../../utils/electronHost', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../utils/electronHost')>()),
@@ -477,32 +475,39 @@ describe('browser site permission verdicts', () => {
   });
 });
 
-// ── Enterprise policy confirm gate ──
-describe('enterprise policy confirm gate', () => {
+describe('authorization extension gate', () => {
   beforeEach(() => {
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
     setMigratedBrowserSettings({ permissionMode: 'standard' });
-    policyMocks.checkTool.mockReturnValue({ decision: 'allow' });
-    policyMocks.showPolicyConfirm.mockResolvedValue(true);
-    policyMocks.showPolicyConfirm.mockClear();
+    setToolAuthorizationProvider(null);
   });
 
-  it('fails closed instead of showing policy confirmation during background runs', async () => {
-    policyMocks.checkTool.mockReturnValue({ decision: 'confirm', reason: 'requires approval' });
+  it('honors an extension refusal for a background run without requesting confirmation', async () => {
+    const confirm = vi.fn();
+    authorizationExtension(() => ({ decision: 'allow' }), async request => {
+      expect(request.interactionMode).toBe('background');
+      return { decision: 'deny', reason: 'Error: confirmation unavailable', denialKind: 'policy-denied' };
+    });
 
     const decision = await checkToolApproval(
       'get_system_info',
       {},
       { interactionMode: 'background' } as never,
+      confirm,
     );
 
     expect(decision.decision).toBe('deny');
-    expect(decision.reason).toContain('[policy]');
-    expect(policyMocks.showPolicyConfirm).not.toHaveBeenCalled();
+    expect(decision.reason).toContain('confirmation unavailable');
+    expect(confirm).not.toHaveBeenCalled();
   });
 
-  it('preserves policy confirmation UI for foreground runs', async () => {
-    policyMocks.checkTool.mockReturnValue({ decision: 'confirm', reason: 'requires approval' });
+  it('waits for the extension authorization of a foreground run', async () => {
+    const confirm = vi.fn(async (_reason: string) => true);
+    authorizationExtension(() => ({ decision: 'allow' }), async request => {
+      expect(request.interactionMode).toBe('foreground');
+      await confirm('requires approval');
+      return { decision: 'allow' };
+    });
 
     const decision = await checkToolApproval(
       'get_system_info',
@@ -511,15 +516,18 @@ describe('enterprise policy confirm gate', () => {
     );
 
     expect(decision.decision).toBe('allow');
-    expect(policyMocks.showPolicyConfirm).toHaveBeenCalledWith('requires approval');
+    expect(confirm).toHaveBeenCalledWith('requires approval');
   });
 
-  it('denies by policy before the large-write guard probes file metadata', async () => {
+  it('honors an extension refusal before the large-write guard probes file metadata', async () => {
     const scopeId = createAuthorizationScope();
     const path = '/Users/testuser/Projects/policy-denied-large.html';
     try {
       scopedAuthorizeWorkspace(scopeId, path, ['read', 'write']);
-      policyMocks.checkTool.mockReturnValue({ decision: 'deny', reason: 'blocked destination' });
+      authorizationExtension(
+        () => ({ decision: 'deny', reason: 'Error: blocked destination', denialKind: 'policy-denied' }),
+        async () => ({ decision: 'allow' }),
+      );
       vi.mocked(exists).mockClear();
       vi.mocked(stat).mockClear();
       vi.mocked(exists).mockResolvedValueOnce(true);
@@ -531,7 +539,7 @@ describe('enterprise policy confirm gate', () => {
         { authorizationScopeId: scopeId, interactionMode: 'background' } as never,
       );
 
-      expect(decision).toEqual({ decision: 'deny', reason: 'Error: [policy] blocked destination' });
+      expect(decision).toEqual({ decision: 'deny', reason: 'Error: blocked destination' });
       expect(exists).not.toHaveBeenCalled();
       expect(stat).not.toHaveBeenCalled();
     } finally {
@@ -544,7 +552,7 @@ describe('command confirmation channel', () => {
   beforeEach(() => {
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
     setMigratedBrowserSettings({ permissionMode: 'standard' });
-    policyMocks.checkTool.mockReturnValue({ decision: 'allow' });
+    setToolAuthorizationProvider(null);
   });
 
   it('fails closed when a command requires confirmation but no channel exists', async () => {
@@ -886,7 +894,7 @@ describe('team file retry boundary (F1/F2)', () => {
     setMigratedBrowserSettings({ permissionMode: 'standard' });
     usePermissionStore.setState({ persistedGrants: {}, sessionGrants: {}, pendingRequest: null });
     useTeamConfirmationStore.setState({ pending: {}, approvedOnce: {}, runRules: {}, retrySelections: {} });
-    policyMocks.checkTool.mockReturnValue({ decision: 'allow' });
+    setToolAuthorizationProvider(null);
     vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (path) => String(path));
     vi.mocked(exists).mockReset().mockResolvedValue(false);
     const path = '/Users/testuser/ExternalReview/exact.txt';
@@ -927,7 +935,7 @@ describe('team file retry boundary (F1/F2)', () => {
     useChatStore.setState({ conversations: { 'file-team': { id: 'file-team', teamId: 't', title: 't', createdAt: 1, updatedAt: 1, status: 'running', messages: [] } } });
     setMigratedBrowserSettings({ permissionMode: 'standard' });
     useTeamConfirmationStore.setState({ pending: {}, approvedOnce: {}, taskRules: {}, retrySelections: {}, currentTaskByConversation: {}, stopped: {} });
-    policyMocks.checkTool.mockReturnValue({ decision: 'allow' });
+    setToolAuthorizationProvider(null);
     vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (path) => String(path));
     vi.mocked(exists).mockReset().mockResolvedValue(false);
     // 成员的工具上下文没有 teamRoster（subagentRunner 的 buildTrustedSubagentToolContext）

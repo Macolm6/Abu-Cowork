@@ -3366,7 +3366,8 @@ describe('agentLoopRunner', () => {
       checkToolApprovalMock.mockResolvedValue({ decision: 'allow' });
 
       const handler = handlerFor(onSidecarRequest, 'approval.check');
-      await handler({ runId: 'run-write', toolName: 'write_file', input: { path: '/tmp/x' } });
+      const { finalizeResponse } = await import('../sidecar/responseFinalization');
+      expect(finalizeResponse(await handler({ runId: 'run-write', toolName: 'write_file', input: { path: '/tmp/x' } }))).toEqual({ decision: 'allow' });
 
       expect((session as typeof session & { committed?: boolean }).committed).toBe(true);
     });
@@ -3395,11 +3396,12 @@ describe('agentLoopRunner', () => {
       }]);
       checkToolApprovalMock.mockResolvedValue({ decision: 'allow' });
 
-      await handlerFor(onSidecarRequest, 'approval.check')({
+      const { finalizeResponse } = await import('../sidecar/responseFinalization');
+      expect(finalizeResponse(await handlerFor(onSidecarRequest, 'approval.check')({
         runId: 'run-http',
         toolName: 'http_fetch',
         input: { url: 'https://example.com/items', method: 'POST', body: '{}' },
-      });
+      }))).toEqual({ decision: 'allow' });
 
       expect((session as typeof session & { committed?: boolean }).committed).toBe(true);
     });
@@ -4614,8 +4616,10 @@ describe('agentLoopRunner', () => {
       });
 
       const precomputeContext = precomputeOrchestrationMock.mock.calls[0][5] as {
+        abortSignal?: AbortSignal;
         skillCommandApproval?: (request: unknown) => Promise<unknown>;
       };
+      expect(precomputeContext.abortSignal).toBe(precomputeOrchestrationMock.mock.calls[0][4]);
       expect(precomputeContext.skillCommandApproval).toEqual(expect.any(Function));
       await precomputeContext.skillCommandApproval?.({
         toolName: 'run_command',
@@ -4629,6 +4633,7 @@ describe('agentLoopRunner', () => {
       expect(checkToolApprovalMock.mock.calls.at(-1)?.[2]).toEqual(expect.objectContaining({
         conversationId: 'conv-1',
         authorizationScopeId: 'scope-real',
+        abortSignal: precomputeContext.abortSignal,
         runPermissionCeiling: ceiling,
       }));
     });
@@ -6422,11 +6427,12 @@ describe('agentLoopRunner', () => {
       const running = runAgentLoopDispatched('conv-1', 'hello');
       await waitForCall(sidecarRequestMock);
       const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
-      await handlerFor(onSidecarRequest, 'approval.check')({
+      const { finalizeResponse } = await import('../sidecar/responseFinalization');
+      expect(finalizeResponse(await handlerFor(onSidecarRequest, 'approval.check')({
         runId,
         toolName: 'write_file',
         input: { path: '/tmp/already-written', content: 'done' },
-      });
+      }))).toEqual({ decision: 'allow' });
 
       d.reject(new Error('sidecar crashed after local write'));
       const result = await running;

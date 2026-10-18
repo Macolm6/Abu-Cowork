@@ -14,6 +14,9 @@ import { analyzeCommand } from '../tools/commandSafety';
 import { invokeTaskCommand } from '../tools/helpers/scopedCommand';
 import { getRunPermissionCeilingFromContext } from '../permissions/runPermissionCeiling';
 import { TOOL_NAMES } from '../tools/toolNames';
+import type { ToolApprovalDecision } from '../tools/registry';
+import { finalizeToolApproval } from '../tools/approvalFinalization';
+import { freezeToolInput, hasToolAuthorizationProvider } from '../tools/operationAuthorization';
 
 export { parseArgs };
 
@@ -37,7 +40,7 @@ export interface SkillCommandApprovalRequest {
 
 export type SkillCommandApprovalCallback = (
   request: SkillCommandApprovalRequest,
-) => Promise<{ decision: 'allow' | 'deny'; reason?: string }>;
+) => Promise<ToolApprovalDecision>;
 
 declare module '../../types' {
   interface ToolExecutionContext {
@@ -51,42 +54,73 @@ declare module '../../types' {
   }
 }
 
-export async function explainBlockedSkillCommand(
+async function approveSkillCommand(
   command: string,
   skillDir: string,
   context?: ToolExecutionContext,
-): Promise<string | null> {
+): Promise<ToolApprovalDecision> {
   const ceiling = getRunPermissionCeilingFromContext(context);
   const isBackgroundRun = context?.interactionMode === 'background';
-  if (!ceiling && !isBackgroundRun) return null;
+  if (!ceiling && !isBackgroundRun && !context?.skillCommandApproval && !hasToolAuthorizationProvider()) {
+    return { decision: 'allow' };
+  }
   if (
     ceiling
     && ceiling.capability !== 'full'
     && ceiling.capability !== 'custom'
     && ceiling.capability !== 'scheduled'
   ) {
-    return 'skill command execution is disabled for this unattended run capability';
+    return { decision: 'deny', reason: 'skill command execution is disabled for this unattended run capability' };
   }
   if (analyzeCommand(command).level === 'block') {
-    return 'command is blocked';
+    return { decision: 'deny', reason: 'command is blocked' };
   }
   if (!context?.skillCommandApproval) {
-    return 'skill command approval is unavailable for this unattended run';
+    return { decision: 'deny', reason: 'skill command approval is unavailable for this run' };
   }
   const onRequireConfirmation = context?.interactionMode === 'foreground'
     ? undefined
     : async () => false;
-  const approval = await context.skillCommandApproval({
+  return context.skillCommandApproval({
     toolName: TOOL_NAMES.RUN_COMMAND,
     input: { command, cwd: skillDir },
     context,
     onRequireConfirmation,
     onRequireFilePermission: async () => false,
   });
-  if (approval.decision === 'deny') {
-    return approval.reason || 'command is blocked';
+}
+
+/** Approve the complete command and consume its receipt immediately before dispatch. */
+export async function executeApprovedSkillCommand(
+  command: string,
+  skillDir: string,
+  context: ToolExecutionContext | undefined,
+  commandIdPrefix: string,
+): Promise<{ blocked: string } | { skipped: true } | { output: CommandOutput }> {
+  const original = freezeToolInput({ command, cwd: skillDir });
+  let approval = await approveSkillCommand(command, skillDir, context);
+  while (true) {
+    const finalized = finalizeToolApproval(approval);
+    if (finalized instanceof Promise) { approval = await finalized; continue; }
+    approval = finalized;
+    break;
   }
-  return null;
+  if (approval.decision === 'deny') return { blocked: approval.reason || 'command is blocked' };
+  if (!isPluginSkillAllowed({ skillDir })) return { skipped: true };
+  if (context?.operationOwner?.isCurrent() === false) return { blocked: 'operation account changed' };
+  const input = approval.executionInput ?? original;
+  if (typeof input.command !== 'string' || typeof input.cwd !== 'string') {
+    throw new Error('Skill command approval returned invalid execution parameters');
+  }
+  const output = await invokeTaskCommand<CommandOutput>('run_shell_command', {
+    command: input.command,
+    cwd: input.cwd,
+    background: false,
+    timeout: 10,
+    sandboxEnabled: true,
+    extraWritablePaths: [input.cwd],
+  }, context, { commandIdPrefix });
+  return { output };
 }
 
 /**
@@ -164,19 +198,10 @@ async function executeAdmittedInlineCommands(content: string, skillDir: string, 
     matches.map(async (match) => {
       const command = match[1];
       try {
-        const blockedReason = await explainBlockedSkillCommand(command, skillDir, context);
-        if (blockedReason) {
-          return `[Command blocked: ${blockedReason}]`;
-        }
-        if (!isPluginSkillAllowed({ skillDir })) return '';
-        const output = await invokeTaskCommand<CommandOutput>('run_shell_command', {
-          command,
-          cwd: skillDir,
-          background: false,
-          timeout: 10,
-          sandboxEnabled: true,
-          extraWritablePaths: [skillDir],
-        }, context, { commandIdPrefix: 'skill-inline' });
+        const execution = await executeApprovedSkillCommand(command, skillDir, context, 'skill-inline');
+        if ('blocked' in execution) return `[Command blocked: ${execution.blocked}]`;
+        if ('skipped' in execution) return '';
+        const { output } = execution;
         return output.code === 0
           ? output.stdout.trim()
           : `[Command failed: ${output.stderr.trim()}]`;

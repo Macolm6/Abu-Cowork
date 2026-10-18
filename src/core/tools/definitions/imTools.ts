@@ -51,12 +51,13 @@ export const sendFileTool: ToolDefinition = {
       return t.sendFileNeedsPath;
     }
     const caption = typeof input.caption === 'string' ? input.caption : undefined;
+    const io = context?.files ?? { exists, stat };
 
     try {
-      if (!(await exists(filePath))) {
+      if (!(await io.exists(filePath))) {
         return format(t.sendFileNotFound, { path: filePath });
       }
-      const info = await stat(filePath);
+      const info = await io.stat(filePath);
       if (!info.isFile) {
         return format(t.sendFileNotAFile, { path: filePath });
       }
@@ -70,6 +71,7 @@ export const sendFileTool: ToolDefinition = {
       const result = await sendIMFile(target.platform as IMPlatform, target.chatId, {
         filePath,
         caption,
+        files: context?.files,
       });
 
       if (result.sent) {

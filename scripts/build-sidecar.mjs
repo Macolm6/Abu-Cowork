@@ -90,6 +90,7 @@ export const SIDECAR_BUILD_RESOLUTION = {
  * agnostic to whether the real files are `.ts` or `.tsx`).
  */
 export const SHIM_TARGETS = [
+  { real: path.resolve(srcDir, 'core/tools/authorizedFileOperation.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/authorizedFileOperationRun.ts') },
   { real: path.resolve(srcDir, 'core/logging/logger.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/logger.ts') },
   // Capture native-command ownership at registration time so out-of-band
   // AbortSignal callbacks can re-enter the correct ALS context. The renderer

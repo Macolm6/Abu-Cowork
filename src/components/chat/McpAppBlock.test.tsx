@@ -106,9 +106,8 @@ function StrictProviders({ children }: { children: ReactNode }) {
 /**
  * Count every write to an iframe's `srcdoc` DOM property.
  *
- * React sets the initial value as an attribute, so what this sees is exactly
- * the host's own re-navigations — one per bridge session is the property under
- * test. Returns a restore function; the descriptor is patched on the prototype
+ * The host starts one document per bridge session. Returns a restore function;
+ * the descriptor is patched on the prototype
  * because the block owns its iframe and never hands the element out before the
  * effect that reassigns it has already run.
  */
@@ -479,6 +478,17 @@ describe('McpAppBlock', () => {
      * silently deaf. StrictMode's mount → unmount → mount is the cheapest
      * faithful reproduction (it is also what dev builds do on every mount).
      */
+    it('starts the app document after creating its bridge session', async () => {
+      let initialSource: string | null | undefined;
+      renderBlock({ deps: { createSession: () => {
+        initialSource = document.querySelector('iframe')?.getAttribute('srcdoc');
+        return makeSession();
+      } } });
+      await settle();
+      expect(initialSource).toBeNull();
+      expect(screen.getByTestId('mcp-app-frame').getAttribute('srcdoc')).toContain('Content-Security-Policy');
+    });
+
     it('re-navigates the frame once per bridge session', async () => {
       const tracker = trackSrcdocWrites();
       try {

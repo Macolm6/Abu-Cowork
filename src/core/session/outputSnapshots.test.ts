@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { exists, readTextFile, readFile, writeTextFile, mkdir, remove, stat, copyFile, rename, writeFile, readDir } from '@tauri-apps/plugin-fs';
+import type { ToolAuthorizationProvider } from '../tools/operationAuthorization';
+import type { FileOperationGuard } from '../tools/fileOperation';
 
 const base64ToUint8ArrayMock = vi.hoisted(() => vi.fn());
 
@@ -175,6 +177,146 @@ describe('outputSnapshots', () => {
     memFs = createMemoryFs();
     mod = await import('./outputSnapshots');
     mod.__testing.resetCaches();
+  });
+
+  describe('host-authorized output captures', () => {
+    const path = '/Users/testuser/Desktop/report.txt';
+    let current: boolean;
+    let disposed: number;
+    let failDisposal: boolean;
+    let guard: FileOperationGuard;
+    let clearProvider: () => void;
+
+    beforeEach(async () => {
+      const ports = await import('../tools/operationAuthorization');
+      const { FileOperationDenied } = await import('../tools/fileOperation');
+      current = true;
+      disposed = 0;
+      failDisposal = false;
+      const assertActive = () => {
+        if (!current) throw new FileOperationDenied('Capture owner changed');
+      };
+      guard = { assertActive, assertCurrent: async () => assertActive() };
+      const unsupported = async (): Promise<never> => { throw new Error('Unsupported file-access operation'); };
+      const provider: ToolAuthorizationProvider = {
+        requiresHostFiles: true,
+        captureFileOwner: () => ({ isCurrent: () => current }),
+        begin: () => ({
+          inspect: () => ({ decision: 'allow' }),
+          authorize: async () => ({ decision: 'allow' }),
+          authorizeFile: async () => ({ decision: 'allow' }),
+          validate: () => ({ decision: 'allow' }),
+          createFiles: plan => ({
+            executionInput: plan.input,
+            originalPath: value => value,
+            prepare: async () => assertActive(),
+            assertActive, assertCurrent: guard.assertCurrent,
+            resultGuard: () => guard,
+            exists, stat, readFile, readTextFile,
+            writeTextFile: unsupported, writeFile: unsupported, ensureParentDir: unsupported,
+            readDir: unsupported, processImage: unsupported, runProcessor: unsupported,
+            openDocument: unsupported, searchLines: unsupported, prepareDelete: unsupported,
+            moveToTrash: unsupported,
+            walkFiles: async function* () { yield await unsupported(); },
+            dispose: async () => {
+              disposed++;
+              if (failDisposal) throw new Error('File-access disposal failed');
+            },
+          }),
+        }),
+      };
+      ports.setToolAuthorizationProvider(provider);
+      clearProvider = () => ports.setToolAuthorizationProvider(null);
+      memFs.addUserFile(path, 3, 'abc');
+    });
+    afterEach(() => clearProvider());
+
+    const capture = (paths = [path]) => mod.snapshotToolOutputs(CONV_ID, {
+      id: 'capture', name: 'run_command', input: { command: 'create-report' },
+      result: `stdout:\n${paths.map(value => `File saved to "${value}"`).join('\n')}\n\nexit code: 0`,
+    }, '/Users/testuser/Desktop', { workspacePath: '/Users/testuser/Desktop' }, guard);
+
+    it('keeps the current bytes and removes replaced copies after commit', async () => {
+      await (await capture())?.commit();
+      const first = (await mod.__testing.loadManifest(CONV_ID)).entries[path];
+      memFs.addUserFile(path, 4, 'next');
+      await (await capture())?.commit();
+      const latest = (await mod.__testing.loadManifest(CONV_ID)).entries[path];
+      expect(latest.captureId).toEqual(expect.any(String));
+      expect(memFs.files.has(`${OUTPUTS_DIR}/${first.snapshotRelPath}`)).toBe(false);
+      expect(memFs.files.get(`${OUTPUTS_DIR}/${latest.snapshotRelPath}`)?.size).toBe(4);
+      expect(disposed).toBe(2);
+    });
+
+    it('restores the preceding record and copy when capture is withdrawn', async () => {
+      await (await capture())?.commit();
+      const previous = (await mod.__testing.loadManifest(CONV_ID)).entries[path];
+      memFs.addUserFile(path, 4, 'next');
+      const pending = await capture();
+      await pending?.rollback();
+      await pending?.rollback();
+      expect((await mod.__testing.loadManifest(CONV_ID)).entries[path]).toEqual(previous);
+      expect([...memFs.files.keys()].filter(value => value.startsWith(`${OUTPUTS_DIR}/files/`)))
+        .toEqual([`${OUTPUTS_DIR}/${previous.snapshotRelPath}`]);
+    });
+
+    it('withdraws the first copy when a later output loses its owner', async () => {
+      const later = '/Users/testuser/Desktop/later.txt';
+      memFs.addUserFile(later, 3, 'xyz');
+      const read = vi.mocked(readFile).getMockImplementation()!;
+      vi.mocked(readFile).mockImplementation(async value => {
+        const bytes = await read(value);
+        if (value === later) current = false;
+        return bytes;
+      });
+      await expect(capture([path, later])).rejects.toThrow('Capture owner changed');
+      expect((await mod.__testing.loadManifest(CONV_ID)).entries).toEqual({});
+      expect([...memFs.files.keys()].filter(value => value.startsWith(`${OUTPUTS_DIR}/files/`))).toEqual([]);
+      expect(disposed).toBe(2);
+    });
+
+    it('removes its record and bytes after file-access disposal failure', async () => {
+      failDisposal = true;
+      await expect(capture()).rejects.toThrow('File-access disposal failed');
+      expect((await mod.__testing.loadManifest(CONV_ID)).entries).toEqual({});
+      expect([...memFs.files.keys()].filter(value => value.startsWith(`${OUTPUTS_DIR}/files/`))).toEqual([]);
+    });
+
+    it('records oversized metadata without reading file bytes and can withdraw it', async () => {
+      memFs.addUserFile(path, mod.__testing.MAX_FILE_BYTES + 1);
+      const pending = await capture();
+      expect((await mod.__testing.loadManifest(CONV_ID)).entries[path].skipReason).toBe('oversized');
+      expect(readFile).not.toHaveBeenCalledWith(path);
+      await pending?.rollback();
+      expect((await mod.__testing.loadManifest(CONV_ID)).entries).toEqual({});
+    });
+
+    it.each([
+      { preceding: 'manual', settlement: 'commit' },
+      { preceding: 'manual', settlement: 'rollback' },
+      { preceding: 'controlled', settlement: 'commit' },
+      { preceding: 'controlled', settlement: 'rollback' },
+    ] as const)('preserves a manual save after $preceding capture and $settlement', async ({ preceding, settlement }) => {
+      if (preceding === 'manual') await mod.snapshotCodeBlockSave(CONV_ID, path, 'text');
+      else await (await capture())?.commit();
+      const pending = await capture();
+      memFs.addUserFile(path, 6, 'manual');
+      await mod.snapshotCodeBlockSave(CONV_ID, path, 'text');
+      await pending?.[settlement]();
+      const latest = (await mod.__testing.loadManifest(CONV_ID)).entries[path];
+      expect(memFs.files.get(`${OUTPUTS_DIR}/${latest.snapshotRelPath}`)?.content).toBe('manual');
+      expect([...memFs.files.keys()].filter(value => value.startsWith(`${OUTPUTS_DIR}/files/`)))
+        .toEqual([`${OUTPUTS_DIR}/${latest.snapshotRelPath}`]);
+    });
+
+    it('rejects changed bytes and missing owner context before publishing a copy', async () => {
+      memFs.addUserFile(path, 4, 'abc');
+      await expect(capture()).rejects.toThrow('output changed during capture');
+      await expect(mod.snapshotToolOutputs(CONV_ID, {
+        id: 'missing', name: 'write_file', input: { path }, result: 'written',
+      })).rejects.toThrow();
+      expect((await mod.__testing.loadManifest(CONV_ID)).entries).toEqual({});
+    });
   });
 
   // ──────────────────────────────────────────────────────────────────
@@ -1092,6 +1234,29 @@ describe('outputSnapshots', () => {
         expect(await keptNames()).toEqual(['a.mov', 'c.mov', 'd.mov', 'e.mov', 'f.mov']);
       });
 
+      it('lets a file authorization that changed during the read throw, and evicts nothing', async () => {
+        const ports = await import('../tools/operationAuthorization');
+        let current = true;
+        ports.setToolAuthorizationProvider({
+          requiresHostFiles: false,
+          captureFileOwner: () => ({ isCurrent: () => current }),
+        } as unknown as Parameters<typeof ports.setToolAuthorizationProvider>[0]);
+        try {
+          for (const name of ['a.mov', 'b.mov', 'c.mov', 'd.mov', 'e.mov']) await keep(name, 200 * MB);
+          // The last copy ranked, so no later inspection would throw in its place.
+          failReading(['e.mov'], () => {
+            current = false;
+            return withCode('EACCES: permission denied', 'EACCES');
+          });
+
+          await expect(keep('f.mov', 200 * MB)).rejects.toThrow('file authorization changed during planning');
+
+          expect(await keptNames()).toEqual(['a.mov', 'b.mov', 'c.mov', 'd.mov', 'e.mov', 'f.mov']);
+        } finally {
+          ports.setToolAuthorizationProvider(null);
+        }
+      });
+
       it('evicts nothing when no original can be read', async () => {
         for (const name of ['a.mov', 'b.mov', 'c.mov', 'd.mov', 'e.mov']) await keep(name, 200 * MB);
         failReading(['a.mov', 'b.mov', 'c.mov', 'd.mov', 'e.mov'], () => withCode('EIO: i/o error', 'EIO'));
@@ -1168,6 +1333,26 @@ describe('outputSnapshots', () => {
         expect(await keptNames(CONV_ID)).toEqual(['a2', 'a3']);
         expect(await keptNames(OTHER)).toEqual(['b1', 'b2', 'b3']);
         expect(memFs.files.has(`${APP_DATA}/conversations/${CONV_ID}/outputs/files/a1/a1`)).toBe(false);
+      });
+
+      it('enforces the total limit without inspecting originals that have no recoverable owner', async () => {
+        const { setToolAuthorizationProvider } = await import('../tools/operationAuthorization');
+        setToolAuthorizationProvider({
+          requiresHostFiles: true,
+          allowUnownedFileRecovery: () => false,
+          begin: () => { throw new Error('Historical cleanup has no operation owner'); },
+        });
+        seedLegacy(CONV_ID, ['a1', 'a2', 'a3'], 1);
+        seedLegacy(OTHER, ['b1', 'b2', 'b3'], 100);
+        try {
+          await mod.enforceTotalCopyLimit(() => false);
+          expect(vi.mocked(exists).mock.calls.some(([path]) => String(path).startsWith(DESKTOP))).toBe(false);
+          expect(vi.mocked(stat).mock.calls.some(([path]) => String(path).startsWith(DESKTOP))).toBe(false);
+          expect(await keptNames(CONV_ID)).toEqual(['a2', 'a3']);
+          expect(await keptNames(OTHER)).toEqual(['b1', 'b2', 'b3']);
+        } finally {
+          setToolAuthorizationProvider(null);
+        }
       });
 
       it('counts a running conversation but takes nothing from it', async () => {

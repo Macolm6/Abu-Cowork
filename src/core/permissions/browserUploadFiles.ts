@@ -82,6 +82,8 @@ export type BrowserUploadRefusalCode =
   | 'unidentifiable';
 
 export interface ApprovedUploadFile {
+  /** Bytes captured through a controlled handle, consumed without reopening a path. */
+  base64?: string;
   /** The CANONICAL path `pathSafety` resolved — what actually gets read. */
   path: string;
   /** Its base name, for the confirmation and for the page's file input. */

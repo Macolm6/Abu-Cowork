@@ -21,6 +21,8 @@
   --brand-ink: #0f3d1e;
   --brand-wash: #e2f3e6;
   --wash-ink: #0f3d1e;
+  /* Brand green dark enough for text on paper. */
+  --accent-ink: #2b7a3e;
   --night: #0c0e0d;
   --night-ink: #f5f5f7;
   --night-ink-2: #9a9da0;
@@ -36,6 +38,9 @@
   --serif: "Instrument Serif", "Noto Serif SC", "Songti SC", "STSong", "SimSun", serif;
   --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", sans-serif;
   --mono: "SF Mono", ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace;
+
+  /* Globe of the language link, drawn in the link's color through a mask. */
+  --globe: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z'/%3E%3C/svg%3E");
 
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   --page: min(1240px, 100vw - 48px);
@@ -60,6 +65,7 @@
     --on-inverse: #f5f5f7;
     --brand-wash: #24382a;
     --wash-ink: #d5efda;
+    --accent-ink: #78c98b;
     --shadow-float: 0 0 0 0.5px rgba(255, 255, 255, 0.14), 0 20px 30px -6px rgba(0, 0, 0, 0.46), 0 8px 12px -6px rgba(0, 0, 0, 0.30);
     --shadow-window: 0 0 0 0.5px rgba(255, 255, 255, 0.16), 0 40px 90px rgba(0, 0, 0, 0.56);
     --shadow-crop: 0 0 0 0.5px rgba(255, 255, 255, 0.12), 0 10px 24px -8px rgba(0, 0, 0, 0.44);
@@ -133,8 +139,25 @@ p, .h3 { text-wrap: balance; }
 .nav-links a[data-new]::before { content: "NEW"; position: absolute; right: 0; top: -9px; padding: 2px 5px; border-radius: 999px; background: var(--brand); color: var(--brand-ink); font-family: var(--mono); font-size: 9px; font-weight: 600; letter-spacing: 0.04em; line-height: 1; }
 .nav-cta { display: flex; gap: 8px; align-items: center; }
 /* The link to the same page in the other language. */
-.nav-lang { padding: 0 10px; font-size: 14px; opacity: 0.72; white-space: nowrap; transition: opacity 200ms; }
+.nav-lang { display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; font-size: 14px; opacity: 0.72; white-space: nowrap; transition: opacity 200ms; }
 .nav-lang:hover { opacity: 1; }
+.nav-lang::before { content: ""; width: 16px; height: 16px; flex: none; background: currentColor; -webkit-mask: var(--globe) center / contain no-repeat; mask: var(--globe) center / contain no-repeat; }/* The menu button and the full-window menu, built by site.js, take over from the entries once the bar gives them up. */
+.nav-menu { display: none; width: 40px; height: 40px; margin-right: -8px; align-items: center; justify-content: center; border-radius: 999px; -webkit-tap-highlight-color: transparent; }
+.nav-menu svg { width: 22px; height: 22px; }
+.nav-menu .close, .nav-menu[aria-expanded="true"] .open { display: none; }
+.nav-menu[aria-expanded="true"] .close { display: block; }
+.nav-sheet { position: fixed; inset: 0; z-index: 59; padding: 88px 24px 40px; overflow-y: auto; background: var(--paper); color: var(--ink); }
+.nav-sheet a { display: flex; align-items: center; gap: 8px; padding: 14px 0; font-size: 20px; line-height: 1.3; }
+.nav-sheet a[aria-current="page"] { color: var(--accent-ink); }
+.nav-sheet a[data-new]::after { content: "NEW"; padding: 2px 5px; border-radius: 999px; background: var(--brand); color: var(--brand-ink); font-family: var(--mono); font-size: 9px; font-weight: 600; letter-spacing: 0.04em; line-height: 1; }
+.nav-sheet .nav-sheet-github { margin-top: 12px; padding-top: 26px; border-top: 1px solid var(--line); }
+.nav.is-open, .nav.is-open.is-solid, .nav.is-open.on-night, .nav.is-open.is-solid.on-night { background: var(--paper); color: var(--ink); box-shadow: none; }
+.nav.is-open .logo, .nav.is-open .nav-cta > :not(.nav-menu) { visibility: hidden; }
+.nav-locked { overflow: hidden; }
+/* Abu has no app for phones and tablets, so a touch screen gets no download button in the bar. */
+@media (hover: none) and (pointer: coarse) {
+  .nav-cta .btn-fill[href$="#start"] { display: none; }
+}
 /* Eight entries, the language link and two buttons need about 1220px on the English enterprise page: the bar tightens first, then gives up the entries. */
 @media (max-width: 1240px) {
   .nav-links { gap: 16px; font-size: 14px; }
@@ -142,6 +165,8 @@ p, .h3 { text-wrap: balance; }
 }
 @media (max-width: 1040px) {
   .nav-links { display: none; }
+  .nav-cta { margin-left: auto; }
+  .nav-menu { display: inline-flex; }
 }
 .nav.on-night { color: var(--night-ink); }
 .nav.on-night .btn-fill { background: #fff; color: #1d1d1f; }
