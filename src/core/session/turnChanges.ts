@@ -42,6 +42,7 @@ import {
 import {
   createTurnUndoRecord,
   isAbsoluteFilePath,
+  jsonValueOf,
   parseTurnUndoRecord,
   pathHashOf,
   sha256Hex,
@@ -285,11 +286,10 @@ function parseManifest(text: string): BeforeManifest {
   return { version: FORMAT_VERSION, loopId: value.loopId, workspaceRoots: value.workspaceRoots as string[], entries };
 }
 
-function parseTurnIndex(text: string): TurnIndex {
-  const value: unknown = JSON.parse(text);
-  if (!isRecord(value) || value.version !== FORMAT_VERSION || !isRecord(value.turns)) {
-    throw new Error('Turn changes index is not in the saved format');
-  }
+/** The index `text` holds, or null when it is no JSON or not in the saved format. */
+function parseTurnIndex(text: string): TurnIndex | null {
+  const value = jsonValueOf(text);
+  if (!isRecord(value) || value.version !== FORMAT_VERSION || !isRecord(value.turns)) return null;
   const index: TurnIndex = {};
   for (const [loopId, entry] of Object.entries(value.turns)) {
     if (
@@ -305,7 +305,7 @@ function parseTurnIndex(text: string): TurnIndex {
       || !(entry.undoneCount === undefined || isCount(entry.undoneCount))
       || !(entry.undoneName === undefined || typeof entry.undoneName === 'string')
     ) {
-      throw new Error('Turn changes index entry is not in the saved format');
+      return null;
     }
     const totals = { total: entry.total, added: entry.added, deleted: entry.deleted, firstFile: entry.firstFile };
     if (entry.restorable) {
@@ -335,8 +335,9 @@ function isUndoneWithoutCopies(entry: TurnIndexEntry): boolean {
   return entry.restorable === undefined && entry.undone === true;
 }
 
-function parseTurnChanges(text: string): TurnChanges {
-  const value: unknown = JSON.parse(text);
+/** The saved turn `text` holds, or null when it is no JSON or not in the saved format. */
+function parseTurnChanges(text: string): TurnChanges | null {
+  const value = jsonValueOf(text);
   if (
     !isRecord(value)
     || typeof value.loopId !== 'string'
@@ -346,7 +347,7 @@ function parseTurnChanges(text: string): TurnChanges {
     || !isCount(value.deleted)
     || !(value.moreFiles === undefined || isCount(value.moreFiles))
   ) {
-    throw new Error('Turn changes file is not in the saved format');
+    return null;
   }
   for (const file of value.files as unknown[]) {
     if (
@@ -358,7 +359,7 @@ function parseTurnChanges(text: string): TurnChanges {
       || !(file.deleted === undefined || isCount(file.deleted))
       || !(file.hunks === undefined || (Array.isArray(file.hunks) && file.hunks.every(isSavedHunk)))
     ) {
-      throw new Error('Turn changes file entry is not in the saved format');
+      return null;
     }
   }
   return value as unknown as TurnChanges;
@@ -377,7 +378,41 @@ function isSavedHunk(value: unknown): value is FileChangeHunk {
 async function loadIndex(dir: string): Promise<TurnIndex> {
   const path = joinConversationPath(dir, INDEX_FILENAME);
   if (!(await exists(path))) return {};
-  return parseTurnIndex(await readTextFile(path));
+  const index = parseTurnIndex(await readTextFile(path));
+  if (index) return index;
+  // The index only sums up the turn files beside it, so one that cannot be read is built again from them.
+  console.warn('[turnChanges] the index of a conversation could not be read; it is rebuilt from its turn files');
+  const rebuilt = await rebuildIndex(dir);
+  await saveIndex(dir, rebuilt);
+  return rebuilt;
+}
+
+/**
+ * The index the turn files of `dir` give, in the order they were written:
+ * each readable turn file with a file in it gives its totals, and a turn whose
+ * undo record can be read gets its marks. A turn file that cannot be read is
+ * left out, and so is the undone mark of a turn whose copies were removed,
+ * which only the index held.
+ */
+async function rebuildIndex(dir: string): Promise<TurnIndex> {
+  const turns: Array<{ loopId: string; saved: TurnChanges; writtenAt: number }> = [];
+  for (const item of await readDir(dir)) {
+    if (!item.isFile || !item.name.endsWith('.json')) continue;
+    const loopId = item.name.slice(0, -'.json'.length);
+    if (loopIdRejection(loopId) !== null) continue;
+    const path = turnFilePath(dir, loopId);
+    const saved = parseTurnChanges(await readTextFile(path));
+    if (!saved || saved.loopId !== loopId || saved.files.length === 0) continue;
+    turns.push({ loopId, saved, writtenAt: (await stat(path)).mtime?.getTime() ?? 0 });
+  }
+  turns.sort((a, b) => a.writtenAt - b.writtenAt);
+  const index: TurnIndex = {};
+  for (const { loopId, saved } of turns) {
+    const record = await loadUndoRecord(dir, loopId);
+    const marks = record && record.entries.length > 0 ? undoMarksOf(record, await measureCopies(dir, loopId)) : null;
+    putIndexEntry(index, loopId, indexEntryOf(saved), marks);
+  }
+  return index;
 }
 
 async function saveIndex(dir: string, index: TurnIndex): Promise<void> {
@@ -1005,7 +1040,8 @@ export function endTurn(loopId: string, options?: { workspacePath?: string | nul
 /**
  * Settles what an earlier run of the app left behind in a conversation. A
  * turn directory beside a saved result stays as it is when it holds an undo
- * record, also one that cannot be read, and is removed otherwise; one with a
+ * record, also one that cannot be read, or when the saved result itself
+ * cannot be read, and is removed otherwise; one with a
  * manifest and no saved result is compared with the disk as it is now and
  * saved; any other is removed. The index ends up naming a restorable count
  * exactly for the turns whose record is on disk and can be read.
@@ -1020,6 +1056,8 @@ async function recoverInterruptedTurns(conversationId: string): Promise<void> {
     const savedPath = turnFilePath(dir, loopId);
     if (await exists(savedPath)) {
       const saved = parseTurnChanges(await readTextFile(savedPath));
+      // A saved result that cannot be read costs this turn alone; its files stay as they are.
+      if (!saved) continue;
       const record = saved.files.length > 0 ? await readUndoRecordFile(dir, loopId) : null;
       const index = await loadIndex(dir);
       if (!index[loopId] && saved.files.length > 0) await saveIndexEntry(dir, loopId, indexEntryOf(saved), null);
@@ -1099,6 +1137,7 @@ export async function readTurnChanges(conversationId: string, loopId: string): P
   const path = turnFilePath(await changesDir(conversationId), loopId);
   if (!(await exists(path))) return null;
   const saved = parseTurnChanges(await readTextFile(path));
+  if (!saved) throw new Error('Turn changes file is not in the saved format');
   if (saved.loopId !== loopId) throw new Error('Turn changes file belongs to another turn');
   return saved;
 }

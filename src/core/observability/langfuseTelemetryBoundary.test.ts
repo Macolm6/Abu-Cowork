@@ -59,6 +59,7 @@ describe('Langfuse telemetry privacy boundary', () => {
     startGeneration('conv-telemetry', {
       model: 'test-model',
       input: [{ role: 'user', content: inlineImage }],
+      protocol: 'anthropic',
     });
     startToolSpan('conv-telemetry', {
       name: 'read_file',
