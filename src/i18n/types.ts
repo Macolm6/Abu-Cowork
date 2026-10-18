@@ -386,6 +386,20 @@ export interface TranslationDict {
     /** Notice after an undo or a put-back in which files failed; `{done}` and `{notDone}` are counts. */
     undoPartialNotice: string;
     reapplyPartialNotice: string;
+    /** The question before a turn is redone: title and confirming button per entry. */
+    redoRegenerateTitle: string;
+    redoRegenerateConfirm: string;
+    redoEditTitle: string;
+    redoEditConfirm: string;
+    redoRetryTitle: string;
+    redoRetryConfirm: string;
+    redoResendTitle: string;
+    redoResendConfirm: string;
+    /** `{count}` is the number of later turns the redo deletes. */
+    redoLaterTurns: string;
+    /** The option to restore the files of the redone turns, and the note under it. */
+    redoRestoreFiles: string;
+    redoNoPutBack: string;
     userMessageShowMore: string;
     userMessageCollapse: string;
     runPending: string;
