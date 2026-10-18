@@ -27,6 +27,7 @@ import GoalRoundMarker from './GoalRoundMarker';
 import GoalBar from './GoalBar';
 import ChapterRail from './ChapterRail';
 import ChapterMenu from './ChapterMenu';
+import BackgroundCommandsButton from './BackgroundCommandsButton';
 import { activeChapterIndex, deriveChapters, shouldShowRail, topVisibleGroup, type Chapter, type RowPosition } from './chapters';
 import { isCompactBoundary } from '@/core/context/compactBoundary';
 import { isBrowserRunReportMessage } from '@/core/observability/browserRunReport';
@@ -1665,11 +1666,14 @@ export default function ChatView({
             </Tag>
           </span>
         )}
-        {/* Chapter navigation moves into the header exactly when the gutter can
-            no longer hold the rail, so the two never appear at once. */}
-        {chapterNavVisible && !railFits && (
-          <ChapterMenu chapters={chapters} currentIndex={currentChapter} onJump={jumpToChapter} />
-        )}
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          <BackgroundCommandsButton key={activeConv.id} conversationId={activeConv.id} />
+          {/* Chapter navigation moves into the header exactly when the gutter can
+              no longer hold the rail, so the two never appear at once. */}
+          {chapterNavVisible && !railFits && (
+            <ChapterMenu chapters={chapters} currentIndex={currentChapter} onJump={jumpToChapter} />
+          )}
+        </div>
       </div>
 
       {/* One approval at a time, and only one that belongs to this conversation. The others

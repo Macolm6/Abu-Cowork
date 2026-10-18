@@ -775,6 +775,38 @@ export interface TranslationDict {
       compacted: string;
       compactedManual: string;
     };
+    // The conversation header's list of background commands
+    backgroundCommands: {
+      /** {count} */
+      running: string;
+      /** {count} */
+      total: string;
+      statusRunning: string;
+      statusStopping: string;
+      statusCompleted: string;
+      /** {code} */
+      statusFailedWithCode: string;
+      statusFailed: string;
+      statusStopped: string;
+      /** {count} */
+      finished: string;
+      clear: string;
+      stop: string;
+      confirmStop: string;
+      stopFailed: string;
+      outputDropped: string;
+      noOutput: string;
+      /** {duration} */
+      runningFor: string;
+      /** {duration} */
+      took: string;
+      /** {s} */
+      durationSeconds: string;
+      /** {m}, {s} */
+      durationMinutes: string;
+      /** {h}, {m} */
+      durationHours: string;
+    };
     // /compact slash command toasts
     compactCommand: {
       done: string;
