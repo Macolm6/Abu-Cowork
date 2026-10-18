@@ -116,6 +116,8 @@ export function useRedoTurn(): { redo: (request: RedoRequest) => Promise<RedoOut
       dismiss();
       return 'cancelled';
     }
+    // Once the run is started the question is over; a question asked on this hook during the run is left alone.
+    let handedToStart = false;
     try {
       // The question was asked about a conversation at rest. A run that started meanwhile (an IM
       // message, a goal's next round, a message from the pet window) owns the conversation now:
@@ -140,6 +142,8 @@ export function useRedoTurn(): { redo: (request: RedoRequest) => Promise<RedoOut
           });
           return 'stopped';
         }
+        // The conversation may have been deleted while its files were restored.
+        if (!conversation()) return 'cancelled';
       }
 
       request.onCommit?.();
@@ -147,12 +151,13 @@ export function useRedoTurn(): { redo: (request: RedoRequest) => Promise<RedoOut
       // The records of the deleted turns go in the conversation's queue, ahead of the new turn's own work.
       void forgetTurns(conversationId, loopIds);
       dismiss();
+      handedToStart = true;
       await request.start(hold);
       return 'started';
     } finally {
       // The dispatcher releases the hold it was handed; every other way out ends it here.
       hold.release();
-      dismiss();
+      if (!handedToStart) dismiss();
     }
   }, [ask, t]);
 

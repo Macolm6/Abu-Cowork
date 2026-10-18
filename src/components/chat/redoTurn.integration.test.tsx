@@ -1,13 +1,13 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 
-import { cleanup, fireEvent, render as renderBare, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as renderBare, screen, within } from '@testing-library/react';
 import { useEffect, type ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { holdConversationStarts, type StartHold } from '@/core/agent/conversationStartHold';
 import { createMemoryHostFs, type MemoryHostFs } from '@/core/session/__fixtures__/memoryHostFs';
-import { beginTurn, captureBefore, endTurn, readTurnIndex } from '@/core/session/turnChanges';
+import { beginTurn, captureBefore, endTurn, onTurnChangesSaved, readTurnIndex } from '@/core/session/turnChanges';
 import { authorizeWorkspace, revokeWorkspace } from '@/core/tools/pathSafety';
 import { format, getI18n, initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
@@ -311,6 +311,7 @@ describe('useRedoTurn', () => {
     expect(workspaceFiles()).toEqual(AFTER_THREE_TURNS);
     expect(messageIds()).toHaveLength(7);
     expect(start).not.toHaveBeenCalled();
+    expectReleased();
   });
 
   it('does nothing when the conversation was deleted while the question was open', async () => {
@@ -327,6 +328,58 @@ describe('useRedoTurn', () => {
     expectReleased();
   });
 
+  it('does not cut or start when the conversation was deleted during the restore', async () => {
+    await conversationWithFiles();
+    const deleteMessagesFrom = vi.fn();
+    useChatStore.setState({ deleteMessagesFrom });
+    const start = vi.fn(async () => undefined);
+    const onCommit = vi.fn();
+    // The restore records each turn it restored a file of; the conversation goes at the first record.
+    const stop = onTurnChangesSaved((savedConversationId) => {
+      if (savedConversationId !== conversationId) return;
+      stop();
+      useChatStore.getState().deleteConversation(conversationId);
+    });
+
+    const { outcome } = await open(request({ start, onCommit }));
+    fireEvent.click(confirmButton());
+
+    expect(await outcome).toBe('cancelled');
+    expect(workspaceFiles()).toEqual(BEFORE_LOOP_2);
+    expect(useChatStore.getState().conversations[conversationId]).toBeUndefined();
+    expect(onCommit).not.toHaveBeenCalled();
+    expect(deleteMessagesFrom).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+    expectReleased();
+  });
+
+  it('keeps a question asked during the run of an earlier redo open until it is answered', async () => {
+    await conversationWithLaterTurnsOnly();
+    let endRun!: () => void;
+    const firstStart = vi.fn(() => new Promise<void>((resolve) => { endRun = resolve; }));
+    const first = await open(request({ cutMessageId: 'u-loop-4', messageIds: ['u-loop-4'], start: firstStart }));
+    fireEvent.click(confirmButton());
+    await vi.waitFor(() => expect(firstStart).toHaveBeenCalledTimes(1));
+    expect(dialog()).toBeNull();
+
+    // The run has ended on the conversation's side; the dispatcher's promise settles later.
+    const secondStart = vi.fn(async () => undefined);
+    const second = await open(request({ cutMessageId: 'u-loop-1', messageIds: ['u-loop-1'], start: secondStart }));
+    // Inside act, so every state change the first redo makes on its way out is painted.
+    await act(async () => {
+      endRun();
+      expect(await first.outcome).toBe('started');
+    });
+
+    // Open, as against a dialog that is fading out after being closed.
+    expect(screen.getByTestId('redo-turn-dialog')).toHaveAttribute('data-state', 'open');
+    fireEvent.click(confirmButton());
+    expect(await second.outcome).toBe('started');
+    expect(secondStart).toHaveBeenCalledTimes(1);
+    expect(workspaceFiles()).toEqual({ 'a.md': 'v0' });
+    expectReleased();
+  });
+
   it('checks canProceed before restoring', async () => {
     await conversationWithFiles();
     const start = vi.fn(async () => undefined);
@@ -340,6 +393,7 @@ describe('useRedoTurn', () => {
     expect(workspaceFiles()).toEqual(AFTER_THREE_TURNS);
     expect(messageIds()).toHaveLength(6);
     expect(start).not.toHaveBeenCalled();
+    expectReleased();
   });
 
   it('returns cancelled when another redo holds the conversation', async () => {
@@ -391,5 +445,6 @@ describe('useRedoTurn', () => {
     fireEvent.click(confirmButton());
     expect(await started.outcome).toBe('started');
     expect(order).toEqual(['commit', 'delete']);
+    expectReleased();
   });
 });
