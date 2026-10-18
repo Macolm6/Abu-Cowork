@@ -105,7 +105,7 @@ function parseEntry(value: unknown): TurnUndoEntry | null {
 }
 
 /** The JSON value of `text`, or undefined when the text is no JSON (a write cut off halfway, a damaged disk). */
-function jsonValueOf(text: string): unknown {
+export function jsonValueOf(text: string): unknown {
   try {
     return JSON.parse(text);
   } catch (error) {
