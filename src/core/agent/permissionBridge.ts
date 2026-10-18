@@ -35,6 +35,7 @@ approvalBridge.setDequeueShortCircuit('file-permission', (payload) => {
 // ── Loop Context (per-loop Map) ──
 
 export interface LoopContext {
+  operationOwner?: import('../tools/operationAuthorization').ToolOperationOwner;
   commandConfirmCallback: (info: ConfirmationInfo) => Promise<boolean>;
   filePermissionCallback: FilePermissionCallback;
   signal: AbortSignal;

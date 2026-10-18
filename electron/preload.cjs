@@ -23,6 +23,7 @@ const RUNTIME_DIAGNOSTICS_CHANNEL = 'abu:runtime-diagnostics';
 const SIDECAR_EVENT_CHANNEL = 'abu:sidecar-event';
 const SIDECAR_BRIDGE_STATE_CHANNEL = 'abu:sidecar-bridge-state';
 const FS_CANONICALIZE_FOR_POLICY_CHANNEL = 'abu:fs-canonicalize-for-policy';
+const FS_NAME_COMPARISON_CHANNEL = 'abu:fs-name-comparison';
 const SAVE_IMAGE_ATTACHMENT_CHANNEL = 'abu:save-image-attachment';
 const READ_USER_ATTACHMENT_CHANNEL = 'abu:read-user-attachment';
 const RELEASE_USER_ATTACHMENT_CHANNEL = 'abu:release-user-attachment';
@@ -724,8 +725,13 @@ contextBridge.exposeInMainWorld('__ABU_SHELL__', {
   speech: invokeSpeech,
   subscribeSpeechEvents,
   pluginOperation: (action, request) => ipcRenderer.invoke('abu:plugin-operation', { action, request }),
+  fileOperation: (action, request) => ipcRenderer.invoke('abu:file-operation', { action, request }),
   canonicalizePathForPolicy: (path, followFinalSymlink = true) => ipcRenderer.invoke(
     FS_CANONICALIZE_FOR_POLICY_CHANNEL,
+    { path, followFinalSymlink },
+  ),
+  inspectPathNameComparison: (path, followFinalSymlink = true) => ipcRenderer.invoke(
+    FS_NAME_COMPARISON_CHANNEL,
     { path, followFinalSymlink },
   ),
   // Chromium no longer exposes File.path. Keep the bridge deliberately narrow:

@@ -35,6 +35,7 @@ import {
   __resetForTests,
 } from './sidecarManager';
 import { APP_VERSION } from '@/utils/version';
+import { withResponseFinalizer } from './responseFinalization';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { IPC_MAX_ARGS_BYTES, PayloadTooLargeError } from '@/core/ipc/payloadTooLarge';
 import type { EnterpriseBinding } from '@/core/enterprise/types';
@@ -539,6 +540,52 @@ describe('sidecarManager', () => {
     function writesAfter(callsBefore: number): unknown[] {
       return invoke.mock.calls.slice(callsBefore).filter((c) => c[0] === 'mcp_write');
     }
+
+    it('finalizes an approval after the handler wait and before writing its ACK', async () => {
+      mockHappyPath();
+      await startSidecar();
+      const callsBefore = invoke.mock.calls.length;
+      let permitted = true;
+      const approval = { decision: 'allow' };
+      onSidecarRequest('approval.check', async () => withResponseFinalizer(approval, () =>
+        permitted ? approval : { decision: 'deny', reason: 'permission changed' }));
+
+      emitMsg({ jsonrpc: '2.0', id: 'approval-final', method: 'approval.check', params: {} });
+      permitted = false;
+      await vi.advanceTimersByTimeAsync(0);
+
+      const writes = writesAfter(callsBefore);
+      expect(writes).toHaveLength(1);
+      expect(JSON.parse(sentMessage(writes[0]))).toEqual({
+        jsonrpc: '2.0', id: 'approval-final', result: { decision: 'deny', reason: 'permission changed' },
+      });
+    });
+
+    it('checks again after an asynchronous response finalizer finishes', async () => {
+      mockHappyPath();
+      await startSidecar();
+      const callsBefore = invoke.mock.calls.length;
+      let finish!: (value: unknown) => void;
+      const waiting = new Promise<unknown>(resolve => { finish = resolve; });
+      let pending = true;
+      let permitted = true;
+      const approval = { decision: 'allow' };
+      onSidecarRequest('approval.check', async () => withResponseFinalizer(approval, () => {
+        if (pending) return waiting;
+        return permitted ? approval : { decision: 'deny', reason: 'permission changed' };
+      }));
+
+      emitMsg({ jsonrpc: '2.0', id: 'approval-waiting', method: 'approval.check', params: {} });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(writesAfter(callsBefore)).toHaveLength(0);
+      pending = false;
+      permitted = false;
+      finish(approval);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(writesAfter(callsBefore)).toHaveLength(1);
+      expect(JSON.parse(sentMessage(writesAfter(callsBefore)[0])).result).toEqual({ decision: 'deny', reason: 'permission changed' });
+    });
 
     it('dispatches an incoming request (method + STRING id) to the registered handler and writes back the result', async () => {
       mockHappyPath();

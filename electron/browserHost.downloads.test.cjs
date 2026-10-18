@@ -842,6 +842,20 @@ test('derives a name the filesystem will actually accept', async () => {
 // Uploads: the bytes, and the picker that never opens
 // ═══════════════════════════════════════════════════════════════════════════
 
+test('captured input bytes reach the DOM runtime without reopening a filesystem path', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const { tabId, contents } = await openTab(host, OWNER_A);
+    const base64 = Buffer.from('captured').toString('base64');
+    await host.performBrowserAutomation('upload_file', {
+      ownerId: OWNER_A, tabId, locator: { css: 'input[type=file]' },
+      files: [{ path: 'memory:input-0', name: 'report.txt', size: 8, base64 }],
+    });
+    const call = contents.domCalls.find(entry => entry.action === 'upload_file');
+    assert.deepEqual(call.payload.files, [{ name: 'report.txt', size: 8, base64 }]);
+  } finally { restore(); }
+});
+
 test('opens the approved file itself and hands the CONTENT to the DOM runtime — never a path', async () => {
   const { host, root, restore } = loadHost();
   try {

@@ -48,7 +48,15 @@ describe('the conversation writer is bundle-safe for the sidecar', () => {
     expect(inputs).toContain('sidecar/src/conversationFsNode.ts');
     expect(inputs).not.toContain('src/core/session/conversationStorage.ts');
     expect(inputs).not.toContain('src/core/session/conversationFsRenderer.ts');
+    expect(inputs).not.toContain('src/core/tools/authorizedFileOperation.ts');
+    expect(inputs).toContain('sidecar/src/shims/authorizedFileOperationRun.ts');
   }, 60_000);
+
+  it('rejects an authorized file operation invoked outside its host', async () => {
+    const { openAuthorizedFileOperation } = await import('./shims/authorizedFileOperationRun');
+    await expect(openAuthorizedFileOperation('read_file', { path: '/allowed/report.txt' }, {}))
+      .rejects.toThrow('Authorized file operations require host execution');
+  });
 
   it('the guard still bites: the renderer adapter cannot be bundled without shims', async () => {
     await expect(inputsOf('src/core/session/conversationFsRenderer.ts', [bundleGraphGuardPlugin])).rejects.toThrow(/Forbidden import/);

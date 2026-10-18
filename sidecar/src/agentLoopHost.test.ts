@@ -1125,6 +1125,21 @@ describe('agentLoopHost', () => {
       );
     });
 
+    it('requires the approved input path to agree with the canonical execution path', async () => {
+      hasLocalToolMock.mockReturnValue(true);
+      sendRequestMock.mockImplementation((method: unknown) => {
+        if (method === 'approval.check') return Promise.resolve({
+          decision: 'allow', executionPath: '/approved/report.md', executionInput: { path: '/unapproved/report.md' },
+        });
+        if (method === 'tool.invoke') return Promise.resolve('fresh reverse approval');
+        return Promise.resolve(undefined);
+      });
+      const result = await withToolInvoker(toolInvoker => toolInvoker.executeAnyTool('read_file', { path: '/original/link.md' }));
+      expect(result).toBe('fresh reverse approval');
+      expect(executeLocalToolMock).not.toHaveBeenCalled();
+      expect(sendRequestMock).toHaveBeenCalledWith('tool.invoke', expect.objectContaining({ input: { path: '/original/link.md' } }));
+    });
+
     it('does not start a local tool when Stop wins after the allow ACK was requested', async () => {
       hasLocalToolMock.mockReturnValue(true);
       isLocalToolReadOnlyMock.mockReturnValue(false);
@@ -1428,6 +1443,21 @@ describe('agentLoopHost', () => {
 
       expect(result).toBe('partial report');
       expect(reportMetadata).toHaveBeenCalledWith({ subagentStopReason: 'max_turns' });
+    });
+
+    it('preserves the trusted host output-capture receipt across reverse tool invocation', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      mockSendRequest({ toolInvokeResult: { result: 'captured', metadata: { outputSnapshotsHandled: true } } });
+      const reportMetadata = vi.fn();
+      await withToolInvoker(invoker => invoker.executeAnyTool('run_command', { command: 'report' }, undefined, undefined, { reportMetadata }));
+      expect(reportMetadata).toHaveBeenCalledWith({ outputSnapshotsHandled: true });
+    });
+
+    it('rejects an invalid output-capture receipt', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      mockSendRequest({ toolInvokeResult: { result: 'captured', metadata: { outputSnapshotsHandled: 'true' } } });
+      await expect(withToolInvoker(invoker => invoker.executeAnyTool('run_command', { command: 'report' })))
+        .rejects.toThrow('Invalid output capture metadata');
     });
 
     it('replays a validated file change metadata envelope into the original tool context', async () => {

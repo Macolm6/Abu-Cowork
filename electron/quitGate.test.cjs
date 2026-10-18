@@ -59,6 +59,21 @@ test('a renderer lost during confirmation does not approve the quit', () => {
   assert.equal(f.gate.passed(), false);
 });
 
+test('a later exit participant failure resets a passed handshake and the next quit asks anew', () => {
+  const f = fixture();
+  f.gate.request();
+  f.gate.report(1, 'ready');
+  assert.equal(f.gate.passed(), true);
+  f.gate.reset();
+  assert.equal(f.gate.state(), 'idle');
+  assert.equal(f.gate.request(), false);
+  assert.deepEqual(f.sent.map(sent => sent.requestId), [1, 2]);
+  f.gate.report(1, 'ready');
+  assert.equal(f.gate.state(), 'requested');
+  f.gate.report(2, 'asking');
+  assert.equal(f.gate.state(), 'asking');
+});
+
 test('an update confirmation can allow the quit and cancellation resets it', () => {
   const f = fixture();
   f.gate.allow();

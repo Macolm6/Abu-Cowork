@@ -22,6 +22,7 @@ import {
   appendAuditRow,
   createAppBridgeHandlers,
   MAX_AUDIT_SUMMARY_CHARS,
+  rememberAppApprovalLifecycle,
   type AppApprovalDecision,
   type McpAppAuditEntry,
 } from '@/core/mcp/appBridgeHandlers';
@@ -38,6 +39,7 @@ import type { RawCallToolResult } from '@/core/mcp/client';
 import { useChatStore } from '@/stores/chatStore';
 import { openWidgetLink } from './widgetLink';
 import type { ToolDefinition, ToolResult, ToolResultContent } from '@/types';
+import { captureToolOperationOwner, freezeToolInput } from '@/core/tools/operationAuthorization';
 
 /** Production handshake budget: the app has this long to answer `ui/initialize`
  *  and send `ui/notifications/initialized` before we give up and fall back to
@@ -224,37 +226,58 @@ async function defaultCheckApproval(
   /** This block's outstanding confirmations, as cancel thunks. The bridge
    *  effect's cleanup runs every one of them. */
   pendingCancels: Set<() => void>,
+  bridgeSignal?: AbortSignal,
 ): Promise<AppApprovalDecision> {
-  const [{ checkToolApproval }, permissionBridge] = await Promise.all([
-    import('@/core/tools/registry'),
-    import('@/core/agent/permissionBridge'),
-  ]);
+  const owner = captureToolOperationOwner();
+  const input = freezeToolInput(args);
+  const controller = new AbortController();
+  const cancelOperation = () => controller.abort();
+  pendingCancels.add(cancelOperation);
+  bridgeSignal?.addEventListener('abort', cancelOperation, { once: true });
+  const unsubscribe = owner?.onInvalidated?.(cancelOperation);
+  const finish = () => {
+    pendingCancels.delete(cancelOperation);
+    bridgeSignal?.removeEventListener('abort', cancelOperation);
+    unsubscribe?.();
+  };
+  if (bridgeSignal?.aborted || owner?.isCurrent() === false) cancelOperation();
+  let transferred = false;
+  try {
+    const [{ checkToolApproval }, permissionBridge] = await Promise.all([
+      import('@/core/tools/registry'),
+      import('@/core/agent/permissionBridge'),
+    ]);
 
-  // 🔴 Fail closed without a conversation. The dialog is addressed BY
-  // conversation (ChatView renders only `conversationId === activeConvId`), so
-  // a block with no conversation could enqueue a confirmation nobody can ever
-  // see — and because the command queue is single-active + FIFO, that one
-  // unanswerable entry would then block every later confirmation in every
-  // conversation. Passing no callback at all reuses `checkToolApproval`'s own
-  // "confirmation is unavailable for this run" denial instead of enqueueing.
-  const onRequireConfirmation = conversationId
-    ? async (info: ConfirmationInfo): Promise<boolean> => {
-        const requestId = `mcp-app-approval-${++approvalSeq}`;
-        const cancel = () => permissionBridge.cancelCommandConfirmation(requestId);
-        pendingCancels.add(cancel);
-        try {
-          return await permissionBridge.requestCommandConfirmationForConversation(
-            info,
-            conversationId,
-            requestId,
-          );
-        } finally {
-          pendingCancels.delete(cancel);
+    // A confirmation needs the conversation that owns the visible app.
+    const onRequireConfirmation = conversationId
+      ? async (info: ConfirmationInfo): Promise<boolean> => {
+          const requestId = `mcp-app-approval-${++approvalSeq}`;
+          const cancel = () => permissionBridge.cancelCommandConfirmation(requestId);
+          pendingCancels.add(cancel);
+          controller.signal.addEventListener('abort', cancel, { once: true });
+          try {
+            if (controller.signal.aborted) return false;
+            return await permissionBridge.requestCommandConfirmationForConversation(
+              info,
+              conversationId,
+              requestId,
+            );
+          } finally {
+            pendingCancels.delete(cancel);
+            controller.signal.removeEventListener('abort', cancel);
+          }
         }
-      }
-    : undefined;
+      : undefined;
 
-  return checkToolApproval(namespacedTool, args, { conversationId }, onRequireConfirmation);
+    const decision = controller.signal.aborted
+      ? { decision: 'deny' as const, reason: 'Tool execution was cancelled' }
+      : await checkToolApproval(namespacedTool, input, { conversationId, abortSignal: controller.signal, operationOwner: owner }, onRequireConfirmation);
+    rememberAppApprovalLifecycle(decision, { signal: controller.signal, finish });
+    transferred = true;
+    return decision;
+  } finally {
+    if (!transferred) finish();
+  }
 }
 
 /** Strip the `<server>__` prefix a step name carries; app calls use bare names. */
@@ -357,12 +380,12 @@ export default function McpAppBlock({
   // Cancel thunks for confirmations this block is still waiting on. Cleared by
   // the bridge effect's cleanup so an approval never outlives its iframe.
   const pendingApprovalCancelsRef = useRef(new Set<() => void>());
-  const checkApproval = deps?.checkApproval
-    ?? ((name: string, args: Record<string, unknown>) =>
-      defaultCheckApproval(name, args, conversationId, pendingApprovalCancelsRef.current));
-  const callToolDep = deps?.callTool
-    ?? ((s: string, tool: string, args: Record<string, unknown>) =>
-      mcpManager.callTool(s, tool, args, { viaAppBridge: true }));
+  const checkApproval = (name: string, args: Record<string, unknown>, signal: AbortSignal) => deps?.checkApproval
+    ? deps.checkApproval(name, args)
+    : defaultCheckApproval(name, args, conversationId, pendingApprovalCancelsRef.current, signal);
+  const callToolDep = (s: string, tool: string, args: Record<string, unknown>, signal?: AbortSignal) => deps?.callTool
+    ? deps.callTool(s, tool, args)
+    : mcpManager.callTool(s, tool, args, { viaAppBridge: true, signal });
   const takeRawAppResult = deps?.takeRawAppResult
     ?? ((s: string, tool: string, args: Record<string, unknown>) => mcpManager.takeRawAppResult(s, tool, args));
   const readServerResource = deps?.readServerResource
@@ -578,18 +601,8 @@ export default function McpAppBlock({
       return;
     }
 
-    // 🔴 A new session needs a new document. The app's `ui/initialize` retry
-    // loop stops for good once the first handshake lands, so a bridge rebuilt
-    // over a document that is still running (StrictMode's double-invoke, a
-    // `status` flicker back through 'loading', a theme/srcdoc churn) would wait
-    // for a handshake that can never arrive — the app goes silently deaf and
-    // its own requests get no answer. Assigning `srcdoc` re-navigates the frame
-    // even when the value is byte-identical, which is exactly the property
-    // wanted here. Nothing is lost in the gap: the session buffers
-    // `tool-input`/`tool-result` until the app reports `initialized`.
-    frame.srcdoc = srcdoc;
-
     let disposed = false;
+    const bridgeController = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     // Policy lives in `appBridgeHandlers` (pure, separately tested); this only
@@ -597,9 +610,9 @@ export default function McpAppBlock({
     const handlers = createAppBridgeHandlers({
       server,
       findTool: (tool) => handlerDepsRef.current.findTool(server, tool),
-      checkApproval: (namespaced, args) => handlerDepsRef.current.checkApproval(namespaced, args),
-      callTool: async (tool, args) => {
-        const converted = await handlerDepsRef.current.callToolDep(server, tool, args);
+      checkApproval: (namespaced, args) => handlerDepsRef.current.checkApproval(namespaced, args, bridgeController.signal),
+      callTool: async (tool, args, signal) => {
+        const converted = await handlerDepsRef.current.callToolDep(server, tool, args, signal);
         // Prefer what the server actually returned (structuredContent/_meta
         // survive only there) — see the raw-result LRU in client.ts.
         const raw = handlerDepsRef.current.takeRawAppResult(server, tool, args);
@@ -657,6 +670,9 @@ export default function McpAppBlock({
       },
     });
     sessionRef.current = session;
+    // A rebuilt bridge needs the app to initialize again. This effect owns
+    // the document: each session gets one navigation after its listener starts.
+    frame.srcdoc = srcdoc;
 
     if (handshakeTimeoutMs > 0) {
       timer = setTimeout(() => {
@@ -666,6 +682,7 @@ export default function McpAppBlock({
 
     return () => {
       disposed = true;
+      bridgeController.abort();
       if (timer) clearTimeout(timer);
       sessionRef.current = null;
       // 🔴 Nothing this block asked for may outlive it. A confirmation left in
@@ -912,7 +929,6 @@ export default function McpAppBlock({
             ref={frameRef}
             data-testid="mcp-app-frame"
             title={`${server} · ${resourceUri}`}
-            srcDoc={srcdoc}
             sandbox={APP_IFRAME_SANDBOX}
             allow=""
             referrerPolicy="no-referrer"
