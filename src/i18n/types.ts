@@ -774,6 +774,10 @@ export interface TranslationDict {
     compactDivider: {
       compacted: string;
       compactedManual: string;
+      noSummary: string;
+      // Accessible names of the row's toggle only
+      expand: string;
+      collapse: string;
     };
     // /compact slash command toasts
     compactCommand: {
