@@ -1111,6 +1111,34 @@ export async function readTurnUndoRecord(conversationId: string, loopId: string)
 }
 
 /**
+ * Removes what the conversation keeps of turns that were deleted from it: the
+ * saved result, the turn directory with its copies and the index entry of
+ * each. Runs behind the conversation's earlier settle work and tells listeners
+ * of every turn. A loop id with no record leaves the disk as it is.
+ */
+export async function forgetTurns(conversationId: string, loopIds: readonly string[]): Promise<void> {
+  assertConversationId(conversationId);
+  for (const loopId of loopIds) assertLoopId(loopId);
+  await ensureRecovered(conversationId);
+  await enqueue(conversationId, async () => {
+    const dir = await changesDir(conversationId);
+    const index = await loadIndex(dir);
+    let indexChanged = false;
+    for (const loopId of loopIds) {
+      const savedPath = turnFilePath(dir, loopId);
+      if (await exists(savedPath)) await remove(savedPath);
+      await removeTurnDir(dir, loopId);
+      if (index[loopId]) {
+        delete index[loopId];
+        indexChanged = true;
+      }
+    }
+    if (indexChanged) await saveIndex(dir, index);
+    for (const loopId of loopIds) emitSaved(conversationId, loopId);
+  });
+}
+
+/**
  * Called each time a turn's result is saved, which a turn with files from both
  * of its settle steps does twice, and once for a turn that changed no file.
  */

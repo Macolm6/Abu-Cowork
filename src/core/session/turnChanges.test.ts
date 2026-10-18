@@ -672,6 +672,54 @@ describe('turnChanges', () => {
     });
   });
 
+  describe('forgetTurns', () => {
+    it('forgets the record, the copies and the index entry of each turn and tells listeners', async () => {
+      fs.write(`${WS}/a.md`, 'a\n');
+      await runTurn('loop-1', async (capture) => {
+        await capture(`${WS}/a.md`);
+        fs.write(`${WS}/a.md`, 'a1\n');
+      });
+      await runTurn('loop-2', async (capture) => {
+        await capture(`${WS}/a.md`);
+        fs.write(`${WS}/a.md`, 'a2\n');
+      });
+      expect(fs.has(`${CHANGES}/loop-2/undo.json`)).toBe(true);
+      const told: Array<[string, string]> = [];
+      mod.onTurnChangesSaved((conversationId, loopId) => told.push([conversationId, loopId]));
+
+      await mod.forgetTurns('conv-1', ['loop-2']);
+
+      expect(fs.has(`${CHANGES}/loop-2.json`)).toBe(false);
+      expect(fs.has(`${CHANGES}/loop-2/undo.json`)).toBe(false);
+      expect(fs.has(`${CHANGES}/loop-2`)).toBe(false);
+      const index = await mod.readTurnIndex('conv-1');
+      expect(index).not.toHaveProperty('loop-2');
+      expect(index).toHaveProperty('loop-1');
+      expect(fs.has(`${CHANGES}/loop-1/undo.json`)).toBe(true);
+      expect(told).toEqual([['conv-1', 'loop-2']]);
+    });
+
+    it('ignores a loop id that has no record', async () => {
+      fs.write(`${WS}/a.md`, 'a\n');
+      await runTurn('loop-1', async (capture) => {
+        await capture(`${WS}/a.md`);
+        fs.write(`${WS}/a.md`, 'a1\n');
+      });
+      const indexBefore = fs.read(`${CHANGES}/index.json`);
+
+      await mod.forgetTurns('conv-1', ['loop-x']);
+
+      expect(fs.read(`${CHANGES}/index.json`)).toBe(indexBefore);
+      expect(fs.has(`${CHANGES}/loop-1.json`)).toBe(true);
+    });
+
+    it('refuses a loop id outside the loop-id grammar before touching the disk', async () => {
+      await expect(mod.forgetTurns('conv-1', ['index'])).rejects.toThrow();
+      await expect(mod.forgetTurns('conv-1', ['../x'])).rejects.toThrow();
+      expect(fs.has(CHANGES)).toBe(false);
+    });
+  });
+
   describe('a conversation deleted while its turn runs', () => {
     it('writes nothing at the end of the turn', async () => {
       let present = true;
