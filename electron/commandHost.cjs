@@ -1045,6 +1045,7 @@ function spawnBackground(app, spec, opts, commandId) {
         stderr: stderrResult,
         code: 0, // process is still running; 0 = "started successfully" (matches Rust)
         backgroundCommandId,
+        running: true,
       });
       // Deliberately NOT killed — the process continues running in the
       // background (matches Tauri semantics). It remains in activeCommands so
@@ -1071,7 +1072,7 @@ function spawnBackground(app, spec, opts, commandId) {
       if (settled) return;
       settled = true;
       clearTimeout(waitTimer);
-      resolve({ stdout: stdoutC.value, stderr: stderrC.value, code: code ?? -1, backgroundCommandId });
+      resolve({ stdout: stdoutC.value, stderr: stderrC.value, code: code ?? -1, backgroundCommandId, running: false });
     });
   });
 }
@@ -1135,7 +1136,10 @@ async function runShellCommand(app, args) {
     stderr: annotateSandboxViolations(result.stderr, command, sandboxEnabled),
     code: result.code,
   };
-  if (result.backgroundCommandId) response.backgroundCommandId = result.backgroundCommandId;
+  if (result.backgroundCommandId) {
+    response.backgroundCommandId = result.backgroundCommandId;
+    response.running = result.running;
+  }
   return response;
 }
 

@@ -1550,6 +1550,9 @@ describe('agentLoopRunner', () => {
       'ax_close_session',
       'computer_use_end_task',
       'computer_use_stop_turn',
+      'background_command_output',
+      'background_command_stop',
+      'background_command_list',
     ])(
       'allows %s and forwards to the real Tauri invoke',
       async (cmd) => {

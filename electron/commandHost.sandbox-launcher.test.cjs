@@ -619,6 +619,7 @@ test('registers a background command and returns its id', async () => {
 
   assert.equal(result.code, 0);
   assert.match(result.backgroundCommandId, /^bg-[0-9a-f]{8}$/);
+  assert.equal(result.running, true);
   assert.ok(countTicks(result.stdout) > 0, 'the first three seconds of output are still returned');
   const rows = await commandDispatch(app, 'background_command_list', { conversationId: 'c1' });
   assert.equal(rows.length, 1);
@@ -632,6 +633,15 @@ test('registers a background command and returns its id', async () => {
       ({ event, payload }) => event === BACKGROUND_COMMANDS_CHANGED_EVENT && payload.conversationId === 'c1',
     ),
   );
+});
+
+test('reports a background command that exits within three seconds as not running', async () => {
+  const result = await startBackground('c1', 'printf done');
+
+  assert.equal(result.code, 0);
+  assert.equal(result.stdout, 'done');
+  assert.match(result.backgroundCommandId, /^bg-[0-9a-f]{8}$/);
+  assert.equal(result.running, false);
 });
 
 test('reads output written after the first three seconds', async () => {

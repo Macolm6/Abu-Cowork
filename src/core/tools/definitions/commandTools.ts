@@ -133,7 +133,7 @@ This tool is suitable for: moving/copying/renaming files (mv/cp), package manage
       ];
 
       // Use custom Tauri command defined in Rust
-      const output = await invokeTaskCommand<CommandOutput>('run_shell_command', {
+      const output = await invokeTaskCommand<CommandOutput & { backgroundCommandId?: string; running?: boolean }>('run_shell_command', {
         command: resolvedCommand,
         cwd: cwd || workspacePath || null,
         background: background || false,
@@ -175,6 +175,9 @@ This tool is suitable for: moving/copying/renaming files (mv/cp), package manage
         parts.push(`stderr:\n${output.stderr.trim()}`);
       }
       parts.push(`exit code: ${output.code}`);
+      if (output.backgroundCommandId && output.running === true) {
+        parts.push(`Background command id: ${output.backgroundCommandId} (still running). Use background_command_output to read later output, stop_background_command to stop it.`);
+      }
 
       return parts.join('\n\n');
     } catch (err) {
