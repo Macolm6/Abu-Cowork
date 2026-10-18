@@ -235,6 +235,24 @@ test('navigation stays in place and lists the same eight entries on every page',
   assert.equal(count(homeZh, 'class="eyebrow sec-no"'), 8, 'eight numbered sections');
 });
 
+test('narrow windows open the entries from a menu, and touch screens get no download button in the bar', () => {
+  const css = read('site.css');
+  const script = read('site.js');
+  // site.js builds the menu from the bar's entries and its GitHub link.
+  for (const page of pages) {
+    const source = read(page);
+    const cta = source.slice(source.indexOf('<div class="nav-cta">'), source.indexOf('</div>', source.indexOf('<div class="nav-cta">')));
+    assert.ok(source.includes('<script src="site.js"></script>'), `${page} does not load site.js`);
+    assert.ok(cta.includes('href="https://github.com/PM-Shawn/Abu-Cowork"'), `${page} has no GitHub link in the bar`);
+    assert.equal(count(cta, 'class="nav-lang"'), 1, `${page} has one language link`);
+  }
+  assert.ok(script.includes("{ open: '菜单', close: '关闭菜单' }") && script.includes("{ open: 'Menu', close: 'Close menu' }"));
+  assert.ok(script.includes("matchMedia('(min-width: 1041px)')"), 'a window wide enough for the entries closes the menu');
+  assert.ok(css.includes('@media (max-width: 1040px) {\n  .nav-links { display: none; }\n  .nav-cta { margin-left: auto; }\n  .nav-menu { display: inline-flex; }\n}'), 'the menu button shows when the entries are hidden');
+  assert.ok(css.includes('@media (hover: none) and (pointer: coarse) {\n  .nav-cta .btn-fill[href$="#start"] { display: none; }'), 'only the download button leaves the bar on a touch screen');
+  assert.ok(css.includes('.nav-lang::before') && css.includes('--globe: url('), 'the language link carries a globe');
+});
+
 test('Chinese and English pages share one structure', () => {
   for (const pair of pairs) {
     const zh = read(pair.zh);
