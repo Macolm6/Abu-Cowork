@@ -40,22 +40,24 @@ export function VersionList({ filePath, conversationId, onPick }: {
     return () => { cancelled = true; };
   }, [filePath, conversationId]);
 
+  // One width while the list is read, empty or shown: a nested list that grew once read would
+  // move beside its trigger and cross the pointer, which closes it.
   if (state.status === 'loading') {
     return (
-      <div className="flex justify-center px-2 py-3">
+      <div className="flex w-76 justify-center px-2 py-3">
         <Spinner size="sm" label={t.common.loading} />
       </div>
     );
   }
   if (state.status === 'failed') {
-    return <p className="px-2 py-3 text-center text-ui-sm text-label-tertiary">{t.panel.versionHistoryLoadFailed}</p>;
+    return <p className="w-76 px-2 py-3 text-center text-ui-sm text-label-tertiary">{t.panel.versionHistoryLoadFailed}</p>;
   }
   if (state.versions.length === 0) {
-    return <p className="px-2 py-3 text-center text-ui-sm text-label-tertiary">{t.panel.versionHistoryEmpty}</p>;
+    return <p className="w-76 px-2 py-3 text-center text-ui-sm text-label-tertiary">{t.panel.versionHistoryEmpty}</p>;
   }
   return (
     // A file can hold 31 versions: the list keeps a compact height and scrolls.
-    <div className="max-h-80 overflow-y-auto">
+    <div className="max-h-80 w-76 overflow-y-auto">
       {state.versions.map((v) => {
         const restorePoint = v.label === REVERT_LABEL;
         const mark = restorePoint ? t.panel.versionRevertPoint : v.source === 'ai' ? t.panel.versionSourceAi : null;
