@@ -49,6 +49,7 @@ const RECORD_TIMEOUT = 30_000;
 const A_BEFORE = 'a 第一版\n';
 const A_AFTER = 'a 第二版\n';
 const A_THIRD = 'a 第三版\n';
+const A_REDONE = 'a 重做版\n';
 const B_BEFORE = 'b 第一版\n';
 const B_AFTER = 'b 第二版\n';
 const C_NEW = 'c 新建\n';
@@ -99,6 +100,19 @@ function twoEditsAndOneNewFile(folder: string): MockReplyPlan[] {
 /** The turn of `twoEditsAndOneNewFile`, then a redone turn that only answers. */
 function oneTurnThenRedo(folder: string): MockReplyPlan[] {
   return [...twoEditsAndOneNewFile(folder), finalReply(REDONE_TEXT)];
+}
+
+/**
+ * A redone turn that first edits a.md from its content before the turn. The edit finds that
+ * content only in a restored file, so `A_REDONE` on disk shows the restore came before the run.
+ */
+function redoneTurnOnRestoredA(folder: string): MockReplyPlan[] {
+  return [editFileCall('call-redo-edit-a', path.join(folder, 'a.md'), 'a 第一版', 'a 重做版'), finalReply(REDONE_TEXT)];
+}
+
+/** The turn of `twoEditsAndOneNewFile`, then `redoneTurnOnRestoredA`. */
+function oneTurnThenRedoOnRestored(folder: string): MockReplyPlan[] {
+  return [...twoEditsAndOneNewFile(folder), ...redoneTurnOnRestoredA(folder)];
 }
 
 /** Send `prompt` and wait until its turn has ended with `reply` and `cards` cards of changed files are there. */
@@ -178,7 +192,7 @@ function userContents(request: MockRequest): string[] {
 test.describe('story 1: redoing a turn restores the files it changed', () => {
   test('pressing 重新生成 asks with the three files, the option ticked and no put-back; confirming restores them and runs the turn again', async () => {
     test.setTimeout(240_000);
-    const { page, workspace } = await launch(oneTurnThenRedo);
+    const { page, workspace } = await launch(oneTurnThenRedoOnRestored);
     await runTurn(page, PROMPT, FINAL_TEXT, 1);
     await expect(changedFilesCards(page).getByRole('button', { name: /^已编辑 3 个文件/ })).toBeVisible();
     expect(read(workspace, 'a.md')).toBe(A_AFTER);
@@ -199,12 +213,14 @@ test.describe('story 1: redoing a turn restores the files it changed', () => {
 
     await expectTurnEnded(page, REDONE_TEXT);
     await expect(dialog).toHaveCount(0);
-    expect(read(workspace, 'a.md')).toBe(A_BEFORE);
+    // The redone turn's edit found a.md's content before the turn: the restore ran first.
+    await expect(changedFilesCards(page)).toHaveCount(1, { timeout: RECORD_TIMEOUT });
+    await expect(changedFilesCards(page).getByRole('button', { name: /^已编辑 a\.md/ })).toBeVisible();
+    expect(read(workspace, 'a.md')).toBe(A_REDONE);
     expect(read(workspace, 'b.md')).toBe(B_BEFORE);
     expect(has(workspace, 'c.md')).toBe(false);
     await expect(page.getByText(FINAL_TEXT, { exact: true })).toHaveCount(0);
     await expect(userMessages(page, PROMPT)).toHaveCount(1);
-    await expect(changedFilesCards(page)).toHaveCount(0);
     const requests = turnRequests();
     expect(userContents(requests[requests.length - 1]).filter((content) => content.includes(PROMPT))).toHaveLength(1);
   });
@@ -246,7 +262,7 @@ test.describe('story 1: redoing a turn restores the files it changed', () => {
 
   test('sending an edited message restores the files first, then runs the turn with the edited text', async () => {
     test.setTimeout(240_000);
-    const { page, workspace } = await launch(oneTurnThenRedo);
+    const { page, workspace } = await launch(oneTurnThenRedoOnRestored);
     await runTurn(page, PROMPT, FINAL_TEXT, 1);
 
     await editAndSend(page, PROMPT, EDITED_PROMPT);
@@ -256,7 +272,8 @@ test.describe('story 1: redoing a turn restores the files it changed', () => {
     await pressWhenSettled(dialog.getByRole('button', { name: '发送', exact: true }));
 
     await expectTurnEnded(page, REDONE_TEXT);
-    expect(read(workspace, 'a.md')).toBe(A_BEFORE);
+    // The redone turn's edit found a.md's content before the turn: the restore ran first.
+    expect(read(workspace, 'a.md')).toBe(A_REDONE);
     expect(read(workspace, 'b.md')).toBe(B_BEFORE);
     expect(has(workspace, 'c.md')).toBe(false);
     await expect(editor(page)).toHaveCount(0);
@@ -273,7 +290,7 @@ test.describe('story 1: redoing a turn restores the files it changed', () => {
     const { page, workspace } = await launch((folder) => [
       editFileCall('call-edit-a', path.join(folder, 'a.md'), 'a 第一版', 'a 第二版'),
       { kind: 'http-error', status: 400, body: { error: { code: 400, message: 'The request was rejected', type: 'invalid_request_error' } } },
-      finalReply(REDONE_TEXT),
+      ...redoneTurnOnRestoredA(folder),
     ]);
     const composer = page.getByPlaceholder(CHAT_PLACEHOLDER);
     await composer.fill(PROMPT);
@@ -289,7 +306,8 @@ test.describe('story 1: redoing a turn restores the files it changed', () => {
     await pressWhenSettled(dialog.getByRole('button', { name: '重试', exact: true }));
 
     await expectTurnEnded(page, REDONE_TEXT);
-    expect(read(workspace, 'a.md')).toBe(A_BEFORE);
+    // The redone turn's edit found a.md's content before the turn: the restore ran first.
+    expect(read(workspace, 'a.md')).toBe(A_REDONE);
     expect(read(workspace, 'b.md')).toBe(B_BEFORE);
     await expect(page.getByText('发送失败', { exact: true })).toHaveCount(0);
     await expect(userMessages(page, PROMPT)).toHaveCount(1);
@@ -356,7 +374,7 @@ const FIRST_REPLY = '第一轮做好了。';
 const SECOND_REPLY = '第二轮做好了。';
 const THIRD_REPLY = '第三轮做好了。';
 
-/** Turn 1 edits a.md, turn 2 edits a.md and b.md, turn 3 creates c.md; then the redone turn 1 only answers. */
+/** Turn 1 edits a.md, turn 2 edits a.md and b.md, turn 3 creates c.md; then the redone turn 1 is `redoneTurnOnRestoredA`. */
 function threeTurnsThenRedo(folder: string): MockReplyPlan[] {
   return [
     editFileCall('call-turn1-a', path.join(folder, 'a.md'), 'a 第一版', 'a 第二版'),
@@ -366,7 +384,7 @@ function threeTurnsThenRedo(folder: string): MockReplyPlan[] {
     finalReply(SECOND_REPLY),
     writeFileCall('call-turn3-c', path.join(folder, 'c.md'), C_NEW),
     finalReply(THIRD_REPLY),
-    finalReply(REDONE_TEXT),
+    ...redoneTurnOnRestoredA(folder),
   ];
 }
 
@@ -393,7 +411,8 @@ test.describe('story 2: redoing an earlier turn restores the files of the turns 
     await pressWhenSettled(dialog.getByRole('button', { name: '重新生成', exact: true }));
 
     await expectTurnEnded(page, REDONE_TEXT);
-    expect(read(workspace, 'a.md')).toBe(A_BEFORE);
+    // The redone turn's edit found a.md's content before turn 1: the restore ran first.
+    expect(read(workspace, 'a.md')).toBe(A_REDONE);
     expect(read(workspace, 'b.md')).toBe(B_BEFORE);
     expect(has(workspace, 'c.md')).toBe(false);
     await expect(userMessages(page, FIRST_PROMPT)).toHaveCount(1);
@@ -402,7 +421,9 @@ test.describe('story 2: redoing an earlier turn restores the files of the turns 
     for (const reply of [FIRST_REPLY, SECOND_REPLY, THIRD_REPLY]) {
       await expect(page.getByText(reply, { exact: true })).toHaveCount(0);
     }
-    await expect(changedFilesCards(page)).toHaveCount(0);
+    // One card is left: the redone turn's own edit of a.md.
+    await expect(changedFilesCards(page)).toHaveCount(1, { timeout: RECORD_TIMEOUT });
+    await expect(changedFilesCards(page).getByRole('button', { name: /^已编辑 a\.md/ })).toBeVisible();
   });
 
   test('a later turn undone on its card first leaves its restored files out of the list, and they are not written again', async () => {
@@ -426,7 +447,7 @@ test.describe('story 2: redoing an earlier turn restores the files of the turns 
     await pressWhenSettled(dialog.getByRole('button', { name: '重新生成', exact: true }));
 
     await expectTurnEnded(page, REDONE_TEXT);
-    expect(read(workspace, 'a.md')).toBe(A_BEFORE);
+    expect(read(workspace, 'a.md')).toBe(A_REDONE);
     expect(read(workspace, 'b.md')).toBe(B_BEFORE);
     expect(fs.statSync(path.join(workspace, 'b.md')).mtimeMs).toBe(bWrittenAt);
     expect(has(workspace, 'c.md')).toBe(false);
