@@ -7,7 +7,9 @@
  *
  * A loopback model scripts each turn with file tools and commands, and every
  * redone turn with a reply of its own. Every case runs in a project whose
- * folder sits in the test's own data root, and reads the files on disk.
+ * folder sits in the test's own data root, and reads the files on disk. With
+ * ABU_E2E_SCREENSHOT_DIR set, the states named in the cases are saved there
+ * as pictures, each after the assertions that establish the state.
  */
 import { expect, test } from '@playwright/test';
 import fs from 'node:fs';
@@ -45,6 +47,7 @@ const EDITED_PROMPT = '请只把 a.md 改成第三版';
 const REDONE_TEXT = '重新做好了。';
 const REPLY_TIMEOUT = 60_000;
 const RECORD_TIMEOUT = 30_000;
+const SCREENSHOT_DIR = process.env.ABU_E2E_SCREENSHOT_DIR;
 
 const A_BEFORE = 'a 第一版\n';
 const A_AFTER = 'a 第二版\n';
@@ -57,6 +60,9 @@ const C_NEW = 'c 新建\n';
 const REGENERATE_QUESTION = '重新生成这一轮？';
 const EDIT_QUESTION = '按修改后的内容重新发送？';
 const RETRY_QUESTION = '重试这一轮？';
+const RESEND_QUESTION = '重新发送这一轮？';
+const QUIT_QUESTION = '阿布还在处理任务，现在退出会中断它。';
+const CLOSED_MIDWAY = '上次关闭应用时，这一轮没有做完。';
 const RESTORE_OPTION = '同时把文件恢复到这一轮开始之前';
 const NO_PUT_BACK = '恢复之后不能放回';
 const RESTORE_A = 'a.md恢复为修改前的内容';
@@ -133,6 +139,12 @@ async function expectTurnEnded(page: Page, reply: string): Promise<void> {
   await expect(page.getByRole('button', { name: '重新生成', exact: true }).last()).toBeVisible({ timeout: REPLY_TIMEOUT });
 }
 
+async function shot(page: Page, name: string): Promise<void> {
+  if (!SCREENSHOT_DIR) return;
+  fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
+  await page.screenshot({ path: path.join(SCREENSHOT_DIR, `${name}.png`), animations: 'disabled' });
+}
+
 function changedFilesCards(page: Page): Locator {
   return page.getByTestId('changed-files-card');
 }
@@ -198,6 +210,7 @@ test.describe('story 1: redoing a turn restores the files it changed', () => {
     expect(read(workspace, 'a.md')).toBe(A_AFTER);
     expect(read(workspace, 'b.md')).toBe(B_AFTER);
     expect(read(workspace, 'c.md')).toBe(C_NEW);
+    await shot(page, 'redo-1-a-card-and-regenerate');
 
     await regenerate(page, 0);
     const dialog = question(page, REGENERATE_QUESTION);
@@ -209,6 +222,7 @@ test.describe('story 1: redoing a turn restores the files it changed', () => {
     await expect(dialog.getByTestId('redo-turn-wont')).toHaveCount(0);
     await expect(dialog).not.toContainText('这之后还有');
     await expect(dialog.getByRole('button', { name: '取消', exact: true })).toBeFocused();
+    await shot(page, 'redo-2-b-question-with-files-checked');
     await pressWhenSettled(dialog.getByRole('button', { name: '重新生成', exact: true }));
 
     await expectTurnEnded(page, REDONE_TEXT);
@@ -223,6 +237,7 @@ test.describe('story 1: redoing a turn restores the files it changed', () => {
     await expect(userMessages(page, PROMPT)).toHaveCount(1);
     const requests = turnRequests();
     expect(userContents(requests[requests.length - 1]).filter((content) => content.includes(PROMPT))).toHaveLength(1);
+    await shot(page, 'redo-4-i-new-turn-after-restore');
   });
 
   test('unticking the option and confirming leaves the files as they are and runs the turn again; the next question has the option ticked again', async () => {
@@ -241,6 +256,7 @@ test.describe('story 1: redoing a turn restores the files it changed', () => {
     await expect(restoreOption(dialog)).not.toBeChecked();
     await expect(dialog.getByText(NO_PUT_BACK, { exact: true })).toHaveCount(0);
     await expect(dialog.getByTestId('redo-turn-will')).toHaveCount(0);
+    await shot(page, 'redo-2-c-question-unchecked');
     await pressWhenSettled(dialog.getByRole('button', { name: '重新生成', exact: true }));
 
     // The redone turn edits a.md once more, from what the first turn left.
@@ -269,6 +285,9 @@ test.describe('story 1: redoing a turn restores the files it changed', () => {
     const dialog = question(page, EDIT_QUESTION);
     await expect(restoreOption(dialog)).toBeChecked();
     await expect(willLines(dialog)).toHaveText([RESTORE_A, RESTORE_B, TRASH_C]);
+    // The open question hides the page from the accessibility tree, so the editor is read as an element.
+    await expect(page.locator('[data-message-id] textarea')).toHaveValue(EDITED_PROMPT);
+    await shot(page, 'redo-2-g-edit-question-with-editor');
     await pressWhenSettled(dialog.getByRole('button', { name: '发送', exact: true }));
 
     await expectTurnEnded(page, REDONE_TEXT);
@@ -303,6 +322,7 @@ test.describe('story 1: redoing a turn restores the files it changed', () => {
     const dialog = question(page, RETRY_QUESTION);
     await expect(restoreOption(dialog)).toBeChecked();
     await expect(willLines(dialog)).toHaveText([RESTORE_A]);
+    await shot(page, 'redo-2-h-retry-question');
     await pressWhenSettled(dialog.getByRole('button', { name: '重试', exact: true }));
 
     await expectTurnEnded(page, REDONE_TEXT);
@@ -311,6 +331,56 @@ test.describe('story 1: redoing a turn restores the files it changed', () => {
     expect(read(workspace, 'b.md')).toBe(B_BEFORE);
     await expect(page.getByText('发送失败', { exact: true })).toHaveCount(0);
     await expect(userMessages(page, PROMPT)).toHaveCount(1);
+  });
+
+  test('pressing 重新发送 under a turn the app closed on after it changed a file restores that file, then runs the turn again', async () => {
+    test.setTimeout(300_000);
+    const partial = 'REDO-RUNNING-TURN-PARTIAL';
+    const { page, workspace } = await launch((folder) => [
+      editFileCall('call-edit-a', path.join(folder, 'a.md'), 'a 第一版', 'a 第二版'),
+      { kind: 'hold-open', partialText: partial },
+      ...redoneTurnOnRestoredA(folder),
+    ]);
+    const composer = page.getByPlaceholder(CHAT_PLACEHOLDER);
+    await composer.fill(PROMPT);
+    await composer.press('Enter');
+    await expect(page.getByText(partial, { exact: true })).toBeVisible({ timeout: REPLY_TIMEOUT });
+    expect(read(workspace, 'a.md')).toBe(A_AFTER);
+
+    // The user quits while the turn runs, and answers the quit question with 退出.
+    const child = launched!.app.process();
+    const left = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+    await launched!.app.evaluate(({ app: electronApp }) => {
+      setImmediate(() => electronApp.quit());
+    });
+    const quit = page.getByRole('alertdialog', { name: QUIT_QUESTION });
+    await pressWhenSettled(quit.getByRole('button', { name: '退出', exact: true }));
+    await left;
+
+    launched!.app = (await launchAbuElectron(launched!.dataRoot)).app;
+    const reopened = await launched!.app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(reopened);
+    const showSidebar = reopened.getByRole('button', { name: '显示侧栏', exact: true });
+    if (await showSidebar.isVisible()) await showSidebar.click();
+    await reopened.getByRole('group', { name: PROJECT_NAME })
+      .getByRole('button', { name: PROJECT_NAME, exact: true })
+      .click();
+    await reopened.getByRole('button', { name: new RegExp(`^${PROMPT}`) }).click();
+    const closedOn = userMessages(reopened, PROMPT);
+    await expect(reopened.getByText(CLOSED_MIDWAY, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+
+    await reopened.getByRole('button', { name: '重新发送', exact: true }).click();
+    const dialog = question(reopened, RESEND_QUESTION);
+    await expect(restoreOption(dialog)).toBeChecked();
+    await expect(willLines(dialog)).toHaveText([RESTORE_A]);
+    await shot(reopened, 'redo-2-h-resend-question');
+    await pressWhenSettled(dialog.getByRole('button', { name: '重新发送', exact: true }));
+
+    await expectTurnEnded(reopened, REDONE_TEXT);
+    // The redone turn's edit found a.md's content before the turn: the restore ran first.
+    expect(read(workspace, 'a.md')).toBe(A_REDONE);
+    await expect(reopened.getByText(CLOSED_MIDWAY, { exact: true })).toHaveCount(0);
+    await expect(closedOn).toHaveCount(1);
   });
 
   test('Cancel and Escape leave the files and the conversation as they are, and keep the editor with the edited text', async () => {
@@ -408,6 +478,7 @@ test.describe('story 2: redoing an earlier turn restores the files of the turns 
     await expect(dialog).toContainText('这之后还有 2 轮对话，会一并永久删除。');
     await expect(restoreOption(dialog)).toBeChecked();
     await expect(willLines(dialog)).toHaveText([RESTORE_A, RESTORE_B, TRASH_C]);
+    await shot(page, 'redo-2-d-question-with-later-turns');
     await pressWhenSettled(dialog.getByRole('button', { name: '重新生成', exact: true }));
 
     await expectTurnEnded(page, REDONE_TEXT);
@@ -451,6 +522,24 @@ test.describe('story 2: redoing an earlier turn restores the files of the turns 
     expect(read(workspace, 'b.md')).toBe(B_BEFORE);
     expect(fs.statSync(path.join(workspace, 'b.md')).mtimeMs).toBe(bWrittenAt);
     expect(has(workspace, 'c.md')).toBe(false);
+  });
+
+  test('redoing turn 1 of two that changed no files asks about the later turn only, with no option and no list', async () => {
+    test.setTimeout(240_000);
+    const { page } = await launch(() => [finalReply(FIRST_REPLY), finalReply(SECOND_REPLY)]);
+    await runTurn(page, FIRST_PROMPT, FIRST_REPLY, 0);
+    await runTurn(page, SECOND_PROMPT, SECOND_REPLY, 0);
+
+    await regenerate(page, 0);
+    const dialog = question(page, REGENERATE_QUESTION);
+    await expect(dialog).toContainText('这之后还有 1 轮对话，会一并永久删除。');
+    await expect(restoreOption(dialog)).toHaveCount(0);
+    await expect(dialog.getByTestId('redo-turn-will')).toHaveCount(0);
+    await expect(dialog.getByTestId('redo-turn-wont')).toHaveCount(0);
+    await shot(page, 'redo-2-f-question-later-turns-only');
+    await pressWhenSettled(dialog.getByRole('button', { name: '取消', exact: true }));
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByText(SECOND_REPLY, { exact: true })).toBeVisible();
   });
 });
 
@@ -500,6 +589,7 @@ test.describe('story 3: knowing before the redo which files cannot be restored',
     const dialog = question(page, REGENERATE_QUESTION);
     await expect(willLines(dialog)).toHaveText([RESTORE_A]);
     await expect(wontLines(dialog)).toHaveText(['合同.docx这份文件是用命令改动的，没有保存修改前的内容']);
+    await shot(page, 'redo-2-e-not-restored-changed-by-command');
     await pressWhenSettled(dialog.getByRole('button', { name: '重新生成', exact: true }));
 
     await expectTurnEnded(page, REDONE_TEXT);
@@ -518,6 +608,7 @@ test.describe('story 3: knowing before the redo which files cannot be restored',
     const dialog = question(page, REGENERATE_QUESTION);
     await expect(willLines(dialog)).toHaveText([RESTORE_A, TRASH_C]);
     await expect(wontLines(dialog)).toHaveText(['b.md这份文件在这一轮之后又被改过']);
+    await shot(page, 'redo-2-e-not-restored-changed-after');
     await pressWhenSettled(dialog.getByRole('button', { name: '重新生成', exact: true }));
 
     await expectTurnEnded(page, REDONE_TEXT);
@@ -555,6 +646,7 @@ test.describe('story 3: knowing before the redo which files cannot be restored',
     const dialog = question(page, REGENERATE_QUESTION);
     await expect(willLines(dialog)).toHaveText([RESTORE_A]);
     await expect(wontLines(dialog)).toHaveText([`${recordedMemoPath}阿布现在没有这个位置的写入授权`]);
+    await shot(page, 'redo-2-e-not-restored-no-authorization');
     await pressWhenSettled(dialog.getByRole('button', { name: '重新生成', exact: true }));
 
     await expectTurnEnded(page, REDONE_TEXT);
@@ -615,6 +707,7 @@ test.describe('story 3: knowing before the redo which files cannot be restored',
     await expect(page.getByText(FINAL_TEXT, { exact: true })).toBeVisible();
     await expect(userMessages(page, PROMPT)).toHaveCount(1);
     await expect(page.getByText(REDONE_TEXT, { exact: true })).toHaveCount(0);
+    await shot(page, 'redo-5-j-notice-and-card-not-restored');
     expect(turnRequests()).toHaveLength(requestsBefore);
     expect(read(workspace, 'a.md')).toBe(A_BEFORE);
     expect(read(workspace, 'b.md')).toBe(B_AFTER);
