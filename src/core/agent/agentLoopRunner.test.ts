@@ -1571,6 +1571,20 @@ describe('agentLoopRunner', () => {
       expect(tauriInvokeMock).not.toHaveBeenCalled();
     });
 
+    it.each([
+      'background_command_output',
+      'background_command_stop',
+      'background_command_list',
+    ])('does not allowlist %s: the background command tools run in the shell', async (cmd) => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-native', makeSession());
+      const handler = handlerFor(onSidecarRequest, 'native.invoke') as (p: unknown) => Promise<unknown>;
+      await expect(handler({ runId: 'run-native', cmd, args: { conversationId: 'conv-1' } }))
+        .rejects.toThrow(`native.invoke: "${cmd}" is not allowlisted`);
+      expect(tauriInvokeMock).not.toHaveBeenCalled();
+    });
+
     it('rejects malformed params (missing runId/cmd)', async () => {
       const { ensureHandlersRegistered } = await importFresh();
       ensureHandlersRegistered();
@@ -3654,9 +3668,28 @@ describe('agentLoopRunner', () => {
       await handler({ runId: 'run-1', path: '/tmp/x.txt' });
 
       expect(snapshotBeforeAiEditMock).toHaveBeenCalledWith('/tmp/x.txt', {
-        loopId: undefined,
-        conversationId: undefined,
+        loopId: 'loop-1',
+        conversationId: 'conv-1',
         knownContent: undefined,
+      });
+    });
+
+    it('snapshots the version under the conversation and loop of the session, not the ones in the request', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1', loopId: 'session-loop' }));
+
+      const handler = handlerFor(onSidecarRequest, 'snapshot.beforeAiEdit');
+      await handler({
+        runId: 'run-1',
+        path: '/w/plan.md',
+        opts: { loopId: 'other-loop', conversationId: 'conv-other', knownContent: 'before' },
+      });
+
+      expect(snapshotBeforeAiEditMock).toHaveBeenCalledExactlyOnceWith('/w/plan.md', {
+        loopId: 'session-loop',
+        conversationId: 'conv-1',
+        knownContent: 'before',
       });
     });
 

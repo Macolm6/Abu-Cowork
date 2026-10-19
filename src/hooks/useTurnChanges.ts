@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useShallow } from 'zustand/react/shallow';
+import {
+  collectConversationChangedFiles,
+  type ConversationChangedFile,
+  type ConversationTurn,
+  type RunningTurnChanges,
+} from '@/core/session/conversationChangedFiles';
+import { getMessageText } from '@/core/context/contextUtils';
 import {
   onTurnChangesSaved,
   readTurnChanges,
@@ -22,6 +30,7 @@ import { createLogger } from '@/core/logging/logger';
 import { useChatStore } from '@/stores/chatStore';
 import { canonicalizeElectronPathForPolicy } from '@/utils/electronHost';
 import { normalizeSeparators } from '@/utils/pathUtils';
+import type { Conversation, ToolCall } from '@/types';
 
 const logger = createLogger('turnChanges');
 
@@ -141,6 +150,90 @@ export function useTurnChangesEntry(
   return useSyncExternalStore(subscribe, () => (
     active ? indexRecords.get(conversationId)?.[loopId as string] ?? null : null
   ));
+}
+
+type MessageFact = string | number | boolean | ToolCall[] | undefined;
+
+const NO_FACTS: MessageFact[] = [];
+const NO_FILES: ConversationChangedFile[] = [];
+const LOADING_FILES = { status: 'loading' as const, files: NO_FILES };
+
+/**
+ * What the changed-files list reads from a conversation's messages, as a flat
+ * list of plain values: whether a turn runs, then per user message 'u', its
+ * first line and time, and per reply 'a', its loop id and tool calls. A
+ * reply's tool call list keeps its identity while text streams into it, so
+ * the list stays equal then.
+ */
+function messageFacts(conversation: Conversation | undefined): MessageFact[] {
+  if (!conversation) return NO_FACTS;
+  const facts: MessageFact[] = [conversation.status === 'running'];
+  for (const message of conversation.messages) {
+    if (message.role === 'user' && !message.isSystem) {
+      facts.push('u', getMessageText(message.content).split('\n', 1)[0], message.timestamp);
+    } else if (message.role === 'assistant' && message.loopId) {
+      facts.push('a', message.loopId, message.toolCalls);
+    }
+  }
+  return facts;
+}
+
+interface TurnsOfMessages {
+  turns: Array<{ loopId: string; prompt: string; at: number }>;
+  running: RunningTurnChanges | null;
+}
+
+function turnsOf(facts: MessageFact[]): TurnsOfMessages {
+  const turns: TurnsOfMessages['turns'] = [];
+  const toolCallsByLoop = new Map<string, ToolCall[]>();
+  let prompt = '';
+  let at = 0;
+  for (let i = 1; i < facts.length; i += 3) {
+    if (facts[i] === 'u') {
+      prompt = facts[i + 1] as string;
+      at = facts[i + 2] as number;
+      continue;
+    }
+    const loopId = facts[i + 1] as string;
+    if (!toolCallsByLoop.has(loopId)) {
+      toolCallsByLoop.set(loopId, []);
+      turns.push({ loopId, prompt, at });
+    }
+    (toolCallsByLoop.get(loopId) as ToolCall[]).push(...((facts[i + 2] as ToolCall[] | undefined) ?? []));
+  }
+  const last = turns.at(-1);
+  if (facts[0] !== true || !last) return { turns, running: null };
+  const changes = (toolCallsByLoop.get(last.loopId) as ToolCall[])
+    .flatMap((toolCall) => (toolCall.fileChange && !toolCall.fromSubagent ? [toolCall.fileChange] : []));
+  return { turns, running: { ...last, changes } };
+}
+
+/**
+ * The files a conversation changed, for the task summary: the saved turns of
+ * its messages from the changes index, and the file tools' changes of the
+ * turn that runs. Loading until the index has been read.
+ */
+export function useConversationChangedFiles(conversationId: string): { status: 'loading' | 'ready'; files: ConversationChangedFile[] } {
+  useEffect(() => {
+    if (!indexRecords.has(conversationId)) loadIndex(conversationId);
+  }, [conversationId]);
+  const index = useSyncExternalStore(subscribe, () => indexRecords.get(conversationId) ?? null);
+  const facts = useChatStore(useShallow((s) => messageFacts(s.conversations[conversationId])));
+  const messageTurns = useMemo(() => turnsOf(facts), [facts]);
+  return useMemo(() => {
+    if (!index) return LOADING_FILES;
+    const turns: ConversationTurn[] = [];
+    for (const turn of messageTurns.turns) {
+      const entry = index[turn.loopId];
+      if (entry) turns.push({ ...turn, files: entry.files, undone: entry.undone === true });
+    }
+    return { status: 'ready' as const, files: collectConversationChangedFiles(turns, messageTurns.running) };
+  }, [index, messageTurns]);
+}
+
+/** The index entry of a turn as last read, for an action taken on it; null when it has not been read. */
+export function cachedTurnChangesEntry(conversationId: string, loopId: string): TurnIndexEntry | null {
+  return indexRecords.get(conversationId)?.[loopId] ?? null;
 }
 
 export interface TurnChangesDetail {

@@ -63,6 +63,8 @@ export interface OpenAiMockOptions {
    * given JSON; any other route still answers 404.
    */
   getRoutes?: Readonly<Record<string, unknown>>;
+  /** The text every compression request is answered with. */
+  compressionResponseText?: string;
 }
 
 /** Which kind of model call a request body is: memory extraction, compression, or the task itself. */
@@ -122,7 +124,10 @@ export async function startOpenAiMock(
       purpose === 'memory'
         ? { kind: 'complete' as const, responseText: '[]' }
         : purpose === 'compression'
-          ? { kind: 'complete' as const, responseText: 'Abu E2E compacted conversation summary.' }
+          ? {
+              kind: 'complete' as const,
+              responseText: options.compressionResponseText ?? 'Abu E2E compacted conversation summary.',
+            }
         : replyPlans[taskRequestCount++];
     if (!replyPlan) {
       res.writeHead(500, { 'content-type': 'application/json' });

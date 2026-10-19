@@ -157,6 +157,9 @@ export async function snapshotVersionBeforeAiEdit(
     const snapshotOptions = {
       source: 'ai',
       label: latestUserMessageLabel(opts.conversationId),
+      ...(opts.conversationId
+        ? { origin: { conversationId: opts.conversationId, ...(opts.loopId ? { loopId: opts.loopId } : {}) } }
+        : {}),
     } as const;
     await (opts.files ? snapshotVersion(path, content, snapshotOptions, opts.files) : snapshotVersion(path, content, snapshotOptions));
     await opts.files?.assertCurrent();

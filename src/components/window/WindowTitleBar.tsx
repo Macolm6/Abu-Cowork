@@ -90,7 +90,9 @@ export default function WindowTitleBar({
   }, [windows, windowsTitleBarOverlay]);
 
   if (mac) {
-    const top = 23;
+    // Centres the 24px controls on the 44px title row of the content card,
+    // whose top sits 8px down: 8 + 44 / 2 - 24 / 2.
+    const top = 18;
 
     return (
       <>

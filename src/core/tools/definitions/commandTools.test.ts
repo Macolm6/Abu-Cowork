@@ -471,7 +471,7 @@ describe('runCommandTool', () => {
 
     await runCommandTool.execute(
       { command: 'npm run dev', background: true },
-      { workspacePath: '/ws', abortSignal: controller.signal },
+      { workspacePath: '/ws', abortSignal: controller.signal, conversationId: 'c1' },
     );
     const p = shellPayload();
 
@@ -480,6 +480,53 @@ describe('runCommandTool', () => {
     await vi.waitFor(() => {
       expect(invoke).toHaveBeenCalledWith('abort_command', { commandId: p.commandId });
     });
+  });
+
+  it('appends the background command id to the result', async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      code: 0,
+      stdout: 'listening on 3000',
+      stderr: '',
+      backgroundCommandId: 'bg-0123abcd',
+      running: true,
+    });
+
+    const result = await runCommandTool.execute(
+      { command: 'npm run dev', background: true },
+      { workspacePath: '/ws', conversationId: 'c1' },
+    );
+
+    expect(shellPayload().conversationId).toBe('c1');
+    expect(result.split('\n').at(-1)).toBe(
+      'Background command id: bg-0123abcd (still running). Use background_command_output to read later output, stop_background_command to stop it.',
+    );
+  });
+
+  it('does not append the still-running line for a background command that already exited', async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      code: 0,
+      stdout: 'done',
+      stderr: '',
+      backgroundCommandId: 'bg-0123abcd',
+      running: false,
+    });
+
+    const result = await runCommandTool.execute(
+      { command: 'printf done', background: true },
+      { workspacePath: '/ws', conversationId: 'c1' },
+    );
+
+    expect(result).toBe('stdout:\ndone\n\nexit code: 0');
+  });
+
+  it('reports an error for a background command without a conversation', async () => {
+    const result = await runCommandTool.execute(
+      { command: 'npm run dev', background: true },
+      { workspacePath: '/ws' },
+    );
+
+    expect(result).toMatch(/^Error executing command: .*conversation/);
+    expect(invoke).not.toHaveBeenCalledWith('run_shell_command', expect.anything());
   });
 
   // Regression test for a code-review finding (P1-3d-5 slice 2b): if the

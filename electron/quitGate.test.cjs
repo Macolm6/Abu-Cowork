@@ -3,11 +3,12 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const { createQuitGate } = require('./quitGate.cjs');
 
-function fixture(reached = 1) {
+function fixture(reached = 1, commands = { running: 0 }) {
   const events = [], sent = [];
   let timer;
   const gate = createQuitGate({
     send: value => { sent.push(value); return reached; },
+    backgroundCommandCount: () => commands.running,
     onProceed: () => events.push('proceed'),
     onCancelled: () => events.push('cancelled'),
     onUnavailable: () => events.push('unavailable'),
@@ -72,6 +73,25 @@ test('a later exit participant failure resets a passed handshake and the next qu
   assert.equal(f.gate.state(), 'requested');
   f.gate.report(2, 'asking');
   assert.equal(f.gate.state(), 'asking');
+});
+
+test('each request carries the count of background commands running at that moment', () => {
+  const commands = { running: 2 };
+  const f = fixture(1, commands);
+  f.gate.request();
+  assert.deepEqual(f.sent[0], { requestId: 1, sessionEnding: false, backgroundCommandCount: 2 });
+  f.gate.report(1, 'asking');
+  commands.running = 1;
+  f.gate.request();
+  assert.deepEqual(f.sent[1], { requestId: 1, sessionEnding: false, backgroundCommandCount: 1 });
+  f.gate.report(1, 'cancelled');
+  commands.running = 0;
+  f.gate.request({ sessionEnding: true });
+  assert.deepEqual(f.sent[2], { requestId: 2, sessionEnding: true, backgroundCommandCount: 0 });
+});
+
+test('a gate needs the count of background commands', () => {
+  assert.throws(() => createQuitGate({ send: () => 1, onProceed() {}, onCancelled() {} }), TypeError);
 });
 
 test('an update confirmation can allow the quit and cancellation resets it', () => {

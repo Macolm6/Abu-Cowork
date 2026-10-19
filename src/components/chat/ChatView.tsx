@@ -27,6 +27,7 @@ import GoalRoundMarker from './GoalRoundMarker';
 import GoalBar from './GoalBar';
 import ChapterRail from './ChapterRail';
 import ChapterMenu from './ChapterMenu';
+import BackgroundCommandsButton from './BackgroundCommandsButton';
 import { activeChapterIndex, deriveChapters, shouldShowRail, topVisibleGroup, type Chapter, type RowPosition } from './chapters';
 import { isCompactBoundary } from '@/core/context/compactBoundary';
 import { isBrowserRunReportMessage } from '@/core/observability/browserRunReport';
@@ -36,6 +37,8 @@ import { compactConversationManually } from '@/core/context/compactionService';
 import { applyGoalCommand, checkGoalCreatable, clearGoalForReplacement, createGoalFromCommand, parseGoalCommand } from '@/core/goal/goalCommand';
 import { useConfirm } from '@/components/ds/confirm-context';
 import { useToastStore } from '@/stores/toastStore';
+import { useBackgroundCommandStore } from '@/stores/backgroundCommandStore';
+import { isTauriEnv } from '@/utils/tauriEnv';
 import { ensureConversationModelUsable } from './sendModelGuard';
 import ChatInput from './ChatInput';
 import { focusComposerAfterPageChange, focusComposerFromWindow } from './composerFocus';
@@ -280,6 +283,10 @@ export default function ChatView({
   // and the next Enter/blur would commit it against the WRONG conversation's id.
   useEffect(() => {
     setIsRenamingTitle(false);
+  }, [activeConvId]);
+  useEffect(() => {
+    if (!activeConvId || !isTauriEnv()) return;
+    void useBackgroundCommandStore.getState().refresh(activeConvId);
   }, [activeConvId]);
   const createConversation = useChatStore((s) => s.createConversation);
   const setConversationTeamId = useChatStore((s) => s.setConversationTeamId);
@@ -661,6 +668,30 @@ export default function ChatView({
   }, [scrollParentEl, updatePinned, writeTurnSpacerHeight, writeTurnSpacerWithCompensation]);
   // Message id to briefly highlight after a search-hit jump (see effect below).
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+  // Ids of the compaction rows whose summary is shown. Kept here because the
+  // list unmounts rows that scroll far out of view.
+  const [expandedCompactIds, setExpandedCompactIds] = useState<ReadonlySet<string>>(() => new Set());
+  const expandedCompactIdsRef = useRef<ReadonlySet<string>>(expandedCompactIds);
+  useLayoutEffect(() => {
+    if (expandedCompactIdsRef.current.size === 0) return;
+    const empty = new Set<string>();
+    expandedCompactIdsRef.current = empty;
+    setExpandedCompactIds(empty);
+  }, [activeConvId]);
+  const toggleCompactSummary = useCallback((messageId: string) => {
+    const next = new Set(expandedCompactIdsRef.current);
+    if (next.has(messageId)) {
+      next.delete(messageId);
+    } else {
+      // Expanding counts as reading upward, exactly like an upward scroll: the
+      // bottom lock and any active-turn anchor are released, so the row stays
+      // where it is and the summary opens below it.
+      leaveTurnAnchor('user-scroll-intent');
+      next.add(messageId);
+    }
+    expandedCompactIdsRef.current = next;
+    setExpandedCompactIds(next);
+  }, [leaveTurnAnchor]);
   // Index of the message group at the top of the viewport — what the chapter
   // rail highlights. Measured from the DOM (see the scroll-spy effect below).
   const [firstVisibleGroup, setFirstVisibleGroup] = useState(0);
@@ -1659,11 +1690,14 @@ export default function ChatView({
             </Tag>
           </span>
         )}
-        {/* Chapter navigation moves into the header exactly when the gutter can
-            no longer hold the rail, so the two never appear at once. */}
-        {chapterNavVisible && !railFits && (
-          <ChapterMenu chapters={chapters} currentIndex={currentChapter} onJump={jumpToChapter} />
-        )}
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          <BackgroundCommandsButton key={activeConv.id} conversationId={activeConv.id} />
+          {/* Chapter navigation moves into the header exactly when the gutter can
+              no longer hold the rail, so the two never appear at once. */}
+          {chapterNavVisible && !railFits && (
+            <ChapterMenu chapters={chapters} currentIndex={currentChapter} onJump={jumpToChapter} />
+          )}
+        </div>
       </div>
 
       {/* One approval at a time, and only one that belongs to this conversation. The others
@@ -1804,7 +1838,11 @@ export default function ChatView({
             }}
             itemContent={(index, group) =>
               group.length === 1 && isCompactBoundary(group[0]) ? (
-                <CompactDivider message={group[0]} />
+                <CompactDivider
+                  message={group[0]}
+                  expanded={expandedCompactIds.has(group[0].id)}
+                  onToggle={() => toggleCompactSummary(group[0].id)}
+                />
               ) : group.length === 1 && isMaxTurnsNoticeMessage(group[0]) ? (
                 // The turn-cap notice. Its own group by construction: the
                 // marker carries no loopId, and `groupMessagesByLoop` starts a

@@ -100,6 +100,7 @@ describe('AccountLoginDialog opened from the settings window', () => {
         <CloseDialog
           open={open}
           hasRunningAgent={false}
+          backgroundCommandCount={0}
           onQuit={onQuit}
           onMinimize={() => undefined}
           onCancel={() => {
@@ -418,6 +419,7 @@ describe('AccountLoginDialog opened from the settings window', () => {
           <CloseDialog
             open={open}
             hasRunningAgent={false}
+            backgroundCommandCount={0}
             onQuit={onQuit}
             onMinimize={() => undefined}
             onCancel={() => {
@@ -636,6 +638,7 @@ describe('AccountLoginDialog opened from the settings window', () => {
           <CloseDialog
             open={open}
             hasRunningAgent={false}
+            backgroundCommandCount={0}
             onQuit={onQuit}
             onMinimize={onMinimize}
             onCancel={() => usePreviewStore.getState().setAppModalOpen(false)}
