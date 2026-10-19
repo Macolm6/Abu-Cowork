@@ -163,6 +163,9 @@ interface OpenTurn extends TurnScope {
   /** Normalized path → its entry; null for a path that is claimed or holds no regular file. */
   captured: Map<string, ManifestEntry | null>;
   manifestWrites: Promise<void>;
+  /** Resolves once `endTurn` has queued the turn's settle, so work queued after it runs behind the settle. */
+  ended: Promise<void>;
+  markEnded: () => void;
 }
 
 type Side =
@@ -944,6 +947,8 @@ export async function beginTurn(
   await (conversationWork.get(conversationId) ?? Promise.resolve());
   if (openTurns.has(loopId)) { unsubscribeFileOwner?.(); return; }
   const folder = workspacePath ? normalizeFilePath(workspacePath) : null;
+  let markEnded: () => void = () => {};
+  const ended = new Promise<void>((resolve) => { markEnded = resolve; });
   const turn: OpenTurn = {
     conversationId,
     operationOwner, fileOwner, fileGuards: [],
@@ -957,6 +962,8 @@ export async function beginTurn(
     isConversationPresent: options?.isConversationPresent ?? (() => true),
     captured: new Map(),
     manifestWrites: Promise.resolve(),
+    ended,
+    markEnded,
   };
   openTurns.set(loopId, turn);
   turnsOfThisRun.add(loopId);
@@ -1030,11 +1037,26 @@ export function endTurn(loopId: string, options?: { workspacePath?: string | nul
   if (turn.workspaceRoots.length === 0 && options?.workspacePath) {
     turn.workspaceRoots = [normalizeFilePath(options.workspacePath)];
   }
-  return enqueue(turn.conversationId, async () => {
+  const settled = enqueue(turn.conversationId, async () => {
     await turn.manifestWrites;
     const entries = [...turn.captured.values()].filter((entry): entry is ManifestEntry => entry !== null);
     await settleTurn(turn, entries);
   });
+  turn.markEnded();
+  return settled;
+}
+
+/**
+ * Resolves once no turn of the conversation is open: every turn open now has
+ * had its settle queued by `endTurn`, and so has any turn opened meanwhile.
+ * Work queued after this runs behind those settles.
+ */
+export async function whenTurnsEnded(conversationId: string): Promise<void> {
+  for (;;) {
+    const open = [...openTurns.values()].filter((turn) => turn.conversationId === conversationId);
+    if (open.length === 0) return;
+    await Promise.all(open.map((turn) => turn.ended));
+  }
 }
 
 /**

@@ -857,6 +857,64 @@ describe('turnChanges', () => {
     });
   });
 
+  describe('whenTurnsEnded', () => {
+    function yieldToMainThread(): Promise<void> {
+      return new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    it('resolves at once with no open turn', async () => {
+      await expect(mod.whenTurnsEnded('conv-1')).resolves.toBeUndefined();
+    });
+
+    it('waits for an open turn of the conversation', async () => {
+      await mod.beginTurn('conv-1', 'loop-1', WS);
+      let ended = false;
+      const waiting = mod.whenTurnsEnded('conv-1').then(() => { ended = true; });
+      await yieldToMainThread();
+      expect(ended).toBe(false);
+
+      await mod.endTurn('loop-1');
+      await waiting;
+      expect(ended).toBe(true);
+    });
+
+    it('resolves for a turn whose endTurn was called, before its settle has run', async () => {
+      let release: () => void = () => {};
+      let listRequested: () => void = () => {};
+      const requested = new Promise<void>((resolve) => { listRequested = resolve; });
+      await mod.beginTurn('conv-1', 'loop-1', WS);
+      host.listWorkspace.mockImplementationOnce(() => new Promise<ConversationWorkspaceFiles>((resolve) => {
+        release = () => resolve({ root: WS, exceeded: false, files: [] });
+        listRequested();
+      }));
+      const ending = mod.endTurn('loop-1');
+      await requested;
+
+      await expect(mod.whenTurnsEnded('conv-1')).resolves.toBeUndefined();
+      expect(mod.hasOpenTurn('conv-1')).toBe(false);
+      release();
+      await ending;
+    });
+
+    it('queues work asked after the wait behind the settle', async () => {
+      fs.write(`${WS}/plan.md`, 'one\n');
+      await mod.beginTurn('conv-1', 'loop-1', WS);
+      await mod.captureBefore('loop-1', `${WS}/plan.md`);
+      fs.write(`${WS}/plan.md`, 'two\n');
+
+      const waited = mod.whenTurnsEnded('conv-1').then(() => mod.enqueue('conv-1', async () => fs.has(`${CHANGES}/loop-1.json`)));
+      await yieldToMainThread();
+      await mod.endTurn('loop-1');
+
+      await expect(waited).resolves.toBe(true);
+    });
+
+    it('does not wait for a turn of another conversation', async () => {
+      await mod.beginTurn('conv-2', 'loop-2', null);
+      await expect(mod.whenTurnsEnded('conv-1')).resolves.toBeUndefined();
+    });
+  });
+
   describe('undo record', () => {
     const text = (value: string): Promise<string> => sha256Hex(new TextEncoder().encode(value));
     /** Texts of an `undo.json` of loop-1 that are JSON and no record of that turn. */

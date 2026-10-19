@@ -29,6 +29,7 @@ import {
   readTurnIndex,
   saveUndoRecord,
   turnCopyPath,
+  whenTurnsEnded,
   type FileSide,
 } from './turnChanges';
 import {
@@ -217,6 +218,8 @@ export async function assessRedo(
  * file is listed once, with what it held before the first of these turns
  * changed it as its target. Reads only. A file already at its target is not
  * listed, nor is one whose chain has a turn without a readable undo record.
+ * A turn of the conversation that is still open, as the one just redone is
+ * until its run has released it, is waited for and read after its settle.
  */
 export async function planRedoRestore(
   conversationId: string,
@@ -228,6 +231,7 @@ export async function planRedoRestore(
   const isPresent = options.isConversationPresent ?? (() => true);
   if (!isPresent()) return EMPTY_PLAN;
   await ensureRecovered(conversationId);
+  await whenTurnsEnded(conversationId);
   return enqueue(conversationId, async () => {
     if (!isPresent()) return EMPTY_PLAN;
     const { files } = await assessRedo(conversationId, loopIds, options.authorize);
@@ -307,8 +311,9 @@ function lastAfterRedo(record: TurnUndoRecord, entry: TurnUndoEntry, result: 'do
  * that already holds its target counts as restored and is not written; a
  * file that is no longer listed as restored is not written either. Each
  * turn with at least one restored file is recorded as undone, once; a turn
- * with none is left as it was. Rejects with `TurnUndoRefusedError` while a
- * turn of the conversation runs.
+ * with none is left as it was. A turn of the conversation that is still open
+ * is waited for and the files are read after its settle; rejects with
+ * `TurnUndoRefusedError` when a turn opens before the queued work runs.
  */
 export async function restoreForRedo(
   conversationId: string,
@@ -321,8 +326,8 @@ export async function restoreForRedo(
   assertConfirmedPaths(confirmed);
   const isPresent = options.isConversationPresent ?? (() => true);
   if (!isPresent()) return EMPTY_RESULT;
-  if (hasOpenTurn(conversationId)) throw new TurnUndoRefusedError('turn-running');
   await ensureRecovered(conversationId);
+  await whenTurnsEnded(conversationId);
   return enqueue(conversationId, async () => {
     if (!isPresent()) return EMPTY_RESULT;
     if (hasOpenTurn(conversationId)) throw new TurnUndoRefusedError('turn-running');

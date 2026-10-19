@@ -127,6 +127,11 @@ function atomicWritesOf(spy: { mock: { calls: unknown[][] } }, path: string): nu
 
 const THREE_TURNS = ['loop-1', 'loop-2', 'loop-3'];
 
+/** Lets every pending microtask run, so a call made before has reached its first wait. */
+function yieldToMainThread(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 beforeAll(async () => {
   host.fs = createMemoryHostFs();
   await import('./turnChanges');
@@ -388,6 +393,23 @@ describe('redoRestore', () => {
       });
     });
 
+    it('plans a turn that is still settling once its settle has run', async () => {
+      fs.write(`${WS}/a.md`, 'v0');
+      await changes.readTurnIndex('conv-1');
+      await changes.beginTurn('conv-1', 'loop-1', WS);
+      await changes.captureBefore('loop-1', `${WS}/a.md`);
+      fs.write(`${WS}/a.md`, 'v1');
+
+      const planning = plan(['loop-1']);
+      await yieldToMainThread();
+      await changes.endTurn('loop-1');
+
+      await expect(planning).resolves.toEqual({
+        willRestore: [{ path: `${WS}/a.md`, display: 'a.md', action: 'write-before' }],
+        wontRestore: [],
+      });
+    });
+
     it('gives an empty plan for turns without records and for a conversation that is gone', async () => {
       await runTurn('loop-1', () => {
         fs.write(`${WS}/by-command.md`, 'x\n');
@@ -525,12 +547,32 @@ describe('redoRestore', () => {
       expect(atomicWritesOf(writes, `${WS}/a.md`)).toBe(1);
     });
 
-    it('refuses while a turn of the conversation runs', async () => {
+    it('restores a turn that is still settling once its settle has run', async () => {
+      fs.write(`${WS}/a.md`, 'v0');
+      await changes.readTurnIndex('conv-1');
+      await changes.beginTurn('conv-1', 'loop-1', WS);
+      await changes.captureBefore('loop-1', `${WS}/a.md`);
+      fs.write(`${WS}/a.md`, 'v1');
+
+      const restoring = restore(['loop-1'], [`${WS}/a.md`]);
+      await yieldToMainThread();
+      await changes.endTurn('loop-1');
+
+      await expect(restoring).resolves.toEqual({ done: 1, notDone: [] });
+      expect(fs.read(`${WS}/a.md`)).toBe('v0');
+      expect(recordOf('loop-1').state).toBe('undone');
+    });
+
+    it('refuses when a turn opens before its queued work runs', async () => {
       await runThreeTurns();
       const confirmed = await confirmedOf(THREE_TURNS);
-      await changes.beginTurn('conv-1', 'loop-9', WS);
 
-      await expect(restore(THREE_TURNS, confirmed)).rejects.toMatchObject({ reason: 'turn-running' });
+      // The restore finds no open turn and queues its work; the turn opens before that work runs.
+      const restoring = restore(THREE_TURNS, confirmed);
+      const opening = changes.beginTurn('conv-1', 'loop-9', WS);
+
+      await expect(restoring).rejects.toMatchObject({ reason: 'turn-running' });
+      await opening;
       expect(fs.read(`${WS}/a.md`)).toBe('v2');
     });
 
