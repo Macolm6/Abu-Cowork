@@ -668,6 +668,30 @@ export default function ChatView({
   }, [scrollParentEl, updatePinned, writeTurnSpacerHeight, writeTurnSpacerWithCompensation]);
   // Message id to briefly highlight after a search-hit jump (see effect below).
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+  // Ids of the compaction rows whose summary is shown. Kept here because the
+  // list unmounts rows that scroll far out of view.
+  const [expandedCompactIds, setExpandedCompactIds] = useState<ReadonlySet<string>>(() => new Set());
+  const expandedCompactIdsRef = useRef<ReadonlySet<string>>(expandedCompactIds);
+  useLayoutEffect(() => {
+    if (expandedCompactIdsRef.current.size === 0) return;
+    const empty = new Set<string>();
+    expandedCompactIdsRef.current = empty;
+    setExpandedCompactIds(empty);
+  }, [activeConvId]);
+  const toggleCompactSummary = useCallback((messageId: string) => {
+    const next = new Set(expandedCompactIdsRef.current);
+    if (next.has(messageId)) {
+      next.delete(messageId);
+    } else {
+      // Expanding counts as reading upward, exactly like an upward scroll: the
+      // bottom lock and any active-turn anchor are released, so the row stays
+      // where it is and the summary opens below it.
+      leaveTurnAnchor('user-scroll-intent');
+      next.add(messageId);
+    }
+    expandedCompactIdsRef.current = next;
+    setExpandedCompactIds(next);
+  }, [leaveTurnAnchor]);
   // Index of the message group at the top of the viewport — what the chapter
   // rail highlights. Measured from the DOM (see the scroll-spy effect below).
   const [firstVisibleGroup, setFirstVisibleGroup] = useState(0);
@@ -1814,7 +1838,11 @@ export default function ChatView({
             }}
             itemContent={(index, group) =>
               group.length === 1 && isCompactBoundary(group[0]) ? (
-                <CompactDivider message={group[0]} />
+                <CompactDivider
+                  message={group[0]}
+                  expanded={expandedCompactIds.has(group[0].id)}
+                  onToggle={() => toggleCompactSummary(group[0].id)}
+                />
               ) : group.length === 1 && isMaxTurnsNoticeMessage(group[0]) ? (
                 // The turn-cap notice. Its own group by construction: the
                 // marker carries no loopId, and `groupMessagesByLoop` starts a
