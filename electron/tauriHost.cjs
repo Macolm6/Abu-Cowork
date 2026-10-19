@@ -33,6 +33,7 @@ const { ipcMain, nativeTheme, powerMonitor, screen, BrowserWindow, dialog } = re
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const { abuAppDataDir, resourceRoot, REPO_ROOT } = require('./appEnv.cjs');
 const { isTauriTransitionBuild } = require('./releaseMetadata.cjs');
 const { initSecretStore, secretDispatch } = require('./secretStore.cjs');
@@ -162,7 +163,14 @@ const { previewDispatch, PREVIEW_MISS } = require('./previewServer.cjs');
 const { catalogDispatch, CATALOG_MISS } = require('./catalogDb.cjs');
 const { noticeDispatch, NOTICE_MISS } = require('./noticeDb.cjs');
 const { usageDispatch, USAGE_MISS } = require('./usageDb.cjs');
-const { commandDispatch, COMMAND_MISS, teardownCommandHost } = require('./commandHost.cjs');
+const {
+  commandDispatch,
+  COMMAND_MISS,
+  teardownCommandHost,
+  installBackgroundCommands,
+  legacyConsoleEncoding,
+} = require('./commandHost.cjs');
+const { createBackgroundCommands } = require('./backgroundCommands.cjs');
 const { triggerDispatch, TRIGGER_MISS } = require('./triggerServer.cjs');
 const { networkProxyDispatch, NETWORK_PROXY_MISS } = require('./networkProxy.cjs');
 const { httpDispatch, HTTP_MISS } = require('./httpHost.cjs');
@@ -924,6 +932,13 @@ function dispatch(app, cmd, args) {
 
 /** @param {import('electron').App} app */
 function registerTauriHost(app, options = {}) {
+  const backgroundCommandTable = createBackgroundCommands({
+    emit: emitEvent,
+    now: Date.now,
+    randomId: crypto.randomBytes,
+    legacyEncoding: legacyConsoleEncoding,
+  });
+  installBackgroundCommands(backgroundCommandTable);
   const pluginOperationSession = createOperationSession(app.getPath('home'));
   const pluginSnapshots = createPluginSnapshotHost({ home: app.getPath('home'), mutate: input => pluginOperationSession.mutate(input) });
   const pluginAuthors = createPluginAuthorHost({ home: app.getPath('home'), session: pluginOperationSession, snapshots: pluginSnapshots });
@@ -1445,6 +1460,7 @@ function registerTauriHost(app, options = {}) {
   let quitConfirmationPending = false;
   quitGate = createQuitGate({
     send: payload => emitWindowEvent(getMainWindow(), 'quit-requested', payload),
+    backgroundCommandCount: () => backgroundCommandTable.runningCount(),
     onProceed: () => app.quit(),
     onCancelled: () => { quitting = false; },
     onUnavailable: () => {

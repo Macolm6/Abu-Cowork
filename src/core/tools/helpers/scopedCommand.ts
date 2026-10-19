@@ -39,6 +39,12 @@ export async function invokeTaskCommand<T>(
     throw new TaskCommandAbortedError();
   }
 
+  // A background command is listed, read and stopped per conversation.
+  const background = args.background === true;
+  if (background && !context?.conversationId) {
+    throw new TypeError('a background command must belong to a conversation');
+  }
+
   const taskInvoke = captureTaskCommandInvoke(context?.loopId);
   const commandId = hasElectronCommandHost()
     ? makeCommandId(options?.commandIdPrefix ?? 'task-command')
@@ -63,6 +69,7 @@ export async function invokeTaskCommand<T>(
     const result = await taskInvoke<T>(cmd, {
       ...(commandId ? { commandId } : {}),
       ...args,
+      ...(background ? { conversationId: context?.conversationId } : {}),
     });
     keepAbortListener = options?.keepAbortListenerAfterResolve?.(result) === true;
     return result;

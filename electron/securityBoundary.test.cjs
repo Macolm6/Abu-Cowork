@@ -322,6 +322,29 @@ test('pet, overlay, and stop-button windows only receive their required commands
   );
 });
 
+test('background command controls are open to the main window only', () => {
+  const commands = [
+    ['background_command_list', { conversationId: 'c1' }],
+    ['background_command_output', { conversationId: 'c1', id: 'bg-0123abcd', since: 0 }],
+    ['background_command_stop', { conversationId: 'c1', id: 'bg-0123abcd' }],
+    ['background_command_clear', { conversationId: 'c1' }],
+    ['background_command_stop_conversation', { conversationId: 'c1' }],
+    ['background_command_running_count', {}],
+  ];
+  for (const label of ['pet', 'overlay', 'overlay-strip', 'stop-button']) {
+    for (const [cmd, args] of commands) {
+      assert.throws(
+        () => validateInvokePayload(trustedRecord(label), { cmd, args }),
+        /cannot invoke/,
+        `${label} ${cmd}`,
+      );
+    }
+  }
+  for (const [cmd, args] of commands) {
+    assert.doesNotThrow(() => validateInvokePayload(trustedRecord('main'), { cmd, args }), cmd);
+  }
+});
+
 test('the pet may move itself and report where, but not raise or focus windows', () => {
   const pet = trustedRecord('pet');
   const petPosition = { label: 'main', value: { position: { type: 'Physical', x: 480, y: 360 } } };

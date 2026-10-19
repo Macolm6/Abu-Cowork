@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { useConfirm } from '@/components/ds/confirm-context';
 import { useI18n } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
@@ -13,7 +14,9 @@ import { UNDO_OFFER_MS } from './undoOffer';
  * The record is read first. A conversation that can be read is deleted at once, and the recent
  * tasks offer to undo it for a few seconds. One whose record is on disk and cannot be read
  * (`chatStore.loadFailures`) has nothing an undo could bring back, so the user is asked first, by
- * name, once the menu has gone and has given the focus back to the row. The answer is checked
+ * name, once the menu has gone and has given the focus back to the row. A conversation with
+ * running background commands is asked about the same way, with their count: the delete stops
+ * them, and its undo brings back only the conversation. The answer is checked
  * against the store as it is then: a conversation that has gone meanwhile is left alone, and one
  * that has been read meanwhile is deleted like any other. One delete per conversation at a time.
  */
@@ -57,7 +60,9 @@ export function useDeleteConversation(rowFocus: ConversationRowFocus, offersUndo
       deleting.current.add(convId);
       try {
         if (!menuHasGone) await chat().loadConversation(convId);
-        if (isUnreadable(convId)) {
+        const runningCommands = await invoke<number>('background_command_running_count', { conversationId: convId });
+        const unreadable = isUnreadable(convId);
+        if (unreadable || runningCommands > 0) {
           if (!menuHasGone && menuClosing.current) {
             // The close hook asks: a question opened now would take the focus from a menu that
             // is leaving, and give it back to nothing.
@@ -65,11 +70,26 @@ export function useDeleteConversation(rowFocus: ConversationRowFocus, offersUndo
             return;
           }
           if (!mounted.current) return;
+          if (chat().conversationIndex[convId] === undefined) return;
           const { t: words, format: fill, confirm: ask } = latest.current;
           // The name is taken before asking; the answer is checked against the store below.
+          // One question when both hold: no undo is offered for an unreadable record.
+          const name = chat().conversationIndex[convId].title;
+          const one = runningCommands === 1;
+          const message = !unreadable
+            ? (one ? words.sidebar.deleteWithBackgroundCommandsMessageOne : words.sidebar.deleteWithBackgroundCommandsMessage)
+            : runningCommands > 0
+              ? fill(one
+                ? words.sidebar.deleteUnreadableWithBackgroundCommandsMessageOne
+                : words.sidebar.deleteUnreadableWithBackgroundCommandsMessage, { name })
+              : fill(words.sidebar.deleteUnreadableMessage, { name });
           const confirmed = await ask({
-            title: words.sidebar.deleteUnreadableTitle,
-            message: fill(words.sidebar.deleteUnreadableMessage, { name: chat().conversationIndex[convId].title }),
+            title: runningCommands > 0
+              ? (one
+                ? words.sidebar.deleteWithBackgroundCommandsTitleOne
+                : fill(words.sidebar.deleteWithBackgroundCommandsTitle, { count: runningCommands }))
+              : words.sidebar.deleteUnreadableTitle,
+            message,
             confirmLabel: words.common.delete,
             tone: 'danger',
           });

@@ -21,6 +21,27 @@ describe('getToolLabel', () => {
       expect(getToolLabel('run_command', { command: 'ls' }, 'zh-CN').label).toBe('执行 ls');
     });
 
+    it('run_command in background mode says so', () => {
+      expect(getToolLabel('run_command', { command: 'npm run dev', background: true }, 'zh-CN').label).toBe('在后台执行 npm run dev');
+      expect(getToolLabel('run_command', { command: 'npm run dev', background: true }, 'en-US').label).toBe('Run npm run dev in background');
+      expect(getToolLabel('run_command', { command: 'npm run dev', background: false }, 'zh-CN').label).toBe('执行 npm run dev');
+    });
+
+    it('background_command_output names the command from the step record, else its id', () => {
+      const record = { backgroundCommand: { command: 'npm run dev' } };
+      expect(getToolLabel('background_command_output', { id: 'bg-0a1b2c3d' }, 'zh-CN', record).label).toBe('查看后台命令的输出 npm run dev');
+      expect(getToolLabel('background_command_output', { id: 'bg-0a1b2c3d' }, 'en-US', record).label).toBe('Read background command output npm run dev');
+      expect(getToolLabel('background_command_output', { id: 'bg-0a1b2c3d' }, 'zh-CN').label).toBe('查看后台命令的输出 bg-0a1b2c3d');
+      expect(getToolLabel('background_command_output', {}, 'en-US').label).toBe('Read background command output');
+    });
+
+    it('stop_background_command names the command from the step record, else its id', () => {
+      const record = { backgroundCommand: { command: 'npm run dev' } };
+      expect(getToolLabel('stop_background_command', { id: 'bg-0a1b2c3d' }, 'zh-CN', record).label).toBe('停止后台命令 npm run dev');
+      expect(getToolLabel('stop_background_command', { id: 'bg-0a1b2c3d' }, 'en-US', record).label).toBe('Stop background command npm run dev');
+      expect(getToolLabel('stop_background_command', { id: 'bg-0a1b2c3d' }, 'en-US').label).toBe('Stop background command bg-0a1b2c3d');
+    });
+
     it('use_skill follows locale', () => {
       expect(getToolLabel('use_skill', { skill_name: '/pdf' }, 'en-US').label).toBe('Use /pdf skill');
       expect(getToolLabel('use_skill', { skill_name: '/pdf' }, 'zh-CN').label).toBe('使用 /pdf 技能');

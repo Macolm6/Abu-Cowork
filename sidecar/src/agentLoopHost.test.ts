@@ -1526,6 +1526,35 @@ describe('agentLoopHost', () => {
       expect(reportMetadata).not.toHaveBeenCalled();
     });
 
+    it('replays the background command metadata of a tool run in the shell', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      mockSendRequest({
+        toolInvokeResult: {
+          result: 'Stop requested for background command bg-0a1b2c3d (npm run dev).',
+          metadata: { backgroundCommand: { command: 'npm run dev', unknownField: 'dropped' } },
+        },
+      });
+      const reportMetadata = vi.fn();
+
+      const result = await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('stop_background_command', { id: 'bg-0a1b2c3d' }, undefined, undefined, { reportMetadata }),
+      );
+
+      expect(result).toBe('Stop requested for background command bg-0a1b2c3d (npm run dev).');
+      expect(reportMetadata).toHaveBeenCalledWith({ backgroundCommand: { command: 'npm run dev' } });
+    });
+
+    it('rejects a background command metadata envelope without a command', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      mockSendRequest({ toolInvokeResult: { result: 'status: running', metadata: { backgroundCommand: { command: '' } } } });
+      const reportMetadata = vi.fn();
+
+      await expect(withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('background_command_output', { id: 'bg-0a1b2c3d' }, undefined, undefined, { reportMetadata }),
+      )).rejects.toThrow('Invalid tool.invoke background command envelope');
+      expect(reportMetadata).not.toHaveBeenCalled();
+    });
+
     it('replays a validated batch terminal summary metadata envelope into the original tool context', async () => {
       hasLocalToolMock.mockReturnValue(false);
       const summary = {
