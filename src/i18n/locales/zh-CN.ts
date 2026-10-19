@@ -282,7 +282,7 @@ const zhCN: TranslationDict = {
     openWith: '用 {label} 打开',
     openWithPreview: '预览',
     openWithBrowser: '浏览器',
-    fileMissing: '文件已不可访问',
+    fileMissing: '文件已经不在了',
     fileOversized: '文件过大未自动备份',
     fileBackupFailed: '文件备份失败',
     cannotRevealOriginal: '原文件已不在原位置',
@@ -640,6 +640,9 @@ const zhCN: TranslationDict = {
     compactDivider: {
       compacted: '上下文已压缩',
       compactedManual: '上下文已压缩（手动）',
+      noSummary: '没有摘要',
+      expand: '展开摘要',
+      collapse: '收起摘要',
     },
     backgroundCommands: {
       running: '{count} 个后台命令运行中',
@@ -2524,7 +2527,6 @@ const zhCN: TranslationDict = {
 
   panel: {
     workspace: '工作区',
-    files: '操作文件',
     preview: '预览',
     changesTabSingle: '改动：{name}',
     changesTabMany: '改动：{name} 等 {count} 个文件',
@@ -2593,13 +2595,19 @@ const zhCN: TranslationDict = {
     versionHistoryReverted: '已恢复到该版本',
     versionHistoryRevertFailedTitle: '恢复失败',
     versionHistoryLoadFailed: '加载历史版本失败',
-    versionSourceAi: 'AI 修改前',
-    versionRevertPoint: '回退前备份',
-    // FilesSection
-    operationRead: '读取',
+    versionSourceAi: '阿布修改前',
+    versionRevertPoint: '恢复前另存',
+    versionRestoreTitle: '把 {name} 恢复到 {time} 的样子？',
+    versionRestoreMessage: '现在的内容会另存一份，可以在历史版本里找回。',
+    versionRestoreConfirm: '恢复',
+    // ChangedFilesSection
+    changedFiles: '改过的文件',
+    changedFilesEmpty: '阿布改过的文件会列在这里',
+    changedFilesMore: '还有 {count} 个文件',
+    operationDelete: '删除',
+    viewChanges: '查看改动',
     operationModify: '修改',
     operationCreate: '新建',
-    clickToPreview: '点击预览',
     showInFinderButton: '在文件管理器中显示',
     noReferencedFiles: '暂无引用文件',
     filesCount: '{count} 个',
@@ -2614,10 +2622,8 @@ const zhCN: TranslationDict = {
     progressEmptyHint: '任务执行进度将显示在这里',
     // ContextSection
     context: '操作记录',
-    contextEmptyHint: '使用的工具和引用的文件将显示在这里',
-    accessedFiles: '访问的文件',
+    contextEmptyHint: '阿布用到的工具会显示在这里',
     toolUsage: '工具使用',
-    moreFiles: '还有 {count} 个文件...',
     collapse: '收起',
     connectors: '连接器',
     refreshing: '刷新中...',

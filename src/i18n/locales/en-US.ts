@@ -282,7 +282,7 @@ const enUS: TranslationDict = {
     openWith: 'Open with {label}',
     openWithPreview: 'Preview',
     openWithBrowser: 'Browser',
-    fileMissing: 'File no longer accessible',
+    fileMissing: 'The file is no longer there',
     fileOversized: 'File too large to auto-backup',
     fileBackupFailed: 'Backup failed',
     cannotRevealOriginal: 'Original file is no longer at this location',
@@ -639,6 +639,9 @@ const enUS: TranslationDict = {
     compactDivider: {
       compacted: 'Context compacted',
       compactedManual: 'Context compacted (manual)',
+      noSummary: 'No summary',
+      expand: 'Show summary',
+      collapse: 'Hide summary',
     },
     backgroundCommands: {
       running: '{count} background commands running',
@@ -2522,7 +2525,6 @@ const enUS: TranslationDict = {
 
   panel: {
     workspace: 'Workspace',
-    files: 'Operated Files',
     preview: 'Preview',
     changesTabSingle: 'Changes: {name}',
     changesTabMany: 'Changes: {name} ({count} files)',
@@ -2591,13 +2593,19 @@ const enUS: TranslationDict = {
     versionHistoryReverted: 'Reverted to this version',
     versionHistoryRevertFailedTitle: 'Revert failed',
     versionHistoryLoadFailed: 'Failed to load version history',
-    versionSourceAi: 'Before AI edit',
-    versionRevertPoint: 'Backup before revert',
-    // FilesSection
-    operationRead: 'Read',
+    versionSourceAi: 'Before Abu edited',
+    versionRevertPoint: 'Saved before restore',
+    versionRestoreTitle: 'Restore {name} to how it was at {time}?',
+    versionRestoreMessage: 'The current content is saved as a version, so you can get it back from the version history.',
+    versionRestoreConfirm: 'Restore',
+    // ChangedFilesSection
+    changedFiles: 'Changed files',
+    changedFilesEmpty: 'Files Abu changes will be listed here',
+    changedFilesMore: '{count} more files',
+    operationDelete: 'Delete',
+    viewChanges: 'View changes',
     operationModify: 'Modify',
     operationCreate: 'Create',
-    clickToPreview: 'Click to preview',
     showInFinderButton: 'Show in File Manager',
     noReferencedFiles: 'No referenced files',
     filesCount: '{count}',
@@ -2612,10 +2620,8 @@ const enUS: TranslationDict = {
     progressEmptyHint: 'Task progress will appear here',
     // ContextSection
     context: 'Activity Log',
-    contextEmptyHint: 'Tools used and files referenced will appear here',
-    accessedFiles: 'Accessed Files',
+    contextEmptyHint: 'Tools Abu uses will appear here',
     toolUsage: 'Tool Usage',
-    moreFiles: '{count} more files...',
     collapse: 'Collapse',
     connectors: 'Connectors',
     refreshing: 'Refreshing...',

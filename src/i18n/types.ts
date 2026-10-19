@@ -800,6 +800,10 @@ export interface TranslationDict {
     compactDivider: {
       compacted: string;
       compactedManual: string;
+      noSummary: string;
+      // Accessible names of the row's toggle only
+      expand: string;
+      collapse: string;
     };
     // The conversation header's list of background commands
     backgroundCommands: {
@@ -3124,7 +3128,6 @@ export interface TranslationDict {
   // Panels
   panel: {
     workspace: string;
-    files: string;
     preview: string;
     /** Title of the tab that compares the one file a turn changed; `{name}` is the file name. */
     changesTabSingle: string;
@@ -3204,11 +3207,19 @@ export interface TranslationDict {
     versionHistoryLoadFailed: string;
     versionSourceAi: string;
     versionRevertPoint: string;
-    // FilesSection
-    operationRead: string;
+    /** {name}, {time} */
+    versionRestoreTitle: string;
+    versionRestoreMessage: string;
+    versionRestoreConfirm: string;
+    // ChangedFilesSection
+    changedFiles: string;
+    changedFilesEmpty: string;
+    /** {count} */
+    changedFilesMore: string;
+    operationDelete: string;
+    viewChanges: string;
     operationModify: string;
     operationCreate: string;
-    clickToPreview: string;
     showInFinderButton: string;
     noReferencedFiles: string;
     filesCount: string;
@@ -3224,9 +3235,7 @@ export interface TranslationDict {
     // ContextSection
     context: string;
     contextEmptyHint: string;
-    accessedFiles: string;
     toolUsage: string;
-    moreFiles: string;
     collapse: string;
     connectors: string;
     refreshing: string;

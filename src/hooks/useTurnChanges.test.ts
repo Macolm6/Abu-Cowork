@@ -1,12 +1,12 @@
 // @vitest-environment happy-dom
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { TurnChanges, TurnIndex } from '@/core/session/turnChanges';
+import type { TurnChanges, TurnIndex, TurnIndexEntry } from '@/core/session/turnChanges';
 
 import type { TurnUndoPlan, TurnUndoResult } from '@/core/session/turnUndo';
 import type { TurnUndoRecord } from '@/core/session/turnUndoRecord';
 import { useChatStore } from '@/stores/chatStore';
-import type { Conversation } from '@/types';
+import type { Conversation, Message } from '@/types';
 
 const mocks = vi.hoisted(() => ({
   readTurnIndex: vi.fn(),
@@ -46,9 +46,22 @@ vi.mock('@/utils/electronHost', async (importOriginal) => ({
   canonicalizeElectronPathForPolicy: (...args: unknown[]) => mocks.canonicalize(...args),
 }));
 
-import { __testing, useTurnChangesDetail, useTurnChangesEntry, useTurnUndo, useTurnUndoRecord } from './useTurnChanges';
+import {
+  __testing,
+  useConversationChangedFiles,
+  useTurnChangesDetail,
+  useTurnChangesEntry,
+  useTurnUndo,
+  useTurnUndoRecord,
+} from './useTurnChanges';
 
-const ENTRY = { total: 2, added: 5, deleted: 1, firstFile: 'a.md' };
+const ENTRY: TurnIndexEntry = {
+  total: 2,
+  added: 5,
+  deleted: 1,
+  firstFile: 'a.md',
+  files: [{ path: '/ws/a.md', display: 'a.md', status: 'modified' }, { path: '/ws/b.xlsx', display: 'b.xlsx', status: 'created' }],
+};
 const TURN: TurnChanges = {
   loopId: 'loop-1',
   files: [
@@ -411,6 +424,88 @@ describe('useTurnChanges', () => {
       expect(isConversationPresent()).toBe(true);
       setConversations(['conv-2']);
       expect(isConversationPresent()).toBe(false);
+    });
+  });
+
+  describe('useConversationChangedFiles', () => {
+    function indexEntry(files: TurnIndexEntry['files'], extra: Partial<TurnIndexEntry> = {}): TurnIndexEntry {
+      return { total: files.length, added: 0, deleted: 0, firstFile: 'x', files, ...extra };
+    }
+
+    function user(id: string, content: string, timestamp: number, extra: Partial<Message> = {}): Message {
+      return { id, role: 'user', content, timestamp, ...extra };
+    }
+
+    function assistant(id: string, loopId: string, extra: Partial<Message> = {}): Message {
+      return { id, role: 'assistant', content: '', timestamp: 0, loopId, ...extra };
+    }
+
+    function setMessages(messages: Message[], status: Conversation['status'] = 'idle'): void {
+      useChatStore.setState({
+        conversations: { 'conv-1': { id: 'conv-1', title: 'conv-1', messages, createdAt: 1_000, updatedAt: 1_000, status } },
+      });
+    }
+
+    it('is loading until the index is read, then lists the files of the turns the messages hold', async () => {
+      mocks.readTurnIndex.mockResolvedValue({
+        'loop-1': indexEntry([{ path: '/ws/a.md', display: 'a.md', status: 'created' }]),
+        'loop-gone': indexEntry([{ path: '/ws/gone.md', display: 'gone.md', status: 'created' }]),
+      } satisfies TurnIndex);
+      setMessages([user('u1', 'write a', 5_000), assistant('a1', 'loop-1')]);
+
+      const { result } = renderHook(() => useConversationChangedFiles('conv-1'));
+      expect(result.current).toEqual({ status: 'loading', files: [] });
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+      expect(result.current.files.map((file) => file.display)).toEqual(['a.md']);
+    });
+
+    it('describes a turn by the first line of the last user message before it that is no system message', async () => {
+      mocks.readTurnIndex.mockResolvedValue({
+        'loop-1': indexEntry([{ path: '/ws/a.md', display: 'a.md', status: 'modified' }]),
+      } satisfies TurnIndex);
+      setMessages([
+        user('u0', 'earlier', 1_000),
+        user('u1', 'tidy the notes\nand more detail', 5_000),
+        user('s1', 'internal', 6_000, { isSystem: true }),
+        assistant('a1', 'loop-1'),
+        assistant('a2', 'loop-1'),
+      ]);
+
+      const { result } = renderHook(() => useConversationChangedFiles('conv-1'));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+      expect(result.current.files[0].turns).toEqual([{ loopId: 'loop-1', prompt: 'tidy the notes', at: 5_000, fileIndex: 0 }]);
+    });
+
+    it('lists the file changes of the running turn, and the saved turn once it is saved', async () => {
+      mocks.readTurnIndex.mockResolvedValue({} satisfies TurnIndex);
+      const running = assistant('a1', 'loop-1', {
+        toolCalls: [{ id: 't1', name: 'write_file', input: {}, fileChange: { path: '/ws/new.md', kind: 'create' } }],
+      });
+      setMessages([user('u1', 'write', 5_000), running], 'running');
+
+      const { result } = renderHook(() => useConversationChangedFiles('conv-1'));
+      await waitFor(() => expect(result.current.files.map((file) => [file.path, file.status])).toEqual([['/ws/new.md', 'created']]));
+
+      mocks.readTurnIndex.mockResolvedValue({
+        'loop-1': indexEntry([{ path: '/ws/new.md', display: 'new.md', status: 'created' }]),
+      } satisfies TurnIndex);
+      act(() => saved('conv-1', 'loop-1'));
+      await waitFor(() => expect(result.current.files.map((file) => file.display)).toEqual(['new.md']));
+    });
+
+    it('returns the same list while text streams into a reply', async () => {
+      mocks.readTurnIndex.mockResolvedValue({
+        'loop-1': indexEntry([{ path: '/ws/a.md', display: 'a.md', status: 'modified' }]),
+      } satisfies TurnIndex);
+      const reply = assistant('a1', 'loop-1', { content: 'one' });
+      setMessages([user('u1', 'go', 5_000), reply], 'running');
+      const { result } = renderHook(() => useConversationChangedFiles('conv-1'));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+      const files = result.current.files;
+
+      act(() => setMessages([user('u1', 'go', 5_000), { ...reply, content: 'one two' }], 'running'));
+
+      expect(result.current.files).toBe(files);
     });
   });
 });
