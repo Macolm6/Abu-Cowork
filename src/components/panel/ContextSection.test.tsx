@@ -129,22 +129,25 @@ describe('ContextSection', () => {
     expect(screen.queryByText('slack')).not.toBeInTheDocument();
   });
 
-  it('expands a file that has content from its own button', () => {
+  it('shows the tool use and the connectors, and no list of files', () => {
     seed({ loading: false });
     openContext();
 
-    const file = screen.getByRole('button', { name: 'notes.md' });
-    expect(file).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.getByText('notes.md')).toHaveClass('font-code');
+    expect(screen.getByText('Tool Usage')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Connectors/ })).toBeInTheDocument();
+    expect(screen.queryByText('notes.md')).not.toBeInTheDocument();
+    expect(screen.queryByText('main.ts')).not.toBeInTheDocument();
     expect(screen.queryByText(/first line/)).not.toBeInTheDocument();
+  });
 
-    fireEvent.click(file);
+  it('says where the tools will be shown before any tool is used', () => {
+    useChatStore.setState({
+      activeConversationId: CONV,
+      conversations: { [CONV]: { id: CONV, title: 'Context', messages: [], createdAt: 1, updatedAt: 1, status: 'idle' } },
+    });
+    openContext();
 
-    expect(file).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByText(/first line/)).toHaveClass('font-code');
-    // A file with nothing to show is a plain row.
-    expect(screen.queryByRole('button', { name: 'main.ts' })).not.toBeInTheDocument();
-    expect(screen.getByText('main.ts')).toBeInTheDocument();
+    expect(screen.getByText('Tools Abu uses will appear here')).toBeInTheDocument();
   });
 
   it('counts tool use in neutral tags', () => {
@@ -185,6 +188,6 @@ describe('ContextSection', () => {
     }));
 
     expect(screen.getByText('6 ops')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'extra.md' })).toBeInTheDocument();
+    expect(screen.getByText('Read')).toHaveTextContent('Readx2');
   });
 });

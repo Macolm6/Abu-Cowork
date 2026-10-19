@@ -2128,9 +2128,11 @@ async function handleSnapshotBeforeAiEdit(rawParams: unknown): Promise<null> {
     // one in the request.
     await captureTurnFileBefore(path, session.loopId);
     if (rawOpts.captureOnly === true) return;
+    // The version records the conversation and turn it was left in, so it
+    // takes the ones this renderer registered for the run as well.
     await snapshotVersionBeforeAiEdit(path, {
-      loopId: typeof rawOpts.loopId === 'string' ? rawOpts.loopId : undefined,
-      conversationId: typeof rawOpts.conversationId === 'string' ? rawOpts.conversationId : undefined,
+      loopId: session.loopId,
+      conversationId: session.conversationId,
       knownContent: typeof rawOpts.knownContent === 'string' ? rawOpts.knownContent : undefined,
     });
   });

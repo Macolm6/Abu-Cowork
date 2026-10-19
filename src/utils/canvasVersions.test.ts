@@ -222,6 +222,8 @@ describe('canvasVersions', () => {
   });
 
   describe('revertToVersion', () => {
+    const ORIGIN = { conversationId: 'conv-1' };
+
     it('reads the snapshot and atomically writes it back to the original path', async () => {
       await mod.snapshotVersion(filePath, 'original content');
       await mod.snapshotVersion(filePath, 'edited content');
@@ -235,7 +237,7 @@ describe('canvasVersions', () => {
         if (a.ts !== b.ts) return a.ts - b.ts;
         return Number(a.id.split('-').pop()) - Number(b.id.split('-').pop());
       })[0];
-      const written = await mod.revertToVersion(filePath, oldest.id);
+      const written = await mod.revertToVersion(filePath, oldest.id, ORIGIN);
 
       expect(written).toBe('original content');
       expect(mockInvoke).toHaveBeenCalledWith('atomic_write_text', {
@@ -253,7 +255,7 @@ describe('canvasVersions', () => {
       // Disk has newer, un-snapshotted content at revert time.
       fs.files.set(filePath, 'current disk content');
 
-      const written = await mod.revertToVersion(filePath, oldId);
+      const written = await mod.revertToVersion(filePath, oldId, ORIGIN);
       expect(written).toBe('old version');
       expect(fs.files.get(filePath)).toBe('old version');
 
@@ -269,7 +271,7 @@ describe('canvasVersions', () => {
       const versions = await mod.listVersions(filePath);
       fs.files.set(filePath, 'same');
 
-      await mod.revertToVersion(filePath, versions[0].id);
+      await mod.revertToVersion(filePath, versions[0].id, ORIGIN);
       expect(await mod.listVersions(filePath)).toHaveLength(1);
     });
 
@@ -280,7 +282,7 @@ describe('canvasVersions', () => {
 
       const versions1 = await mod.listVersions(filePath);
       const oldId = versions1.find((v) => v.id.endsWith('-0'))!.id;
-      await mod.revertToVersion(filePath, oldId);
+      await mod.revertToVersion(filePath, oldId, ORIGIN);
 
       // Disk content ('B') already matches the latest history entry, so the
       // full-history dedup (contentExistsInHistory) skips the pre-revert
@@ -307,7 +309,7 @@ describe('canvasVersions', () => {
       const baselineEntry = versionsBefore.find((v) => v.id.endsWith('-0'))!;
       const bEntry = versionsBefore.find((v) => v.id !== baselineEntry.id)!;
 
-      const written = await mod.revertToVersion(filePath, bEntry.id);
+      const written = await mod.revertToVersion(filePath, bEntry.id, ORIGIN);
 
       expect(written).toBe('B');
       expect(fs.files.get(filePath)).toBe('B');
@@ -326,6 +328,67 @@ describe('canvasVersions', () => {
       expect(versions).toHaveLength(1);
       expect(versions[0].label).toBe('用户消息');
       expect(versions[0].source).toBe('ai');
+    });
+  });
+
+  describe('origins', () => {
+    const A = { conversationId: 'conv-a', loopId: 'loop-1' };
+    const B = { conversationId: 'conv-b', loopId: 'loop-7' };
+
+    it('records the conversation and turn a new version was left in', async () => {
+      await mod.snapshotVersion(filePath, 'v1', { source: 'ai', origin: A });
+      await mod.snapshotVersion(filePath, 'v2');
+
+      const [plain, fromA] = await mod.listVersions(filePath);
+      expect(fromA.origins).toEqual([A]);
+      expect(plain.origins).toBeUndefined();
+    });
+
+    it('adds the conversation to the latest version when the content is the same, once', async () => {
+      await mod.snapshotVersion(filePath, 'same', { source: 'ai', origin: A });
+      await mod.snapshotVersion(filePath, 'same', { source: 'ai', origin: B });
+      await mod.snapshotVersion(filePath, 'same', { source: 'ai', origin: B });
+
+      const versions = await mod.listVersions(filePath);
+      expect(versions).toHaveLength(1);
+      expect(versions[0].origins).toEqual([A, B]);
+    });
+
+    it('records the conversation that asked for a revert on the version it keeps first', async () => {
+      await mod.snapshotVersion(filePath, 'old');
+      const [old] = await mod.listVersions(filePath);
+      fs.files.set(filePath, 'current');
+
+      await mod.revertToVersion(filePath, old.id, { conversationId: 'conv-a' });
+
+      const [kept] = await mod.listVersions(filePath);
+      expect(kept.label).toBe(mod.REVERT_LABEL);
+      expect(kept.origins).toEqual([{ conversationId: 'conv-a' }]);
+    });
+
+    it('adds the conversation that asked for a revert to the version that already holds the current content', async () => {
+      await mod.snapshotVersion(filePath, 'A', { source: 'ai', origin: A });
+      await mod.snapshotVersion(filePath, 'B');
+      fs.files.set(filePath, 'A');
+      const versions = await mod.listVersions(filePath);
+      const target = versions.find((version) => version.origins === undefined)!;
+
+      await mod.revertToVersion(filePath, target.id, { conversationId: 'conv-b' });
+
+      const after = await mod.listVersions(filePath);
+      expect(after).toHaveLength(2);
+      expect(after.find((version) => version.id !== target.id)!.origins).toEqual([A, { conversationId: 'conv-b' }]);
+    });
+
+    it('lists only the versions of a conversation when asked for one, and every version otherwise', async () => {
+      await mod.snapshotVersion(filePath, 'legacy');
+      await mod.snapshotVersion(filePath, 'from a', { source: 'ai', origin: A });
+      await mod.snapshotVersion(filePath, 'from b', { source: 'ai', origin: B });
+
+      const ofA = await mod.listVersions(filePath, { conversationId: 'conv-a' });
+      expect(ofA.map((version) => version.origins)).toEqual([[A]]);
+      await expect(mod.listVersions(filePath)).resolves.toHaveLength(3);
+      await expect(mod.listVersions(filePath, { conversationId: 'conv-c' })).resolves.toEqual([]);
     });
   });
 
