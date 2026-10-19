@@ -1099,16 +1099,14 @@ export function endTurn(loopId: string, options?: { workspacePath?: string | nul
 }
 
 /**
- * Resolves once no turn of the conversation is open: every turn open now has
- * had its settle queued by `endTurn`, and so has any turn opened meanwhile.
- * Work queued after this runs behind those settles.
+ * Resolves once every turn of the conversation that is open at the call has
+ * had its settle queued by `endTurn`. Work queued after this runs behind those
+ * settles. A turn opened after the call is not waited for: `hasOpenTurn` in
+ * the queued work tells of it.
  */
 export async function whenTurnsEnded(conversationId: string): Promise<void> {
-  for (;;) {
-    const open = [...openTurns.values()].filter((turn) => turn.conversationId === conversationId);
-    if (open.length === 0) return;
-    await Promise.all(open.map((turn) => turn.ended));
-  }
+  const open = [...openTurns.values()].filter((turn) => turn.conversationId === conversationId);
+  await Promise.all(open.map((turn) => turn.ended));
 }
 
 /**

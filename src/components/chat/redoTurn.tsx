@@ -98,8 +98,10 @@ export function useRedoTurn(): { redo: (request: RedoRequest) => Promise<RedoOut
       isConversationPresent: () => Boolean(conversation()),
     };
     const { loopIds, laterTurnsCount } = redoScope(conversation()?.messages ?? [], request.cutMessageId);
-    const plan = await planRedoRestore(conversationId, loopIds, options);
+    // Read before the plan: the plan waits for a turn that has just ended, and a run that starts
+    // during that wait owns the conversation, as one that starts while the question is open does.
     const ranWhenAsked = isRunning();
+    const plan = await planRedoRestore(conversationId, loopIds, options);
 
     let restore = false;
     if (plan.willRestore.length > 0 || laterTurnsCount > 0) {

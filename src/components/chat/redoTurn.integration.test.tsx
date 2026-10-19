@@ -299,6 +299,30 @@ describe('useRedoTurn', () => {
     expectReleased();
   });
 
+  it('does nothing when a run started while the plan waited for the just-ended turn', async () => {
+    fs.write(`${WS}/a.md`, 'v0');
+    fs.write(`${WS}/b.md`, 'b0');
+    const messages = [...await turn('loop-1', { 'a.md': 'v1' }), ...await turn('loop-2', { 'a.md': 'v2', 'b.md': 'b1' })];
+    // loop-3 has ended for the user, but its run has not released its file record yet.
+    await beginTurn(conversationId, 'loop-3', WS);
+    await captureBefore('loop-3', `${WS}/c.md`);
+    fs.write(`${WS}/c.md`, 'c3');
+    putConversation([...messages, message('u-loop-3', 'user', 'loop-3'), message('a-loop-3', 'assistant', 'loop-3')]);
+    const start = vi.fn(async () => undefined);
+
+    const outcome = harness.redo(request({ start }));
+    useChatStore.getState().setConversationStatus(conversationId, 'running');
+    await act(() => endTurn('loop-3'));
+    await screen.findByTestId('redo-turn-dialog');
+    fireEvent.click(confirmButton());
+
+    expect(await outcome).toBe('cancelled');
+    expect(workspaceFiles()).toEqual(AFTER_THREE_TURNS);
+    expect(messageIds()).toEqual(['u-loop-1', 'a-loop-1', 'u-loop-2', 'a-loop-2', 'u-loop-3', 'a-loop-3']);
+    expect(start).not.toHaveBeenCalled();
+    expectReleased();
+  });
+
   it('does nothing when the messages changed while the question was open', async () => {
     await conversationWithFiles();
     const start = vi.fn(async () => undefined);

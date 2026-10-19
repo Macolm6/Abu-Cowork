@@ -563,6 +563,24 @@ describe('redoRestore', () => {
       expect(recordOf('loop-1').state).toBe('undone');
     });
 
+    it('refuses when a run opens a turn while it waits for the turn to settle', async () => {
+      fs.write(`${WS}/a.md`, 'v0');
+      await changes.readTurnIndex('conv-1');
+      await changes.beginTurn('conv-1', 'loop-1', WS);
+      await changes.captureBefore('loop-1', `${WS}/a.md`);
+      fs.write(`${WS}/a.md`, 'v1');
+
+      const restoring = restore(['loop-1'], [`${WS}/a.md`]);
+      await yieldToMainThread();
+      await changes.beginTurn('conv-1', 'loop-2', WS);
+      await changes.endTurn('loop-1');
+
+      await expect(restoring).rejects.toMatchObject({ reason: 'turn-running' });
+      expect(fs.read(`${WS}/a.md`)).toBe('v1');
+      expect(recordOf('loop-1').state).toBe('applied');
+      await changes.endTurn('loop-2');
+    });
+
     it('refuses when a turn opens before its queued work runs', async () => {
       await runThreeTurns();
       const confirmed = await confirmedOf(THREE_TURNS);

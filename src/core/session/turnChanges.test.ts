@@ -1074,6 +1074,18 @@ describe('turnChanges', () => {
       await mod.beginTurn('conv-2', 'loop-2', null);
       await expect(mod.whenTurnsEnded('conv-1')).resolves.toBeUndefined();
     });
+
+    it('resolves when the turns open at the call end, while a turn opened meanwhile is still open', async () => {
+      await mod.beginTurn('conv-1', 'loop-1', WS);
+      const waiting = mod.whenTurnsEnded('conv-1');
+      await mod.beginTurn('conv-1', 'loop-2', WS);
+
+      await mod.endTurn('loop-1');
+
+      await expect(waiting).resolves.toBeUndefined();
+      expect(mod.hasOpenTurn('conv-1')).toBe(true);
+      await mod.endTurn('loop-2');
+    });
   });
 
   describe('undo record', () => {
