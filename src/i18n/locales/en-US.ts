@@ -333,6 +333,7 @@ const enUS: TranslationDict = {
     redoLaterTurns: 'There are {count} later turn(s) after this one. They will be permanently deleted too.',
     redoRestoreFiles: 'Also restore files to how they were before this turn',
     redoNoPutBack: 'Restored files cannot be put back',
+    redoCommandNotRestored: 'Files changed by commands are not restored',
     userMessageShowMore: 'Show more',
     userMessageCollapse: 'Collapse',
     runPending: 'Sending…',

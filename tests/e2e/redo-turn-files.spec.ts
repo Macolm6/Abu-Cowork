@@ -65,6 +65,7 @@ const QUIT_QUESTION = '阿布还在处理任务，现在退出会中断它。';
 const CLOSED_MIDWAY = '上次关闭应用时，这一轮没有做完。';
 const RESTORE_OPTION = '同时把文件恢复到这一轮开始之前';
 const NO_PUT_BACK = '恢复之后不能放回';
+const COMMAND_NOT_RESTORED = '用命令改动的文件不会恢复';
 const RESTORE_A = 'a.md恢复为修改前的内容';
 const RESTORE_B = 'b.md恢复为修改前的内容';
 const TRASH_C = 'c.md移到废纸篓';
@@ -217,6 +218,7 @@ test.describe('story 1: redoing a turn restores the files it changed', () => {
     await expect(dialog).toBeVisible();
     await expect(restoreOption(dialog)).toBeChecked();
     await expect(dialog.getByText(NO_PUT_BACK, { exact: true })).toBeVisible();
+    await expect(dialog.getByText(COMMAND_NOT_RESTORED, { exact: true })).toBeVisible();
     await expect(dialog).toContainText('3 个文件会恢复到这一轮开始之前');
     await expect(willLines(dialog)).toHaveText([RESTORE_A, RESTORE_B, TRASH_C]);
     await expect(dialog.getByTestId('redo-turn-wont')).toHaveCount(0);
@@ -595,6 +597,39 @@ test.describe('story 3: knowing before the redo which files cannot be restored',
     await expectTurnEnded(page, REDONE_TEXT);
     expect(read(workspace, 'a.md')).toBe(A_BEFORE);
     expect(read(workspace, '合同.docx')).toBe('second version');
+  });
+
+  test('a file a later turn changed only with a command is in neither list, the option says command changes are not restored, and the file keeps its content', async () => {
+    test.setTimeout(300_000);
+    const byCommand = 'a 命令版\n';
+    const { page, workspace } = await launch((folder) => [
+      editFileCall('call-turn1-a', path.join(folder, 'a.md'), 'a 第一版', 'a 第二版'),
+      editFileCall('call-turn1-b', path.join(folder, 'b.md'), 'b 第一版', 'b 第二版'),
+      finalReply(FIRST_REPLY),
+      commandCall('call-turn2-a', "printf 'a 命令版\\n' > a.md"),
+      finalReply(SECOND_REPLY),
+      finalReply(REDONE_TEXT),
+    ]);
+    await runTurn(page, FIRST_PROMPT, FIRST_REPLY, 1);
+    await runTurn(page, SECOND_PROMPT, SECOND_REPLY, 2);
+    expect(read(workspace, 'a.md')).toBe(byCommand);
+    expect(read(workspace, 'b.md')).toBe(B_AFTER);
+
+    await regenerate(page, 0);
+    const dialog = question(page, REGENERATE_QUESTION);
+    await expect(dialog).toContainText('这之后还有 1 轮对话，会一并永久删除。');
+    await expect(restoreOption(dialog)).toBeChecked();
+    await expect(willLines(dialog)).toHaveText([RESTORE_B]);
+    await expect(dialog.getByTestId('redo-turn-wont')).toHaveCount(0);
+    await expect(dialog.getByText(COMMAND_NOT_RESTORED, { exact: true })).toBeVisible();
+    await expect(dialog).not.toContainText('a.md');
+    await pressWhenSettled(dialog.getByRole('button', { name: '重新生成', exact: true }));
+
+    await expectTurnEnded(page, REDONE_TEXT);
+    await expect(dialog).toHaveCount(0);
+    expect(read(workspace, 'a.md')).toBe(byCommand);
+    expect(read(workspace, 'b.md')).toBe(B_BEFORE);
+    await expect(userMessages(page, SECOND_PROMPT)).toHaveCount(0);
   });
 
   test('a file the user changed after the turn is listed as not restored, with the reason, and keeps its content', async () => {

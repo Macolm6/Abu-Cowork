@@ -397,9 +397,10 @@ export interface TranslationDict {
     redoResendConfirm: string;
     /** `{count}` is the number of later turns the redo deletes. */
     redoLaterTurns: string;
-    /** The option to restore the files of the redone turns, and the note under it. */
+    /** The option to restore the files of the redone turns, and the two notes under it. */
     redoRestoreFiles: string;
     redoNoPutBack: string;
+    redoCommandNotRestored: string;
     userMessageShowMore: string;
     userMessageCollapse: string;
     runPending: string;

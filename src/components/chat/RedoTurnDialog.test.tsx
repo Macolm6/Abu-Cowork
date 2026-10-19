@@ -85,8 +85,9 @@ describe('RedoTurnDialog', () => {
     const dialog = screen.getByRole('alertdialog');
     const box = within(dialog).getByRole('checkbox', { name: chat.redoRestoreFiles });
     expect(box).toBeChecked();
-    expect(box).toHaveAccessibleDescription(chat.redoNoPutBack);
+    expect(box).toHaveAccessibleDescription(`${chat.redoNoPutBack} ${chat.redoCommandNotRestored}`);
     expect(dialog).toHaveTextContent(chat.redoNoPutBack);
+    expect(dialog).toHaveTextContent(chat.redoCommandNotRestored);
     expect(dialog).toHaveTextContent(format(chat.undoConfirmCount, { count: PLAN.willRestore.length }));
     expect(lines('redo-turn-will')).toEqual([
       ['a.md', chat.undoActionWriteBefore],
@@ -106,6 +107,8 @@ describe('RedoTurnDialog', () => {
     rerender(<RedoTurnDialog {...props({ onRestoreFilesChange, restoreFiles: false })} />);
     expect(screen.getByRole('checkbox', { name: chat.redoRestoreFiles })).not.toBeChecked();
     expect(screen.getByRole('alertdialog')).not.toHaveTextContent(chat.redoNoPutBack);
+    expect(screen.getByRole('alertdialog')).not.toHaveTextContent(chat.redoCommandNotRestored);
+    expect(screen.getByRole('checkbox', { name: chat.redoRestoreFiles })).not.toHaveAttribute('aria-describedby');
     expect(screen.getByRole('alertdialog')).not.toHaveTextContent(format(chat.undoConfirmCount, { count: PLAN.willRestore.length }));
     expect(screen.queryByTestId('redo-turn-will')).toBeNull();
     expect(screen.queryByTestId('redo-turn-wont')).toBeNull();
@@ -120,6 +123,7 @@ describe('RedoTurnDialog', () => {
 
     expect(screen.getByRole('alertdialog')).toHaveTextContent(format(getI18n().chat.redoLaterTurns, { count: 1 }));
     expect(screen.queryByRole('checkbox')).toBeNull();
+    expect(screen.getByRole('alertdialog')).not.toHaveTextContent(getI18n().chat.redoCommandNotRestored);
     expect(screen.queryByTestId('redo-turn-will')).toBeNull();
     expect(screen.queryByTestId('redo-turn-wont')).toBeNull();
   });

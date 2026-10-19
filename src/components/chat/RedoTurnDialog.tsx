@@ -38,6 +38,7 @@ export default function RedoTurnDialog({
 }) {
   const { t } = useI18n();
   const noteId = useId();
+  const commandNoteId = useId();
   const skippedHeading = useId();
   const words = entryWords(t, entry);
   const canRestore = plan.willRestore.length > 0;
@@ -65,10 +66,13 @@ export default function RedoTurnDialog({
               checked={restoreFiles}
               onCheckedChange={onRestoreFilesChange}
               label={t.chat.redoRestoreFiles}
-              aria-describedby={restoreFiles ? noteId : undefined}
+              aria-describedby={restoreFiles ? `${noteId} ${commandNoteId}` : undefined}
             />
             {restoreFiles && (
-              <p id={noteId} className="mt-1 pl-6 text-ui-sm text-label-secondary">{t.chat.redoNoPutBack}</p>
+              <>
+                <p id={noteId} className="mt-1 pl-6 text-ui-sm text-label-secondary">{t.chat.redoNoPutBack}</p>
+                <p id={commandNoteId} className="mt-1 pl-6 text-ui-sm text-label-secondary">{t.chat.redoCommandNotRestored}</p>
+              </>
             )}
           </div>
           {restoreFiles && (

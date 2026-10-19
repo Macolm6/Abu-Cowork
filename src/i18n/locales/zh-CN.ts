@@ -333,6 +333,7 @@ const zhCN: TranslationDict = {
     redoLaterTurns: '这之后还有 {count} 轮对话，会一并永久删除。',
     redoRestoreFiles: '同时把文件恢复到这一轮开始之前',
     redoNoPutBack: '恢复之后不能放回',
+    redoCommandNotRestored: '用命令改动的文件不会恢复',
     userMessageShowMore: '显示更多',
     userMessageCollapse: '收起',
     runPending: '正在发送…',
