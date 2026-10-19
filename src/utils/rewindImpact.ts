@@ -58,7 +58,11 @@ export function computeRewindImpact(
 }
 
 export interface RedoScope {
-  /** Turns from the cut onward, in conversation order; the first is the turn being redone. */
+  /**
+   * Turns from the cut onward that start at or after the cut, in conversation order. The first
+   * is the turn being redone, unless that turn's loopId also appears before the cut: then it is
+   * left out and the list holds the later turns only.
+   */
   loopIds: string[];
   /** Turns after the redone one, the same count `computeRewindImpact` reports. */
   laterTurnsCount: number;

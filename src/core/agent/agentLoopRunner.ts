@@ -3411,8 +3411,12 @@ async function runSingleAgentLoopDispatchedWithOwnership(
   // The record of what this turn changes on disk is a side write, handled like
   // the output snapshots in toolExecutor.ts: a failure is logged and never
   // decides whether or how the turn runs. Each venue awaits it once its run is
-  // registered and before the run can write, so the workspace is listed first
-  // and nothing is awaited between the concurrency guard and the registration.
+  // registered and before the run can write, so the workspace is listed first.
+  // Awaits do run between the concurrency guard and the registration (the
+  // computer-use target capture, the in-process browser runtime), so the guard
+  // alone does not keep a second dispatch out. During a redo the start hold
+  // awaited at the top of this function does: other dispatches wait there
+  // until the redo's run is registered or the redo has stopped.
   const turnChangesScopeId = options.authorizationScopeId;
   const beginTurnRecord = (): Promise<void> => beginTurnChanges(
     conversationId,
