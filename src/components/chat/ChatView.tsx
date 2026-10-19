@@ -27,6 +27,7 @@ import GoalRoundMarker from './GoalRoundMarker';
 import GoalBar from './GoalBar';
 import ChapterRail from './ChapterRail';
 import ChapterMenu from './ChapterMenu';
+import BackgroundCommandsButton from './BackgroundCommandsButton';
 import { activeChapterIndex, deriveChapters, shouldShowRail, topVisibleGroup, type Chapter, type RowPosition } from './chapters';
 import { isCompactBoundary } from '@/core/context/compactBoundary';
 import { isBrowserRunReportMessage } from '@/core/observability/browserRunReport';
@@ -36,6 +37,8 @@ import { compactConversationManually } from '@/core/context/compactionService';
 import { applyGoalCommand, checkGoalCreatable, clearGoalForReplacement, createGoalFromCommand, parseGoalCommand } from '@/core/goal/goalCommand';
 import { useConfirm } from '@/components/ds/confirm-context';
 import { useToastStore } from '@/stores/toastStore';
+import { useBackgroundCommandStore } from '@/stores/backgroundCommandStore';
+import { isTauriEnv } from '@/utils/tauriEnv';
 import { ensureConversationModelUsable } from './sendModelGuard';
 import ChatInput from './ChatInput';
 import { focusComposerAfterPageChange, focusComposerFromWindow } from './composerFocus';
@@ -280,6 +283,10 @@ export default function ChatView({
   // and the next Enter/blur would commit it against the WRONG conversation's id.
   useEffect(() => {
     setIsRenamingTitle(false);
+  }, [activeConvId]);
+  useEffect(() => {
+    if (!activeConvId || !isTauriEnv()) return;
+    void useBackgroundCommandStore.getState().refresh(activeConvId);
   }, [activeConvId]);
   const createConversation = useChatStore((s) => s.createConversation);
   const setConversationTeamId = useChatStore((s) => s.setConversationTeamId);
@@ -1683,11 +1690,14 @@ export default function ChatView({
             </Tag>
           </span>
         )}
-        {/* Chapter navigation moves into the header exactly when the gutter can
-            no longer hold the rail, so the two never appear at once. */}
-        {chapterNavVisible && !railFits && (
-          <ChapterMenu chapters={chapters} currentIndex={currentChapter} onJump={jumpToChapter} />
-        )}
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          <BackgroundCommandsButton key={activeConv.id} conversationId={activeConv.id} />
+          {/* Chapter navigation moves into the header exactly when the gutter can
+              no longer hold the rail, so the two never appear at once. */}
+          {chapterNavVisible && !railFits && (
+            <ChapterMenu chapters={chapters} currentIndex={currentChapter} onJump={jumpToChapter} />
+          )}
+        </div>
       </div>
 
       {/* One approval at a time, and only one that belongs to this conversation. The others

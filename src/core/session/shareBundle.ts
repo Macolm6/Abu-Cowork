@@ -349,6 +349,11 @@ function redactToolCall(
     onRedaction(text);
     out.fileChange = text.count > 0 || change.cut ? fileChangeWithoutHunks(change) : change;
   }
+  if (out.backgroundCommand) {
+    const command = redactText(out.backgroundCommand.command);
+    onRedaction(command);
+    out.backgroundCommand = { command: command.text };
+  }
   return out;
 }
 

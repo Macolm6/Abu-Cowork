@@ -935,6 +935,7 @@ describe('McpAppBlock', () => {
             <CloseDialog
               open
               hasRunningAgent={false}
+              backgroundCommandCount={0}
               onQuit={answered.quit}
               onMinimize={answered.minimize}
               onCancel={answered.cancel}

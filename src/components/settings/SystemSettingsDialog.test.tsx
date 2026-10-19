@@ -125,6 +125,7 @@ function CloseQuestion() {
     <CloseDialog
       open={open}
       hasRunningAgent={false}
+      backgroundCommandCount={0}
       onQuit={onQuit}
       onMinimize={() => undefined}
       onCancel={() => {
@@ -366,6 +367,7 @@ describe('SystemSettingsDialog', () => {
           <CloseDialog
             open={open}
             hasRunningAgent={false}
+            backgroundCommandCount={0}
             onQuit={onQuit}
             onMinimize={onMinimize}
             onCancel={onQuestionCancel}

@@ -73,6 +73,79 @@ describe('truncation', () => {
     });
   });
 
+  // ── background_command_output: header lines and the end of the output ──
+  describe('background_command_output', () => {
+    const status = [
+      'id: bg-0a1b2c3d',
+      'command: npm run build',
+      'status: failed (exit code 1)',
+      'exit code: 1',
+    ];
+    const header = [...status, 'output (last 200 of 950 lines):'];
+
+    it('keeps the status lines and the final error of 200 output lines', () => {
+      const output = Array.from({ length: 199 }, (_, i) => `build step ${i + 1}: ${'z'.repeat(64)}`);
+      const raw = [...header, ...output, 'Error: Cannot find module "./missing"'].join('\n');
+      expect(raw.length).toBeGreaterThan(15000);
+
+      const result = truncateToolResult('background_command_output', raw);
+
+      expect(result.length).toBeLessThanOrEqual(15000);
+      expect(result.startsWith(`${status.join('\n')}\n[... `)).toBe(true);
+      expect(result.endsWith('build step 199: ' + 'z'.repeat(64) + '\nError: Cannot find module "./missing"')).toBe(true);
+      expect(result).toContain('lines omitted');
+      expect(result).not.toContain('build step 1:');
+    });
+
+    it('keeps the status lines and the end of a single long output line', () => {
+      for (const lead of [status, ['id: bg-0a1b2c3d', 'command: npm run dev', 'status: running', 'output:']]) {
+        const raw = [...lead, `${'x'.repeat(20000)}FATAL at the end`].join('\n');
+
+        const result = truncateToolResult('background_command_output', raw);
+
+        expect(result.length).toBeLessThanOrEqual(15000);
+        expect(result.startsWith(`${lead.join('\n')}\n`)).toBe(true);
+        expect(result.endsWith('FATAL at the end')).toBe(true);
+        expect(result).toContain('characters omitted');
+      }
+    });
+
+    it('keeps the header and the final error under the strongest context pressure', () => {
+      const output = Array.from({ length: 199 }, (_, i) => `build step ${i + 1}: ${'z'.repeat(64)}`);
+      const raw = [...header, ...output, 'Error: Cannot find module "./missing"'].join('\n');
+
+      const result = truncateToolResult('background_command_output', raw, 99);
+
+      expect(result.length).toBeLessThanOrEqual(3750);
+      expect(result.startsWith(`${status.join('\n')}\n`)).toBe(true);
+      expect(result.endsWith('Error: Cannot find module "./missing"')).toBe(true);
+    });
+
+    it('cuts a long command line in the header and still keeps the status lines', () => {
+      const raw = [
+        'id: bg-0a1b2c3d',
+        `command: node -e "${'a'.repeat(5000)}"`,
+        'status: running',
+        'output:',
+        ...Array.from({ length: 300 }, (_, i) => `tick ${i + 1}: ${'q'.repeat(60)}`),
+      ].join('\n');
+
+      const result = truncateToolResult('background_command_output', raw, 99);
+
+      expect(result.length).toBeLessThanOrEqual(3750);
+      expect(result).toContain('status: running');
+      expect(result).toContain('characters omitted');
+      expect(result.endsWith(`tick 300: ${'q'.repeat(60)}`)).toBe(true);
+    });
+
+    it('leaves the list results as they are', () => {
+      const none = 'No background commands in this conversation.';
+      expect(truncateToolResult('background_command_output', none)).toBe(none);
+      const list = 'Background commands in this conversation:\n- bg-0a1b2c3d · running · 3m42s · npm run dev';
+      expect(truncateToolResult('background_command_output', list)).toBe(list);
+    });
+  });
+
   // ── Character-based truncation (default rule) ──
   // default: headLines=0, tailLines=0, maxChars=3500
   describe('character-based truncation — default', () => {

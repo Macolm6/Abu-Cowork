@@ -246,7 +246,7 @@ async function reopenConversation(whileClosed?: () => void): Promise<Page> {
     .getByRole('button', { name: PROJECT_NAME, exact: true })
     .click();
   await reopened.getByRole('button', { name: new RegExp(`^${PROMPT}`) }).click();
-  await expect(reopened.getByText(FINAL_TEXT)).toBeVisible();
+  await expect(reopened.getByText(FINAL_TEXT).last()).toBeVisible();
   return reopened;
 }
 
@@ -663,5 +663,70 @@ test.describe('a turn whose undo record is damaged, or whose copies were removed
     expect(read(workspace, '方案.md')).toBe(PLAN_BEFORE);
     expect(read(workspace, '预算.md')).toBe(BUDGET_BEFORE);
     expect(has(workspace, '提纲.md')).toBe(false);
+  });
+});
+
+test.describe('a conversation whose list of changed turns or one saved turn is damaged', () => {
+  /** Two turns: the first edits 方案.md, the second 预算.md. */
+  function twoTurns(folder: string): MockReplyPlan[] {
+    return [
+      editFileCall('call-edit-plan', path.join(folder, '方案.md'), PLAN_GOALS_BEFORE, PLAN_GOALS_AFTER),
+      finalReply(),
+      editFileCall('call-edit-budget', path.join(folder, '预算.md'), '合计 100', '合计 120\n备注 已复核'),
+      finalReply(),
+    ];
+  }
+
+  async function runTwoTurns(page: Page): Promise<void> {
+    await runTurn(page);
+    const composer = page.getByPlaceholder(CHAT_PLACEHOLDER);
+    await composer.fill(PROMPT);
+    await composer.press('Enter');
+    await expect(page.getByTestId('changed-files-card')).toHaveCount(2, { timeout: RECORD_TIMEOUT });
+    await page.getByTestId('changed-files-card').first().getByRole('button', { name: /^已编辑/ }).click();
+    await expect(panel(page).getByTestId('changes-tab')).toBeVisible();
+  }
+
+  test('a list of changed turns cut off halfway is built again, and every card comes back with its undo', async () => {
+    test.setTimeout(300_000);
+    const { page } = await launchInProject(twoTurns, seedPlanAndBudget);
+    await runTwoTurns(page);
+    const [changes] = changesDirs();
+    const indexPath = path.join(changes, 'index.json');
+    const cutOff = fs.readFileSync(indexPath, 'utf8').slice(0, 30);
+
+    const reopened = await reopenConversation(() => fs.writeFileSync(indexPath, cutOff));
+
+    const cards = reopened.getByTestId('changed-files-card');
+    await expect(cards).toHaveCount(2, { timeout: RECORD_TIMEOUT });
+    await expect(cards.nth(0).getByRole('button', { name: /^已编辑 方案\.md/ })).toBeVisible();
+    await expect(cards.nth(1).getByRole('button', { name: /^已编辑 预算\.md/ })).toBeVisible();
+    await expect(undoButton(cards.nth(0))).toBeVisible();
+    await expect(undoButton(cards.nth(1))).toBeVisible();
+    expect(JSON.parse(fs.readFileSync(indexPath, 'utf8'))).toMatchObject({ version: 1 });
+    await shot(reopened, '22-cards-after-the-list-of-turns-was-built-again');
+  });
+
+  test('one saved turn cut off halfway leaves the other turn of the conversation as it was', async () => {
+    test.setTimeout(300_000);
+    const { page, workspace } = await launchInProject(twoTurns, seedPlanAndBudget);
+    await runTwoTurns(page);
+    const [changes] = changesDirs();
+    const saved = fs.readdirSync(changes)
+      .filter((name) => name.endsWith('.json') && name !== 'index.json')
+      .map((name) => path.join(changes, name))
+      .find((file) => fs.readFileSync(file, 'utf8').includes('方案.md'))!;
+    const cutOff = fs.readFileSync(saved, 'utf8').slice(0, 30);
+
+    const reopened = await reopenConversation(() => fs.writeFileSync(saved, cutOff));
+
+    const budgetCard = reopened.getByTestId('changed-files-card').filter({ hasText: '预算.md' });
+    await expect(budgetCard.getByRole('button', { name: /^已编辑 预算\.md/ })).toBeVisible({ timeout: RECORD_TIMEOUT });
+    await expect(undoButton(budgetCard)).toBeVisible();
+    await confirmFromCard(reopened, undoButton(budgetCard), UNDO_QUESTION, '撤销');
+    await expect(budgetCard.getByRole('button', { name: /^已撤销 预算\.md 的改动/ })).toBeVisible();
+    expect(read(workspace, '预算.md')).toBe(BUDGET_BEFORE);
+    expect(read(workspace, '方案.md')).toBe(PLAN_AFTER);
+    expect(fs.readFileSync(saved, 'utf8')).toBe(cutOff);
   });
 });

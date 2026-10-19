@@ -52,6 +52,14 @@ describe('AccountMenu 里的下拉选项', () => {
     return render(<AccountMenu onEditProfile={() => {}} />, { wrapper: DesignSystemProvider });
   }
 
+  it('没有头像图片时，按钮上的头像是人形图标，不显示昵称的第一个字', () => {
+    renderMenu();
+
+    const placeholder = screen.getByRole('button', { name: '我' }).querySelector('[role="img"]');
+    expect(placeholder?.querySelector('svg')).not.toBeNull();
+    expect(placeholder?.textContent).toBe('');
+  });
+
   it('全程用键盘选语言：方向键进入「语言」子菜单，回车选中，写入设置', async () => {
     const user = userEvent.setup();
     renderMenu();

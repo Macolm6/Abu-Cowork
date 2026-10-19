@@ -172,7 +172,7 @@ test.describe.serial('apps', () => {
     await expect(page.getByTestId('app-switcher-menu')).toBeHidden();
     await expect.poll(() => app.evaluate(() => (
       globalThis as typeof globalThis & { appDocsOpened: string[] }
-    ).appDocsOpened)).toEqual(['https://github.com/PM-Shawn/Abu-Cowork/blob/dev/docs/app-spec.md']);
+    ).appDocsOpened)).toEqual(['https://abuwork.com/platform.html']);
     await app.evaluate(() => (globalThis as typeof globalThis & { restoreAppDocsOpen: () => void }).restoreAppDocsOpen());
     await expect(page.getByTestId('app-switcher-menu')).toBeHidden();
   });
