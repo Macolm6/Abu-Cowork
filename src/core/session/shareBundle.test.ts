@@ -28,6 +28,8 @@ import { buildShareBundle, SHARE_SCHEMA_VERSION } from './shareBundle';
 import { createCompactBoundaryMarker } from '@/core/context/compactBoundary';
 import { createMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
 import { createBrowserRunReportMessage } from '@/core/observability/browserRunReport';
+import { snapshotExecutionSteps } from '@/core/agent/executionSnapshot';
+import type { ExecutionStep } from '@/types/execution';
 
 function makeConv(messages: Message[], overrides: Partial<Conversation> = {}): Conversation {
   return {
@@ -154,7 +156,7 @@ describe('buildShareBundle', () => {
         executionSteps: [{
           id: 's1', type: 'command', label: 'Run cat /Users/alice/.env', status: 'completed', toolName: 'run_command',
           completionMessage: `read ${KEY}`,
-          detailBlocks: [{ id: 's1-result', title: 'Result', type: 'result', content: `API_KEY=${KEY}`, fullContentLength: 900 }],
+          detailBlocks: [{ id: 's1-result', title: 'Result', type: 'result', content: `API_KEY=${KEY}` }],
           childSteps: [{
             id: 'c1', type: 'command', label: 'Run env', status: 'completed', toolName: 'run_command',
             detailBlocks: [{ id: 'c1-result', title: 'Result', type: 'result', content: `TOKEN=${KEY}` }],
@@ -195,6 +197,47 @@ describe('buildShareBundle', () => {
       expect(JSON.stringify(bundle.messages)).not.toContain('sk-ant-abc');
       expect(bundle.messages[0].toolCalls?.[0].resultContent?.[0]).toEqual({ type: 'text', text: 'key=[REDACTED:anthropic-key]' });
       expect(bundle.stats.redactionCount).toBe(2);
+    });
+
+    describe('a step snapshot cut through a key or a path', () => {
+      function stepWithResult(result: string): ExecutionStep {
+        return {
+          id: 's1', executionId: 'e1', toolCallId: 't1', type: 'command', label: 'Run', status: 'completed',
+          toolName: 'run_command', toolInput: {}, source: 'agent',
+          detailBlocks: [{
+            id: 's1-result', stepId: 's1', type: 'result', label: 'Result', labelKey: 'result',
+            content: result, isTruncated: false, isExpanded: false,
+          }],
+        };
+      }
+
+      async function exportedSnapshotText(result: string): Promise<string | undefined> {
+        const conv = makeConv([{
+          id: 'm1', role: 'assistant', content: 'done', timestamp: 1,
+          executionSteps: snapshotExecutionSteps([stepWithResult(result)]),
+        }]);
+        const bundle = await buildShareBundle(conv);
+        return bundle.messages[0].executionSteps?.[0].detailBlocks?.[0].content;
+      }
+
+      it('drops the half of a key the cut left, which no rule can recognize', async () => {
+        const content = await exportedSnapshotText(`${'x '.repeat(231)}AIza${'Q'.repeat(35)} tail`);
+
+        expect(content).not.toContain('AIza');
+        expect(content?.endsWith('...')).toBe(true);
+        expect(content).toContain('x x x');
+      });
+
+      it('drops a home path the cut stopped inside, user name and all', async () => {
+        const content = await exportedSnapshotText(`${'y '.repeat(244)}open /Users/alice`);
+
+        expect(content).not.toContain('/Users');
+        expect(content).toContain('open');
+      });
+
+      it('keeps the end of a block the snapshot did not cut', async () => {
+        expect(await exportedSnapshotText('exit code: 0')).toBe('exit code: 0');
+      });
     });
 
     it('leaves image data as it is, even where its base64 happens to look like a key', async () => {

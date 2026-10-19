@@ -30,6 +30,8 @@ import { isMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
 import { normalizeUpstreamErrorDetails, sanitizeUntrustedLlmErrorText } from '@/core/llm/adapter';
 import { fileChangeWithoutHunks } from '@/core/files/fileChangeBudget';
 import type { FileChange } from '@/types/fileChange';
+import type { ExecutionStepSnapshot } from '@/types/execution';
+import { isCutSnapshotBlock } from '@/core/agent/executionSnapshot';
 
 export const SHARE_SCHEMA_VERSION = 1 as const;
 
@@ -271,7 +273,28 @@ async function prepareMessage(
   // above matches no rule again, so it adds nothing to the count here.
   const rest = redactDeep(clone, isMediaData);
   onRedaction({ count: rest.count, samples: rest.samples });
-  return rest.value as Message;
+  const redacted = rest.value as Message;
+  if (redacted.executionSteps) redacted.executionSteps = redacted.executionSteps.map(dropCutTails);
+  return redacted;
+}
+
+/**
+ * A snapshot block cut at its character limit may end inside a key or a path,
+ * whose half no rule recognizes. The run of text the cut ended in goes, for
+ * the same reason a shortened file change goes out without its lines.
+ */
+function dropCutTails(step: ExecutionStepSnapshot): ExecutionStepSnapshot {
+  return {
+    ...step,
+    ...(step.detailBlocks
+      ? {
+        detailBlocks: step.detailBlocks.map((block) => (block.content && isCutSnapshotBlock(block)
+          ? { ...block, content: `${block.content.replace(/\.\.\.$/, '').replace(/\S*$/, '')}...` }
+          : block)),
+      }
+      : {}),
+    ...(step.childSteps ? { childSteps: step.childSteps.map(dropCutTails) } : {}),
+  };
 }
 
 async function prepareImageBlock(
