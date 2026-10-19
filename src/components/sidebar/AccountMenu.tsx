@@ -208,7 +208,7 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
   // accessible name.
   const avatar = (size: 'sm' | 'lg') => (
     <span aria-hidden="true" className="flex shrink-0">
-      <Avatar name={accountLabel} src={userAvatar || undefined} size={size} />
+      <Avatar name={accountLabel} src={userAvatar || undefined} size={size} placeholderIcon={AppIcons.account} />
     </span>
   );
 
