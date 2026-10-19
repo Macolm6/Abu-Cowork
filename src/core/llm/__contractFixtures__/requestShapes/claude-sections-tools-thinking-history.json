@@ -1,0 +1,127 @@
+{
+  "url": "https://api.anthropic.com/v1/messages",
+  "body": {
+    "model": "claude-opus-5-5",
+    "max_tokens": 16384,
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Read the config"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "The user wants the config file."
+          },
+          {
+            "type": "text",
+            "text": "Reading it now."
+          },
+          {
+            "type": "tool_use",
+            "id": "toolu_1_0",
+            "name": "read_file",
+            "input": {
+              "path": "config.json"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "toolu_1_0",
+            "content": [
+              {
+                "type": "text",
+                "text": "{\"a\":1}"
+              },
+              {
+                "type": "image",
+                "source": {
+                  "type": "base64",
+                  "media_type": "image/png",
+                  "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Thanks, now summarize it",
+            "cache_control": {
+              "type": "ephemeral"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "[context] todo: none"
+          }
+        ]
+      }
+    ],
+    "stream": true,
+    "system": [
+      {
+        "type": "text",
+        "text": "You are Abu."
+      },
+      {
+        "type": "text",
+        "text": "Follow the rules.",
+        "cache_control": {
+          "type": "ephemeral"
+        }
+      },
+      {
+        "type": "text",
+        "text": "Now: 2026-10-19"
+      }
+    ],
+    "tools": [
+      {
+        "name": "read_file",
+        "description": "Read a file",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Path to file"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        },
+        "cache_control": {
+          "type": "ephemeral"
+        }
+      }
+    ],
+    "temperature": 1,
+    "thinking": {
+      "type": "enabled",
+      "budget_tokens": 10000
+    }
+  }
+}

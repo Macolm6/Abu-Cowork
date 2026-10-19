@@ -1,0 +1,103 @@
+{
+  "url": "https://openrouter.ai/api/v1/chat/completions",
+  "body": {
+    "model": "google/gemini-3-pro",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Read the config"
+      },
+      {
+        "role": "assistant",
+        "content": "Reading it now.",
+        "tool_calls": [
+          {
+            "id": "toolu_1_0",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\":\"config.json\"}"
+            },
+            "extra_content": {
+              "google": {
+                "thought_signature": "skip_thought_signature_validator"
+              }
+            }
+          }
+        ],
+        "reasoning_content": "The user wants the config file."
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "toolu_1_0",
+        "content": "{\"a\":1}"
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "[SCREENSHOT] Tool results produced these screenshot(s). You MUST describe what you actually see in the image before deciding next action. If you cannot see the image, say \"I cannot see the screenshot\" — do NOT guess or fabricate what is on screen."
+          },
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": "Thanks, now summarize it"
+      }
+    ],
+    "max_tokens": 8192,
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    },
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "read_file",
+          "description": "Read a file",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Path to file"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "set_level",
+          "description": "Set a level",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "level": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "level"
+            ]
+          }
+        }
+      }
+    ],
+    "reasoning": {
+      "effort": "low"
+    }
+  }
+}
