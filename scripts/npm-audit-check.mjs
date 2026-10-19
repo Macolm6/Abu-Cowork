@@ -6,8 +6,11 @@
 // high/critical finding that is not covered by an unexpired allowlist entry,
 // and also fails when an entry has expired, so every acceptance gets re-reviewed.
 //
+// It takes one report per audited lockfile. The allowlist is shared, so an entry
+// is reported as unused only when no report matches it.
+//
 //   npm audit --omit=dev --json > audit.json || true
-//   node scripts/npm-audit-check.mjs audit.json [--allowlist=path] [--asof=YYYY-MM-DD]
+//   node scripts/npm-audit-check.mjs audit.json [sub/audit.json ...] [--allowlist=path] [--asof=YYYY-MM-DD]
 //
 // Allowlist shape (.github/npm-audit-allowlist.json):
 //   { "entries": [ { "ghsa", "package", "reason", "expires" } ] }
@@ -61,15 +64,35 @@ export function parseAllowlist(allowlist, asOf) {
   return { active, expired };
 }
 
-export function evaluateAudit(report, allowlist, asOf) {
-  if (!report || typeof report !== 'object' || !report.vulnerabilities || typeof report.vulnerabilities !== 'object') {
-    const detail = report?.error ? ` (npm reported: ${JSON.stringify(report.error)})` : '';
-    throw new Error(`audit report has no "vulnerabilities" object${detail}`);
+// reports: [{ source, report }], one per audited lockfile; source names it in the output.
+export function evaluateAudit(reports, allowlist, asOf) {
+  if (!Array.isArray(reports) || reports.length === 0) {
+    throw new Error('evaluateAudit needs at least one { source, report }');
   }
   const { active, expired } = parseAllowlist(allowlist, asOf);
+  const usedEntries = new Set();
+  const sources = reports.map(({ source, report }) => ({
+    source,
+    ...evaluateReport(source, report, active, usedEntries),
+  }));
+  const unused = [...active.values()].filter((entry) => !usedEntries.has(entry.ghsa));
+  return {
+    sources,
+    blocking: sources.flatMap((item) => item.blocking),
+    allowlisted: sources.flatMap((item) => item.allowlisted),
+    expired,
+    unused,
+    asOf,
+  };
+}
+
+function evaluateReport(source, report, active, usedEntries) {
+  if (!report || typeof report !== 'object' || !report.vulnerabilities || typeof report.vulnerabilities !== 'object') {
+    const detail = report?.error ? ` (npm reported: ${JSON.stringify(report.error)})` : '';
+    throw new Error(`audit report ${source} has no "vulnerabilities" object${detail}`);
+  }
   const vulnerabilities = report.vulnerabilities;
   const coveredByName = new Map();
-  const usedEntries = new Set();
 
   // A package is covered when every path that makes it vulnerable is covered:
   // advisory objects by an active allowlist entry for that package, string
@@ -107,11 +130,10 @@ export function evaluateAudit(report, allowlist, asOf) {
       .filter((via) => typeof via === 'object' && via !== null)
       .map((via) => ({ ghsa: ghsaIdFromUrl(via.url), title: via.title, range: via.range }));
     const viaPackages = vulnerability.via.filter((via) => typeof via === 'string');
-    const item = { name, severity: vulnerability.severity, advisories, viaPackages };
+    const item = { source, name, severity: vulnerability.severity, advisories, viaPackages };
     (isCovered(name, new Set()) ? allowlisted : blocking).push(item);
   }
-  const unused = [...active.values()].filter((entry) => !usedEntries.has(entry.ghsa));
-  return { blocking, allowlisted, expired, unused, asOf };
+  return { blocking, allowlisted };
 }
 
 export function formatReport(result) {
@@ -121,43 +143,45 @@ export function formatReport(result) {
     const via = item.viaPackages.map((name) => `via ${name}`);
     return `- **${item.name}** (${item.severity}): ${[...advisories, ...via].join('; ')}`;
   };
-  if (result.blocking.length > 0) {
-    lines.push(`❌ ${result.blocking.length} blocking finding(s) not covered by the allowlist:`);
-    lines.push(...result.blocking.map(describe));
-    lines.push('');
+  for (const { source, blocking, allowlisted } of result.sources) {
+    lines.push(`#### \`${source}\``, '');
+    if (blocking.length > 0) {
+      lines.push(`❌ ${blocking.length} blocking finding(s) not covered by the allowlist:`);
+      lines.push(...blocking.map(describe));
+      lines.push('');
+    }
+    if (allowlisted.length > 0) {
+      lines.push(`⚠️ ${allowlisted.length} finding(s) accepted by allowlist (see ${DEFAULT_ALLOWLIST_PATH}):`);
+      lines.push(...allowlisted.map(describe));
+      lines.push('');
+    }
+    if (blocking.length === 0) {
+      lines.push(allowlisted.length === 0 ? '✅ no high/critical findings.' : '✅ no unaccepted high/critical findings.', '');
+    }
   }
   if (result.expired.length > 0) {
     lines.push(`❌ ${result.expired.length} allowlist entr${result.expired.length === 1 ? 'y' : 'ies'} expired (as of ${result.asOf}) — re-review and extend or remove:`);
     lines.push(...result.expired.map((entry) => `- ${entry.ghsa} (${entry.package}) expired ${entry.expires}: ${entry.reason}`));
     lines.push('');
   }
-  if (result.allowlisted.length > 0) {
-    lines.push(`⚠️ ${result.allowlisted.length} finding(s) accepted by allowlist (see ${DEFAULT_ALLOWLIST_PATH}):`);
-    lines.push(...result.allowlisted.map(describe));
-    lines.push('');
-  }
   if (result.unused.length > 0) {
-    lines.push(`ℹ️ ${result.unused.length} allowlist entr${result.unused.length === 1 ? 'y' : 'ies'} no longer matched by npm audit — safe to delete:`);
+    lines.push(`ℹ️ ${result.unused.length} allowlist entr${result.unused.length === 1 ? 'y' : 'ies'} no longer matched by any audited lockfile — safe to delete:`);
     lines.push(...result.unused.map((entry) => `- ${entry.ghsa} (${entry.package})`));
     lines.push('');
   }
-  if (result.blocking.length === 0 && result.expired.length === 0) {
-    lines.push(result.allowlisted.length === 0 ? '✅ no high/critical findings.' : '✅ no unaccepted high/critical findings.');
-  }
-  return lines.join('\n');
+  return lines.join('\n').trimEnd();
 }
 
 function parseArgs(argv) {
-  const options = { reportPath: null, allowlistPath: DEFAULT_ALLOWLIST_PATH, asOf: null };
+  const options = { reportPaths: [], allowlistPath: DEFAULT_ALLOWLIST_PATH, asOf: null };
   for (const arg of argv) {
     if (arg.startsWith('--allowlist=')) options.allowlistPath = arg.slice('--allowlist='.length);
     else if (arg.startsWith('--asof=')) options.asOf = arg.slice('--asof='.length);
     else if (arg.startsWith('--')) throw new Error(`unknown option ${arg}`);
-    else if (options.reportPath === null) options.reportPath = arg;
-    else throw new Error(`unexpected argument ${arg}`);
+    else options.reportPaths.push(arg);
   }
-  if (options.reportPath === null) {
-    throw new Error('usage: node scripts/npm-audit-check.mjs <audit.json> [--allowlist=path] [--asof=YYYY-MM-DD]');
+  if (options.reportPaths.length === 0) {
+    throw new Error('usage: node scripts/npm-audit-check.mjs <audit.json> [sub/audit.json ...] [--allowlist=path] [--asof=YYYY-MM-DD]');
   }
   return options;
 }
@@ -165,9 +189,12 @@ function parseArgs(argv) {
 export function runCli(argv, { cwd = process.cwd(), env = process.env, today } = {}) {
   const options = parseArgs(argv);
   const asOf = options.asOf ?? env.NPM_AUDIT_ASOF ?? today ?? new Date().toISOString().slice(0, 10);
-  const report = JSON.parse(readFileSync(path.resolve(cwd, options.reportPath), 'utf8'));
+  const reports = options.reportPaths.map((source) => ({
+    source,
+    report: JSON.parse(readFileSync(path.resolve(cwd, source), 'utf8')),
+  }));
   const allowlist = JSON.parse(readFileSync(path.resolve(cwd, options.allowlistPath), 'utf8'));
-  const result = evaluateAudit(report, allowlist, asOf);
+  const result = evaluateAudit(reports, allowlist, asOf);
   return { result, output: formatReport(result), ok: result.blocking.length === 0 && result.expired.length === 0 };
 }
 

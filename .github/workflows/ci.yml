@@ -318,8 +318,13 @@ jobs:
           node-version: 24
       - name: npm audit (production deps, high+, allowlist-aware)
         run: |
+          # Every lockfile whose production deps ship in the app: the root, the
+          # bridge bundled into chrome-bridge-runtime, and the speech runtime
+          # copied as an extraResource. abu-chrome-extension has no production deps.
           # npm audit exits non-zero whenever it finds anything; the checker decides.
-          npm audit --omit=dev --json > audit.json || true
-          node scripts/npm-audit-check.mjs audit.json | tee -a "$GITHUB_STEP_SUMMARY"
+          for dir in . abu-browser-bridge electron/speech-runtime; do
+            (cd "$dir" && npm audit --omit=dev --json > audit.json) || true
+          done
+          node scripts/npm-audit-check.mjs audit.json abu-browser-bridge/audit.json electron/speech-runtime/audit.json | tee -a "$GITHUB_STEP_SUMMARY"
           status=${PIPESTATUS[0]}
           exit "$status"

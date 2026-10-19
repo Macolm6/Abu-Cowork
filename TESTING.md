@@ -349,7 +349,8 @@ describe('module name', () => {
 
 ## 7. CI Integration
 
-The CI workflow (`.github/workflows/ci.yml`) has one blocking job, `check`, plus two advisory jobs.
+The CI workflow (`.github/workflows/ci.yml`) has one blocking job, `check`, the advisory
+`test-windows` job, and the `audit` job.
 
 **`check` job — gate steps.** The quality gate is split into **independent steps**:
 Lint → Type check → Test with coverage (`npm run test:coverage`) → Test-infra scripts
@@ -380,8 +381,13 @@ opening a PR.
 - `test-windows` — first Windows run of the unit suite (`npx vitest run`, no coverage); junit
   uploaded as the `test-results-windows` artifact. Triage path-sensitive failures, then drop
   `continue-on-error`.
-- `audit` — `npm audit --omit=dev --audit-level=high`; stays yellow until the 2 high baseline
-  findings in transitive production deps are cleaned, then flip to blocking.
+
+**`audit` job** (fails on its own findings; not a required status check):
+`npm audit --omit=dev --json` in every directory whose lockfile has production packages (the root,
+`abu-browser-bridge/`, `electron/speech-runtime/`), then `scripts/npm-audit-check.mjs` over all the
+reports. It fails on any high/critical finding not covered by an unexpired entry in
+`.github/npm-audit-allowlist.json`. `scripts/ci-workflow.test.mjs` fails when a tracked lockfile
+with production packages is missing from that list.
 
 Model-data freshness (`gen:models:check`) runs automatically before tests via the `pretest` npm hook
 and again inside `npm run build` — no separate CI step is needed.
