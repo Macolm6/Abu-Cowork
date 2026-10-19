@@ -48,6 +48,33 @@ function report() {
   };
 }
 
+// The root lockfile's report, as the CLI passes it to evaluateAudit.
+function rootOnly(rootReport = report()) {
+  return [{ source: 'audit.json', report: rootReport }];
+}
+
+// A sub-package report whose only high finding is not allowlisted.
+function bridgeReport() {
+  return {
+    auditReportVersion: 2,
+    vulnerabilities: {
+      'fast-uri': {
+        name: 'fast-uri',
+        severity: 'high',
+        isDirect: false,
+        via: [{ source: 4, name: 'fast-uri', severity: 'high', title: 'fast-uri host confusion', url: 'https://github.com/advisories/GHSA-5jgf-p345-68v8', range: '>=3.1.3 <3.1.6' }],
+        range: '3.1.3 - 3.1.5',
+        fixAvailable: true,
+      },
+    },
+    metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 1, critical: 0, total: 1 } },
+  };
+}
+
+function cleanReport() {
+  return { auditReportVersion: 2, vulnerabilities: {}, metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 } } };
+}
+
 function allowlist(overrides = {}) {
   return {
     entries: [
@@ -65,7 +92,7 @@ test('ghsaIdFromUrl extracts and normalises the advisory id', () => {
 });
 
 test('fully allowlisted findings pass, including packages vulnerable only via an allowlisted one', () => {
-  const result = evaluateAudit(report(), allowlist(), AS_OF);
+  const result = evaluateAudit(rootOnly(), allowlist(), AS_OF);
   assert.deepEqual(result.blocking, []);
   assert.deepEqual(result.expired, []);
   assert.deepEqual(result.unused, []);
@@ -74,13 +101,13 @@ test('fully allowlisted findings pass, including packages vulnerable only via an
 });
 
 test('moderate findings are ignored (matches --audit-level=high)', () => {
-  const result = evaluateAudit(report(), allowlist(), AS_OF);
+  const result = evaluateAudit(rootOnly(), allowlist(), AS_OF);
   assert.ok(!result.blocking.concat(result.allowlisted).some((item) => item.name === 'qs'));
 });
 
 test('a high finding without an allowlist entry blocks, and the dependent package blocks with it', () => {
   const partial = { entries: allowlist().entries.slice(0, 1) };
-  const result = evaluateAudit(report(), partial, AS_OF);
+  const result = evaluateAudit(rootOnly(), partial, AS_OF);
   assert.deepEqual(result.blocking.map((item) => item.name).sort(), ['image-size', 'pptxgenjs']);
   assert.match(formatReport(result), /❌ 2 blocking finding/);
   assert.match(formatReport(result), /GHSA-5P2G-FCMC-QVQQ/);
@@ -88,35 +115,57 @@ test('a high finding without an allowlist entry blocks, and the dependent packag
 
 test('an allowlist entry only covers the package it names', () => {
   const wrongPackage = allowlist({ package: 'pptxgenjs' });
-  const result = evaluateAudit(report(), wrongPackage, AS_OF);
+  const result = evaluateAudit(rootOnly(), wrongPackage, AS_OF);
   assert.ok(result.blocking.some((item) => item.name === 'image-size'));
 });
 
 test('an expired entry fails the check even when the finding is otherwise covered', () => {
-  const result = evaluateAudit(report(), allowlist({ expires: '2026-09-06' }), AS_OF);
+  const result = evaluateAudit(rootOnly(), allowlist({ expires: '2026-09-06' }), AS_OF);
   assert.equal(result.expired.length, 1);
   assert.equal(result.expired[0].ghsa, 'GHSA-W3RX-R6R6-PGPR');
   assert.ok(result.blocking.some((item) => item.name === 'image-size'));
   assert.match(formatReport(result), /expired \(as of 2026-09-07\)/);
   // The day of expiry itself still counts as valid.
-  assert.equal(evaluateAudit(report(), allowlist({ expires: AS_OF }), AS_OF).expired.length, 0);
+  assert.equal(evaluateAudit(rootOnly(), allowlist({ expires: AS_OF }), AS_OF).expired.length, 0);
 });
 
 test('entries npm audit no longer reports are surfaced as unused, not as failures', () => {
   const extra = { entries: [...allowlist().entries, { ghsa: 'GHSA-aaaa-bbbb-cccc', package: 'left-pad', reason: 'gone', expires: '2026-12-31' }] };
-  const result = evaluateAudit(report(), extra, AS_OF);
+  const result = evaluateAudit(rootOnly(), extra, AS_OF);
   assert.deepEqual(result.blocking, []);
   assert.deepEqual(result.unused.map((entry) => entry.ghsa), ['GHSA-AAAA-BBBB-CCCC']);
   assert.match(formatReport(result), /safe to delete/);
 });
 
+test('a high finding in a sub-package report blocks and names the report it came from', () => {
+  const reports = [...rootOnly(), { source: 'abu-browser-bridge/audit.json', report: bridgeReport() }];
+  const result = evaluateAudit(reports, allowlist(), AS_OF);
+  assert.deepEqual(result.blocking.map((item) => [item.source, item.name]), [['abu-browser-bridge/audit.json', 'fast-uri']]);
+  assert.deepEqual(result.sources.map((item) => item.source), ['audit.json', 'abu-browser-bridge/audit.json']);
+  const output = formatReport(result);
+  const bridgeSection = output.slice(output.indexOf('#### `abu-browser-bridge/audit.json`'));
+  assert.match(bridgeSection, /❌ 1 blocking finding[\s\S]*GHSA-5JGF-P345-68V8/);
+  const rootSection = output.slice(output.indexOf('#### `audit.json`'), output.indexOf('#### `abu-browser-bridge/audit.json`'));
+  assert.match(rootSection, /✅ no unaccepted high\/critical findings/);
+});
+
+test('an allowlist entry matched by one report is not unused because another report lacks it', () => {
+  const reports = [...rootOnly(), { source: 'electron/speech-runtime/audit.json', report: cleanReport() }];
+  const result = evaluateAudit(reports, allowlist(), AS_OF);
+  assert.deepEqual(result.blocking, []);
+  assert.deepEqual(result.unused, []);
+  assert.doesNotMatch(formatReport(result), /safe to delete/);
+  assert.match(formatReport(result), /#### `electron\/speech-runtime\/audit.json`\n\n✅ no high\/critical findings/);
+});
+
 test('malformed inputs throw instead of silently passing', () => {
-  assert.throws(() => evaluateAudit({ error: { code: 'ENOAUDIT' } }, allowlist(), AS_OF), /no "vulnerabilities" object.*ENOAUDIT/);
-  assert.throws(() => evaluateAudit(report(), { entries: [{ ghsa: 'GHSA-w3rx-r6r6-pgpr', package: 'image-size', expires: '2026-12-31' }] }, AS_OF), /missing "reason"/);
-  assert.throws(() => evaluateAudit(report(), allowlist({ expires: '31/12/2026' }), AS_OF), /must be YYYY-MM-DD/);
-  assert.throws(() => evaluateAudit(report(), allowlist({ ghsa: 'CVE-2026-1' }), AS_OF), /malformed GHSA/);
-  assert.throws(() => evaluateAudit(report(), { allow: [] }, AS_OF), /"entries" array/);
-  assert.throws(() => evaluateAudit(report(), allowlist(), 'today'), /asOf must be YYYY-MM-DD/);
+  assert.throws(() => evaluateAudit([{ source: 'sub/audit.json', report: { error: { code: 'ENOAUDIT' } } }], allowlist(), AS_OF), /sub\/audit\.json has no "vulnerabilities" object.*ENOAUDIT/);
+  assert.throws(() => evaluateAudit([], allowlist(), AS_OF), /at least one/);
+  assert.throws(() => evaluateAudit(rootOnly(), { entries: [{ ghsa: 'GHSA-w3rx-r6r6-pgpr', package: 'image-size', expires: '2026-12-31' }] }, AS_OF), /missing "reason"/);
+  assert.throws(() => evaluateAudit(rootOnly(), allowlist({ expires: '31/12/2026' }), AS_OF), /must be YYYY-MM-DD/);
+  assert.throws(() => evaluateAudit(rootOnly(), allowlist({ ghsa: 'CVE-2026-1' }), AS_OF), /malformed GHSA/);
+  assert.throws(() => evaluateAudit(rootOnly(), { allow: [] }, AS_OF), /"entries" array/);
+  assert.throws(() => evaluateAudit(rootOnly(), allowlist(), 'today'), /asOf must be YYYY-MM-DD/);
 });
 
 test('committed allowlist is well-formed and matches the shape the checker requires', () => {
@@ -128,7 +177,7 @@ test('committed allowlist is well-formed and matches the shape the checker requi
     assert.ok(entry.reason.length > 20, `reason for ${entry.ghsa} must explain why it is accepted`);
   }
   // Evaluating the fixture against the committed file must not throw.
-  evaluateAudit(report(), committed, AS_OF);
+  evaluateAudit(rootOnly(), committed, AS_OF);
 });
 
 test('CLI: exit 0 when covered, 1 when blocking or expired, 2 on malformed input', () => {
@@ -152,6 +201,12 @@ test('CLI: exit 0 when covered, 1 when blocking or expired, 2 on malformed input
 
     const explicitAsOf = run('audit.json', '--allowlist=expired.json', '--asof=2025-12-31');
     assert.equal(explicitAsOf.status, 0, 'explicit --asof must override NPM_AUDIT_ASOF');
+
+    mkdirSync(path.join(dir, 'bridge'));
+    writeFileSync(path.join(dir, 'bridge', 'audit.json'), JSON.stringify(bridgeReport()));
+    const withSubPackage = run('audit.json', 'bridge/audit.json', '--allowlist=allow.json');
+    assert.equal(withSubPackage.status, 1, 'a blocking finding in any report fails the run');
+    assert.match(withSubPackage.stdout, /#### `bridge\/audit.json`\n\n❌ 1 blocking finding/);
 
     const broken = run('broken.json', '--allowlist=allow.json');
     assert.equal(broken.status, 2);
