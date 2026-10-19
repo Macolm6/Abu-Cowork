@@ -114,7 +114,7 @@ test('an exported conversation redacts a key a step printed, in the step snapsho
 
   const exportWindow = page.getByRole('dialog', { name: '导出对话 · 预览' });
   await expect(exportWindow).toBeVisible();
-  await expect(exportWindow.getByText(/^共 \d+ 处$/)).toBeVisible({ timeout: READY_TIMEOUT });
+  await expect(exportWindow.getByText(/^· 共 \d+ 处$/)).toBeVisible({ timeout: READY_TIMEOUT });
 
   const target = path.join(dataRoot!.rootDir, 'shared.json');
   await answerSaveDialogWith(target);
