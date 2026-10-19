@@ -1571,6 +1571,20 @@ describe('agentLoopRunner', () => {
       expect(tauriInvokeMock).not.toHaveBeenCalled();
     });
 
+    it.each([
+      'background_command_output',
+      'background_command_stop',
+      'background_command_list',
+    ])('does not allowlist %s: the background command tools run in the shell', async (cmd) => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-native', makeSession());
+      const handler = handlerFor(onSidecarRequest, 'native.invoke') as (p: unknown) => Promise<unknown>;
+      await expect(handler({ runId: 'run-native', cmd, args: { conversationId: 'conv-1' } }))
+        .rejects.toThrow(`native.invoke: "${cmd}" is not allowlisted`);
+      expect(tauriInvokeMock).not.toHaveBeenCalled();
+    });
+
     it('rejects malformed params (missing runId/cmd)', async () => {
       const { ensureHandlersRegistered } = await importFresh();
       ensureHandlersRegistered();

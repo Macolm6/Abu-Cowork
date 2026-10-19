@@ -15,6 +15,8 @@ export const TOOL_NAMES = {
   FIND_FILES: 'find_files',
   CHECK_OPEN_DOCUMENT: 'check_open_document',
   RUN_COMMAND: 'run_command',
+  BACKGROUND_COMMAND_OUTPUT: 'background_command_output',
+  STOP_BACKGROUND_COMMAND: 'stop_background_command',
   DELETE_FILE: 'delete_file',
 
   // Web & network

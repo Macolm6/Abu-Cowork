@@ -243,4 +243,20 @@ describe('durable tool-result storage budget', () => {
       expect(jsonBytes([editCall])).toBeGreaterThan(jsonBytes([reduced]));
     });
   });
+
+  it('keeps the background command of a call that is reduced, so its tool row still names the command', () => {
+    const stopCall: ToolCall = {
+      id: 'call-stop',
+      name: 'stop_background_command',
+      input: { id: 'bg-0a1b2c3d' },
+      result: 'Stop requested for background command bg-0a1b2c3d (npm run dev).',
+      backgroundCommand: { command: 'npm run dev' },
+      noticeCard: { type: 'skill-proposal', id: 'x'.repeat(200) } as ToolCall['noticeCard'],
+    };
+    const { noticeCard: _dropped, ...reduced } = stopCall;
+
+    const bounded = boundToolCallRichContent([stopCall], { maxBytes: jsonBytes([reduced]) })!;
+
+    expect(bounded).toEqual([reduced]);
+  });
 });

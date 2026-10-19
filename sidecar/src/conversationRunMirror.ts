@@ -203,6 +203,7 @@ export function createConversationRunMirror(
           if (hideScreenshot != null) tc.hideScreenshot = hideScreenshot;
           if (metadata?.computerStep) tc.computerStep = metadata.computerStep;
           if (metadata?.fileChange) tc.fileChange = metadata.fileChange;
+          if (metadata?.backgroundCommand) tc.backgroundCommand = metadata.backgroundCommand;
           if (tc.name === 'run_command' && metadata?.sandboxRecovery) {
             tc.sandboxRecovery = metadata.sandboxRecovery;
             tc.isError = true;
@@ -240,6 +241,7 @@ export function createConversationRunMirror(
         if (!tc) break;
         if (metadata.computerStep) tc.computerStep = metadata.computerStep;
         if (metadata.fileChange) tc.fileChange = metadata.fileChange;
+        if (metadata.backgroundCommand) tc.backgroundCommand = metadata.backgroundCommand;
         if (
           metadata.subagentStopReason
           && !(tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed' && metadata.subagentStopReason === 'completed')

@@ -529,6 +529,66 @@ describe('TaskBlock — file change of a step', () => {
   });
 });
 
+describe('TaskBlock — the command of a background-command step', () => {
+  afterEach(cleanup);
+
+  const outputStep: ExecutionStep = {
+    id: 'step-output',
+    executionId: 'exec-1',
+    toolCallId: 'tc-output',
+    type: 'tool',
+    label: 'Read background command output bg-0a1b2c3d',
+    status: 'completed',
+    toolName: 'background_command_output',
+    toolInput: { id: 'bg-0a1b2c3d' },
+    toolResult: 'status: running',
+    source: 'agent',
+    detailBlocks: [],
+  };
+  const commands = new Map([['tc-output', { command: 'npm run dev' }]]);
+
+  function renderOpen(steps: ExecutionStep[]) {
+    render(<TaskBlock executionSteps={steps} isActive={false} backgroundCommands={commands} />);
+    fireEvent.click(screen.getAllByRole('button')[0]);
+  }
+
+  it('names the command the step recorded', () => {
+    renderOpen([outputStep]);
+
+    expect(screen.getByText('Read background command output npm run dev')).toBeInTheDocument();
+  });
+
+  it('names the command for a step restored from a saved snapshot', () => {
+    const restored = snapshotToExecutionSteps(snapshotExecutionSteps([outputStep]));
+    expect(restored[0].toolInput).toEqual({});
+
+    renderOpen(restored);
+
+    expect(screen.getByText('Read background command output npm run dev')).toBeInTheDocument();
+  });
+
+  it('names the command for a legacy step by its tool call id', () => {
+    render(
+      <TaskBlock
+        steps={[{
+          id: 'tc-output',
+          type: 'tool',
+          label: '查看后台命令的输出 bg-0a1b2c3d',
+          status: 'completed',
+          timestamp: 1,
+          toolName: 'background_command_output',
+          toolInput: { id: 'bg-0a1b2c3d' },
+        }]}
+        isActive={false}
+        backgroundCommands={commands}
+      />,
+    );
+    fireEvent.click(screen.getAllByRole('button')[0]);
+
+    expect(screen.getByText('Read background command output npm run dev')).toBeInTheDocument();
+  });
+});
+
 describe('convertExecutionStep label (persisted snapshots keep their label)', () => {
   const base = { id: 's', executionId: 'e', type: 'command' as const, status: 'completed' as const, source: 'agent' as const, detailBlocks: [] };
   it('keeps the stored label when the snapshot has no toolInput, recomputes when it does', () => {

@@ -114,6 +114,47 @@ describe('invokeTaskCommand', () => {
     );
   });
 
+  it('passes conversationId for background commands', async () => {
+    setElectronMarker(true);
+    vi.mocked(invoke).mockResolvedValueOnce({ code: 0, stdout: '', stderr: '', backgroundCommandId: 'bg-0123abcd' });
+
+    await invokeTaskCommand(
+      'run_shell_command',
+      { command: 'npm run dev', cwd: null, background: true, timeout: 30 },
+      { conversationId: 'c1' },
+    );
+
+    expect(invoke).toHaveBeenCalledWith(
+      'run_shell_command',
+      expect.objectContaining({ command: 'npm run dev', background: true, conversationId: 'c1' }),
+    );
+  });
+
+  it('throws for a background command without a conversation', async () => {
+    setElectronMarker(true);
+
+    await expect(invokeTaskCommand(
+      'run_shell_command',
+      { command: 'npm run dev', cwd: null, background: true, timeout: 30 },
+      { workspacePath: '/ws' },
+    )).rejects.toThrow(/conversation/);
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('does not add conversationId to foreground commands', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ code: 0, stdout: 'ok', stderr: '' });
+
+    await invokeTaskCommand(
+      'run_shell_command',
+      { command: 'echo ok', cwd: null, background: false, timeout: 30 },
+      { conversationId: 'c1' },
+    );
+
+    expect(invoke).toHaveBeenCalledWith('run_shell_command', {
+      command: 'echo ok', cwd: null, background: false, timeout: 30,
+    });
+  });
+
   it('does not invoke anything when the task signal is already aborted', async () => {
     const controller = new AbortController();
     controller.abort();

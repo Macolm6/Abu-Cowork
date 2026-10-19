@@ -4,11 +4,13 @@ import { Checkbox } from '@/components/ds/checkbox';
 import { Dialog } from '@/components/ds/dialog';
 import { AppIcons } from '@/components/ds/icons';
 import { InlineMessage } from '@/components/ds/inline-message';
-import { useI18n } from '@/i18n';
+import { format, useI18n } from '@/i18n';
 
 interface CloseDialogProps {
   open: boolean;
   hasRunningAgent: boolean;
+  /** Background commands of every conversation still running; quitting stops them. */
+  backgroundCommandCount: number;
   onQuit: () => void;
   onMinimize: () => void;
   onCancel: () => void;
@@ -27,6 +29,7 @@ interface CloseDialogProps {
 export default function CloseDialog({
   open,
   hasRunningAgent,
+  backgroundCommandCount,
   onQuit,
   onMinimize,
   onCancel,
@@ -81,7 +84,18 @@ export default function CloseDialog({
         </div>
       )}
     >
-      {hasRunningAgent && <InlineMessage tone="warning">{t.windowClose.agentRunningWarning}</InlineMessage>}
+      {(hasRunningAgent || backgroundCommandCount > 0) && (
+        <div className="flex flex-col gap-2">
+          {hasRunningAgent && <InlineMessage tone="warning">{t.windowClose.agentRunningWarning}</InlineMessage>}
+          {backgroundCommandCount > 0 && (
+            <InlineMessage tone="warning">
+              {backgroundCommandCount === 1
+                ? t.windowClose.backgroundCommandsRunningOne
+                : format(t.windowClose.backgroundCommandsRunning, { count: backgroundCommandCount })}
+            </InlineMessage>
+          )}
+        </div>
+      )}
     </Dialog>
   );
 }

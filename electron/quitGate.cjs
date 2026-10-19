@@ -2,9 +2,16 @@
 
 const ACK_TIMEOUT_MS = 2_000;
 
-/** Confirms interruption of running work before the host starts saving. */
-function createQuitGate({ send, onProceed, onCancelled, onUnavailable = onCancelled,
+/**
+ * Confirms interruption of running work before the host starts saving.
+ * `backgroundCommandCount` counts the background commands of every conversation still running;
+ * each request carries it, so the page can name them in its question.
+ */
+function createQuitGate({ send, backgroundCommandCount, onProceed, onCancelled, onUnavailable = onCancelled,
   ackTimeoutMs = ACK_TIMEOUT_MS, setTimer = setTimeout, clearTimer = clearTimeout }) {
+  if (typeof backgroundCommandCount !== 'function') {
+    throw new TypeError('createQuitGate: backgroundCommandCount is required');
+  }
   let state = 'idle';
   let requestId = 0;
   let timer = null;
@@ -25,7 +32,7 @@ function createQuitGate({ send, onProceed, onCancelled, onUnavailable = onCancel
     if (state === 'passed') return true;
     if (state === 'requested') return false;
     if (state === 'idle') requestId++;
-    if (send({ requestId, sessionEnding }) === 0) {
+    if (send({ requestId, sessionEnding, backgroundCommandCount: backgroundCommandCount() }) === 0) {
       unavailable();
       return false;
     }
