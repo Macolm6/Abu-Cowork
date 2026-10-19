@@ -169,6 +169,17 @@ export interface TranslationDict {
     deleteUnreadableTitle: string;
     /** `{name}` is the task's title. */
     deleteUnreadableMessage: string;
+    /** The question before a task with running background commands is deleted. `{count}` is how many run. */
+    deleteWithBackgroundCommandsTitle: string;
+    /** Singular of `deleteWithBackgroundCommandsTitle`, for exactly one command. */
+    deleteWithBackgroundCommandsTitleOne: string;
+    deleteWithBackgroundCommandsMessage: string;
+    /** Singular of `deleteWithBackgroundCommandsMessage`, for exactly one command. */
+    deleteWithBackgroundCommandsMessageOne: string;
+    /** Both at once: the record cannot be read and background commands run. `{name}` is the task's title. */
+    deleteUnreadableWithBackgroundCommandsMessage: string;
+    /** Singular of `deleteUnreadableWithBackgroundCommandsMessage`, for exactly one command. */
+    deleteUnreadableWithBackgroundCommandsMessageOne: string;
     importSession: string;
     renameConversation: string;
     moreActions: string;
@@ -790,6 +801,42 @@ export interface TranslationDict {
       compacted: string;
       compactedManual: string;
     };
+    // The conversation header's list of background commands
+    backgroundCommands: {
+      /** {count} */
+      running: string;
+      /** Singular of `running`, for exactly one command. */
+      runningOne: string;
+      /** {count} */
+      total: string;
+      /** Singular of `total`, for exactly one command. */
+      totalOne: string;
+      statusRunning: string;
+      statusStopping: string;
+      statusCompleted: string;
+      /** {code} */
+      statusFailedWithCode: string;
+      statusFailed: string;
+      statusStopped: string;
+      /** {count} */
+      finished: string;
+      clear: string;
+      stop: string;
+      confirmStop: string;
+      stopFailed: string;
+      outputDropped: string;
+      noOutput: string;
+      /** {duration} */
+      runningFor: string;
+      /** {duration} */
+      took: string;
+      /** {s} */
+      durationSeconds: string;
+      /** {m}, {s} */
+      durationMinutes: string;
+      /** {h}, {m} */
+      durationHours: string;
+    };
     // /compact slash command toasts
     compactCommand: {
       done: string;
@@ -940,6 +987,10 @@ export interface TranslationDict {
     collapse: string;
     /** Shown in tool-call detail when the task was aborted mid-execution */
     cancelled: string;
+    /** Tool-row labels of background commands; {command} is the command text, or its id */
+    runInBackground: string;
+    readBackgroundCommandOutput: string;
+    stopBackgroundCommand: string;
   };
 
   // Notice menubar summaries (noticeMenubarStore.ts)
@@ -3767,6 +3818,10 @@ export interface TranslationDict {
     agentRunningWarning: string;
     /** The question asked when the application is quit while a conversation is running. */
     quitWhileRunning: string;
+    /** Background commands that quitting stops ({count}). */
+    backgroundCommandsRunning: string;
+    /** Singular of `backgroundCommandsRunning`, for exactly one command. */
+    backgroundCommandsRunningOne: string;
     quit: string;
     minimize: string;
     rememberChoice: string;
@@ -4534,6 +4589,16 @@ export interface TranslationDict {
     errBusy: string;
   };
   toolResult: {
+    /** background_command_output / stop_background_command results */
+    backgroundCommand: {
+      noCommands: string;
+      listHeader: string;
+      earlierOutputDropped: string;
+      noOutput: string;
+      outputTail: string;
+      stopRequested: string;
+      alreadyFinished: string;
+    };
     team: {
       invalidInput: string;
       unavailableAgents: string;

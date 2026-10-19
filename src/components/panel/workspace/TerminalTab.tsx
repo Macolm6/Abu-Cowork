@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Terminal, type ITheme } from '@xterm/xterm';
+import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { invoke } from '@tauri-apps/api/core';
@@ -8,6 +8,12 @@ import { useChatStore } from '@/stores/chatStore';
 import { useI18n, format, getI18n } from '@/i18n';
 import { createLogger } from '@/core/logging/logger';
 import { useTokenRevision } from '@/hooks/useTokenRevision';
+import {
+  TERMINAL_FONT_SIZE,
+  TERMINAL_MINIMUM_CONTRAST,
+  readToken,
+  resolveTerminalTheme,
+} from '@/components/common/terminalTheme';
 import { isMacOS } from '@/utils/platform';
 import { ContextMenu } from '@/components/ds/context-menu';
 import { MenuItem } from '@/components/ds/menu';
@@ -15,41 +21,6 @@ import { SelectionToolbar } from '@/features/reference/SelectionToolbar';
 import { createDocReference } from '@/types/chatReference';
 
 const terminalLogger = createLogger('terminal');
-
-function readToken(name: string): string {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-}
-
-// xterm lifts any cell whose text falls under this contrast against its own background
-// (the terminal background, a program-set background, or the selection).
-const TERMINAL_MINIMUM_CONTRAST = 4.5;
-
-/**
- * Terminal colors from the design tokens. xterm takes concrete color values only,
- * so the `--ds-*` variables are read here and read again whenever the appearance
- * changes (`useTokenRevision`). `--ds-surface` is the workspace panel card the
- * terminal sits on, so the terminal blends into it.
- *
- * `selectionBackground` MUST be set explicitly: xterm's built-in default is
- * `rgba(255,255,255,0.3)` (white), which is invisible on a white background —
- * users dragged to select and saw nothing, and concluded copying was broken.
- *
- * `cursorAccent` is the character under the block cursor. xterm's default is black,
- * which disappears into a cursor drawn in the label color; the terminal background
- * always contrasts with the label.
- *
- * The 16 ANSI colors stay xterm's defaults: they are the program's output. xterm keeps
- * each cell readable through `minimumContrastRatio` (see TERMINAL_MINIMUM_CONTRAST).
- */
-function resolveTerminalTheme(): ITheme {
-  return {
-    background: readToken('--ds-surface'),
-    foreground: readToken('--ds-label'),
-    cursor: readToken('--ds-label'),
-    cursorAccent: readToken('--ds-surface'),
-    selectionBackground: readToken('--ds-selection'),
-  };
-}
 
 function copyTerminalSelection(term: Terminal): void {
   const text = term.getSelection();
@@ -153,13 +124,12 @@ export default function TerminalTab({ tabId }: { tabId: string }) {
     if (!container) return;
 
     const term = new Terminal({
-      // 13px is the code size of the design system (`--text-mono`).
-      fontSize: 13,
+      fontSize: TERMINAL_FONT_SIZE,
       fontFamily: readToken('--ds-font-mono'),
       cursorBlink: true,
       convertEol: false,
       minimumContrastRatio: TERMINAL_MINIMUM_CONTRAST,
-      theme: resolveTerminalTheme(),
+      theme: resolveTerminalTheme('--ds-surface'),
     });
     termRef.current = term;
     const fitAddon = new FitAddon();
@@ -304,7 +274,7 @@ export default function TerminalTab({ tabId }: { tabId: string }) {
   // without touching the pty session above: xterm supports swapping `options.theme`
   // on an existing instance, so the terminal repaints and keeps its buffer.
   useEffect(() => {
-    if (termRef.current) termRef.current.options.theme = resolveTerminalTheme();
+    if (termRef.current) termRef.current.options.theme = resolveTerminalTheme('--ds-surface');
   }, [tokenRevision]);
 
   const handleMenuOpenChange = useCallback((open: boolean) => {

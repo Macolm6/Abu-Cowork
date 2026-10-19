@@ -118,6 +118,30 @@ describe('buildShareBundle', () => {
     expect(JSON.stringify(bundle)).toContain('[REDACTED:anthropic-key]');
   });
 
+  it('redacts the command a background-command tool call recorded', async () => {
+    const conv = makeConv([
+      {
+        id: 'm1',
+        role: 'assistant',
+        content: 'stopped',
+        timestamp: 1,
+        toolCalls: [{
+          id: 't1',
+          name: 'stop_background_command',
+          input: { id: 'bg-0a1b2c3d' },
+          result: 'Stop requested',
+          backgroundCommand: { command: 'API_KEY=sk-ant-abcdefghijklmnopqrstuvwxyz123456 npm run dev' },
+        }],
+      },
+    ]);
+
+    const bundle = await buildShareBundle(conv);
+
+    expect(bundle.messages[0].toolCalls?.[0].backgroundCommand?.command).toContain('[REDACTED:anthropic-key]');
+    expect(JSON.stringify(bundle)).not.toContain('sk-ant-abc');
+    expect(conv.messages[0].toolCalls?.[0].backgroundCommand?.command).toContain('sk-ant-abc');
+  });
+
   describe('tool call file change', () => {
     function fileChangeConv(fileChange: NonNullable<NonNullable<Message['toolCalls']>[number]['fileChange']>): Conversation {
       return makeConv([

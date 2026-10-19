@@ -398,6 +398,7 @@ describe('SensitiveAuditDialog', () => {
           <CloseDialog
             open={open}
             hasRunningAgent={false}
+            backgroundCommandCount={0}
             onQuit={onQuit}
             onMinimize={() => undefined}
             onCancel={() => usePreviewStore.getState().setAppModalOpen(false)}
