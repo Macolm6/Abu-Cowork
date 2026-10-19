@@ -627,6 +627,9 @@ const enUS: TranslationDict = {
     compactDivider: {
       compacted: 'Context compacted',
       compactedManual: 'Context compacted (manual)',
+      noSummary: 'No summary',
+      expand: 'Show summary',
+      collapse: 'Hide summary',
     },
     backgroundCommands: {
       running: '{count} background commands running',

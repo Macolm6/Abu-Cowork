@@ -377,6 +377,41 @@ describe('ChatView active-turn scroll state machine', () => {
     expect(getScrollTop()).toBe(0);
   });
 
+  it('keeps the view in place when a compaction summary below the anchor expands during a run', async () => {
+    const user = userEvent.setup();
+    const conversationId = setupConversation();
+    render(<ChatView />);
+    const scroller = document.querySelector<HTMLElement>('.overlay-scroll')!;
+    const { getScrollTop } = installGeometry(scroller);
+    const spacer = await armNewTurn(conversationId);
+    expect(getScrollTop()).toBe(200);
+
+    // An automatic compaction during the run puts its marker below the new prompt.
+    act(() => useChatStore.getState().addMessage(conversationId, {
+      id: 'compact-boundary-run',
+      role: 'system',
+      content: '',
+      timestamp: 2,
+      compactBoundary: {
+        summaryText: 'keep the API stable',
+        summarizedFromId: 'old-user',
+        summarizedToId: 'old-assistant',
+        createdAt: 2,
+        source: 'auto',
+      },
+    }));
+
+    await user.click(screen.getByRole('button', { name: /Context compacted/ }));
+    // The opened summary grows the tail past the spacer.
+    geometry.contentHeight = 320;
+    act(() => harness.props?.totalListHeightChanged?.(520));
+    act(() => harness.props?.atBottomStateChange?.(false));
+
+    expect(spacer.dataset.spacerHeight).toBe('200');
+    expect(getScrollTop()).toBe(200);
+    expect(screen.getByRole('button', { name: 'Scroll to bottom' })).toBeInTheDocument();
+  });
+
   it('leaves an unpinned reader alone when late content resizes', async () => {
     const conversationId = setupConversation();
     render(<ChatView />);

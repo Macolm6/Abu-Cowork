@@ -628,6 +628,9 @@ const zhCN: TranslationDict = {
     compactDivider: {
       compacted: '上下文已压缩',
       compactedManual: '上下文已压缩（手动）',
+      noSummary: '没有摘要',
+      expand: '展开摘要',
+      collapse: '收起摘要',
     },
     backgroundCommands: {
       running: '{count} 个后台命令运行中',
