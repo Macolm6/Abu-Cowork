@@ -142,6 +142,94 @@ describe('buildShareBundle', () => {
     expect(conv.messages[0].toolCalls?.[0].backgroundCommand?.command).toContain('sk-ant-abc');
   });
 
+  describe('fields without a rule of their own', () => {
+    const KEY = 'sk-ant-abcdefghijklmnopqrstuvwxyz123456';
+
+    it('redacts the step snapshot a restored conversation shows, nested steps included', async () => {
+      const conv = makeConv([{
+        id: 'm1',
+        role: 'assistant',
+        content: 'done',
+        timestamp: 1,
+        executionSteps: [{
+          id: 's1', type: 'command', label: 'Run cat /Users/alice/.env', status: 'completed', toolName: 'run_command',
+          completionMessage: `read ${KEY}`,
+          detailBlocks: [{ id: 's1-result', title: 'Result', type: 'result', content: `API_KEY=${KEY}`, fullContentLength: 900 }],
+          childSteps: [{
+            id: 'c1', type: 'command', label: 'Run env', status: 'completed', toolName: 'run_command',
+            detailBlocks: [{ id: 'c1-result', title: 'Result', type: 'result', content: `TOKEN=${KEY}` }],
+          }],
+        }],
+        plannedSteps: [{ index: 0, description: `Use ${KEY} to call the API`, status: 'completed' }],
+      }]);
+
+      const bundle = await buildShareBundle(conv);
+      const json = JSON.stringify(bundle.messages);
+
+      expect(json).not.toContain('sk-ant-abc');
+      expect(json).not.toContain('/Users/alice');
+      expect(bundle.messages[0].executionSteps?.[0].detailBlocks?.[0].content).toBe('API_KEY=[REDACTED:anthropic-key]');
+      expect(bundle.messages[0].executionSteps?.[0].childSteps?.[0].detailBlocks?.[0].content).toBe('TOKEN=[REDACTED:anthropic-key]');
+      expect(bundle.stats.redactionCount).toBe(5);
+      expect(conv.messages[0].executionSteps?.[0].detailBlocks?.[0].content).toContain('sk-ant-abc');
+    });
+
+    it('redacts the text blocks of a tool result and what an interface or the user added to a tool call', async () => {
+      const conv = makeConv([{
+        id: 'm1',
+        role: 'assistant',
+        content: 'done',
+        timestamp: 1,
+        toolCalls: [{
+          id: 't1',
+          name: 'read_file',
+          input: { path: 'config.txt' },
+          result: 'read',
+          resultContent: [{ type: 'text', text: `key=${KEY}` }],
+          modelContext: `context ${KEY}`,
+        }],
+      }]);
+
+      const bundle = await buildShareBundle(conv);
+
+      expect(JSON.stringify(bundle.messages)).not.toContain('sk-ant-abc');
+      expect(bundle.messages[0].toolCalls?.[0].resultContent?.[0]).toEqual({ type: 'text', text: 'key=[REDACTED:anthropic-key]' });
+      expect(bundle.stats.redactionCount).toBe(2);
+    });
+
+    it('leaves image data as it is, even where its base64 happens to look like a key', async () => {
+      const data = `iVBOR${'AIza'}${'B'.repeat(35)}xyz`;
+      const conv = makeConv([{
+        id: 'm1',
+        role: 'assistant',
+        content: 'shot',
+        timestamp: 1,
+        toolCalls: [{
+          id: 't1',
+          name: 'computer',
+          input: { action: 'screenshot' },
+          result: 'Screenshot taken',
+          resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data } }],
+        }],
+        toolCallsForContext: [{
+          id: 't1',
+          name: 'computer',
+          input: { action: 'screenshot' },
+          result: 'Screenshot taken',
+          resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data } }],
+        }],
+      }]);
+
+      const bundle = await buildShareBundle(conv);
+      const block = bundle.messages[0].toolCalls?.[0].resultContent?.[0];
+      const contextBlock = bundle.messages[0].toolCallsForContext?.[0].resultContent?.[0];
+
+      expect(block?.type === 'image' && block.source.data).toBe(data);
+      expect(contextBlock?.type === 'image' && contextBlock.source.data).toBe(data);
+      expect(bundle.stats.redactionCount).toBe(0);
+    });
+  });
+
   describe('tool call file change', () => {
     function fileChangeConv(fileChange: NonNullable<NonNullable<Message['toolCalls']>[number]['fileChange']>): Conversation {
       return makeConv([

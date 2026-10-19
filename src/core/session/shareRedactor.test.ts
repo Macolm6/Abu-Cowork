@@ -104,6 +104,16 @@ describe('shareRedactor', () => {
       expect(value).toEqual({ n: 42, b: true, x: null });
     });
 
+    it('returns an object the keep test accepts as it is, and redacts its siblings', () => {
+      const kept = { type: 'base64', data: `AIza${'B'.repeat(35)}` };
+      const input = { source: kept, note: 'sk-ant-abcdefghijklmnopqrstuvwxyz1234567' };
+      const { value, count } = redactDeep(input, (node) => node.type === 'base64');
+      const v = value as typeof input;
+      expect(v.source).toBe(kept);
+      expect(v.note).toBe('[REDACTED:anthropic-key]');
+      expect(count).toBe(1);
+    });
+
     it('skips oversized strings to avoid scanning base64 blobs', () => {
       const huge = 'a'.repeat(200_000) + 'sk-ant-abcdefghijklmnopqrstuvwxyz1234567';
       const { value, count } = redactDeep({ img: huge });

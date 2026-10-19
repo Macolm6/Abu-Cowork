@@ -173,11 +173,15 @@ export function redactText(input: string): RedactionResult {
  * Recursively redact every string inside a structured value. Used for tool
  * inputs / results whose shape we don't control. Image base64 blobs are
  * skipped by length — we only touch strings shorter than a threshold that
- * could plausibly contain credentials.
+ * could plausibly contain credentials. An object `keep` accepts is returned
+ * as it is, with nothing inside it redacted.
  */
 const MAX_STRING_LEN_FOR_REDACTION = 100_000;
 
-export function redactDeep(value: unknown): { value: unknown; count: number; samples: RedactionSample[] } {
+export function redactDeep(
+  value: unknown,
+  keep?: (node: Record<string, unknown>) => boolean,
+): { value: unknown; count: number; samples: RedactionSample[] } {
   let count = 0;
   const samples: RedactionSample[] = [];
 
@@ -191,6 +195,7 @@ export function redactDeep(value: unknown): { value: unknown; count: number; sam
     }
     if (Array.isArray(v)) return v.map(walk);
     if (v && typeof v === 'object') {
+      if (keep?.(v as Record<string, unknown>)) return v;
       const out: Record<string, unknown> = {};
       for (const [k, vv] of Object.entries(v as Record<string, unknown>)) {
         out[k] = walk(vv);

@@ -168,6 +168,15 @@ export function serializeShareBundle(bundle: ShareBundle): string {
 // Internals
 // ────────────────────────────────────────────────────────────────────────────
 
+/**
+ * The base64 source of an image or document block. Its data is bytes written
+ * out as text, and a run of it can look like a key (`AIza…`, `AKIA…`), so the
+ * rules are never applied to it.
+ */
+function isMediaData(node: Record<string, unknown>): boolean {
+  return node.type === 'base64' && typeof node.data === 'string';
+}
+
 function indexByNormalizedPath(entries: SnapshotEntry[]): Map<string, SnapshotEntry> {
   const out = new Map<string, SnapshotEntry>();
   for (const e of entries) {
@@ -216,7 +225,7 @@ async function prepareMessage(
     clone.toolCalls = clone.toolCalls.map((tc) => redactToolCall(tc, onRedaction));
   }
   if (clone.toolCallsForContext && clone.toolCallsForContext.length > 0) {
-    const r = redactDeep(clone.toolCallsForContext);
+    const r = redactDeep(clone.toolCallsForContext, isMediaData);
     onRedaction({ count: r.count, samples: r.samples });
     clone.toolCallsForContext = r.value as typeof clone.toolCallsForContext;
   }
@@ -256,7 +265,13 @@ async function prepareMessage(
     if (redactedDetails) clone.runErrorDetails = redactedDetails;
     else delete clone.runErrorDetails;
   }
-  return clone;
+  // Everything else on the message goes out through the same rules: the step
+  // snapshot a reopened conversation shows, the text blocks of tool results,
+  // plans, answers, interface context and any field added later. Text redacted
+  // above matches no rule again, so it adds nothing to the count here.
+  const rest = redactDeep(clone, isMediaData);
+  onRedaction({ count: rest.count, samples: rest.samples });
+  return rest.value as Message;
 }
 
 async function prepareImageBlock(
@@ -323,7 +338,7 @@ function redactToolCall(
 ): ToolCall {
   const out: ToolCall = { ...tc, isExecuting: false };
   if (out.input !== undefined) {
-    const r = redactDeep(out.input);
+    const r = redactDeep(out.input, isMediaData);
     onRedaction({ count: r.count, samples: r.samples });
     out.input = r.value as typeof out.input;
   }
@@ -332,7 +347,7 @@ function redactToolCall(
     onRedaction(r);
     out.result = r.text;
   } else if (out.result !== undefined) {
-    const r = redactDeep(out.result);
+    const r = redactDeep(out.result, isMediaData);
     onRedaction({ count: r.count, samples: r.samples });
     out.result = r.value as typeof out.result;
   }
