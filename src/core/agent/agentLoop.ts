@@ -2833,6 +2833,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           model: effectiveModelId,
           input: lastProviderMessages,
           startTime: new Date(genStartTime),
+          protocol: usageProtocolFor(adapterKind),
         }).end({
           output: {
             content: turnMsg?.content,

@@ -14,6 +14,7 @@ import { Langfuse } from 'langfuse';
 import type { LangfuseTraceClient } from 'langfuse';
 import type { TokenUsage } from '../../types';
 import { getTauriFetch } from '../llm/tauriFetch';
+import { promptTokensOf, type UsageProtocol } from '../llm/usageAccounting';
 import { redactSensitiveMediaText } from '../security/redaction';
 
 // Structural match for langfuse-core's LangfuseFetchOptions (not re-exported by
@@ -123,9 +124,10 @@ interface EndableSpan {
 const NOOP_GENERATION: EndableGeneration = { end() {} };
 const NOOP_SPAN: EndableSpan = { end() {} };
 
-function mapUsage(usage?: TokenUsage, costUsd?: number) {
+function mapUsage(protocol: UsageProtocol, usage?: TokenUsage, costUsd?: number) {
   if (!usage && costUsd === undefined) return undefined;
-  const input = usage?.inputTokens;
+  // 上报整段输入。Anthropic 的 inputTokens 不含缓存读写，要按协议换算。
+  const input = usage?.inputTokens !== undefined ? promptTokensOf(protocol, usage) : undefined;
   const output = usage?.outputTokens;
   const hasTokens = input !== undefined || output !== undefined;
   return {
@@ -236,7 +238,14 @@ export function endConversationTrace(
  */
 export function startGeneration(
   conversationId: string,
-  data: { name?: string; model: string; input: unknown; startTime?: Date },
+  data: {
+    name?: string;
+    model: string;
+    input: unknown;
+    startTime?: Date;
+    /** 适配器上报用量的协议，决定 `TokenUsage.inputTokens` 含不含缓存。 */
+    protocol: UsageProtocol;
+  },
 ): EndableGeneration {
   const sink = _sink;
   const trace = _traces.get(conversationId);
@@ -256,7 +265,7 @@ export function startGeneration(
         if (gen) {
           gen.end({
             output: sanitizeLangfusePayload(end?.output),
-            usage: mapUsage(end?.usage, end?.costUsd),
+            usage: mapUsage(data.protocol, end?.usage, end?.costUsd),
             ...(end?.level === 'ERROR' ? { level: 'ERROR', statusMessage: sanitizeLangfusePayload(end?.statusMessage) } : {}),
           });
         }

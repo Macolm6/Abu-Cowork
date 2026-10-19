@@ -647,11 +647,63 @@ describe('turnChanges', () => {
       expect(fs.has(CHANGES)).toBe(false);
     });
 
-    it('rejects a saved file that does not have the saved shape', async () => {
+    it('rejects a saved file that does not have the saved shape, and builds an index of another shape again', async () => {
       fs.write(`${CHANGES}/loop-1.json`, '{"loopId":"loop-1"}');
       fs.write(`${CHANGES}/index.json`, '[]');
-      await expect(mod.readTurnChanges('conv-1', 'loop-1')).rejects.toThrow();
-      await expect(mod.readTurnIndex('conv-1')).rejects.toThrow();
+      await expect(mod.readTurnChanges('conv-1', 'loop-1')).rejects.toThrow('not in the saved format');
+      await expect(mod.readTurnIndex('conv-1')).resolves.toEqual({});
+      expect(fs.readJson(`${CHANGES}/index.json`)).toEqual({ version: 1, turns: {} });
+    });
+
+    it.each([
+      ['cut off halfway', '{"version":1,"turns":{"loop-a":{"total":1,'],
+      ['empty', ''],
+      ['of another shape', '[]'],
+    ])('builds an index that is %s again from the turn files beside it, with the undo marks', async (_label, damaged) => {
+      fs.write(`${WS}/plan.md`, 'one\n');
+      await runTurn('loop-a', async (capture) => {
+        await capture(`${WS}/plan.md`);
+        fs.write(`${WS}/plan.md`, 'two\n');
+      });
+      await runTurn('loop-b', () => {
+        fs.write(`${WS}/by-command.md`, 'x\n');
+      });
+      const before = await mod.readTurnIndex('conv-1');
+      fs.write(`${CHANGES}/index.json`, damaged);
+
+      const afterRestart = await restart();
+
+      await expect(afterRestart.readTurnIndex('conv-1')).resolves.toEqual(before);
+      expect(fs.readJson(`${CHANGES}/index.json`)).toEqual({ version: 1, turns: before });
+      await expect(afterRestart.readTurnUndoRecord('conv-1', 'loop-a')).resolves.toMatchObject({ state: 'applied' });
+    });
+
+    it.each([
+      ['cut off halfway', '{"loopId":"loop-a","files":[{"path":'],
+      ['of another shape', '{"loopId":"loop-a"}'],
+    ])('keeps the other turns of a conversation when one saved file is %s, and leaves that file as it is', async (_label, damaged) => {
+      fs.write(`${WS}/plan.md`, 'one\n');
+      fs.write(`${WS}/notes.md`, 'n1\n');
+      await runTurn('loop-a', async (capture) => {
+        await capture(`${WS}/plan.md`);
+        fs.write(`${WS}/plan.md`, 'two\n');
+      });
+      await runTurn('loop-b', async (capture) => {
+        await capture(`${WS}/notes.md`);
+        fs.write(`${WS}/notes.md`, 'n2\n');
+      });
+      fs.write(`${CHANGES}/loop-a.json`, damaged);
+      const kept = fs.list(`${CHANGES}/loop-a/`);
+
+      const afterRestart = await restart();
+
+      await expect(afterRestart.readTurnIndex('conv-1')).resolves.toMatchObject({
+        'loop-b': { total: 1, firstFile: 'notes.md', restorable: 1 },
+      });
+      await expect(afterRestart.readTurnChanges('conv-1', 'loop-b')).resolves.toMatchObject({ total: 1 });
+      await expect(afterRestart.readTurnChanges('conv-1', 'loop-a')).rejects.toThrow('not in the saved format');
+      expect(fs.read(`${CHANGES}/loop-a.json`)).toBe(damaged);
+      expect(fs.list(`${CHANGES}/loop-a/`)).toEqual(kept);
     });
 
     it.each([
@@ -912,12 +964,18 @@ describe('turnChanges', () => {
       await expect(mod.readTurnUndoRecord('conv-1', loopId)).rejects.toThrow();
     });
 
-    it('rejects an index entry whose restorable count or undone mark has another type', async () => {
+    it('builds an index again whose restorable count or undone mark has another type', async () => {
       const entry = { total: 1, added: 0, deleted: 0, firstFile: 'a.md' };
       fs.write(`${CHANGES}/index.json`, JSON.stringify({ version: 1, turns: { 'loop-1': { ...entry, restorable: '1' } } }));
-      await expect(mod.readTurnIndex('conv-1')).rejects.toThrow('not in the saved format');
+      await expect(mod.readTurnIndex('conv-1')).resolves.toEqual({});
       fs.write(`${CHANGES}/index.json`, JSON.stringify({ version: 1, turns: { 'loop-1': { ...entry, undone: 1 } } }));
-      await expect((await restart()).readTurnIndex('conv-1')).rejects.toThrow('not in the saved format');
+      await expect((await restart()).readTurnIndex('conv-1')).resolves.toEqual({});
+    });
+
+    it('still fails a read of the index that the disk refuses', async () => {
+      fs.write(`${CHANGES}/index.json`, JSON.stringify({ version: 1, turns: {} }));
+      fs.failNextRead(`${CHANGES}/index.json`);
+      await expect(mod.readTurnIndex('conv-1')).rejects.toThrow('EIO');
     });
 
     describe('after a restart', () => {
