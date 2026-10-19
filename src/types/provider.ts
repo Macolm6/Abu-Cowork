@@ -33,6 +33,7 @@ export interface ModelDeclaredCapabilities {
   supportedEfforts?: Array<'low' | 'medium' | 'high'>;
   maxInputTokens?: number;
   maxOutputTokens?: number;
+  parallelToolCalls?: boolean;
 }
 
 /** Unified model definition */
@@ -63,11 +64,21 @@ export interface DeclaredCapabilities {
   /** How this provider expects the "reasoning/thinking" toggle to be shaped in the request body.
    *  Auto-derived from host when omitted; set explicitly to override
    *  (e.g. self-hosted qwen via vLLM needs 'qwen-chat-template'). */
-  thinkingFormat?: 'openai' | 'deepseek' | 'qwen' | 'qwen-chat-template' | 'zai' | 'together' | 'openrouter';
+  thinkingFormat?: 'openai' | 'deepseek' | 'qwen' | 'qwen-chat-template' | 'zai' | 'together' | 'openrouter' | 'kimi';
   /** Which field name this provider uses for the output-token cap. Auto-derived when omitted. */
   maxTokensField?: 'max_tokens' | 'max_completion_tokens';
   /** When true, tool-result (role:tool) messages must carry a `name` field mirroring the tool_call function name. */
   requiresToolResultName?: boolean;
+  /** Whether earlier assistant turns carry `reasoning_content` on replay. Family default when omitted. */
+  reasoningReplay?: 'none' | 'reasoning_content' | 'reasoning_content-or-empty';
+  /** Tool-schema cleanup the endpoint needs. Family default when omitted. */
+  toolSchemaDialect?: 'standard' | 'gemini' | 'deepseek';
+  /** Whether `temperature` is forwarded. Family default when omitted. */
+  sendTemperature?: boolean;
+  /** Whether `prompt_cache_key` is sent. Derived from the host when omitted. */
+  promptCacheKey?: boolean;
+  /** Whether the model may receive several tool calls in one turn. Family default when omitted. */
+  parallelToolCalls?: boolean;
 }
 
 /** Unified Provider instance (builtin and custom share the same structure) */

@@ -117,6 +117,7 @@ import { learnContextWindowAfterOverflow } from './contextOverflowRecovery';
 import { resolveImagePolicy } from '../llm/imagePolicy';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelDeclared } from '../llm/resolveModelDeclared';
+import { resolveModelProfile } from '../llm/modelProfile';
 import { rehydrateForSend, type ImageBase64Cache } from '../llm/imageRehydration';
 import { TOOL_NAMES, isDisplayHiddenStepBackedTool } from '../tools/toolNames';
 import { adaptComputerToolForTier } from '../tools/definitions/computerToolText';
@@ -1998,6 +1999,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // No-op when activeProvider has no declaredCapabilities (builtin providers).
       modelCaps = applyDeclaredCapabilities(modelCaps, modelDeclared);
       modelSupportsVision = modelCaps.vision;
+      // The profile is the one record of how Abu talks to this model; the
+      // adapter resolves the same record from the same inputs for the wire.
+      const modelProfile = resolveModelProfile({
+        modelId: effectiveModelId,
+        provider: activeProvider,
+        declared: modelDeclared,
+      });
       // Image limits belong to the route, not to Abu: the same picture is fine
       // for DeepSeek and a 400 from Anthropic. Resolved from the model actually
       // being called, alongside the rest of its capabilities.
@@ -2892,6 +2900,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           contextUsagePercent: usagePercent,
           toolInvoker,
           settingsReader: entrySettingsReader,
+          parallelToolCalls: modelProfile.capabilities.parallelToolCalls,
         });
         if (batchResult.requiresUserRecovery) {
           awaitingUserRecovery = true;

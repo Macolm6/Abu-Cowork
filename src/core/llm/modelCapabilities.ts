@@ -6,8 +6,10 @@
  * that route to different models via a single API format.
  */
 import { GENERATED_KNOWN_MODELS } from './generated/modelData.generated';
-import { classifyThinkingProtocol } from './model-data/classify';
+import { FALLBACK_DEFAULT, bareModelId, hasVisionName, resolveFamilyCapabilities } from './model-data/families';
 import type { DeclaredCapabilities, ProviderSource } from '@/types/provider';
+
+export { hasVisionName } from './model-data/families';
 
 // How images in tool results are handled
 export type ToolResultImageSupport = 'native' | 'workaround' | 'none';
@@ -125,29 +127,13 @@ export function resolveAgentModelCapabilities({
 // keeps its pattern fallback for ids not present in this table.
 const KNOWN_MODELS: Record<string, ModelCapabilities> = GENERATED_KNOWN_MODELS;
 
-// ── Pattern-based defaults ──────────────────────────────────────────
-
-const CLAUDE_DEFAULT: ModelCapabilities =       { vision: true,  thinking: false,              toolResultImages: 'native',     documentBlock: true,  maxOutputTokens: 16384, contextWindow: 200000 };
-const GPT_MODERN_DEFAULT: ModelCapabilities =   { vision: true,  thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 16384, contextWindow: 128000 };
-const DEEPSEEK_DEFAULT: ModelCapabilities =     { vision: false, thinking: false,              toolResultImages: 'none',       documentBlock: false, maxOutputTokens: 8192,  contextWindow: 128000 };
-const QWEN_DEFAULT: ModelCapabilities =         { vision: false, thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 8192,  contextWindow: 131072 };
-const FALLBACK_DEFAULT: ModelCapabilities =     { vision: true,  thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 8192,  contextWindow: 128000 };
-
-/** 名字里带 vl、vision、omni 或以 -v 结尾的模型能看图，先于家族规则判断。 */
-const VISION_NAME_PATTERN = /(?:^|[-_.:/\d])vl(?:[-_.:/\d]|$)|vision|omni|-v$/i;
-
-export function hasVisionName(modelId: string): boolean {
-  const bare = modelId.includes('/') ? modelId.split('/').pop()! : modelId;
-  return VISION_NAME_PATTERN.test(bare);
-}
-
 /**
  * Resolve model capabilities from a model ID.
  *
  * Resolution order:
  *  1. Exact match in KNOWN_MODELS
  *  2. Strip provider prefix (e.g. "anthropic/claude-opus-4-6" → "claude-opus-4-6")
- *  3. 名字先认视觉，再按家族规则匹配（claude-*, gpt-*, deepseek-* 等）
+ *  3. 名字先认视觉，再按家族规则匹配（model-data/families.ts）
  *  4. Fallback default (assumes vision + workaround images)
  */
 export function resolveCapabilities(modelId: string): ModelCapabilities {
@@ -155,66 +141,12 @@ export function resolveCapabilities(modelId: string): ModelCapabilities {
   if (KNOWN_MODELS[modelId]) return KNOWN_MODELS[modelId];
 
   // 2. Strip provider/ prefix (OpenRouter format: "anthropic/claude-opus-4-6")
-  const bare = modelId.includes('/') ? modelId.split('/').pop()! : modelId;
+  const bare = bareModelId(modelId);
   if (bare !== modelId && KNOWN_MODELS[bare]) return KNOWN_MODELS[bare];
 
   // 3. 名字先认视觉，再按家族规则；只改视觉一项，其余上限沿用家族值
-  const family = resolveFamilyCapabilities(bare.toLowerCase());
+  const family = resolveFamilyCapabilities(bare);
   return !family.vision && hasVisionName(bare) ? { ...family, vision: true } : family;
-}
-
-function resolveFamilyCapabilities(id: string): ModelCapabilities {
-  // Reasoning-protocol labels below come from classifyThinkingProtocol (shared with
-  // the build-time classifier in model-data/classify.ts) so the protocol labels can't
-  // drift. The family branches themselves (which ids reason) are still maintained here.
-  if (/claude.*opus/i.test(id)) {
-    return { ...CLAUDE_DEFAULT, thinking: classifyThinkingProtocol(id), maxOutputTokens: 16384 };
-  }
-  if (/claude/i.test(id)) return CLAUDE_DEFAULT;
-
-  // o[1-9]: matches classifyThinkingProtocol's /^o[1-9]/ (was /^o[34]/ here, which
-  // silently dropped o1/o2/o5 to non-reasoning for ids not in the snapshot).
-  if (/^o[1-9]/i.test(id)) {
-    return { ...GPT_MODERN_DEFAULT, thinking: classifyThinkingProtocol(id) };
-  }
-  // gpt-5 family reasons (matches classifyThinkingProtocol's /gpt-?5/). Must precede
-  // the gpt-4/5 branch below, which would otherwise label it non-reasoning. The
-  // non-reasoning gpt-5-chat* variants are all in the snapshot, so only unknown
-  // gpt-5 ids reach this branch.
-  if (/gpt-?5/i.test(id)) {
-    return { ...GPT_MODERN_DEFAULT, thinking: classifyThinkingProtocol(id) };
-  }
-  if (/gpt-[45]/i.test(id) || /gpt-4o/i.test(id)) return GPT_MODERN_DEFAULT;
-  if (/gpt-3\.5/i.test(id)) return { ...GPT_MODERN_DEFAULT, vision: false };
-
-  if (/deepseek.*r1|deepseek.*reasoner/i.test(id)) {
-    // DeepSeek R1 reasons but exposes no budget knob → can't bound it.
-    return { ...DEEPSEEK_DEFAULT, thinking: classifyThinkingProtocol(id) };
-  }
-  if (/deepseek/i.test(id)) return DEEPSEEK_DEFAULT;
-
-  // Qwen3.x flagship (e.g. qwen3-max, qwen3.7-max, dated variants) — reasoning,
-  // thinking always on, bounded via thinking_budget. Probe-verified 65536 output.
-  if (/qwen3\.?\d*-max/i.test(id)) {
-    return { ...QWEN_DEFAULT, thinking: classifyThinkingProtocol(id), maxOutputTokens: 65536, contextWindow: 1000000 };
-  }
-  if (/qwen/i.test(id)) return QWEN_DEFAULT;
-  if (/doubao|seed/i.test(id)) return { ...GPT_MODERN_DEFAULT, maxOutputTokens: 8192 };
-  if (/minimax.*m2\.7/i.test(id)) return { vision: true, thinking: false, toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 8192, contextWindow: 204800 };
-  if (/minimax/i.test(id)) return { vision: false, thinking: false, toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 8192, contextWindow: 204800 };
-  // Xiaomi MiMo: MiMo-VL variants support vision; the base text models (e.g. mimo-v2.5-pro) do not.
-  if (/mimo.*vl/i.test(id)) return { ...FALLBACK_DEFAULT, vision: true, toolResultImages: 'workaround' };
-  if (/mimo/i.test(id)) return { ...FALLBACK_DEFAULT, vision: false, toolResultImages: 'none' };
-  if (/moonshot|kimi/i.test(id)) return { ...FALLBACK_DEFAULT, vision: false };
-  if (/gemma3/i.test(id)) return { vision: true, thinking: false, toolResultImages: 'none', documentBlock: false, maxOutputTokens: 8192, contextWindow: 128000 };
-  if (/gemma/i.test(id)) return { ...FALLBACK_DEFAULT, vision: false, toolResultImages: 'none' };
-  if (/phi[34]/i.test(id)) return { ...FALLBACK_DEFAULT, vision: false, toolResultImages: 'none' };
-  if (/llama|mistral/i.test(id)) return { ...FALLBACK_DEFAULT, toolResultImages: 'none' };
-  if (/glm.*v/i.test(id)) return { vision: true, thinking: false, toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 4096, contextWindow: 128000 };
-  if (/glm/i.test(id)) return { vision: false, thinking: false, toolResultImages: 'none', documentBlock: false, maxOutputTokens: 8192, contextWindow: 128000 };
-
-  // 4. Fallback: assume modern model with basic capabilities
-  return FALLBACK_DEFAULT;
 }
 
 // ── Reasoning budget policy ─────────────────────────────────────────
