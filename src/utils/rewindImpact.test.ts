@@ -74,24 +74,38 @@ describe('computeRewindImpact', () => {
 });
 
 describe('redoScope', () => {
-  const u = (id: string, loopId?: string): Message => ({ id, role: 'user', content: id, timestamp: 1, ...(loopId ? { loopId } : {}) });
-  const a = (id: string, loopId?: string): Message => ({ id, role: 'assistant', content: id, timestamp: 1, ...(loopId ? { loopId } : {}) });
-
   it('lists the loops from the cut in conversation order', () => {
-    const messages = [u('u1', 'l1'), a('a1', 'l1'), u('u2', 'l2'), a('a2', 'l2'), u('u3', 'l3'), a('a3', 'l3')];
+    const messages = [
+      msg('u1', 'user', 'l1'),
+      msg('a1', 'assistant', 'l1'),
+      msg('u2', 'user', 'l2'),
+      msg('a2', 'assistant', 'l2'),
+      msg('u3', 'user', 'l3'),
+      msg('a3', 'assistant', 'l3'),
+    ];
     expect(redoScope(messages, 'u2')).toEqual({ loopIds: ['l2', 'l3'], laterTurnsCount: 1 });
   });
   it('gives the last turn alone with no later turns', () => {
-    expect(redoScope([u('u1', 'l1'), a('a1', 'l1')], 'u1')).toEqual({ loopIds: ['l1'], laterTurnsCount: 0 });
+    expect(redoScope([msg('u1', 'user', 'l1'), msg('a1', 'assistant', 'l1')], 'u1')).toEqual({ loopIds: ['l1'], laterTurnsCount: 0 });
   });
   it('leaves out a loop that also has a message before the cut', () => {
-    const messages = [u('u1', 'l1'), a('a1', 'l1'), u('u2', 'l1'), a('a2', 'l1'), u('u3', 'l2')];
+    const messages = [
+      msg('u1', 'user', 'l1'),
+      msg('a1', 'assistant', 'l1'),
+      msg('u2', 'user', 'l1'),
+      msg('a2', 'assistant', 'l1'),
+      msg('u3', 'user', 'l2'),
+    ];
     expect(redoScope(messages, 'u2')).toEqual({ loopIds: ['l2'], laterTurnsCount: 1 });
   });
   it('skips messages without a loop id', () => {
-    expect(redoScope([u('u1'), a('a1')], 'u1')).toEqual({ loopIds: [], laterTurnsCount: 1 });
+    expect(redoScope([msg('u1', 'user'), msg('a1', 'assistant')], 'u1')).toEqual({ loopIds: [], laterTurnsCount: 1 });
+  });
+  it('lists the later loops after a cut message without a loop id', () => {
+    const messages = [msg('u1', 'user'), msg('u2', 'user', 'l2'), msg('a2', 'assistant', 'l2')];
+    expect(redoScope(messages, 'u1')).toEqual({ loopIds: ['l2'], laterTurnsCount: 1 });
   });
   it('throws for a cut message that is not there', () => {
-    expect(() => redoScope([u('u1', 'l1')], 'gone')).toThrow('Redo cut message is not in the conversation');
+    expect(() => redoScope([msg('u1', 'user', 'l1')], 'gone')).toThrow('Redo cut message is not in the conversation');
   });
 });
