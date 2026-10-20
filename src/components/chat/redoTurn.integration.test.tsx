@@ -2,7 +2,7 @@
 /// <reference types="@testing-library/jest-dom" />
 
 import { act, cleanup, fireEvent, render as renderBare, screen, within } from '@testing-library/react';
-import { useEffect, type ReactElement } from 'react';
+import { createRef, useEffect, type ReactElement, type RefObject } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { holdConversationStarts, type StartHold } from '@/core/agent/conversationStartHold';
@@ -62,14 +62,21 @@ let conversationId: string;
 let conversationCount = 0;
 const originalDeleteMessagesFrom = useChatStore.getState().deleteMessagesFrom;
 
-/** The hook under test, with `redo` handed out for the test to call. */
-const harness: { redo: (request: RedoRequest) => Promise<RedoOutcome> } = { redo: () => { throw new Error('not rendered'); } };
-function Harness({ onRedo }: { onRedo: (redo: (request: RedoRequest) => Promise<RedoOutcome>) => void }) {
+type Redo = (request: RedoRequest) => Promise<RedoOutcome>;
+
+/** The hook under test, with `redo` handed to the test through `redoRef`. */
+function Harness({ redoRef }: { redoRef: RefObject<Redo | null> }) {
   const { redo, dialog } = useRedoTurn();
-  useEffect(() => { onRedo(redo); }, [onRedo, redo]);
+  useEffect(() => { redoRef.current = redo; }, [redoRef, redo]);
   return <>{dialog}</>;
 }
-const takeRedo = (redo: (request: RedoRequest) => Promise<RedoOutcome>) => { harness.redo = redo; };
+/** The ref of the harness rendered for the current test. */
+let redoRef: RefObject<Redo | null>;
+function redo(req: RedoRequest): Promise<RedoOutcome> {
+  const current = redoRef.current;
+  if (!current) throw new Error('The redo harness is not rendered');
+  return current(req);
+}
 
 function message(id: string, role: Message['role'], loopId: string): Message {
   return { id, role, content: `${role} ${id}`, timestamp: 1_000, loopId };
@@ -150,7 +157,7 @@ function expectReleased(): void {
 
 /** Calls `redo` and waits for its question to be on the page; the outcome is wrapped so that the await does not take it in. */
 async function open(req: RedoRequest): Promise<{ outcome: Promise<RedoOutcome> }> {
-  const outcome = harness.redo(req);
+  const outcome = redo(req);
   await screen.findByTestId('redo-turn-dialog');
   return { outcome };
 }
@@ -165,7 +172,8 @@ describe('useRedoTurn', () => {
     conversationId = `redo-conv-${conversationCount}`;
     authorizeWorkspace(WS);
     useToastStore.setState({ toasts: [] });
-    render(<Harness onRedo={takeRedo} />);
+    redoRef = createRef<Redo>();
+    render(<Harness redoRef={redoRef} />);
   });
 
   afterEach(() => {
@@ -179,7 +187,7 @@ describe('useRedoTurn', () => {
     await conversationWithLaterTurnsOnly();
     const start = vi.fn(async () => undefined);
 
-    const outcome = await harness.redo(request({ cutMessageId: 'u-loop-5', messageIds: ['u-loop-5'], start }));
+    const outcome = await redo(request({ cutMessageId: 'u-loop-5', messageIds: ['u-loop-5'], start }));
 
     expect(dialog()).toBeNull();
     expect(start).toHaveBeenCalledTimes(1);
@@ -310,7 +318,7 @@ describe('useRedoTurn', () => {
     putConversation([...messages, message('u-loop-3', 'user', 'loop-3'), message('a-loop-3', 'assistant', 'loop-3')]);
     const start = vi.fn(async () => undefined);
 
-    const outcome = harness.redo(request({ start }));
+    const outcome = redo(request({ start }));
     useChatStore.getState().setConversationStatus(conversationId, 'running');
     await act(() => endTurn('loop-3'));
     await screen.findByTestId('redo-turn-dialog');
