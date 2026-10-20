@@ -220,7 +220,9 @@ let app: ElectronApplication | undefined;
 let dataRoot: ElectronDataRoot | undefined;
 let server: http.Server | undefined;
 
-test.describe.serial('personal account login UI', () => {
+// Personal accounts are off (`IS_PERSONAL_ACCOUNT_ENABLED`), so the app offers no way into this flow.
+// The release that turns them on removes `.skip`; the cases still describe that interface.
+test.describe.serial.skip('personal account login UI', () => {
   test.afterEach(async () => {
     if (app) await closeAbuElectron(app);
     if (server) await new Promise<void>((resolve) => server?.close(() => resolve()));
