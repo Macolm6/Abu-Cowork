@@ -1322,6 +1322,53 @@ describe('runAgentLoop 用量合并', () => {
   });
 });
 
+describe('runAgentLoop start hold', () => {
+  it('releases the start hold once the conversation is running, before the loop ends', async () => {
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const adapters = await import('../llm/selectChatAdapter');
+    const { holdConversationStarts, waitForConversationStarts } = await import('./conversationStartHold');
+    const settings = useSettingsStore.getState();
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: p.models.some((m) => m.id === 'llama3.2') ? p.models : [...p.models, { id: 'llama3.2', label: 'llama3.2' }] }
+          : p),
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 0; });
+    const conversationId = useChatStore.getState().createConversation();
+    const hold = holdConversationStarts(conversationId);
+    expect(hold).not.toBeNull();
+    let statusAtRelease: string | undefined;
+    const waiter = waitForConversationStarts(conversationId).then(() => {
+      statusAtRelease = useChatStore.getState().conversations[conversationId].status;
+    });
+    let releasedWhenModelCalled = false;
+    const chat = vi.fn().mockImplementation(
+      async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+        releasedWhenModelCalled = statusAtRelease !== undefined;
+        onEvent({ type: 'text', text: 'ok' });
+        onEvent({ type: 'done', stopReason: 'end_turn' });
+      },
+    );
+    const selectAdapter = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat });
+    try {
+      const result = await runAgentLoop(conversationId, 'hello', { startHold: hold! });
+      expect(result.reason).toBe('completed');
+      expect(chat).toHaveBeenCalled();
+      expect(releasedWhenModelCalled).toBe(true);
+      await waiter;
+      expect(statusAtRelease).toBe('running');
+    } finally {
+      hold!.release();
+      selectAdapter.mockRestore();
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe('运行开始询问本地服务的窗口', () => {
   beforeAll(async () => {
     await import('./subagentRunner');

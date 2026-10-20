@@ -371,11 +371,11 @@ test.describe('story 1: redoing a turn restores the files it changed', () => {
     const closedOn = userMessages(reopened, PROMPT);
     await expect(reopened.getByText(CLOSED_MIDWAY, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
 
-    await reopened.getByRole('button', { name: '重新发送', exact: true }).click();
+    await closedOn.getByRole('button', { name: '重新发送', exact: true }).click();
     const dialog = question(reopened, RESEND_QUESTION);
     await expect(restoreOption(dialog)).toBeChecked();
     await expect(willLines(dialog)).toHaveText([RESTORE_A]);
-    await shot(reopened, 'redo-2-h-resend-question');
+    await shot(reopened, 'redo-2-k-resend-question');
     await pressWhenSettled(dialog.getByRole('button', { name: '重新发送', exact: true }));
 
     await expectTurnEnded(reopened, REDONE_TEXT);
@@ -526,9 +526,9 @@ test.describe('story 2: redoing an earlier turn restores the files of the turns 
     expect(has(workspace, 'c.md')).toBe(false);
   });
 
-  test('redoing turn 1 of two that changed no files asks about the later turn only, with no option and no list', async () => {
+  test('redoing turn 1 of two that changed no files asks about the later turn only, with no option and no list; confirming runs turn 1 again and leaves the files alone', async () => {
     test.setTimeout(240_000);
-    const { page } = await launch(() => [finalReply(FIRST_REPLY), finalReply(SECOND_REPLY)]);
+    const { page, workspace } = await launch(() => [finalReply(FIRST_REPLY), finalReply(SECOND_REPLY), finalReply(REDONE_TEXT)]);
     await runTurn(page, FIRST_PROMPT, FIRST_REPLY, 0);
     await runTurn(page, SECOND_PROMPT, SECOND_REPLY, 0);
 
@@ -542,6 +542,22 @@ test.describe('story 2: redoing an earlier turn restores the files of the turns 
     await pressWhenSettled(dialog.getByRole('button', { name: '取消', exact: true }));
     await expect(dialog).toHaveCount(0);
     await expect(page.getByText(SECOND_REPLY, { exact: true })).toBeVisible();
+
+    await regenerate(page, 0);
+    const again = question(page, REGENERATE_QUESTION);
+    await expect(again).toContainText('这之后还有 1 轮对话，会一并永久删除。');
+    await pressWhenSettled(again.getByRole('button', { name: '重新生成', exact: true }));
+
+    await expectTurnEnded(page, REDONE_TEXT);
+    await expect(again).toHaveCount(0);
+    await expect(userMessages(page, FIRST_PROMPT)).toHaveCount(1);
+    await expect(userMessages(page, SECOND_PROMPT)).toHaveCount(0);
+    for (const reply of [FIRST_REPLY, SECOND_REPLY]) {
+      await expect(page.getByText(reply, { exact: true })).toHaveCount(0);
+    }
+    await expect(changedFilesCards(page)).toHaveCount(0);
+    expect(read(workspace, 'a.md')).toBe(A_BEFORE);
+    expect(read(workspace, 'b.md')).toBe(B_BEFORE);
   });
 });
 
@@ -762,8 +778,13 @@ test.describe('story 3: knowing before the redo which files cannot be restored',
     await expect(notices(page)).toHaveText([/已恢复 2 个，1 个没有恢复/]);
     await expect(page.getByTestId('redo-turn-dialog')).toHaveCount(0);
     await expect(editor(page)).toHaveValue(EDITED_PROMPT);
+    const card = changedFilesCards(page);
+    await expect(card.getByRole('button', { name: /^已撤销 2 个文件的改动/ })).toBeVisible();
+    await expect(card.getByRole('listitem').filter({ hasText: 'b.md' })).toContainText('没有恢复');
     await expect(page.getByText(FINAL_TEXT, { exact: true })).toBeVisible();
     expect(turnRequests()).toHaveLength(requestsBefore);
+    expect(read(workspace, 'a.md')).toBe(A_BEFORE);
     expect(read(workspace, 'b.md')).toBe(B_AFTER);
+    expect(has(workspace, 'c.md')).toBe(false);
   });
 });

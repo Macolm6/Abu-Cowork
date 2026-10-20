@@ -61,7 +61,11 @@ export function useRedoTurn(): { redo: (request: RedoRequest) => Promise<RedoOut
 
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; };
+    return () => {
+      mounted.current = false;
+      // The question leaves the page with its owner and is answered no.
+      pending.current?.answer(false);
+    };
   }, []);
 
   const changeRestoreFiles = useCallback((next: boolean) => {

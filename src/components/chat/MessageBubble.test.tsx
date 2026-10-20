@@ -803,7 +803,9 @@ describe('MessageBubble redo question', () => {
     let heldDuringRun = false;
     vi.mocked(runAgentLoopDispatched).mockImplementation(async () => {
       // No other redo can take the conversation while the run it was handed starts.
-      heldDuringRun = holdConversationStarts(CONVERSATION) === null;
+      const probe = holdConversationStarts(CONVERSATION);
+      heldDuringRun = probe === null;
+      probe?.release();
       return { reason: 'completed' };
     });
     seed([question, answer, ...laterTurns(1)]);
@@ -976,10 +978,24 @@ describe('MessageBubble redo question', () => {
 
   it('offers no redo while the conversation runs', () => {
     seed([question, answer, ...laterTurns(1)], 'running');
-    render(<><MessageBubble message={question} /><MessageBubble message={answer} hideAvatar /></>);
+    const turnRows = render(<><MessageBubble message={question} /><MessageBubble message={answer} hideAvatar /></>);
 
     expect(screen.queryByRole('button', { name: 'Regenerate' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
+    turnRows.unmount();
+
+    const failed: Message = { ...question, runState: 'failed', runError: 'boom' };
+    seed([failed, ...laterTurns(1)], 'running');
+    const failedRow = render(<MessageBubble message={failed} />);
+    expect(screen.getByText('Send failed')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+    failedRow.unmount();
+
+    const closedMidway: Message = { ...question, runState: 'interrupted', runInterruptCause: 'app_exit' };
+    seed([closedMidway, ...laterTurns(1)], 'running');
+    render(<MessageBubble message={closedMidway} />);
+    expect(screen.getByRole('status')).toHaveTextContent('The app was closed before this turn finished.');
+    expect(screen.queryByRole('button', { name: 'Send again' })).not.toBeInTheDocument();
   });
 
   // An IM message, a goal's next round or a message from the pet window can start a run on the
