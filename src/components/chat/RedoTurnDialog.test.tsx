@@ -91,6 +91,8 @@ describe('RedoTurnDialog', () => {
     expect(dialog).toHaveTextContent(chat.redoNoPutBack);
     expect(dialog).toHaveTextContent(chat.redoCommandNotRestored);
     expect(dialog).toHaveTextContent(format(chat.undoConfirmCount, { count: PLAN.willRestore.length }));
+    expect(within(dialog).getByRole('list', { name: format(chat.undoConfirmCount, { count: PLAN.willRestore.length }) }))
+      .toBe(screen.getByTestId('redo-turn-will'));
     expect(lines('redo-turn-will')).toEqual([
       ['a.md', chat.undoActionWriteBefore],
       ['b.md', chat.undoActionPutBack],

@@ -39,6 +39,7 @@ export default function RedoTurnDialog({
   const { t } = useI18n();
   const noteId = useId();
   const commandNoteId = useId();
+  const willHeading = useId();
   const skippedHeading = useId();
   const words = entryWords(t, entry);
   const canRestore = plan.willRestore.length > 0;
@@ -77,8 +78,8 @@ export default function RedoTurnDialog({
           </div>
           {restoreFiles && (
             <section className="mt-3 border-t border-separator pt-3">
-              <p className="text-ui text-label">{format(t.chat.undoConfirmCount, { count: plan.willRestore.length })}</p>
-              <ul data-testid="redo-turn-will" className="mt-1">
+              <p id={willHeading} className="text-ui text-label">{format(t.chat.undoConfirmCount, { count: plan.willRestore.length })}</p>
+              <ul data-testid="redo-turn-will" aria-labelledby={willHeading} className="mt-1">
                 {plan.willRestore.map((file) => (
                   <FileLine key={file.path} display={file.display} note={actionLabel(t, 'undo', file.action)} />
                 ))}
