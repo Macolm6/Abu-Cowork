@@ -49,15 +49,11 @@ describe('CompactDivider', () => {
     expect(screen.getByRole('button', { name: /Context compacted/ })).toHaveAttribute('aria-expanded', 'false');
   });
 
-  it('disables the row when the summary is empty', async () => {
-    const user = userEvent.setup();
-    const onToggle = renderDivider(makeMarker('auto', '   '), false);
-    const row = screen.getByRole('button', { name: /Context compacted/ });
-    expect(row).toBeDisabled();
-    expect(row).not.toHaveAttribute('aria-expanded');
-    expect(screen.getByText('No summary')).toBeInTheDocument();
-    await user.click(row);
-    expect(onToggle).not.toHaveBeenCalled();
+  it('renders a plain divider when the summary is empty', () => {
+    renderDivider(makeMarker('auto', '   '), false);
+    expect(screen.queryByRole('button', { name: /Context compacted/ })).toBeNull();
+    expect(screen.getByText('Context compacted')).toBeVisible();
+    expect(screen.getByText('No summary')).toBeVisible();
   });
 
   it('keeps the manual title', () => {

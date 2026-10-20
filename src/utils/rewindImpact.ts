@@ -56,3 +56,40 @@ export function computeRewindImpact(
 
   return { hasLaterTurns: true, laterTurnsCount: laterLoopIds.size + anonymousCount };
 }
+
+export interface RedoScope {
+  /**
+   * Turns from the cut onward that start at or after the cut, in conversation order. The first
+   * is the turn being redone, unless that turn's loopId also appears before the cut: then it is
+   * left out and the list holds the later turns only.
+   */
+  loopIds: string[];
+  /** Turns after the redone one, the same count `computeRewindImpact` reports. */
+  laterTurnsCount: number;
+}
+
+/**
+ * The turns a redo deletes. `cutMessageId` is the message
+ * `chatStore.deleteMessagesFrom` truncates from, so the turns listed here are
+ * exactly the turns the conversation loses.
+ *
+ * A loopId that also appears before the cut keeps its earlier messages, so it
+ * is left out. Messages without a loopId (legacy) have no undo record and are
+ * skipped.
+ */
+export function redoScope(messages: Message[], cutMessageId: string): RedoScope {
+  const cutIdx = messages.findIndex((m) => m.id === cutMessageId);
+  if (cutIdx === -1) throw new Error('Redo cut message is not in the conversation');
+  const cut = messages[cutIdx];
+
+  const beforeCut = new Set<string>();
+  for (const m of messages.slice(0, cutIdx)) {
+    if (m.loopId) beforeCut.add(m.loopId);
+  }
+  const loopIds: string[] = [];
+  for (const m of messages.slice(cutIdx)) {
+    if (m.loopId && !beforeCut.has(m.loopId) && !loopIds.includes(m.loopId)) loopIds.push(m.loopId);
+  }
+
+  return { loopIds, laterTurnsCount: computeRewindImpact(messages, cut.loopId, cut.id).laterTurnsCount };
+}
