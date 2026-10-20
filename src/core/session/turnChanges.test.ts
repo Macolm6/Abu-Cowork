@@ -798,11 +798,14 @@ describe('turnChanges', () => {
         fs.write(`${WS}/a.md`, 'a1\n');
       });
       const indexBefore = fs.read(`${CHANGES}/index.json`);
+      const told: Array<[string, string]> = [];
+      mod.onTurnChangesSaved((conversationId, loopId) => told.push([conversationId, loopId]));
 
       await mod.forgetTurns('conv-1', ['loop-x']);
 
       expect(fs.read(`${CHANGES}/index.json`)).toBe(indexBefore);
       expect(fs.has(`${CHANGES}/loop-1.json`)).toBe(true);
+      expect(told).toEqual([['conv-1', 'loop-x']]);
     });
 
     it('refuses a loop id outside the loop-id grammar before touching the disk', async () => {
