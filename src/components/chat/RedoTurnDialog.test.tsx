@@ -72,9 +72,11 @@ describe('RedoTurnDialog', () => {
     const chat = getI18n().chat;
     const { rerender } = render(<RedoTurnDialog {...props({ laterTurnsCount: 2 })} />);
     expect(screen.getByRole('alertdialog')).toHaveTextContent(format(chat.redoLaterTurns, { count: 2 }));
+    expect(screen.getByRole('alertdialog')).toHaveAccessibleDescription(format(chat.redoLaterTurns, { count: 2 }));
 
     rerender(<RedoTurnDialog {...props({ laterTurnsCount: 0 })} />);
     expect(screen.getByRole('alertdialog')).not.toHaveTextContent(format(chat.redoLaterTurns, { count: 0 }));
+    expect(screen.getByRole('alertdialog')).not.toHaveAccessibleDescription();
   });
 
   it('shows the restore option checked, with the note and the lists only while checked', () => {
@@ -111,6 +113,20 @@ describe('RedoTurnDialog', () => {
     expect(screen.getByRole('checkbox', { name: chat.redoRestoreFiles })).not.toHaveAttribute('aria-describedby');
     expect(screen.getByRole('alertdialog')).not.toHaveTextContent(format(chat.undoConfirmCount, { count: PLAN.willRestore.length }));
     expect(screen.queryByTestId('redo-turn-will')).toBeNull();
+    expect(screen.queryByTestId('redo-turn-wont')).toBeNull();
+  });
+
+  it('says commands are not restored while checked, also when no file of the plan was changed by a command', () => {
+    const chat = getI18n().chat;
+    const plan: TurnUndoPlan = {
+      willRestore: [{ path: '/ws/a.md', display: 'a.md', action: 'write-before' }],
+      wontRestore: [],
+    };
+    render(<RedoTurnDialog {...props({ plan })} />);
+
+    const dialog = screen.getByRole('alertdialog');
+    expect(within(dialog).getByRole('checkbox', { name: chat.redoRestoreFiles })).toBeChecked();
+    expect(dialog).toHaveTextContent(chat.redoCommandNotRestored);
     expect(screen.queryByTestId('redo-turn-wont')).toBeNull();
   });
 
