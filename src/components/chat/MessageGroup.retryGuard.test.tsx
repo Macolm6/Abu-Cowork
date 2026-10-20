@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 
-import { act, cleanup, fireEvent, render as renderBare, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as renderBare, screen, waitFor } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { DesignSystemProvider } from '@/components/ds/provider';
@@ -98,7 +98,7 @@ describe('MessageGroup retry when the conversation pinned model is no longer usa
     expect(useToastStore.getState().toasts).toEqual([
       expect.objectContaining({ type: 'error', title: expect.stringContaining('model-a') }),
     ]);
-    expect(screen.queryByText(getI18n().chat.rewindConfirmTitle)).not.toBeInTheDocument();
+    expect(screen.queryByText(getI18n().chat.redoRetryTitle)).not.toBeInTheDocument();
   });
 });
 
@@ -139,8 +139,14 @@ describe('MessageGroup retry question', () => {
     deleteSpy = vi.spyOn(useChatStore.getState(), 'deleteMessagesFrom');
   }
   const stored = () => useChatStore.getState().conversations[CONVERSATION].messages;
-  const questionTitle = () => screen.queryByText(getI18n().chat.rewindConfirmTitle);
+  const questionTitle = () => screen.queryByText(getI18n().chat.redoRetryTitle);
+  // The question opens once the files of the turns it would delete have been looked at.
+  const asked = () => screen.findByText(getI18n().chat.redoRetryTitle);
+  const confirm = () => fireEvent.click(screen.getByRole('button', { name: getI18n().chat.redoRetryConfirm }));
   const answered = () => act(async () => {});
+  const sentWith = (content: string) => [CONVERSATION, content, { initiatedBy: 'user', startHold: expect.objectContaining({ conversationId: CONVERSATION }) }];
+  // A retry that asks nothing starts once the files have been looked at.
+  const started = () => waitFor(() => expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1));
   function pressRetry() {
     // The failed step block starts collapsed; open it to reach its Retry control.
     fireEvent.click(screen.getByText('Called tool').closest('button')!);
@@ -177,14 +183,13 @@ describe('MessageGroup retry question', () => {
     render(<MessageGroup conversationId={CONVERSATION} messages={[userMessage, assistantMessage]} isLastGroup />);
 
     pressRetry();
-    await answered();
+    await started();
 
     expect(questionTitle()).not.toBeInTheDocument();
     // The cut starts at the user message: the run writes that message anew.
     expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, userMessage.id]]);
     expect(stored()).toEqual([]);
-    expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
-    expect(runAgentLoopDispatched).toHaveBeenCalledWith(CONVERSATION, 'do the thing', { initiatedBy: 'user' });
+    expect(runAgentLoopDispatched).toHaveBeenCalledWith(...sentWith('do the thing'));
   });
 
   it('keeps the earlier turns and cuts at the user message of the retried turn', async () => {
@@ -194,7 +199,7 @@ describe('MessageGroup retry question', () => {
     render(<MessageGroup conversationId={CONVERSATION} messages={[userMessage, assistantMessage]} isLastGroup />);
 
     pressRetry();
-    await answered();
+    await started();
 
     expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, userMessage.id]]);
     expect(stored()).toEqual([earlierUser, earlierReply]);
@@ -207,7 +212,7 @@ describe('MessageGroup retry question', () => {
     render(<MessageGroup conversationId={CONVERSATION} messages={[userMessage, assistantMessage]} isLastGroup />);
 
     pressRetry();
-    await answered();
+    await started();
 
     expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, userMessage.id]]);
     expect(stored()).toEqual([earlierUser, earlierReply]);
@@ -219,10 +224,9 @@ describe('MessageGroup retry question', () => {
     render(<MessageGroup conversationId={CONVERSATION} messages={[routed, assistantMessage]} isLastGroup />);
 
     pressRetry();
-    await answered();
+    await started();
 
-    expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
-    expect(runAgentLoopDispatched).toHaveBeenCalledWith(CONVERSATION, '@researcher do the thing', { initiatedBy: 'user' });
+    expect(runAgentLoopDispatched).toHaveBeenCalledWith(...sentWith('@researcher do the thing'));
   });
 
   it('sends a turn that ran a skill to that skill again', async () => {
@@ -231,10 +235,9 @@ describe('MessageGroup retry question', () => {
     render(<MessageGroup conversationId={CONVERSATION} messages={[routed, assistantMessage]} isLastGroup />);
 
     pressRetry();
-    await answered();
+    await started();
 
-    expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
-    expect(runAgentLoopDispatched).toHaveBeenCalledWith(CONVERSATION, '/pdf do the thing', { initiatedBy: 'user' });
+    expect(runAgentLoopDispatched).toHaveBeenCalledWith(...sentWith('/pdf do the thing'));
   });
 
   it('asks with the number of turns that follow, and Cancel deletes nothing', async () => {
@@ -243,8 +246,8 @@ describe('MessageGroup retry question', () => {
     render(<MessageGroup conversationId={CONVERSATION} messages={[userMessage, assistantMessage]} isLastGroup />);
 
     pressRetry();
-    expect(questionTitle()).toBeInTheDocument();
-    expect(screen.getByText(getI18n().chat.rewindConfirmMessage.replace('{count}', '1'))).toBeInTheDocument();
+    expect(await asked()).toBeInTheDocument();
+    expect(screen.getByText(getI18n().chat.redoLaterTurns.replace('{count}', '1'))).toBeInTheDocument();
     expect(deleteSpy).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: getI18n().common.cancel }));
@@ -260,24 +263,25 @@ describe('MessageGroup retry question', () => {
     render(<MessageGroup conversationId={CONVERSATION} messages={[userMessage, assistantMessage]} isLastGroup />);
 
     pressRetry();
-    fireEvent.click(screen.getByRole('button', { name: getI18n().common.confirm }));
+    await asked();
+    confirm();
     await answered();
 
     expect(questionTitle()).not.toBeInTheDocument();
     expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, userMessage.id]]);
     expect(stored()).toEqual([]);
     expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
-    expect(runAgentLoopDispatched).toHaveBeenCalledWith(CONVERSATION, 'do the thing', { initiatedBy: 'user' });
+    expect(runAgentLoopDispatched).toHaveBeenCalledWith(...sentWith('do the thing'));
   });
 
-  it('asks in a question window that opens on Cancel', () => {
+  it('asks in a question window that opens on Cancel', async () => {
     seed([userMessage, assistantMessage, laterTurn]);
     render(<MessageGroup conversationId={CONVERSATION} messages={[userMessage, assistantMessage]} isLastGroup />);
 
     pressRetry();
 
-    expect(screen.getByRole('alertdialog', { name: getI18n().chat.rewindConfirmTitle })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: getI18n().common.cancel })).toHaveFocus();
+    expect(await screen.findByRole('alertdialog', { name: getI18n().chat.redoRetryTitle })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: getI18n().common.cancel })).toHaveFocus());
     expect(screen.getAllByRole('alertdialog')).toHaveLength(1);
   });
 
@@ -286,13 +290,14 @@ describe('MessageGroup retry question', () => {
     render(<MessageGroup conversationId={CONVERSATION} messages={[userMessage, assistantMessage]} isLastGroup />);
 
     pressRetry();
+    await asked();
     act(() => {
       useChatStore.setState((state) => ({
         conversations: { [CONVERSATION]: { ...state.conversations[CONVERSATION], messages: [laterTurn] } },
       }));
     });
     const before = stored();
-    fireEvent.click(screen.getByRole('button', { name: getI18n().common.confirm }));
+    confirm();
     await answered();
 
     expect(deleteSpy).not.toHaveBeenCalled();
@@ -311,9 +316,10 @@ describe('MessageGroup retry question', () => {
     render(<MessageGroup conversationId={CONVERSATION} messages={[userMessage, assistantMessage]} isLastGroup />);
 
     pressRetry();
+    await asked();
     setStatus('running');
     const before = stored();
-    fireEvent.click(screen.getByRole('button', { name: getI18n().common.confirm }));
+    confirm();
     await answered();
 
     expect(deleteSpy).not.toHaveBeenCalled();
@@ -321,19 +327,18 @@ describe('MessageGroup retry question', () => {
     expect(stored()).toBe(before);
   });
 
-  // The retry of a failed step is offered while another part of the conversation runs; a
-  // question asked then is answered as before.
-  it('still retries when the conversation was already running when the question was asked', async () => {
+  // A redo cuts the conversation and may restore files, so like every other redo entry the
+  // step retry waits until the conversation is at rest.
+  it('offers no step retry while the conversation runs', () => {
     seed([userMessage, assistantMessage, laterTurn]);
     setStatus('running');
     render(<MessageGroup conversationId={CONVERSATION} messages={[userMessage, assistantMessage]} isLastGroup />);
 
-    pressRetry();
-    fireEvent.click(screen.getByRole('button', { name: getI18n().common.confirm }));
-    await answered();
+    // Open the failed step block, where its Retry control sits.
+    fireEvent.click(screen.getByText('Called tool').closest('button')!);
 
-    expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, userMessage.id]]);
-    expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Read file')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: getI18n().task.retryAction })).not.toBeInTheDocument();
   });
 
   it('deletes nothing when more turns follow at the answer than the question named', async () => {
@@ -341,6 +346,7 @@ describe('MessageGroup retry question', () => {
     render(<MessageGroup conversationId={CONVERSATION} messages={[userMessage, assistantMessage]} isLastGroup />);
 
     pressRetry();
+    await asked();
     const another: Message = { id: 'user-3', role: 'user', content: 'and more', timestamp: 5_000, loopId: 'loop-3' };
     act(() => {
       useChatStore.setState((state) => ({
@@ -348,7 +354,7 @@ describe('MessageGroup retry question', () => {
       }));
     });
     const before = stored();
-    fireEvent.click(screen.getByRole('button', { name: getI18n().common.confirm }));
+    confirm();
     await answered();
 
     expect(deleteSpy).not.toHaveBeenCalled();

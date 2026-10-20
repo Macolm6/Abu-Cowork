@@ -172,6 +172,9 @@ interface OpenTurn extends TurnScope {
   /** Normalized path → its entry; null for a path that is claimed or holds no regular file. */
   captured: Map<string, ManifestEntry | null>;
   manifestWrites: Promise<void>;
+  /** Resolves once `endTurn` has queued the turn's settle, so work queued after it runs behind the settle. */
+  ended: Promise<void>;
+  markEnded: () => void;
 }
 
 type Side =
@@ -996,6 +999,8 @@ export async function beginTurn(
   await (conversationWork.get(conversationId) ?? Promise.resolve());
   if (openTurns.has(loopId)) { unsubscribeFileOwner?.(); return; }
   const folder = workspacePath ? normalizeFilePath(workspacePath) : null;
+  let markEnded: () => void = () => {};
+  const ended = new Promise<void>((resolve) => { markEnded = resolve; });
   const turn: OpenTurn = {
     conversationId,
     operationOwner, fileOwner, fileGuards: [],
@@ -1009,6 +1014,8 @@ export async function beginTurn(
     isConversationPresent: options?.isConversationPresent ?? (() => true),
     captured: new Map(),
     manifestWrites: Promise.resolve(),
+    ended,
+    markEnded,
   };
   openTurns.set(loopId, turn);
   turnsOfThisRun.add(loopId);
@@ -1082,11 +1089,24 @@ export function endTurn(loopId: string, options?: { workspacePath?: string | nul
   if (turn.workspaceRoots.length === 0 && options?.workspacePath) {
     turn.workspaceRoots = [normalizeFilePath(options.workspacePath)];
   }
-  return enqueue(turn.conversationId, async () => {
+  const settled = enqueue(turn.conversationId, async () => {
     await turn.manifestWrites;
     const entries = [...turn.captured.values()].filter((entry): entry is ManifestEntry => entry !== null);
     await settleTurn(turn, entries);
   });
+  turn.markEnded();
+  return settled;
+}
+
+/**
+ * Resolves once every turn of the conversation that is open at the call has
+ * had its settle queued by `endTurn`. Work queued after this runs behind those
+ * settles. A turn opened after the call is not waited for: `hasOpenTurn` in
+ * the queued work tells of it.
+ */
+export async function whenTurnsEnded(conversationId: string): Promise<void> {
+  const open = [...openTurns.values()].filter((turn) => turn.conversationId === conversationId);
+  await Promise.all(open.map((turn) => turn.ended));
 }
 
 /**
@@ -1199,6 +1219,34 @@ export async function readTurnUndoRecord(conversationId: string, loopId: string)
   assertConversationId(conversationId);
   assertLoopId(loopId);
   return loadUndoRecord(await changesDir(conversationId), loopId);
+}
+
+/**
+ * Removes what the conversation keeps of turns that were deleted from it: the
+ * saved result, the turn directory with its copies and the index entry of
+ * each. Runs behind the conversation's earlier settle work and tells listeners
+ * of every turn. A loop id with no record leaves the disk as it is.
+ */
+export async function forgetTurns(conversationId: string, loopIds: readonly string[]): Promise<void> {
+  assertConversationId(conversationId);
+  for (const loopId of loopIds) assertLoopId(loopId);
+  await ensureRecovered(conversationId);
+  await enqueue(conversationId, async () => {
+    const dir = await changesDir(conversationId);
+    const index = await loadIndex(dir);
+    let indexChanged = false;
+    for (const loopId of loopIds) {
+      const savedPath = turnFilePath(dir, loopId);
+      if (await exists(savedPath)) await remove(savedPath);
+      await removeTurnDir(dir, loopId);
+      if (index[loopId]) {
+        delete index[loopId];
+        indexChanged = true;
+      }
+    }
+    if (indexChanged) await saveIndex(dir, index);
+    for (const loopId of loopIds) emitSaved(conversationId, loopId);
+  });
 }
 
 /**

@@ -764,6 +764,57 @@ describe('turnChanges', () => {
     });
   });
 
+  describe('forgetTurns', () => {
+    it('forgets the record, the copies and the index entry of each turn and tells listeners', async () => {
+      fs.write(`${WS}/a.md`, 'a\n');
+      await runTurn('loop-1', async (capture) => {
+        await capture(`${WS}/a.md`);
+        fs.write(`${WS}/a.md`, 'a1\n');
+      });
+      await runTurn('loop-2', async (capture) => {
+        await capture(`${WS}/a.md`);
+        fs.write(`${WS}/a.md`, 'a2\n');
+      });
+      expect(fs.has(`${CHANGES}/loop-2/undo.json`)).toBe(true);
+      const told: Array<[string, string]> = [];
+      mod.onTurnChangesSaved((conversationId, loopId) => told.push([conversationId, loopId]));
+
+      await mod.forgetTurns('conv-1', ['loop-2']);
+
+      expect(fs.has(`${CHANGES}/loop-2.json`)).toBe(false);
+      expect(fs.has(`${CHANGES}/loop-2/undo.json`)).toBe(false);
+      expect(fs.has(`${CHANGES}/loop-2`)).toBe(false);
+      const index = await mod.readTurnIndex('conv-1');
+      expect(index).not.toHaveProperty('loop-2');
+      expect(index).toHaveProperty('loop-1');
+      expect(fs.has(`${CHANGES}/loop-1/undo.json`)).toBe(true);
+      expect(told).toEqual([['conv-1', 'loop-2']]);
+    });
+
+    it('ignores a loop id that has no record', async () => {
+      fs.write(`${WS}/a.md`, 'a\n');
+      await runTurn('loop-1', async (capture) => {
+        await capture(`${WS}/a.md`);
+        fs.write(`${WS}/a.md`, 'a1\n');
+      });
+      const indexBefore = fs.read(`${CHANGES}/index.json`);
+      const told: Array<[string, string]> = [];
+      mod.onTurnChangesSaved((conversationId, loopId) => told.push([conversationId, loopId]));
+
+      await mod.forgetTurns('conv-1', ['loop-x']);
+
+      expect(fs.read(`${CHANGES}/index.json`)).toBe(indexBefore);
+      expect(fs.has(`${CHANGES}/loop-1.json`)).toBe(true);
+      expect(told).toEqual([['conv-1', 'loop-x']]);
+    });
+
+    it('refuses a loop id outside the loop-id grammar before touching the disk', async () => {
+      await expect(mod.forgetTurns('conv-1', ['index'])).rejects.toThrow();
+      await expect(mod.forgetTurns('conv-1', ['../x'])).rejects.toThrow();
+      expect(fs.has(CHANGES)).toBe(false);
+    });
+  });
+
   describe('file list in the index', () => {
     it('keeps the path, display path and status of each file of a turn, in the order of the saved turn', async () => {
       fs.write(`${WS}/plan.md`, 'one\n');
@@ -967,6 +1018,76 @@ describe('turnChanges', () => {
       host.listWorkspace.mockRejectedValueOnce(new Error('list failed'));
       await expect(mod.endTurn('loop-1')).rejects.toThrow('list failed');
       await expect(mod.beginTurn('conv-1', 'loop-2', WS)).resolves.toBeUndefined();
+    });
+  });
+
+  describe('whenTurnsEnded', () => {
+    function yieldToMainThread(): Promise<void> {
+      return new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    it('resolves at once with no open turn', async () => {
+      await expect(mod.whenTurnsEnded('conv-1')).resolves.toBeUndefined();
+    });
+
+    it('waits for an open turn of the conversation', async () => {
+      await mod.beginTurn('conv-1', 'loop-1', WS);
+      let ended = false;
+      const waiting = mod.whenTurnsEnded('conv-1').then(() => { ended = true; });
+      await yieldToMainThread();
+      expect(ended).toBe(false);
+
+      await mod.endTurn('loop-1');
+      await waiting;
+      expect(ended).toBe(true);
+    });
+
+    it('resolves for a turn whose endTurn was called, before its settle has run', async () => {
+      let release: () => void = () => {};
+      let listRequested: () => void = () => {};
+      const requested = new Promise<void>((resolve) => { listRequested = resolve; });
+      await mod.beginTurn('conv-1', 'loop-1', WS);
+      host.listWorkspace.mockImplementationOnce(() => new Promise<ConversationWorkspaceFiles>((resolve) => {
+        release = () => resolve({ root: WS, exceeded: false, files: [] });
+        listRequested();
+      }));
+      const ending = mod.endTurn('loop-1');
+      await requested;
+
+      await expect(mod.whenTurnsEnded('conv-1')).resolves.toBeUndefined();
+      expect(mod.hasOpenTurn('conv-1')).toBe(false);
+      release();
+      await ending;
+    });
+
+    it('queues work asked after the wait behind the settle', async () => {
+      fs.write(`${WS}/plan.md`, 'one\n');
+      await mod.beginTurn('conv-1', 'loop-1', WS);
+      await mod.captureBefore('loop-1', `${WS}/plan.md`);
+      fs.write(`${WS}/plan.md`, 'two\n');
+
+      const waited = mod.whenTurnsEnded('conv-1').then(() => mod.enqueue('conv-1', async () => fs.has(`${CHANGES}/loop-1.json`)));
+      await yieldToMainThread();
+      await mod.endTurn('loop-1');
+
+      await expect(waited).resolves.toBe(true);
+    });
+
+    it('does not wait for a turn of another conversation', async () => {
+      await mod.beginTurn('conv-2', 'loop-2', null);
+      await expect(mod.whenTurnsEnded('conv-1')).resolves.toBeUndefined();
+    });
+
+    it('resolves when the turns open at the call end, while a turn opened meanwhile is still open', async () => {
+      await mod.beginTurn('conv-1', 'loop-1', WS);
+      const waiting = mod.whenTurnsEnded('conv-1');
+      await mod.beginTurn('conv-1', 'loop-2', WS);
+
+      await mod.endTurn('loop-1');
+
+      await expect(waiting).resolves.toBeUndefined();
+      expect(mod.hasOpenTurn('conv-1')).toBe(true);
+      await mod.endTurn('loop-2');
     });
   });
 

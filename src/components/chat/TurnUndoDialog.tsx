@@ -10,7 +10,8 @@ import type {
   TurnUndoSkipReason,
 } from '@/core/session/turnUndo';
 
-function actionLabel(t: TranslationDict, direction: TurnUndoDirection, action: TurnUndoAction): string {
+// eslint-disable-next-line react-refresh/only-export-components
+export function actionLabel(t: TranslationDict, direction: TurnUndoDirection, action: TurnUndoAction): string {
   if (direction === 'undo') {
     if (action === 'trash') return t.chat.undoActionTrash;
     if (action === 'put-back') return t.chat.undoActionPutBack;
@@ -21,7 +22,8 @@ function actionLabel(t: TranslationDict, direction: TurnUndoDirection, action: T
   return t.chat.reapplyActionWriteAfter;
 }
 
-function reasonLabel(t: TranslationDict, direction: TurnUndoDirection, reason: TurnUndoSkipReason): string {
+// eslint-disable-next-line react-refresh/only-export-components
+export function reasonLabel(t: TranslationDict, direction: TurnUndoDirection, reason: TurnUndoSkipReason): string {
   if (reason === 'by-command') return t.chat.undoReasonByCommand;
   if (reason === 'too-large') return t.chat.undoReasonTooLarge;
   if (reason === 'folder-gone') return t.chat.undoReasonFolderGone;
@@ -29,7 +31,7 @@ function reasonLabel(t: TranslationDict, direction: TurnUndoDirection, reason: T
   return direction === 'undo' ? t.chat.undoReasonChangedSince : t.chat.reapplyReasonChangedSince;
 }
 
-function FileLine({ display, note }: { display: string; note: string }) {
+export function FileLine({ display, note }: { display: string; note: string }) {
   return (
     <li className="py-1">
       <div className="break-all text-ui text-label">{display}</div>

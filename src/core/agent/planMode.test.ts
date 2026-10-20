@@ -204,6 +204,19 @@ describe('evaluatePlanGate', () => {
       }
     });
 
+    it('allows BACKGROUND_COMMAND_OUTPUT and blocks STOP_BACKGROUND_COMMAND', () => {
+      expect(evaluatePlanGate({
+        toolName: TOOL_NAMES.BACKGROUND_COMMAND_OUTPUT,
+        toolReadOnly: undefined,
+        planMode: 'planning',
+      }).allow).toBe(true);
+      expect(evaluatePlanGate({
+        toolName: TOOL_NAMES.STOP_BACKGROUND_COMMAND,
+        toolReadOnly: undefined,
+        planMode: 'planning',
+      }).allow).toBe(false);
+    });
+
     it('blocks WRITE_FILE with toolReadOnly undefined', () => {
       const result = evaluatePlanGate({
         toolName: TOOL_NAMES.WRITE_FILE,
