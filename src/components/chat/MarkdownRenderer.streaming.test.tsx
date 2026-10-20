@@ -65,7 +65,7 @@ afterEach(() => {
 });
 
 describe('MarkdownRenderer while a reply streams', () => {
-  it('renders every prefix exactly as a one-shot render of the same text', () => {
+  it('renders every prefix exactly as a one-shot render of the same text', async () => {
     const streamed = render(inProvider(<MarkdownRenderer content="" streaming />));
     for (let end = 9; end < REPLY.length + 9; end += 9) {
       const prefix = REPLY.slice(0, Math.min(end, REPLY.length));
@@ -74,6 +74,9 @@ describe('MarkdownRenderer while a reply streams', () => {
       expect(markup(streamed.container)).toBe(markup(once.container));
       once.unmount();
     }
+    // A prefix that ends inside the fence's language name (```t) asks for a grammar by that
+    // name, which loads the grammar table; let that load finish inside this test.
+    await vi.dynamicImportSettled();
   });
 
   it('keeps the elements it streamed into when the reply finishes', () => {
