@@ -25,9 +25,8 @@ import { announceChatTurnScrollIntent } from './chatTurnScrollIntent';
 import { useI18n } from '@/i18n';
 import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
 import { formatRelativeTime } from '@/utils/messageTime';
-import { computeRewindImpact } from '@/utils/rewindImpact';
 import { rebuildImageAttachments } from './imageAttachmentRebuild';
-import { useRewindQuestion } from './rewindQuestion';
+import { useRedoTurn } from './redoTurn';
 import { reattachRoutingPrefix, retryTurn } from './retryTurn';
 import abuAvatar from '@/assets/abu-avatar.png';
 import AgentAvatar from '@/components/common/AgentAvatar';
@@ -439,12 +438,11 @@ export default function MessageBubble({
     useChatStore.getState().setPendingInput(draft);
   };
 
-  // Rewind (edit-resend / regenerate / run-retry) truncates the conversation
-  // from the redone turn onward via deleteMessagesFrom, durably discarding
-  // anything after it. When that redone turn isn't the conversation's last,
-  // later turns would be silently lost — those cases ask first. After a yes,
-  // `proceed` runs the exact same delete+resend steps the unasked path runs.
-  const askBeforeRewind = useRewindQuestion();
+  // A redo (edit-resend / regenerate / retry / resend) truncates the conversation
+  // from the redone turn onward and runs the turn again. `redo` asks first when
+  // later turns would be deleted or files of those turns can be restored; the
+  // question is rendered with the bubble (`redoDialog`).
+  const { redo, dialog: redoDialog } = useRedoTurn();
 
   const textContent = getTextContent(message.content);
   const imageBlocks = getImageBlocks(message.content);
@@ -459,47 +457,46 @@ export default function MessageBubble({
     // Refuse before anything is deleted; the editor stays open so the edit survives.
     if (!ensureConversationModelUsable(activeConv, t.chat)) return;
     const imageAttachments = rebuildImageAttachments(message.content, `edit-${Date.now()}`);
+    // Re-attach the original routing prefix (@expert or /skill) so the
+    // edited resend stays on the same agent / skill — otherwise the message
+    // falls back to the default `general` route and the expert is lost.
+    const routedContent = reattachRoutingPrefix(newContent, message);
 
-    const proceed = async () => {
-      // Re-check: the provider may have been removed while the confirm was open.
-      if (!ensureConversationModelUsable(useChatStore.getState().conversations[convId], t.chat)) return;
-      // The editor closes only now that the edited message is sent. Until then it stays, with
-      // what was typed: a no to the question, or a resend refused at the answer, loses nothing.
-      setIsEditing(false);
-      // Delete this message and all subsequent messages, then runAgentLoopDispatched creates a fresh one
-      useChatStore.getState().deleteMessagesFrom(convId, message.id);
-      // Re-attach the original routing prefix (@expert or /skill) so the
-      // edited resend stays on the same agent / skill — otherwise the message
-      // falls back to the default `general` route and the expert is lost.
-      const routedContent = reattachRoutingPrefix(newContent, message);
-      announceChatTurnScrollIntent({ conversationId: convId, source: 'edit-resend' });
-      await runAgentLoopDispatched(convId, routedContent, {
-        initiatedBy: 'user',
-        ...(imageAttachments ? { images: imageAttachments } : {}),
-      });
-    };
-
-    // `message` is a user message, the first message of its loop (the user
-    // message is added before any assistant message of the same loop), so its
-    // loopId directly identifies the turn being redone.
-    const impact = activeConv
-      ? computeRewindImpact(activeConv.messages, message.loopId, message.id)
-      : { hasLaterTurns: false, laterTurnsCount: 0 };
-    if (impact.hasLaterTurns && !(await askBeforeRewind({
+    // The cut is this message: it and every later message go, and the run writes it anew.
+    await redo({
       conversationId: convId,
-      laterTurnsCount: impact.laterTurnsCount,
-      loopId: message.loopId,
-      fallbackMessageId: message.id,
+      entry: 'edit-resend',
+      cutMessageId: message.id,
       messageIds: [message.id],
-    }))) return;
-    await proceed();
+      // The provider may have been removed while the question was open.
+      canProceed: () => ensureConversationModelUsable(useChatStore.getState().conversations[convId], t.chat),
+      // The editor closes only now that the edited message is sent. Until then it stays, with
+      // what was typed: a no to the question, a redo refused at the answer or a restore that
+      // stopped loses nothing.
+      onCommit: () => setIsEditing(false),
+      start: (startHold) => {
+        announceChatTurnScrollIntent({ conversationId: convId, source: 'edit-resend' });
+        return runAgentLoopDispatched(convId, routedContent, {
+          initiatedBy: 'user',
+          startHold,
+          ...(imageAttachments ? { images: imageAttachments } : {}),
+        });
+      },
+    });
   };
 
-  // 「重试」 under a failed user message runs its turn again from this message;
-  // the step block's retry of the same turn takes the same path (retryTurn).
+  // 「重试」 under a failed user message, and 「重新发送」 under a message the app
+  // closed midway, run its turn again from this message; the step block's retry
+  // of the same turn takes the same path (retryTurn).
   const handleRunRetry = async () => {
     if (!activeConv || message.role !== 'user') return;
-    await retryTurn({ conversation: activeConv, userMessage: message, askBeforeRewind, chatText: t.chat });
+    await retryTurn({
+      conversation: activeConv,
+      userMessage: message,
+      entry: closedMidway ? 'resend' : 'retry',
+      redo,
+      chatText: t.chat,
+    });
   };
 
   const handleRegenerate = async () => {
@@ -531,9 +528,6 @@ export default function MessageBubble({
     }
 
     if (userMsgToRegenerate) {
-      // Bind to a const so the `proceed` closure below keeps the narrowed
-      // (non-undefined) type — TS narrowing on the outer `let` doesn't
-      // persist across a nested function boundary.
       const targetUserMsg = userMsgToRegenerate;
       const userContent = getTextContent(targetUserMsg.content);
       // Re-attach the original @expert / /skill prefix so the regenerated
@@ -542,27 +536,23 @@ export default function MessageBubble({
       const routedContent = reattachRoutingPrefix(userContent, targetUserMsg);
       const imageAttachments = rebuildImageAttachments(targetUserMsg.content, `regen-${Date.now()}`);
 
-      const proceed = async () => {
-        // Re-check: the provider may have been removed while the confirm was open.
-        if (!ensureConversationModelUsable(useChatStore.getState().conversations[convId], t.chat)) return;
-        // Delete from user message onwards and regenerate
-        useChatStore.getState().deleteMessagesFrom(convId, targetUserMsg.id);
-        announceChatTurnScrollIntent({ conversationId: convId, source: 'regenerate' });
-        await runAgentLoopDispatched(convId, routedContent, {
-          initiatedBy: 'user',
-          ...(imageAttachments ? { images: imageAttachments } : {}),
-        });
-      };
-
-      const impact = computeRewindImpact(messages, targetUserMsg.loopId, targetUserMsg.id);
-      if (impact.hasLaterTurns && !(await askBeforeRewind({
+      // Delete from the user message onwards and regenerate.
+      await redo({
         conversationId: convId,
-        laterTurnsCount: impact.laterTurnsCount,
-        loopId: targetUserMsg.loopId,
-        fallbackMessageId: targetUserMsg.id,
+        entry: 'regenerate',
+        cutMessageId: targetUserMsg.id,
         messageIds: [message.id, targetUserMsg.id],
-      }))) return;
-      await proceed();
+        // The provider may have been removed while the question was open.
+        canProceed: () => ensureConversationModelUsable(useChatStore.getState().conversations[convId], t.chat),
+        start: (startHold) => {
+          announceChatTurnScrollIntent({ conversationId: convId, source: 'regenerate' });
+          return runAgentLoopDispatched(convId, routedContent, {
+            initiatedBy: 'user',
+            startHold,
+            ...(imageAttachments ? { images: imageAttachments } : {}),
+          });
+        },
+      });
     }
   };
 
@@ -596,6 +586,7 @@ export default function MessageBubble({
           conversationId={convId}
         />
         {message.timestamp && <MessageTimestamp timestamp={message.timestamp} />}
+        {redoDialog}
       </div>
     );
   }
@@ -767,6 +758,7 @@ export default function MessageBubble({
             </>
           )}
         </div>
+        {redoDialog}
       </div>
     );
   }
@@ -814,6 +806,7 @@ export default function MessageBubble({
             {message.timestamp && <MessageTimestamp timestamp={message.timestamp} />}
           </div>
         )}
+        {redoDialog}
       </div>
     );
   }
@@ -869,6 +862,7 @@ export default function MessageBubble({
           </div>
         )}
       </div>
+      {redoDialog}
     </div>
   );
 }
