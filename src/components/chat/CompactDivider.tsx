@@ -43,26 +43,34 @@ export default function CompactDivider({ message, expanded, onToggle }: {
     setCopied(true);
   };
 
+  if (!hasSummary) {
+    return (
+      <div className="my-3 flex items-center gap-2 px-2 text-label-tertiary">
+        <div className="h-px flex-1 bg-separator" />
+        <Icon icon={AppIcons.compact} size="sm" />
+        <span className="select-none text-ui-sm">{label}</span>
+        <span className="select-none text-ui-sm">{t.chat.compactDivider.noSummary}</span>
+        <div className="h-px flex-1 bg-separator" />
+      </div>
+    );
+  }
+
   return (
     <div className="my-3">
       <Pressable
-        disabled={!hasSummary}
-        aria-expanded={hasSummary ? open : undefined}
+        aria-expanded={open}
         onClick={onToggle}
         className="flex w-full items-center gap-2 rounded-control px-2 text-label-tertiary"
       >
         <span className="h-px flex-1 bg-separator" />
-        {hasSummary && (
-          <Icon
-            icon={AppIcons.disclose}
-            size="sm"
-            label={open ? t.chat.compactDivider.collapse : t.chat.compactDivider.expand}
-            className={cn('transition-transform duration-fast', open && 'rotate-90')}
-          />
-        )}
+        <Icon
+          icon={AppIcons.disclose}
+          size="sm"
+          label={open ? t.chat.compactDivider.collapse : t.chat.compactDivider.expand}
+          className={cn('transition-transform duration-fast', open && 'rotate-90')}
+        />
         <Icon icon={AppIcons.compact} size="sm" />
         <span className="select-none text-ui-sm">{label}</span>
-        {!hasSummary && <span className="select-none text-ui-sm">{t.chat.compactDivider.noSummary}</span>}
         <span className="h-px flex-1 bg-separator" />
       </Pressable>
       {open && (
