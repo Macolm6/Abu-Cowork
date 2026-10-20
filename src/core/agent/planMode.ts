@@ -124,6 +124,8 @@ export const READONLY_FALLBACK_TOOLS: ReadonlySet<string> = new Set([
   TOOL_NAMES.CAPABILITY_SNAPSHOT,
   TOOL_NAMES.GET_SYSTEM_INFO,
   TOOL_NAMES.CLIPBOARD_READ,
+  // Reads output of commands this conversation started; changes nothing.
+  TOOL_NAMES.BACKGROUND_COMMAND_OUTPUT,
   // Inline visualization: read_me only returns static guidelines text;
   // show_widget renders in-conversation and mutates nothing on disk.
   TOOL_NAMES.SHOW_WIDGET,
