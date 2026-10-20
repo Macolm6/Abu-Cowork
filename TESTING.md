@@ -46,7 +46,7 @@ under `scripts/`). E2E (`e2e/*.spec.ts`) is handled by Playwright and runs as a 
 |---|---|
 | Unit (`*.test.ts(x)`, Vitest) | 1030 |
 | Integration (`*.integration.test.ts`) | 16 |
-| Contract (`*.contract.test.ts`) | 30 |
+| Contract (`*.contract.test.ts`) | 31 |
 | Enterprise (`enterprise-tests/**`, `npm run test:enterprise`, private build only — not in the default gate) | 60 |
 | Quarantined (`src/__tests__/quarantine/`) | 0 |
 | Quarantined specs (`e2e/**/*.spec.ts`, `tests/e2e/**/*.spec.ts`) | 0 |
