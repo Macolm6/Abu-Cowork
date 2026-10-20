@@ -215,9 +215,6 @@ test('cannot open an empty summary', async () => {
   await showSidebar(page);
   await page.getByText(ROUNDS[0].prompt).first().click();
   await expect(page.getByText(ROUNDS[0].reply, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
-  const row = page.getByRole('button', { name: /上下文已压缩/ });
-  await expect(row).toBeVisible();
-  await expect(row).toBeDisabled();
-  await expect(row).toContainText('没有摘要');
-  await expect(row).not.toHaveAttribute('aria-expanded', /.*/);
+  await expect(page.getByText('没有摘要', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: /上下文已压缩/ })).toHaveCount(0);
 });
