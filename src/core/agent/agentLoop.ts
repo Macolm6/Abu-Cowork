@@ -135,6 +135,7 @@ import {
   latestUserTaskSummary,
 } from '../capabilityPlugins/computerUseResume';
 import { deriveRunInteractionMode, type RunInitiator } from './runInteractionMode';
+import type { StartHold } from './conversationStartHold';
 import {
   BROWSER_DENIAL_ABORT_CAUSE,
   createBrowserDenialTracker,
@@ -605,6 +606,13 @@ export interface AgentLoopOptions {
   continuesTeamTask?: boolean;
   /** Shell-resolved team task, handed to the in-process loop only. Never sent to the sidecar. */
   teamTaskId?: string;
+  /**
+   * The hold a redo took on this conversation while it restored files. The
+   * dispatch that carries it passes the hold's wait; the hold is released once
+   * this run is registered as joinable, and in any case when the dispatch ends.
+   * Renderer-only: never part of the `agent.start` params.
+   */
+  startHold?: StartHold;
   /** Override the command confirmation callback (e.g. auto-deny for scheduled tasks) */
   commandConfirmCallback?: (info: ConfirmationInfo) => Promise<boolean>;
   /** Override the file permission callback (e.g. auto-deny for scheduled tasks) */
@@ -1064,6 +1072,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
   // Set conversation status to running
   chatDelta.setConversationStatus(conversationId, 'running');
+  // From here the dispatcher's guard sees this run (status `running` with an
+  // abort controller) and stages later messages into it, so a redo's hold on
+  // the conversation has done its work.
+  options?.startHold?.release();
 
   // Route the input through the orchestrator + build the static system
   // prompt sections — unless the shell dispatch layer already pre-computed
