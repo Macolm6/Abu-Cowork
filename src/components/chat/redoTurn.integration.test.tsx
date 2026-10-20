@@ -412,6 +412,22 @@ describe('useRedoTurn', () => {
     expectReleased();
   });
 
+  it('answers cancelled when the owner of the question leaves the page while it shows', async () => {
+    await conversationWithFiles();
+    const start = vi.fn(async () => undefined);
+
+    const { outcome } = await open(request({ start }));
+    let settled: RedoOutcome | undefined;
+    void outcome.then((value) => { settled = value; });
+    cleanup();
+
+    await vi.waitFor(() => expect(settled).toBe('cancelled'));
+    expect(workspaceFiles()).toEqual(AFTER_THREE_TURNS);
+    expect(messageIds()).toHaveLength(6);
+    expect(start).not.toHaveBeenCalled();
+    expectReleased();
+  });
+
   it('checks canProceed before restoring', async () => {
     await conversationWithFiles();
     const start = vi.fn(async () => undefined);
