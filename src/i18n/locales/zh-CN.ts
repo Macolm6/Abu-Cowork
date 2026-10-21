@@ -140,6 +140,7 @@ const zhCN: TranslationDict = {
     deleteWithBackgroundCommandsMessageOne: '删除后会停止它们。撤销删除只能恢复对话。',
     deleteUnreadableWithBackgroundCommandsMessage: '「{name}」的记录目前读不出来，删除后无法恢复，也会停止这些命令。',
     deleteUnreadableWithBackgroundCommandsMessageOne: '「{name}」的记录目前读不出来，删除后无法恢复，也会停止这些命令。',
+    deleteConversationFailed: '没能删除这段对话，请再试一次',
     importSession: '导入会话',
     renameConversation: '重命名',
     moreActions: '更多操作',
@@ -667,6 +668,8 @@ const zhCN: TranslationDict = {
       durationSeconds: '{s}秒',
       durationMinutes: '{m}分{s}秒',
       durationHours: '{h}小时{m}分',
+      loadFailed: '没能读到最新状态',
+      retry: '重试',
     },
     compactCommand: {
       done: '上下文已压缩',
