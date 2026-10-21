@@ -1228,7 +1228,10 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
     toolInvoker,
     resolvedCreds: params.resolvedCreds,
     locale: params.locale,
-    pushFrame: pushOrdered,
+    // Session checkpoints carry whole messages, tool images included, so they
+    // take the same media-encoding path as the chat frames those images first
+    // crossed on (see `pushPreparedTransportFrame`).
+    pushFrame: (frame) => chatDelta.pushPreparedTransportFrame(frame, conversationId),
   };
 
   if (params.planMode) applyPlanModeState(conversationId, params.planMode);
