@@ -10,6 +10,7 @@ import { usePreviewStore } from '@/stores/previewStore';
 import { __testing as turnChangesCache } from '@/hooks/useTurnChanges';
 import type { TurnChangedFile, TurnChanges } from '@/core/session/turnChanges';
 import type { FileChangeHunk } from '@/types/fileChange';
+import { diffTexts } from '@/core/files/fileChange';
 import ChangesTab, { TurnFileComparison } from './ChangesTab';
 
 const mocks = vi.hoisted(() => ({
@@ -112,6 +113,20 @@ describe('ChangesTab', () => {
     expect(diff().textContent).toContain('old plan');
     expect(diff().textContent).toContain('new plan');
     expect(mocks.readTurnChanges).toHaveBeenCalledWith(CONVERSATION_ID, LOOP_ID);
+  });
+
+  it('shows every line a deleted file held before the turn, each as a deleted line', async () => {
+    const compared = diffTexts('first\nsecond\nthird\n', '');
+    if (!compared) throw new Error('the texts were not compared');
+    mocks.readTurnChanges.mockResolvedValue(turnOf([
+      { path: '/ws/old.md', display: 'old.md', status: 'deleted', added: compared.added, deleted: compared.deleted, hunks: compared.hunks },
+    ]));
+    openTab(0);
+    render(<Harness />);
+    await screen.findByRole('list');
+
+    fireEvent.click(screen.getByRole('radio', { name: '单栏' }));
+    expect(diffText()).toEqual(['1-first', '2-second', '3-third']);
   });
 
   it('switches the comparison to the file chosen in the list', async () => {

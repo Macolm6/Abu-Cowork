@@ -397,6 +397,21 @@ export interface TranslationDict {
     /** Notice after an undo or a put-back in which files failed; `{done}` and `{notDone}` are counts. */
     undoPartialNotice: string;
     reapplyPartialNotice: string;
+    /** The question before a turn is redone: title and confirming button per entry. */
+    redoRegenerateTitle: string;
+    redoRegenerateConfirm: string;
+    redoEditTitle: string;
+    redoEditConfirm: string;
+    redoRetryTitle: string;
+    redoRetryConfirm: string;
+    redoResendTitle: string;
+    redoResendConfirm: string;
+    /** `{count}` is the number of later turns the redo deletes. */
+    redoLaterTurns: string;
+    /** The option to restore the files of the redone turns, and the two notes under it. */
+    redoRestoreFiles: string;
+    redoNoPutBack: string;
+    redoCommandNotRestored: string;
     userMessageShowMore: string;
     userMessageCollapse: string;
     runPending: string;
@@ -899,12 +914,6 @@ export interface TranslationDict {
       /** Shown on the max-turns card instead of Continue while goal mode drives the rounds. */
       maxTurnsAutoContinue: string;
     };
-    /** Rewind confirmation (edit-resend / regenerate / retry) — shown only
-     * when the redone turn is not the conversation's last, so later turns
-     * would otherwise be silently and permanently discarded. */
-    rewindConfirmTitle: string;
-    /** Body. {count} = number of later turns that will be discarded. */
-    rewindConfirmMessage: string;
   };
 
   // Share (conversation export / import)
@@ -3119,7 +3128,6 @@ export interface TranslationDict {
   // Panels
   panel: {
     workspace: string;
-    files: string;
     preview: string;
     /** Title of the tab that compares the one file a turn changed; `{name}` is the file name. */
     changesTabSingle: string;
@@ -3199,11 +3207,19 @@ export interface TranslationDict {
     versionHistoryLoadFailed: string;
     versionSourceAi: string;
     versionRevertPoint: string;
-    // FilesSection
-    operationRead: string;
+    /** {name}, {time} */
+    versionRestoreTitle: string;
+    versionRestoreMessage: string;
+    versionRestoreConfirm: string;
+    // ChangedFilesSection
+    changedFiles: string;
+    changedFilesEmpty: string;
+    /** {count} */
+    changedFilesMore: string;
+    operationDelete: string;
+    viewChanges: string;
     operationModify: string;
     operationCreate: string;
-    clickToPreview: string;
     showInFinderButton: string;
     noReferencedFiles: string;
     filesCount: string;
@@ -3219,9 +3235,7 @@ export interface TranslationDict {
     // ContextSection
     context: string;
     contextEmptyHint: string;
-    accessedFiles: string;
     toolUsage: string;
-    moreFiles: string;
     collapse: string;
     connectors: string;
     refreshing: string;

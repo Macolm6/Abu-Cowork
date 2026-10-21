@@ -179,6 +179,7 @@ import { attachTrustedSkillCommandApproval } from './skillCommandApproval';
 import { AgentLoopDispatchError, wrapAgentLoopDispatchError } from './agentLoopDispatchError';
 import { isPayloadTooLargeError } from '../ipc/payloadTooLarge';
 import { paramsBuildDisplayMessage } from './paramsBuildFailure';
+import { waitForConversationStarts } from './conversationStartHold';
 import {
   isInProcessAgentEnvironment,
   waitForSidecarVenue,
@@ -2128,9 +2129,11 @@ async function handleSnapshotBeforeAiEdit(rawParams: unknown): Promise<null> {
     // one in the request.
     await captureTurnFileBefore(path, session.loopId);
     if (rawOpts.captureOnly === true) return;
+    // The version records the conversation and turn it was left in, so it
+    // takes the ones this renderer registered for the run as well.
     await snapshotVersionBeforeAiEdit(path, {
-      loopId: typeof rawOpts.loopId === 'string' ? rawOpts.loopId : undefined,
-      conversationId: typeof rawOpts.conversationId === 'string' ? rawOpts.conversationId : undefined,
+      loopId: session.loopId,
+      conversationId: session.conversationId,
       knownContent: typeof rawOpts.knownContent === 'string' ? rawOpts.knownContent : undefined,
     });
   });
@@ -3314,6 +3317,10 @@ async function runSingleAgentLoopDispatchedWithOwnership(
   ownership: { messageTaken: boolean },
   options?: AgentLoopOptions,
 ): Promise<AgentLoopDispatchResult> {
+  // A redo holds the conversation while it restores files and starts its own
+  // run. Every other dispatch waits here first, so the guard below reads the
+  // conversation as it is once the redo's run is registered (or has stopped).
+  await waitForConversationStarts(conversationId, options?.startHold);
   const entryConversation = getConversationReader().getConversation(conversationId);
   const inProcessEnvironment = isInProcessAgentEnvironment();
 
@@ -3406,8 +3413,12 @@ async function runSingleAgentLoopDispatchedWithOwnership(
   // The record of what this turn changes on disk is a side write, handled like
   // the output snapshots in toolExecutor.ts: a failure is logged and never
   // decides whether or how the turn runs. Each venue awaits it once its run is
-  // registered and before the run can write, so the workspace is listed first
-  // and nothing is awaited between the concurrency guard and the registration.
+  // registered and before the run can write, so the workspace is listed first.
+  // Awaits do run between the concurrency guard and the registration (the
+  // computer-use target capture, the in-process browser runtime), so the guard
+  // alone does not keep a second dispatch out. During a redo the start hold
+  // awaited at the top of this function does: other dispatches wait there
+  // until the redo's run is registered or the redo has stopped.
   const turnChangesScopeId = options.authorizationScopeId;
   const beginTurnRecord = (): Promise<void> => beginTurnChanges(
     conversationId,
@@ -3777,6 +3788,9 @@ async function runSingleAgentLoopDispatchedWithOwnership(
   shellAbortController.signal.addEventListener('abort', onShellAbort, { once: true });
 
   registerRunSession(runId, session);
+  // The session is now what `findJoinableRunSessionForConversation` returns,
+  // so a dispatch that waited on a redo's hold stages into this run.
+  options?.startHold?.release();
   installShellLoopContext(runId, session);
   markRuntimeRunStage(runId, 'waiting_for_first_delta');
   traceRuntimeEvent('renderer.agent_run_dispatched', {
@@ -4326,7 +4340,10 @@ export function runAgentLoopDispatched(
   userMessage: string,
   options?: AgentLoopOptions,
 ): Promise<AgentLoopDispatchResult> {
-  if (dispatchBarriers.size > 0) return Promise.reject(new Error('Agent dispatch is unavailable during application exit'));
+  if (dispatchBarriers.size > 0) {
+    options?.startHold?.release();
+    return Promise.reject(new Error('Agent dispatch is unavailable during application exit'));
+  }
   const key = Symbol();
   let finish!: () => void;
   const entry = { conversationId, settled: new Promise<void>(resolve => { finish = resolve; }), controller: undefined as AbortController | undefined };
@@ -4349,6 +4366,11 @@ export function runAgentLoopDispatched(
       }
     },
   }).finally(() => {
+    // A dispatch that returned before registering a run (the guard refused or
+    // staged it, the params build failed, the sidecar was unavailable) still
+    // ends the redo's hold here; a release after the registration point does
+    // nothing.
+    options?.startHold?.release();
     unsubscribeOwner?.();
     activeDispatches.delete(key);
     finish();

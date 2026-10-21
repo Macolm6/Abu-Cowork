@@ -157,7 +157,7 @@ describe('MessageGroup file cards', () => {
       await act(async () => {});
       expect(cardButtons()).toHaveLength(0);
       expect(screen.queryByTitle('file-1.md')).toBeNull();
-      expect(screen.queryByText('File no longer accessible')).toBeNull();
+      expect(screen.queryByText('The file is no longer there')).toBeNull();
     });
 
     it('renders no card before the disk check answers', async () => {

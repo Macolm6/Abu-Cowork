@@ -11,6 +11,8 @@ import { getI18n, initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import type { Conversation, Message } from '@/types';
 import MessageBubble from './MessageBubble';
+import type { RedoEntry } from './RedoTurnDialog';
+import { holdConversationStarts } from '@/core/agent/conversationStartHold';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import { usePreviewStore } from '@/stores/previewStore';
@@ -487,7 +489,7 @@ describe('MessageBubble user run status', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
 
       expectNothingSent(spy, before);
-      expect(screen.queryByText(getI18n().chat.rewindConfirmTitle)).not.toBeInTheDocument();
+      expect(screen.queryByText(getI18n().chat.redoRetryTitle)).not.toBeInTheDocument();
     });
 
     it('re-checks when the provider is removed while the rewind confirm is open', async () => {
@@ -497,7 +499,7 @@ describe('MessageBubble user run status', () => {
 
       render(<MessageBubble message={failed} />);
       fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
-      expect(screen.getByText(getI18n().chat.rewindConfirmTitle)).toBeInTheDocument();
+      expect(await screen.findByText(getI18n().chat.redoRetryTitle)).toBeInTheDocument();
       expect(useToastStore.getState().toasts).toEqual([]);
 
       useSettingsStore.setState((state) => ({
@@ -509,7 +511,7 @@ describe('MessageBubble user run status', () => {
       useSettingsStore.setState((state) => ({
         providers: [...state.providers, { ...state.providers.find((p) => p.id === 'anthropic')!, id: 'other', enabled: true }],
       }));
-      fireEvent.click(screen.getByRole('button', { name: getI18n().common.confirm }));
+      fireEvent.click(screen.getByRole('button', { name: getI18n().chat.redoRetryConfirm }));
       // The answer reaches the handler that waits for it.
       await act(async () => {});
 
@@ -528,7 +530,7 @@ describe('MessageBubble user run status', () => {
 
       expectNothingSent(spy, before);
       expect(screen.getByRole('textbox')).toHaveValue('edited text');
-      expect(screen.queryByText(getI18n().chat.rewindConfirmTitle)).not.toBeInTheDocument();
+      expect(screen.queryByText(getI18n().chat.redoEditTitle)).not.toBeInTheDocument();
     });
 
     it('refuses regenerate before rewinding any turns', () => {
@@ -541,7 +543,7 @@ describe('MessageBubble user run status', () => {
       fireEvent.click(screen.getByRole('button', { name: getI18n().chat.regenerate }));
 
       expectNothingSent(spy, before);
-      expect(screen.queryByText(getI18n().chat.rewindConfirmTitle)).not.toBeInTheDocument();
+      expect(screen.queryByText(getI18n().chat.redoRegenerateTitle)).not.toBeInTheDocument();
     });
   });
 });
@@ -708,11 +710,22 @@ describe('MessageBubble redo question', () => {
     deleteSpy = vi.spyOn(useChatStore.getState(), 'deleteMessagesFrom');
   }
   const stored = () => useChatStore.getState().conversations[CONVERSATION].messages;
-  const questionTitle = () => screen.queryByText(getI18n().chat.rewindConfirmTitle);
-  const questionText = (count: number) => getI18n().chat.rewindConfirmMessage.replace('{count}', String(count));
+  const words = (entry: RedoEntry) => {
+    const chat = getI18n().chat;
+    if (entry === 'edit-resend') return { title: chat.redoEditTitle, confirm: chat.redoEditConfirm };
+    if (entry === 'retry') return { title: chat.redoRetryTitle, confirm: chat.redoRetryConfirm };
+    if (entry === 'resend') return { title: chat.redoResendTitle, confirm: chat.redoResendConfirm };
+    return { title: chat.redoRegenerateTitle, confirm: chat.redoRegenerateConfirm };
+  };
+  const questionTitle = (entry: RedoEntry = 'regenerate') => screen.queryByText(words(entry).title);
+  // The question opens once the files of the turns it would delete have been looked at.
+  const asked = (entry: RedoEntry = 'regenerate') => screen.findByText(words(entry).title);
+  const questionText = (count: number) => getI18n().chat.redoLaterTurns.replace('{count}', String(count));
   const press = (name: string) => fireEvent.click(screen.getByRole('button', { name }));
+  const confirm = (entry: RedoEntry = 'regenerate') => press(words(entry).confirm);
   // Lets the answer reach the handler that waits for it.
   const answered = () => act(async () => {});
+  const sentWith = (content: string) => [CONVERSATION, content, { initiatedBy: 'user', startHold: expect.objectContaining({ conversationId: CONVERSATION }) }];
 
   beforeEach(() => {
     initLanguage('en-US');
@@ -743,12 +756,11 @@ describe('MessageBubble redo question', () => {
     render(<MessageBubble message={answer} />);
 
     press('Regenerate');
-    await answered();
+    await waitFor(() => expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1));
 
     expect(questionTitle()).not.toBeInTheDocument();
     expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, question.id]]);
-    expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
-    expect(runAgentLoopDispatched).toHaveBeenCalledWith(CONVERSATION, question.content, { initiatedBy: 'user' });
+    expect(runAgentLoopDispatched).toHaveBeenCalledWith(...sentWith(question.content as string));
   });
 
   it('asks with the number of turns that follow, and Cancel deletes nothing', async () => {
@@ -757,7 +769,7 @@ describe('MessageBubble redo question', () => {
     render(<MessageBubble message={answer} />);
 
     press('Regenerate');
-    expect(questionTitle()).toBeInTheDocument();
+    expect(await asked()).toBeInTheDocument();
     expect(screen.getByText(questionText(3))).toBeInTheDocument();
     expect(deleteSpy).not.toHaveBeenCalled();
     expect(runAgentLoopDispatched).not.toHaveBeenCalled();
@@ -775,15 +787,43 @@ describe('MessageBubble redo question', () => {
     render(<MessageBubble message={answer} />);
 
     press('Regenerate');
+    await asked();
     expect(screen.getByText(questionText(2))).toBeInTheDocument();
-    press('Confirm');
+    confirm();
     await answered();
 
     expect(questionTitle()).not.toBeInTheDocument();
     expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, question.id]]);
     expect(stored()).toEqual([]);
     expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
-    expect(runAgentLoopDispatched).toHaveBeenCalledWith(CONVERSATION, question.content, { initiatedBy: 'user' });
+    expect(runAgentLoopDispatched).toHaveBeenCalledWith(...sentWith(question.content as string));
+  });
+
+  it('passes the start hold to the run it starts', async () => {
+    let heldDuringRun = false;
+    vi.mocked(runAgentLoopDispatched).mockImplementation(async () => {
+      // No other redo can take the conversation while the run it was handed starts.
+      const probe = holdConversationStarts(CONVERSATION);
+      heldDuringRun = probe === null;
+      probe?.release();
+      return { reason: 'completed' };
+    });
+    seed([question, answer, ...laterTurns(1)]);
+    render(<MessageBubble message={answer} />);
+
+    press('Regenerate');
+    await asked();
+    confirm();
+    await answered();
+
+    expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
+    const options = vi.mocked(runAgentLoopDispatched).mock.calls[0][2];
+    expect(options?.startHold?.conversationId).toBe(CONVERSATION);
+    expect(heldDuringRun).toBe(true);
+    // Once the run has started the hold is free again.
+    const after = holdConversationStarts(CONVERSATION);
+    expect(after).not.toBeNull();
+    after?.release();
   });
 
   it('takes Escape as Cancel', async () => {
@@ -792,7 +832,7 @@ describe('MessageBubble redo question', () => {
     render(<MessageBubble message={answer} />);
 
     press('Regenerate');
-    expect(questionTitle()).toBeInTheDocument();
+    expect(await asked()).toBeInTheDocument();
     fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
     await answered();
 
@@ -809,13 +849,31 @@ describe('MessageBubble redo question', () => {
     render(<MessageBubble message={failed} />);
 
     press('Retry');
+    expect(await asked('retry')).toBeInTheDocument();
     expect(screen.getByText(questionText(2))).toBeInTheDocument();
     expect(stored()).toBe(before);
-    press('Confirm');
+    confirm('retry');
     await answered();
 
     expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, failed.id]]);
     expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks to resend this turn under a message the app closed midway', async () => {
+    const closed: Message = { ...question, runState: 'interrupted', runInterruptCause: 'app_exit' };
+    seed([closed, ...laterTurns(1)]);
+    const before = stored();
+    render(<MessageBubble message={closed} />);
+
+    press(getI18n().chat.runResend);
+    expect(await asked('resend')).toBeInTheDocument();
+    expect(screen.getByText(questionText(1))).toBeInTheDocument();
+    expect(stored()).toBe(before);
+    confirm('resend');
+    await answered();
+
+    expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, closed.id]]);
+    expect(runAgentLoopDispatched).toHaveBeenCalledWith(...sentWith(closed.content as string));
   });
 
   it('asks the same question before an edited message is sent again', async () => {
@@ -826,13 +884,14 @@ describe('MessageBubble redo question', () => {
     press('Edit');
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'edited text' } });
     press('Save & Resend');
+    expect(await asked('edit-resend')).toBeInTheDocument();
     expect(screen.getByText(questionText(1))).toBeInTheDocument();
     expect(stored()).toBe(before);
-    press('Confirm');
+    confirm('edit-resend');
     await answered();
 
     expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, question.id]]);
-    expect(runAgentLoopDispatched).toHaveBeenCalledWith(CONVERSATION, 'edited text', { initiatedBy: 'user' });
+    expect(runAgentLoopDispatched).toHaveBeenCalledWith(...sentWith('edited text'));
   });
 
   // What was typed into the editor is never lost by the cautious answer: the editor stays while
@@ -848,13 +907,13 @@ describe('MessageBubble redo question', () => {
       return resend;
     }
 
-    it('stays open with its text while the question shows', () => {
+    it('stays open with its text while the question shows', async () => {
       seed([question, answer, ...laterTurns(1)]);
       render(<MessageBubble message={question} />);
 
       editAndPressResend();
 
-      expect(questionTitle()).toBeInTheDocument();
+      expect(await asked('edit-resend')).toBeInTheDocument();
       expect(screen.getByRole('textbox', { hidden: true })).toHaveValue('edited text');
     });
 
@@ -864,10 +923,11 @@ describe('MessageBubble redo question', () => {
       render(<MessageBubble message={question} />);
 
       const resend = editAndPressResend();
+      await asked('edit-resend');
       press('Cancel');
       await answered();
 
-      expect(questionTitle()).not.toBeInTheDocument();
+      expect(questionTitle('edit-resend')).not.toBeInTheDocument();
       expect(editor()).toHaveValue('edited text');
       expect(resend).toBeInTheDocument();
       // The question hands the focus back one step after it has left the page.
@@ -881,8 +941,9 @@ describe('MessageBubble redo question', () => {
       render(<MessageBubble message={question} />);
 
       editAndPressResend();
+      await asked('edit-resend');
       await setStored([question, answer, ...laterTurns(3)]);
-      press('Confirm');
+      confirm('edit-resend');
       await answered();
 
       expect(editor()).toHaveValue('edited text');
@@ -895,11 +956,12 @@ describe('MessageBubble redo question', () => {
       render(<MessageBubble message={question} />);
 
       editAndPressResend();
-      press('Confirm');
+      await asked('edit-resend');
+      confirm('edit-resend');
       await answered();
 
       expect(editor()).not.toBeInTheDocument();
-      expect(runAgentLoopDispatched).toHaveBeenCalledWith(CONVERSATION, 'edited text', { initiatedBy: 'user' });
+      expect(runAgentLoopDispatched).toHaveBeenCalledWith(...sentWith('edited text'));
     });
 
     it('closes at once when no turn follows and nothing is asked', async () => {
@@ -907,20 +969,33 @@ describe('MessageBubble redo question', () => {
       render(<MessageBubble message={question} />);
 
       editAndPressResend();
-      await answered();
+      await waitFor(() => expect(runAgentLoopDispatched).toHaveBeenCalledWith(...sentWith('edited text')));
 
-      expect(questionTitle()).not.toBeInTheDocument();
+      expect(questionTitle('edit-resend')).not.toBeInTheDocument();
       expect(editor()).not.toBeInTheDocument();
-      expect(runAgentLoopDispatched).toHaveBeenCalledWith(CONVERSATION, 'edited text', { initiatedBy: 'user' });
     });
   });
 
   it('offers no redo while the conversation runs', () => {
     seed([question, answer, ...laterTurns(1)], 'running');
-    render(<><MessageBubble message={question} /><MessageBubble message={answer} hideAvatar /></>);
+    const turnRows = render(<><MessageBubble message={question} /><MessageBubble message={answer} hideAvatar /></>);
 
     expect(screen.queryByRole('button', { name: 'Regenerate' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
+    turnRows.unmount();
+
+    const failed: Message = { ...question, runState: 'failed', runError: 'boom' };
+    seed([failed, ...laterTurns(1)], 'running');
+    const failedRow = render(<MessageBubble message={failed} />);
+    expect(screen.getByText('Send failed')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+    failedRow.unmount();
+
+    const closedMidway: Message = { ...question, runState: 'interrupted', runInterruptCause: 'app_exit' };
+    seed([closedMidway, ...laterTurns(1)], 'running');
+    render(<MessageBubble message={closedMidway} />);
+    expect(screen.getByRole('status')).toHaveTextContent('The app was closed before this turn finished.');
+    expect(screen.queryByRole('button', { name: 'Send again' })).not.toBeInTheDocument();
   });
 
   // An IM message, a goal's next round or a message from the pet window can start a run on the
@@ -930,6 +1005,7 @@ describe('MessageBubble redo question', () => {
     render(<MessageBubble message={answer} />);
 
     press('Regenerate');
+    await asked();
     act(() => {
       useChatStore.setState((state) => ({
         conversations: { [CONVERSATION]: { ...state.conversations[CONVERSATION], status: 'running' } },
@@ -937,7 +1013,7 @@ describe('MessageBubble redo question', () => {
     });
     const before = stored();
     expect(questionTitle()).toBeInTheDocument();
-    press('Confirm');
+    confirm();
     await answered();
 
     expect(questionTitle()).not.toBeInTheDocument();
@@ -951,6 +1027,7 @@ describe('MessageBubble redo question', () => {
     render(<MessageBubble message={answer} />);
 
     press('Regenerate');
+    await asked();
     for (const status of ['running', 'idle'] as const) {
       act(() => {
         useChatStore.setState((state) => ({
@@ -958,7 +1035,7 @@ describe('MessageBubble redo question', () => {
         }));
       });
     }
-    press('Confirm');
+    confirm();
     await answered();
 
     expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, question.id]]);
@@ -971,15 +1048,15 @@ describe('MessageBubble redo question', () => {
     }));
   });
 
-  it('asks in a question window that opens on Cancel', () => {
+  it('asks in a question window that opens on Cancel', async () => {
     seed([question, answer, ...laterTurns(1)]);
     render(<MessageBubble message={answer} />);
 
     press('Regenerate');
 
-    const box = screen.getByRole('alertdialog', { name: getI18n().chat.rewindConfirmTitle });
+    const box = await screen.findByRole('alertdialog', { name: getI18n().chat.redoRegenerateTitle });
     expect(box).toHaveTextContent(questionText(1));
-    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus());
     expect(screen.getAllByRole('alertdialog')).toHaveLength(1);
   });
 
@@ -988,9 +1065,10 @@ describe('MessageBubble redo question', () => {
     render(<MessageBubble message={answer} />);
 
     press('Regenerate');
+    await asked();
     await setStored(laterTurns(1));
     const before = stored();
-    press('Confirm');
+    confirm();
     await answered();
 
     expect(deleteSpy).not.toHaveBeenCalled();
@@ -1003,9 +1081,10 @@ describe('MessageBubble redo question', () => {
     render(<MessageBubble message={answer} />);
 
     press('Regenerate');
+    await asked();
     await setStored([answer, ...laterTurns(1)]);
     const before = stored();
-    press('Confirm');
+    confirm();
     await answered();
 
     expect(deleteSpy).not.toHaveBeenCalled();
@@ -1018,10 +1097,11 @@ describe('MessageBubble redo question', () => {
     render(<MessageBubble message={answer} />);
 
     press('Regenerate');
+    await asked();
     expect(screen.getByText(questionText(1))).toBeInTheDocument();
     await setStored([question, answer, ...laterTurns(3)]);
     const before = stored();
-    press('Confirm');
+    confirm();
     await answered();
 
     expect(deleteSpy).not.toHaveBeenCalled();
@@ -1029,7 +1109,8 @@ describe('MessageBubble redo question', () => {
     expect(stored()).toBe(before);
   });
 
-  it('deletes nothing when the message row has left the page by the time of the answer', async () => {
+  // The question belongs to the row that asked it and leaves the page with it.
+  it('deletes nothing when the message row leaves the page while the question shows', async () => {
     function Host() {
       const [shown, setShown] = useState(true);
       return (
@@ -1044,10 +1125,11 @@ describe('MessageBubble redo question', () => {
     render(<Host />);
 
     press('Regenerate');
+    await asked();
     fireEvent.click(screen.getByRole('button', { name: 'take the row away', hidden: true }));
-    press('Confirm');
     await answered();
 
+    expect(questionTitle()).not.toBeInTheDocument();
     expect(deleteSpy).not.toHaveBeenCalled();
     expect(runAgentLoopDispatched).not.toHaveBeenCalled();
     expect(stored()).toBe(before);
@@ -1068,6 +1150,7 @@ describe('MessageBubble redo question', () => {
     render(<><MessageBubble message={answer} /><Other /></>);
 
     press('Regenerate');
+    await asked();
     fireEvent.click(screen.getByRole('button', { name: 'ask about the goal', hidden: true }));
     await answered();
 
@@ -1090,7 +1173,8 @@ describe('MessageBubble redo question', () => {
     render(<MessageBubble message={answer} />);
 
     press('Regenerate');
-    const confirmButton = screen.getByRole('button', { name: 'Confirm' });
+    await asked();
+    const confirmButton = screen.getByRole('button', { name: words('regenerate').confirm });
     fireEvent.click(confirmButton);
     fireEvent.click(confirmButton);
     await answered();

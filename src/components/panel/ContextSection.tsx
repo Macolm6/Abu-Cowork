@@ -5,25 +5,17 @@ import { Pressable } from '@/components/ds/pressable';
 import { Spinner } from '@/components/ds/spinner';
 import { Tag } from '@/components/ds/tag';
 import { cn } from '@/lib/utils';
-import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { useActiveToolCallLists } from './useActiveToolCallLists';
 import { useMCPStore, initMCPStoreSync, type MCPServerEntry } from '@/stores/mcpStore';
-import { useI18n, format } from '@/i18n';
+import { useI18n } from '@/i18n';
 import { useShallow } from 'zustand/react/shallow';
 
-interface AccessedFile {
-  path: string;
-  operation: 'read' | 'write' | 'execute';
-  content?: string;  // Content from read_file result
-}
-
 /**
- * ContextSection - Shows accessed files (with expandable content), tool call statistics, and MCP connectors
+ * ContextSection - Shows tool call statistics and MCP connectors
  */
 export default function ContextSection() {
   const [expanded, setExpanded] = useState(false);
   const [connectorsExpanded, setConnectorsExpanded] = useState(true);
-  const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set());
   // Only the tool calls: text streaming into a message leaves them as they are, so
   // the section stays as it is for every streamed character.
   const toolCallLists = useActiveToolCallLists();
@@ -36,12 +28,9 @@ export default function ContextSection() {
     initMCPStoreSync();
   }, []);
 
-  // Extract context data from messages, including file content from read_file results
+  // Tool use and the connectors it reached, from the conversation's tool calls
   const contextData = useMemo(() => {
-    const accessedFiles: AccessedFile[] = [];
     const toolStats: Record<string, number> = {};
-    const seenFiles = new Set<string>();
-    const fileContents: Record<string, string> = {};
     const usedMCPServers = new Set<string>();
 
     for (const toolCalls of toolCallLists) {
@@ -55,58 +44,14 @@ export default function ContextSection() {
           if (sepIndex > 0) {
             usedMCPServers.add(tc.name.substring(0, sepIndex));
           }
-
-          // Track file access
-          const input = tc.input as Record<string, unknown>;
-          const path = (input.path || input.file_path || input.filePath) as string | undefined;
-
-          // Capture content from read_file results
-          if (path && [TOOL_NAMES.READ_FILE, 'read', 'get_file_contents'].includes(tc.name)) {
-            if (tc.result && typeof tc.result === 'string' && !tc.result.toLowerCase().startsWith('error:')) {
-              fileContents[path] = tc.result;
-            }
-          }
-
-          if (path && !seenFiles.has(path)) {
-            seenFiles.add(path);
-            let operation: 'read' | 'write' | 'execute' = 'read';
-
-            if ([TOOL_NAMES.WRITE_FILE, 'write', TOOL_NAMES.EDIT_FILE, 'edit', 'create_file', 'create'].includes(tc.name)) {
-              operation = 'write';
-            } else if ([TOOL_NAMES.RUN_COMMAND, 'bash', 'execute', 'shell'].includes(tc.name)) {
-              operation = 'execute';
-            }
-
-            accessedFiles.push({ path, operation });
-          }
         }
-      }
-    }
-
-    // Attach content to files
-    for (const file of accessedFiles) {
-      if (fileContents[file.path]) {
-        file.content = fileContents[file.path];
       }
     }
 
     const totalToolCalls = Object.values(toolStats).reduce((a, b) => a + b, 0);
 
-    return { accessedFiles, toolStats, totalToolCalls, usedMCPServers };
+    return { toolStats, totalToolCalls, usedMCPServers };
   }, [toolCallLists]);
-
-  // Toggle file expansion
-  const toggleFileExpand = (path: string) => {
-    setExpandedFiles((prev) => {
-      const next = new Set(prev);
-      if (next.has(path)) {
-        next.delete(path);
-      } else {
-        next.add(path);
-      }
-      return next;
-    });
-  };
 
   // Only show MCP servers that were actually used in this conversation
   const usedServers = mcpServers.filter((s) => contextData.usedMCPServers.has(s.config.name));
@@ -141,28 +86,6 @@ export default function ContextSection() {
         <div className="mt-3">
           {hasContent ? (
             <div className="space-y-4">
-              {/* Accessed Files - now with expandable content */}
-              {contextData.accessedFiles.length > 0 && (
-                <div>
-                  <div className="mb-2 text-ui-sm text-label-tertiary">{t.panel.accessedFiles}</div>
-                  <div className="space-y-1">
-                    {contextData.accessedFiles.slice(0, 10).map((file, i) => (
-                      <FileRow
-                        key={i}
-                        file={file}
-                        isExpanded={expandedFiles.has(file.path)}
-                        onToggle={() => toggleFileExpand(file.path)}
-                      />
-                    ))}
-                    {contextData.accessedFiles.length > 10 && (
-                      <div className="text-caption text-label-tertiary">
-                        {format(t.panel.moreFiles, { count: contextData.accessedFiles.length - 10 })}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
               {/* Tool Stats */}
               {Object.keys(contextData.toolStats).length > 0 && (
                 <div>
@@ -202,63 +125,6 @@ export default function ContextSection() {
               </p>
             </div>
           )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// --- File Row with expandable content ---
-
-const OPERATION_ICON = {
-  read: AppIcons.fileRead,
-  write: AppIcons.fileEdit,
-  execute: AppIcons.terminal,
-} as const;
-
-interface FileRowProps {
-  file: AccessedFile;
-  isExpanded: boolean;
-  onToggle: () => void;
-}
-
-function FileRow({ file, isExpanded, onToggle }: FileRowProps) {
-  const hasContent = !!file.content;
-
-  // The disclosure arrow, or the same width left empty, so every name starts in one column.
-  const body = (
-    <>
-      <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-        {hasContent && <Icon icon={isExpanded ? AppIcons.expand : AppIcons.disclose} size="sm" />}
-      </span>
-      <Icon icon={OPERATION_ICON[file.operation]} size="sm" />
-      <span className="truncate font-code">{getFileName(file.path)}</span>
-    </>
-  );
-
-  return (
-    <div>
-      {hasContent ? (
-        // The negative margin lets the hover fill reach past the text column.
-        <div className="-mx-1">
-          <Pressable
-            onClick={onToggle}
-            aria-expanded={isExpanded}
-            className="flex w-full items-center gap-2 rounded-control px-1 py-1 text-left text-ui-sm text-label-tertiary hover:bg-fill-hover"
-          >
-            {body}
-          </Pressable>
-        </div>
-      ) : (
-        <div className="flex items-center gap-2 py-1 text-ui-sm text-label-tertiary">{body}</div>
-      )}
-
-      {/* Expanded content */}
-      {isExpanded && hasContent && (
-        <div className="ml-5 mt-1 rounded-control bg-code p-2">
-          <pre className="max-h-50 overflow-y-auto whitespace-pre-wrap break-all font-code text-caption text-label-secondary">
-            {truncateContent(file.content!, 2000)}
-          </pre>
         </div>
       )}
     </div>
@@ -345,12 +211,6 @@ function ConnectorRow({ server }: ConnectorRowProps) {
   );
 }
 
-// Extract filename from path
-function getFileName(path: string): string {
-  const segments = path.split(/[/\\]/);
-  return segments[segments.length - 1] || path;
-}
-
 // Format tool name for display
 function formatToolName(name: string): string {
   return name
@@ -361,10 +221,4 @@ function formatToolName(name: string): string {
     .replace('Read File', 'Read')
     .replace('Write File', 'Write')
     .replace('Run Command', 'Run');
-}
-
-// Truncate content for display
-function truncateContent(content: string, maxLength: number): string {
-  if (content.length <= maxLength) return content;
-  return content.slice(0, maxLength) + `\n\n... (${content.length - maxLength} more characters)`;
 }

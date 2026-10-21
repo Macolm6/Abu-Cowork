@@ -94,12 +94,21 @@ export interface TurnChanges {
   deleted: number;
 }
 
+/** One file of a turn as the index lists it. */
+export interface TurnIndexFile {
+  path: string;
+  display: string;
+  status: TurnChangedFile['status'];
+}
+
 export interface TurnIndexEntry {
   total: number;
   added: number;
   deleted: number;
   /** File name of the first file by display path. */
   firstFile: string;
+  /** The files of `TurnChanges.files`, in its order and within the same limit. */
+  files: TurnIndexFile[];
   /** Files of the turn that can be restored; absent when there is none. */
   restorable?: number;
   /** True while the turn is undone. */
@@ -163,6 +172,9 @@ interface OpenTurn extends TurnScope {
   /** Normalized path → its entry; null for a path that is claimed or holds no regular file. */
   captured: Map<string, ManifestEntry | null>;
   manifestWrites: Promise<void>;
+  /** Resolves once `endTurn` has queued the turn's settle, so work queued after it runs behind the settle. */
+  ended: Promise<void>;
+  markEnded: () => void;
 }
 
 type Side =
@@ -286,11 +298,26 @@ function parseManifest(text: string): BeforeManifest {
   return { version: FORMAT_VERSION, loopId: value.loopId, workspaceRoots: value.workspaceRoots as string[], entries };
 }
 
+function isIndexFile(value: unknown): value is TurnIndexFile {
+  return isRecord(value)
+    && typeof value.path === 'string'
+    && isAbsoluteFilePath(value.path)
+    && typeof value.display === 'string'
+    && (value.status === 'created' || value.status === 'modified' || value.status === 'deleted');
+}
+
+interface ParsedTurnIndex {
+  index: TurnIndex;
+  /** Turns of an index written before entries had a file list; theirs is empty until it is filled in. */
+  withoutFiles: string[];
+}
+
 /** The index `text` holds, or null when it is no JSON or not in the saved format. */
-function parseTurnIndex(text: string): TurnIndex | null {
+function parseTurnIndex(text: string): ParsedTurnIndex | null {
   const value = jsonValueOf(text);
   if (!isRecord(value) || value.version !== FORMAT_VERSION || !isRecord(value.turns)) return null;
   const index: TurnIndex = {};
+  const withoutFiles: string[] = [];
   for (const [loopId, entry] of Object.entries(value.turns)) {
     if (
       !isRecord(entry)
@@ -298,6 +325,7 @@ function parseTurnIndex(text: string): TurnIndex | null {
       || !isCount(entry.added)
       || !isCount(entry.deleted)
       || typeof entry.firstFile !== 'string'
+      || !(entry.files === undefined || (Array.isArray(entry.files) && entry.files.every(isIndexFile)))
       || !(entry.restorable === undefined || isCount(entry.restorable))
       || !(entry.undone === undefined || typeof entry.undone === 'boolean')
       || !(entry.settledAt === undefined || isCount(entry.settledAt))
@@ -307,7 +335,9 @@ function parseTurnIndex(text: string): TurnIndex | null {
     ) {
       return null;
     }
-    const totals = { total: entry.total, added: entry.added, deleted: entry.deleted, firstFile: entry.firstFile };
+    if (entry.files === undefined) withoutFiles.push(loopId);
+    const files = (entry.files as TurnIndexFile[] | undefined)?.map(({ path, display, status }) => ({ path, display, status })) ?? [];
+    const totals = { total: entry.total, added: entry.added, deleted: entry.deleted, firstFile: entry.firstFile, files };
     if (entry.restorable) {
       index[loopId] = {
         ...totals,
@@ -327,7 +357,7 @@ function parseTurnIndex(text: string): TurnIndex | null {
       index[loopId] = totals;
     }
   }
-  return index;
+  return { index, withoutFiles };
 }
 
 /** Whether `entry` is an undone turn that has no copies left, so nothing to restore. */
@@ -378,8 +408,14 @@ function isSavedHunk(value: unknown): value is FileChangeHunk {
 async function loadIndex(dir: string): Promise<TurnIndex> {
   const path = joinConversationPath(dir, INDEX_FILENAME);
   if (!(await exists(path))) return {};
-  const index = parseTurnIndex(await readTextFile(path));
-  if (index) return index;
+  const parsed = parseTurnIndex(await readTextFile(path));
+  if (parsed) {
+    if (parsed.withoutFiles.length === 0) return parsed.index;
+    // An index written before entries had a file list gets it once, from the saved turns.
+    for (const loopId of parsed.withoutFiles) parsed.index[loopId].files = await savedTurnFiles(dir, loopId);
+    await saveIndex(dir, parsed.index);
+    return parsed.index;
+  }
   // The index only sums up the turn files beside it, so one that cannot be read is built again from them.
   console.warn('[turnChanges] the index of a conversation could not be read; it is rebuilt from its turn files');
   const rebuilt = await rebuildIndex(dir);
@@ -415,6 +451,15 @@ async function rebuildIndex(dir: string): Promise<TurnIndex> {
   return index;
 }
 
+/** The file list of a saved turn; empty for a turn whose saved file is gone or cannot be read. */
+async function savedTurnFiles(dir: string, loopId: string): Promise<TurnIndexFile[]> {
+  if (loopIdRejection(loopId) !== null) return [];
+  const path = turnFilePath(dir, loopId);
+  if (!(await exists(path))) return [];
+  const saved = parseTurnChanges(await readTextFile(path));
+  return saved && saved.loopId === loopId ? indexFilesOf(saved) : [];
+}
+
 async function saveIndex(dir: string, index: TurnIndex): Promise<void> {
   await atomicWrite(joinConversationPath(dir, INDEX_FILENAME), JSON.stringify({ version: FORMAT_VERSION, turns: index }));
 }
@@ -440,7 +485,7 @@ function undoMarksOf(record: TurnUndoRecord, copyBytes: number): TurnUndoMarks {
  * has a place keeps it; a new one goes after every other.
  */
 function putIndexEntry(index: TurnIndex, loopId: string, entry: TurnIndexEntry, marks: TurnUndoMarks | null): void {
-  const totals = { total: entry.total, added: entry.added, deleted: entry.deleted, firstFile: entry.firstFile };
+  const totals = { total: entry.total, added: entry.added, deleted: entry.deleted, firstFile: entry.firstFile, files: entry.files };
   if (!marks || marks.restorable === 0) {
     index[loopId] = totals;
     return;
@@ -461,8 +506,18 @@ async function saveIndexEntry(dir: string, loopId: string, entry: TurnIndexEntry
   await saveIndex(dir, index);
 }
 
+function indexFilesOf(turn: TurnChanges): TurnIndexFile[] {
+  return turn.files.map(({ path, display, status }) => ({ path, display, status }));
+}
+
 function indexEntryOf(turn: TurnChanges): TurnIndexEntry {
-  return { total: turn.total, added: turn.added, deleted: turn.deleted, firstFile: fileNameOf(turn.files[0].display) };
+  return {
+    total: turn.total,
+    added: turn.added,
+    deleted: turn.deleted,
+    firstFile: fileNameOf(turn.files[0].display),
+    files: indexFilesOf(turn),
+  };
 }
 
 function isInside(root: string, path: string): boolean {
@@ -944,6 +999,8 @@ export async function beginTurn(
   await (conversationWork.get(conversationId) ?? Promise.resolve());
   if (openTurns.has(loopId)) { unsubscribeFileOwner?.(); return; }
   const folder = workspacePath ? normalizeFilePath(workspacePath) : null;
+  let markEnded: () => void = () => {};
+  const ended = new Promise<void>((resolve) => { markEnded = resolve; });
   const turn: OpenTurn = {
     conversationId,
     operationOwner, fileOwner, fileGuards: [],
@@ -957,6 +1014,8 @@ export async function beginTurn(
     isConversationPresent: options?.isConversationPresent ?? (() => true),
     captured: new Map(),
     manifestWrites: Promise.resolve(),
+    ended,
+    markEnded,
   };
   openTurns.set(loopId, turn);
   turnsOfThisRun.add(loopId);
@@ -1030,11 +1089,24 @@ export function endTurn(loopId: string, options?: { workspacePath?: string | nul
   if (turn.workspaceRoots.length === 0 && options?.workspacePath) {
     turn.workspaceRoots = [normalizeFilePath(options.workspacePath)];
   }
-  return enqueue(turn.conversationId, async () => {
+  const settled = enqueue(turn.conversationId, async () => {
     await turn.manifestWrites;
     const entries = [...turn.captured.values()].filter((entry): entry is ManifestEntry => entry !== null);
     await settleTurn(turn, entries);
   });
+  turn.markEnded();
+  return settled;
+}
+
+/**
+ * Resolves once every turn of the conversation that is open at the call has
+ * had its settle queued by `endTurn`. Work queued after this runs behind those
+ * settles. A turn opened after the call is not waited for: `hasOpenTurn` in
+ * the queued work tells of it.
+ */
+export async function whenTurnsEnded(conversationId: string): Promise<void> {
+  const open = [...openTurns.values()].filter((turn) => turn.conversationId === conversationId);
+  await Promise.all(open.map((turn) => turn.ended));
 }
 
 /**
@@ -1147,6 +1219,34 @@ export async function readTurnUndoRecord(conversationId: string, loopId: string)
   assertConversationId(conversationId);
   assertLoopId(loopId);
   return loadUndoRecord(await changesDir(conversationId), loopId);
+}
+
+/**
+ * Removes what the conversation keeps of turns that were deleted from it: the
+ * saved result, the turn directory with its copies and the index entry of
+ * each. Runs behind the conversation's earlier settle work and tells listeners
+ * of every turn. A loop id with no record leaves the disk as it is.
+ */
+export async function forgetTurns(conversationId: string, loopIds: readonly string[]): Promise<void> {
+  assertConversationId(conversationId);
+  for (const loopId of loopIds) assertLoopId(loopId);
+  await ensureRecovered(conversationId);
+  await enqueue(conversationId, async () => {
+    const dir = await changesDir(conversationId);
+    const index = await loadIndex(dir);
+    let indexChanged = false;
+    for (const loopId of loopIds) {
+      const savedPath = turnFilePath(dir, loopId);
+      if (await exists(savedPath)) await remove(savedPath);
+      await removeTurnDir(dir, loopId);
+      if (index[loopId]) {
+        delete index[loopId];
+        indexChanged = true;
+      }
+    }
+    if (indexChanged) await saveIndex(dir, index);
+    for (const loopId of loopIds) emitSaved(conversationId, loopId);
+  });
 }
 
 /**
