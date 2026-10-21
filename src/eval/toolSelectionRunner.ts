@@ -16,7 +16,8 @@ import { registerBuiltinTools } from '@/core/tools/builtins';
 import { getAllTools } from '@/core/tools/registry';
 import { buildSystemPromptSections, routeInput } from '@/core/agent/orchestrator';
 import { sectionsToString } from '@/core/llm/promptSections';
-import type { ToolDefinition } from '@/types';
+import type { LLMAdapter } from '@/core/llm/adapter';
+import type { Message, StreamEvent, ToolDefinition } from '@/types';
 
 export interface RunOptions {
   apiKey: string;
@@ -224,6 +225,130 @@ export async function runToolSelectionEval(
     });
 
     // Log progress
+    const status = judgment.passed ? '✅' : '❌';
+    console.log(`  ${status} ${evalCase.id} (${Date.now() - start}ms) tools=[${toolsCalled.join(', ')}]`);
+  }
+
+  return results;
+}
+
+export interface AdapterRunOptions {
+  apiKey: string;
+  baseUrl: string;
+  filter?: string[];
+  category?: string;
+}
+
+/**
+ * Same eval through one of Abu's own LLM adapters (the OpenAI-compatible
+ * adapter for every non-Anthropic vendor), so the request is shaped exactly
+ * as the app shapes it: the adapter's message conversion, tool schema
+ * conversion and per-vendor request processors all run.
+ */
+export async function runToolSelectionEvalWithAdapter(
+  cases: ToolSelectionCase[],
+  target: EvalTarget,
+  adapter: LLMAdapter,
+  options: AdapterRunOptions,
+): Promise<CaseResult[]> {
+  registerBuiltinTools();
+
+  const route = routeInput('');
+  const evalImContext = { platform: 'eval', workspacePath: '/eval/workspace' };
+  const sections = await buildSystemPromptSections(route, '', 'eval-session', evalImContext, 0);
+  const systemPrompt = sectionsToString(sections);
+  const tools = getAllTools();
+
+  let filteredCases = cases;
+  if (options.filter?.length) {
+    filteredCases = cases.filter(c => options.filter!.includes(c.id));
+  }
+  if (options.category) {
+    filteredCases = filteredCases.filter(c => c.category === options.category);
+  }
+
+  const results: CaseResult[] = [];
+  let messageCounter = 0;
+
+  for (const evalCase of filteredCases) {
+    const start = Date.now();
+    const toolCalls: Array<{ name: string; input: Record<string, unknown> }> = [];
+    const tokenUsage = { input: 0, output: 0 };
+    let thinking = '';
+    let error: string | undefined;
+
+    const messages: Message[] = [
+      ...(evalCase.contextMessages?.map(m => ({
+        id: `eval-${++messageCounter}`,
+        role: m.role,
+        content: m.content,
+        timestamp: start,
+      })) ?? []),
+      { id: `eval-${++messageCounter}`, role: 'user', content: evalCase.input, timestamp: start },
+    ];
+
+    const onEvent = (event: StreamEvent): void => {
+      switch (event.type) {
+        case 'tool_use':
+          toolCalls.push({ name: event.name, input: event.input });
+          break;
+        case 'thinking':
+          thinking += event.thinking;
+          break;
+        case 'usage':
+          tokenUsage.input = Math.max(tokenUsage.input, event.usage.inputTokens);
+          tokenUsage.output = Math.max(tokenUsage.output, event.usage.outputTokens);
+          break;
+        case 'done':
+          if (event.usage) {
+            tokenUsage.input = Math.max(tokenUsage.input, event.usage.inputTokens);
+            tokenUsage.output = Math.max(tokenUsage.output, event.usage.outputTokens);
+          }
+          break;
+        case 'error':
+          error = event.error;
+          break;
+        case 'text':
+        case 'tool_result':
+          break;
+      }
+    };
+
+    try {
+      await adapter.chat(messages, {
+        model: target.modelId,
+        apiKey: options.apiKey,
+        baseUrl: options.baseUrl,
+        systemPrompt,
+        tools,
+        metadata: { conversationId: 'eval-session' },
+        supportsVision: false,
+      }, onEvent);
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+
+    const toolsCalled = toolCalls.map(tc => tc.name);
+    const judgment = error
+      ? { passed: false, missingTools: evalCase.expected.requiredTools, forbiddenToolsCalled: [], paramMismatches: [`Error: ${error}`] }
+      : judgeToolSelection(toolsCalled, evalCase.expected, toolCalls);
+
+    results.push({
+      caseId: evalCase.id,
+      target,
+      passed: judgment.passed,
+      toolsCalled,
+      details: {
+        missingTools: judgment.missingTools,
+        forbiddenToolsCalled: judgment.forbiddenToolsCalled,
+        paramMismatches: judgment.paramMismatches,
+      },
+      latencyMs: Date.now() - start,
+      tokenUsage,
+      thinking: thinking || undefined,
+      error,
+    });
+
     const status = judgment.passed ? '✅' : '❌';
     console.log(`  ${status} ${evalCase.id} (${Date.now() - start}ms) tools=[${toolsCalled.join(', ')}]`);
   }
