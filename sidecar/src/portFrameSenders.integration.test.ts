@@ -46,6 +46,7 @@ vi.mock('@/core/agent/sidecarRunPredicate', () => ({
 }));
 
 import { applyDeltaFrames } from '@/core/agent/frameApplier';
+import { materializeSidecarMediaRefsForShell } from '@/core/subagent/delegatedUserTurnMaterializer';
 import { createFrameChatDelta } from './portFrameSenders';
 import { createConversationRunMirror } from './conversationRunMirror';
 import type { PortFrame } from './portFrameCoalescer';
@@ -144,5 +145,46 @@ describe('portFrameSenders → frameApplier round trip', () => {
     // The mirror's own copy converged on the same text.
     expect(mirror.reader.getConversation(convId)?.messages.find((m) => m.id === 'm-answer')?.content)
       .toBe('hello world');
+  });
+
+  it('delivers a session checkpoint with its tool image intact to the ledger writer', async () => {
+    const pngBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+    const pngBase64 = 'iVBORw0KGgo=';
+    delegatedMediaStoreMocks.persistDelegatedMedia.mockResolvedValue({
+      id: 'media_round_trip_checkpoint',
+      sha256: 'c'.repeat(64),
+      mediaType: 'image/png',
+      bytes: pngBytes.byteLength,
+    });
+    delegatedMediaStoreMocks.readDelegatedMedia.mockResolvedValue(pngBytes);
+    const convId = useChatStore.getState().createConversation();
+    const mirror = createConversationRunMirror(convId, { conversation: seedConversation(convId) });
+    const frames: PortFrame[] = [];
+    const delta = createFrameChatDelta((frame) => frames.push(frame), mirror.applyChatDeltaWrite);
+    const resultContent: ToolResultContent[] = [
+      { type: 'text', text: 'Image: probe.png (1280x720)' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: pngBase64 } },
+    ];
+    const checkpoint: Message = {
+      id: 'm-tool',
+      role: 'assistant',
+      content: '',
+      timestamp: FIXED_TIMESTAMP,
+      toolCalls: [{ id: 'tc-1', name: 'read_file', input: { path: 'probe.png' }, result: 'Image: probe.png (1280x720)', resultContent }],
+    };
+
+    delta.updateToolCall(convId, 'm-tool', 'tc-1', 'Image: probe.png (1280x720)', resultContent, false);
+    delta.pushPreparedTransportFrame({ p: 'session', m: 'replaceMessageById', a: [convId, checkpoint] }, convId);
+    await delta.drain();
+    expect(JSON.stringify(frames)).not.toContain(pngBase64);
+
+    // Same two steps the shell's agent.delta handler performs.
+    const shellFrames = await materializeSidecarMediaRefsForShell(frames, convId);
+    await applyDeltaFrames(shellFrames);
+
+    expect(replaceMessageByIdMock).toHaveBeenCalledTimes(1);
+    const [writtenConvId, written] = replaceMessageByIdMock.mock.calls[0] as [string, Message];
+    expect(writtenConvId).toBe(convId);
+    expect(written.toolCalls?.[0].resultContent).toEqual(resultContent);
   });
 });
