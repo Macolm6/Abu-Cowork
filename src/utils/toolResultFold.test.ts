@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { charsOmittedMarker, linesOmittedMarker, scaledTruncationRule, truncateText, truncateToolResult } from '@/core/context/truncation';
 import { DURABLE_RESULT_OMITTED_NOTE } from '@/core/session/durableToolResultContent';
-import { COMMAND_OUTPUT_CUT_NOTE, foldToolResult, toResultRows } from './toolResultFold';
+import { COMMAND_OUTPUT_CUT_NOTE, foldRowList, foldToolResult, toResultRows } from './toolResultFold';
 
 const lines = (n: number) => Array.from({ length: n }, (_, i) => `line ${i + 1}`).join('\n');
 
@@ -83,5 +83,29 @@ describe('foldToolResult', () => {
     const head = fold.head[0];
     expect(head.kind === 'text' && Array.from(head.text).every((char) => char === '😀')).toBe(true);
     expect(fold.hidden).toEqual({ unit: 'chars', count: 1100 });
+  });
+});
+
+describe('foldRowList', () => {
+  const numbers = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
+
+  it('keeps nine rows whole', () => {
+    const fold = foldRowList(numbers(9), () => true);
+    expect(fold.hidden).toBeNull();
+    expect(fold.head).toEqual(numbers(9));
+    expect(fold.tail).toEqual([]);
+  });
+
+  it('folds ten rows to five and four and counts the lines', () => {
+    const fold = foldRowList(numbers(10), (row) => row !== 6);
+    expect(fold.rows).toEqual(numbers(10));
+    expect(fold.head).toEqual([1, 2, 3, 4, 5]);
+    expect(fold.tail).toEqual([7, 8, 9, 10]);
+    expect(fold.hidden).toEqual({ unit: 'lines', count: 9 });
+  });
+
+  it('gives foldToolResult the same answer as before', () => {
+    const text = truncateText(lines(5000), scaledTruncationRule('run_command'));
+    expect(foldToolResult(text)).toEqual(foldRowList(toResultRows(text), (row) => row.kind === 'text'));
   });
 });

@@ -15,13 +15,15 @@ export type ToolResultRow =
   | { kind: 'text'; text: string }
   | { kind: 'note'; note: ToolResultNoteKind; count?: number };
 
-export interface ToolResultFold {
-  rows: ToolResultRow[];
-  head: ToolResultRow[];
-  tail: ToolResultRow[];
-  /** What the fold leaves out, or null when the result shows whole. */
+export interface RowFold<T> {
+  rows: T[];
+  head: T[];
+  tail: T[];
+  /** What the fold leaves out, or null when the rows show whole. */
   hidden: null | { unit: 'lines' | 'chars'; count: number };
 }
+
+export type ToolResultFold = RowFold<ToolResultRow>;
 
 const HEAD_ROWS = 5;
 const TAIL_ROWS = 4;
@@ -89,16 +91,27 @@ function takeChars(rows: ToolResultRow[], budget: number, from: 'start' | 'end')
 }
 
 /**
- * How a tool result shows before the user asks for all of it: past nine rows
- * the first five and the last four; on fewer rows past 1000 characters the
- * first 700 and the last 300. The count is what Abu read, notes left out.
+ * How a list of rows shows before the user asks for all of it: past nine rows
+ * the first five and the last four. The count is the rows `countsAsLine` keeps.
+ */
+export function foldRowList<T>(rows: readonly T[], countsAsLine: (row: T) => boolean): RowFold<T> {
+  const all = [...rows];
+  if (all.length > HEAD_ROWS + TAIL_ROWS) {
+    const count = all.filter(countsAsLine).length;
+    return { rows: all, head: all.slice(0, HEAD_ROWS), tail: all.slice(all.length - TAIL_ROWS), hidden: { unit: 'lines', count } };
+  }
+  return { rows: all, head: all, tail: [], hidden: null };
+}
+
+/**
+ * How a tool result shows before the user asks for all of it: the rows fold
+ * as `foldRowList` folds them; on fewer rows past 1000 characters the first
+ * 700 and the last 300. The count is what Abu read, notes left out.
  */
 export function foldToolResult(text: string): ToolResultFold {
   const rows = toResultRows(text);
-  if (rows.length > HEAD_ROWS + TAIL_ROWS) {
-    const count = rows.filter((row) => row.kind === 'text').length;
-    return { rows, head: rows.slice(0, HEAD_ROWS), tail: rows.slice(rows.length - TAIL_ROWS), hidden: { unit: 'lines', count } };
-  }
+  const byRows = foldRowList(rows, (row) => row.kind === 'text');
+  if (byRows.hidden) return byRows;
   const count = rows.reduce((total, row) => total + textLength(row), 0);
   if (count > MAX_CHARS) {
     return {
