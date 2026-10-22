@@ -212,6 +212,55 @@ describe('buildShareBundle', () => {
     expect(calls[2].httpFetchOutcome).toEqual(httpFetchOutcome);
   });
 
+  describe('a result over the offload threshold', () => {
+    // The stored result keeps only a preview; the whole text the views read is in toolCallsForContext.
+    const preview = 'Exit code: 0\nstdout:\n' + 'a'.repeat(200);
+    const commandOutcome = { exitCode: 0, stdout: [21, 9021] as [number, number] };
+
+    function offloadedConv(wholeText: string): Conversation {
+      return makeConv([
+        {
+          id: 'm1',
+          role: 'assistant',
+          content: 'ran',
+          timestamp: 1,
+          toolCalls: [
+            { id: 't1', name: 'run_command', input: { command: 'cat .env' }, result: preview, commandOutcome },
+          ],
+        },
+        {
+          id: 'm2',
+          role: 'assistant',
+          content: 'done',
+          timestamp: 2,
+          toolCallsForContext: [
+            { id: 't1', name: 'run_command', input: { command: 'cat .env' }, result: wholeText },
+          ],
+        },
+      ]);
+    }
+
+    it('drops the outcome records when the secret sits after the preview', async () => {
+      const wholeText = 'Exit code: 0\nstdout:\n' + 'a'.repeat(4000)
+        + 'KEY=sk-ant-abcdefghijklmnopqrstuvwxyz123456\n' + 'b'.repeat(5000);
+      expect(wholeText.length).toBeGreaterThan(8192);
+
+      const bundle = await buildShareBundle(offloadedConv(wholeText));
+
+      expect(bundle.messages[0].toolCalls?.[0].result).toBe(preview);
+      expect(bundle.messages[1].toolCallsForContext?.[0].result).toContain('[REDACTED:anthropic-key]');
+      expect(bundle.messages[0].toolCalls?.[0]).not.toHaveProperty('commandOutcome');
+    });
+
+    it('keeps the outcome records when neither text was redacted', async () => {
+      const wholeText = 'Exit code: 0\nstdout:\n' + 'a'.repeat(9000);
+
+      const bundle = await buildShareBundle(offloadedConv(wholeText));
+
+      expect(bundle.messages[0].toolCalls?.[0].commandOutcome).toEqual(commandOutcome);
+    });
+  });
+
   describe('tool call file change', () => {
     function fileChangeConv(fileChange: NonNullable<NonNullable<Message['toolCalls']>[number]['fileChange']>): Conversation {
       return makeConv([
