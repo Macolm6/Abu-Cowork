@@ -113,6 +113,72 @@ describe('messageNormalizer', () => {
         }
       });
 
+      it('keeps the signature and redacted blocks with the kept thinking and drops them with the stripped one', () => {
+        const messages: Message[] = [
+          makeMessage({ role: 'user', content: 'Q1' }),
+          makeMessage({
+            role: 'assistant',
+            content: 'A1',
+            thinking: 'reasoning 1',
+            thinkingSignature: 'sig-1',
+            redactedThinking: ['blob-1'],
+          }),
+          makeMessage({ role: 'user', content: 'Q2' }),
+          makeMessage({
+            role: 'assistant',
+            content: 'A2',
+            thinking: 'reasoning 2',
+            thinkingSignature: 'sig-2',
+            redactedThinking: ['blob-2'],
+          }),
+        ];
+
+        const turns = normalizeMessages(messages);
+        expect(turns[1]).toMatchObject({ kind: 'assistant', text: 'A1' });
+        if (turns[1].kind === 'assistant') {
+          expect(turns[1].thinking).toBeUndefined();
+          expect(turns[1].thinkingSignature).toBeUndefined();
+          expect(turns[1].redactedThinking).toBeUndefined();
+        }
+        if (turns[3].kind === 'assistant') {
+          expect(turns[3].thinking).toBe('reasoning 2');
+          expect(turns[3].thinkingSignature).toBe('sig-2');
+          expect(turns[3].redactedThinking).toEqual(['blob-2']);
+        }
+      });
+
+      it('keeps thinking from a record written before signatures were stored, with no signature', () => {
+        const messages: Message[] = [
+          makeMessage({ role: 'user', content: 'Q1' }),
+          makeMessage({ role: 'assistant', content: 'A1', thinking: 'old reasoning' }),
+        ];
+
+        const turns = normalizeMessages(messages);
+        if (turns[1].kind === 'assistant') {
+          expect(turns[1].thinking).toBe('old reasoning');
+          expect(turns[1].thinkingSignature).toBeUndefined();
+          expect(turns[1].redactedThinking).toBeUndefined();
+        }
+      });
+
+      it('treats a turn whose whole reasoning was redacted as a thinking turn worth keeping', () => {
+        const messages: Message[] = [
+          makeMessage({ role: 'user', content: 'Q1' }),
+          makeMessage({
+            role: 'assistant',
+            content: '',
+            redactedThinking: ['blob-1'],
+            toolCallsForContext: [{ name: 'read_file', input: { path: '/a' }, result: 'content' }],
+          }),
+        ];
+
+        const turns = normalizeMessages(messages);
+        if (turns[1].kind === 'assistant') {
+          expect(turns[1].thinking).toBeUndefined();
+          expect(turns[1].redactedThinking).toEqual(['blob-1']);
+        }
+      });
+
       it('falls back to a prior output turn when later turns are empty', () => {
         // Bug case shape: one healthy turn, then several degenerate-empty turns.
         // The healthy turn's thinking should be preserved; the empty turns'

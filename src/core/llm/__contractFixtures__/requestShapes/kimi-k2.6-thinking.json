@@ -1,0 +1,42 @@
+{
+  "url": "https://api.moonshot.cn/v1/chat/completions",
+  "body": {
+    "model": "kimi-k2.6",
+    "messages": [
+      {
+        "role": "user",
+        "content": "hi"
+      }
+    ],
+    "max_tokens": 8192,
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    },
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "read_file",
+          "description": "Read a file",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Path to file"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
+        }
+      }
+    ],
+    "thinking": {
+      "type": "enabled"
+    },
+    "temperature": 1
+  }
+}
