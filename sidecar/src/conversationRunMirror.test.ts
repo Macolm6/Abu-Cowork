@@ -97,6 +97,21 @@ describe('conversationRunMirror', () => {
       expect(mirror.reader.getConversation('conv-1')?.messages[0].thinking).toBe('step 1 step 2');
     });
 
+    it('setThinkingSignature stores the signature on the targeted message', () => {
+      const conv = makeConversation({ messages: [makeMessage({ id: 'm1' })] });
+      const mirror = createConversationRunMirror('conv-1', { conversation: conv });
+      mirror.applyChatDeltaWrite('setThinkingSignature', ['conv-1', 'sig-abc', 'm1']);
+      expect(mirror.reader.getConversation('conv-1')?.messages[0].thinkingSignature).toBe('sig-abc');
+    });
+
+    it('appendRedactedThinking appends each opaque block in arrival order', () => {
+      const conv = makeConversation({ messages: [makeMessage({ id: 'm1' })] });
+      const mirror = createConversationRunMirror('conv-1', { conversation: conv });
+      mirror.applyChatDeltaWrite('appendRedactedThinking', ['conv-1', 'blob-1', 'm1']);
+      mirror.applyChatDeltaWrite('appendRedactedThinking', ['conv-1', 'blob-2', 'm1']);
+      expect(mirror.reader.getConversation('conv-1')?.messages[0].redactedThinking).toEqual(['blob-1', 'blob-2']);
+    });
+
     it('setMessageToolCalls sets toolCalls and clears isStreaming', () => {
       const conv = makeConversation({ messages: [makeMessage({ id: 'm1', isStreaming: true })] });
       const mirror = createConversationRunMirror('conv-1', { conversation: conv });

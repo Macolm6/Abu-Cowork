@@ -66,6 +66,27 @@ describe('createInProcessChatDelta', () => {
     expect(useChatStore.getState().conversations[id].messages[0].thinkingDuration).toBe(7);
   });
 
+  it('setThinkingSignature() forwards to updateMessageThinkingSignature', () => {
+    const delta = createInProcessChatDelta();
+    const id = useChatStore.getState().createConversation();
+    useChatStore.getState().addMessage(id, {
+      id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
+    });
+    delta.setThinkingSignature(id, 'sig-abc', 'a1');
+    expect(useChatStore.getState().conversations[id].messages[0].thinkingSignature).toBe('sig-abc');
+  });
+
+  it('appendRedactedThinking() forwards to appendMessageRedactedThinking, keeping arrival order', () => {
+    const delta = createInProcessChatDelta();
+    const id = useChatStore.getState().createConversation();
+    useChatStore.getState().addMessage(id, {
+      id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
+    });
+    delta.appendRedactedThinking(id, 'blob-1', 'a1');
+    delta.appendRedactedThinking(id, 'blob-2', 'a1');
+    expect(useChatStore.getState().conversations[id].messages[0].redactedThinking).toEqual(['blob-1', 'blob-2']);
+  });
+
   it('finishStreaming() forwards and flips isStreaming false', () => {
     const delta = createInProcessChatDelta();
     const id = useChatStore.getState().createConversation();
@@ -314,6 +335,8 @@ describe('getChatDelta / setChatDelta', () => {
       setLastMessageContent: () => calls.push('setLastMessageContent'),
       appendThinking: () => calls.push('appendThinking'),
       setThinkingDuration: () => calls.push('setThinkingDuration'),
+      setThinkingSignature: () => calls.push('setThinkingSignature'),
+      appendRedactedThinking: () => calls.push('appendRedactedThinking'),
       flushTokens: () => calls.push('flushTokens'),
       finishStreaming: () => calls.push('finishStreaming'),
       cancelStreaming: () => calls.push('cancelStreaming'),

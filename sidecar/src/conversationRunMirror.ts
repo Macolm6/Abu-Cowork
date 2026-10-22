@@ -155,6 +155,18 @@ export function createConversationRunMirror(
         if (target) target.thinkingDuration = duration;
         break;
       }
+      case 'setThinkingSignature': {
+        const [, signature, msgId] = args as [string, string, string | undefined];
+        const target = findTarget(msgId);
+        if (target) target.thinkingSignature = signature;
+        break;
+      }
+      case 'appendRedactedThinking': {
+        const [, data, msgId] = args as [string, string, string | undefined];
+        const target = findTarget(msgId);
+        if (target) target.redactedThinking = [...(target.redactedThinking ?? []), data];
+        break;
+      }
       case 'finishStreaming': {
         const [, msgId] = args as [string, string | undefined];
         const target = findTarget(msgId);

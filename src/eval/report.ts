@@ -4,11 +4,148 @@
  * Generates CLI summary + JSON report from eval results.
  */
 
-import { writeFileSync, readFileSync, existsSync, mkdirSync, readdirSync } from 'fs';
+import { writeFileSync, readFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
-import type { CaseResult, EvalReport, EvalTarget, CategoryStats, TargetSummary } from './types';
+import type {
+  CaseResult,
+  EvalReport,
+  EvalTarget,
+  CategoryStats,
+  TargetSummary,
+  FileEditCase,
+  FileEditCaseResult,
+  FileEditReport,
+  FileEditTargetSummary,
+} from './types';
 
 const RESULTS_DIR = join(process.cwd(), 'eval-results');
+
+/**
+ * Save a report under `eval-results/<family>/<date>-<model>-<dataset>.json`,
+ * the committed location for per-family baselines. A second run on the same
+ * day gets a numeric suffix instead of overwriting the first.
+ */
+export function saveFamilyReport(
+  report: EvalReport | FileEditReport,
+  family: string,
+  modelId: string,
+  dataset: string,
+  date: string = new Date().toISOString().slice(0, 10),
+): string {
+  const dir = join(RESULTS_DIR, family);
+  mkdirSync(dir, { recursive: true });
+  const safeModel = modelId.replace(/[^A-Za-z0-9._-]+/g, '_');
+  const base = `${date}-${safeModel}-${dataset}`;
+  let filepath = join(dir, `${base}.json`);
+  for (let n = 2; existsSync(filepath); n++) {
+    filepath = join(dir, `${base}-${n}.json`);
+  }
+  writeFileSync(filepath, JSON.stringify(report, null, 2) + '\n', 'utf-8');
+  return filepath;
+}
+
+function average(values: number[]): number {
+  return values.length > 0 ? values.reduce((sum, v) => sum + v, 0) / values.length : 0;
+}
+
+function tally(
+  results: FileEditCaseResult[],
+  caseMap: Map<string, FileEditCase>,
+  key: (c: FileEditCase) => string,
+): Record<string, CategoryStats> {
+  const stats: Record<string, CategoryStats> = {};
+  for (const result of results) {
+    const evalCase = caseMap.get(result.caseId);
+    if (!evalCase) continue;
+    const bucket = key(evalCase);
+    if (!stats[bucket]) stats[bucket] = { pass: 0, total: 0 };
+    stats[bucket].total++;
+    if (result.passed) stats[bucket].pass++;
+  }
+  return stats;
+}
+
+export function summarizeFileEditResults(results: FileEditCaseResult[]): FileEditTargetSummary {
+  const passCount = results.filter((r) => r.passed).length;
+  return {
+    passRate: results.length > 0 ? passCount / results.length : 0,
+    passCount,
+    failCount: results.length - passCount,
+    errorCount: results.filter((r) => r.error !== undefined).length,
+    textOnlyEndTurnCount: results.filter((r) => r.textOnlyEndTurn).length,
+    avgToolCalls: average(results.map((r) => r.toolCallCount)),
+    avgWriteToolCalls: average(results.map((r) => r.writeToolCallCount)),
+    avgTurns: average(results.map((r) => r.turns)),
+    avgLatencyMs: average(results.map((r) => r.latencyMs)),
+    totalTokens: {
+      input: results.reduce((sum, r) => sum + r.tokenUsage.input, 0),
+      output: results.reduce((sum, r) => sum + r.tokenUsage.output, 0),
+    },
+  };
+}
+
+export function buildFileEditReport(
+  results: FileEditCaseResult[],
+  cases: FileEditCase[],
+  meta: { runId: string; target: EvalTarget; family: string; toolNames: string[]; maxTurns: number; timestamp?: string },
+): FileEditReport {
+  const caseMap = new Map(cases.map((c) => [c.id, c]));
+  return {
+    metadata: {
+      timestamp: meta.timestamp ?? new Date().toISOString(),
+      runId: meta.runId,
+      target: meta.target,
+      family: meta.family,
+      dataset: 'file-edit',
+      totalCases: results.length,
+      toolNames: meta.toolNames,
+      maxTurns: meta.maxTurns,
+    },
+    summary: {
+      ...summarizeFileEditResults(results),
+      byCategory: tally(results, caseMap, (c) => c.category),
+      byDifficulty: tally(results, caseMap, (c) => c.difficulty),
+    },
+    results,
+  };
+}
+
+export function printFileEditReport(report: FileEditReport): void {
+  const line = '─'.repeat(60);
+  const s = report.summary;
+  console.log(`\n${line}`);
+  console.log(`  Abu File-Edit Eval Report`);
+  console.log(`  Target: ${report.metadata.target.label} (family: ${report.metadata.family})`);
+  console.log(`  Cases: ${report.metadata.totalCases}   Run: ${report.metadata.runId}`);
+  console.log(line);
+  console.log(`  Pass Rate: ${s.passCount}/${s.passCount + s.failCount} (${(s.passRate * 100).toFixed(1)}%)`);
+  console.log(`  Errors: ${s.errorCount}   textOnlyEndTurn: ${s.textOnlyEndTurnCount}`);
+  console.log(`  Avg tool calls: ${s.avgToolCalls.toFixed(2)} (writes ${s.avgWriteToolCalls.toFixed(2)}), avg turns: ${s.avgTurns.toFixed(2)}`);
+  console.log(`  Avg latency: ${s.avgLatencyMs.toFixed(0)}ms   Tokens: ${s.totalTokens.input} in / ${s.totalTokens.output} out`);
+
+  console.log(`\n  By Category:`);
+  for (const [cat, stats] of Object.entries(s.byCategory)) {
+    console.log(`    ${cat.padEnd(16)} ${stats.pass}/${stats.total}`);
+  }
+  console.log(`\n  By Difficulty:`);
+  for (const diff of ['easy', 'medium', 'hard']) {
+    const stats = s.byDifficulty[diff];
+    if (stats) console.log(`    ${diff.padEnd(16)} ${stats.pass}/${stats.total}`);
+  }
+
+  const failures = report.results.filter((r) => !r.passed);
+  if (failures.length > 0) {
+    console.log(`\n  ❌ Failed Cases:`);
+    for (const f of failures) {
+      console.log(`    ${f.caseId}: tools=[${f.toolCalls.map((tc) => tc.name + (tc.isError ? '!' : '')).join(', ')}]`);
+      if (f.error) console.log(`      → error: ${f.error}`);
+      if (f.textOnlyEndTurn) console.log(`      → textOnlyEndTurn`);
+      for (const m of f.mismatches) console.log(`      → ${m.path}: ${m.reason}`);
+      if (f.extraFiles.length) console.log(`      → extra files: ${f.extraFiles.join(', ')}`);
+    }
+  }
+  console.log(`\n${line}\n`);
+}
 
 /**
  * Build aggregated report from raw results.
@@ -247,11 +384,22 @@ export function diffReports(before: EvalReport, after: EvalReport): void {
 export function loadReport(nameHint: string): EvalReport | null {
   if (!existsSync(RESULTS_DIR)) return null;
 
-  const files = readdirSync(RESULTS_DIR).filter(f => f.endsWith('.json') && f.includes(nameHint));
+  // Flat files plus the per-family subdirectories.
+  const files: string[] = [];
+  for (const entry of readdirSync(RESULTS_DIR)) {
+    const full = join(RESULTS_DIR, entry);
+    if (statSync(full).isDirectory()) {
+      for (const inner of readdirSync(full)) {
+        if (inner.endsWith('.json') && inner.includes(nameHint)) files.push(join(entry, inner));
+      }
+    } else if (entry.endsWith('.json') && entry.includes(nameHint)) {
+      files.push(entry);
+    }
+  }
   if (files.length === 0) return null;
 
-  // Take the most recent
-  files.sort().reverse();
+  // Take the most recent (file names start with the date)
+  files.sort((a, b) => a.split('/').pop()!.localeCompare(b.split('/').pop()!)).reverse();
   const content = readFileSync(join(RESULTS_DIR, files[0]), 'utf-8');
   return JSON.parse(content);
 }

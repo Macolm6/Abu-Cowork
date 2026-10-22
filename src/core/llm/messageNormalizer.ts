@@ -41,7 +41,16 @@ export type PreparedContentBlock =
 /** A normalized conversation turn */
 export type PreparedTurn =
   | { kind: 'user'; content: PreparedContentBlock[] }
-  | { kind: 'assistant'; text: string; thinking?: string; toolCalls: PreparedToolCall[] };
+  | {
+      kind: 'assistant';
+      text: string;
+      thinking?: string;
+      /** Kept or dropped together with `thinking` (see `Message.thinkingSignature`). */
+      thinkingSignature?: string;
+      /** Opaque Anthropic blocks kept under the same rule as `thinking`. */
+      redactedThinking?: string[];
+      toolCalls: PreparedToolCall[];
+    };
 
 /** Options for normalizeMessages */
 export interface NormalizeOptions {
@@ -132,6 +141,15 @@ function producedRealOutput(text: string, toolCallCount: number): boolean {
   if (toolCallCount > 0) return true;
   const trimmed = text.trim();
   return trimmed.length > 0 && trimmed !== EMPTY_RESPONSE_TOMBSTONE;
+}
+
+/**
+ * Whether an assistant message carries anything the "keep the most recent
+ * thinking" rule can keep: readable thinking text, a signature issued for a
+ * block whose text the API withheld, or Anthropic's opaque redacted blocks.
+ */
+function hasThinkingToReplay(m: Message): boolean {
+  return !!m.thinking || !!m.thinkingSignature || (m.redactedThinking?.length ?? 0) > 0;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────
@@ -262,7 +280,7 @@ export function normalizeMessages(
   let keepThinkingIdx = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (m.role !== 'assistant' || !m.thinking) continue;
+    if (m.role !== 'assistant' || !hasThinkingToReplay(m)) continue;
     const text = getTextContent(m.content);
     const toolCount = (m.toolCallsForContext?.length ?? m.toolCalls?.length ?? 0);
     if (producedRealOutput(text, toolCount)) {
@@ -345,10 +363,15 @@ export function normalizeMessages(
         ? EMPTY_RESPONSE_TOMBSTONE
         : text;
 
+      // The signature and the redacted blocks follow the same keep/drop
+      // decision as the thinking text: a signature is only meaningful next to
+      // the exact text it was issued for.
       turns.push({
         kind: 'assistant',
         text: effectiveText,
         thinking: keepThinking ? msg.thinking : undefined,
+        thinkingSignature: keepThinking ? msg.thinkingSignature : undefined,
+        redactedThinking: keepThinking && msg.redactedThinking?.length ? msg.redactedThinking : undefined,
         toolCalls: preparedToolCalls,
       });
     }

@@ -315,6 +315,8 @@ export function createFrameChatDelta(push: Push, onLocalApply?: (m: string, a: u
     setLastMessageContent: (convId, content, msgId) => send('setLastMessageContent', [convId, content, msgId]),
     appendThinking: (convId, thinking, msgId) => send('appendThinking', [convId, thinking, msgId]),
     setThinkingDuration: (convId, duration, msgId) => send('setThinkingDuration', [convId, duration, msgId]),
+    setThinkingSignature: (convId, signature, msgId) => send('setThinkingSignature', [convId, signature, msgId]),
+    appendRedactedThinking: (convId, data, msgId) => send('appendRedactedThinking', [convId, data, msgId]),
     flushTokens: (convId, msgId) => send('flushTokens', [convId, msgId]),
     finishStreaming: (convId, msgId) => send('finishStreaming', [convId, msgId]),
     cancelStreaming: (convId) => send('cancelStreaming', [convId]),
