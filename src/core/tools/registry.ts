@@ -139,6 +139,8 @@ import { snapshotToolOutputs, type OutputCapture } from '../session/outputSnapsh
 import { FileOperationDenied, type ToolFileAccess } from '@/core/tools/fileOperation';
 import { uint8ArrayToBase64 } from '@/core/tools/helpers/toolHelpers';
 import { hasToolFileTargets, planToolFiles } from '@/core/tools/fileToolTargets';
+import { parsePatchOperations, resolvePatchPath } from '@/core/tools/definitions/patchTools';
+import { rewriteShellApplyPatch } from '@/core/tools/applyPatchCommand';
 export { finalizeToolApproval } from './approvalFinalization';
 
 // Cache home dir for command-boundary resolution (only resolved on first safe write command).
@@ -408,11 +410,25 @@ export type FilePermissionCallback = (request: {
 // "present but invalid" and must still flow THROUGH the boundary check (which
 // rejects it), not skip it. A truthy `i.path ?` treats '' as falsy → returns
 // null → the whole permission/boundary block is bypassed for path: ''.
-export const FILE_TOOL_PATH_MAP: Record<string, (input: Record<string, unknown>) => { path: string; capability: 'read' | 'write' } | null> = {
+export interface FileToolPathTarget { path: string; capability: 'read' | 'write' }
+
+export const FILE_TOOL_PATH_MAP: Record<string, (input: Record<string, unknown>) => FileToolPathTarget | FileToolPathTarget[] | null> = {
   [TOOL_NAMES.READ_FILE]:      (i) => typeof i.path === 'string' ? { path: i.path, capability: 'read' } : null,
   [TOOL_NAMES.LIST_DIRECTORY]: (i) => typeof i.path === 'string' ? { path: i.path, capability: 'read' } : null,
   [TOOL_NAMES.WRITE_FILE]:     (i) => typeof i.path === 'string' ? { path: i.path, capability: 'write' } : null,
   [TOOL_NAMES.EDIT_FILE]:      (i) => typeof i.path === 'string' ? { path: i.path, capability: 'write' } : null,
+  // Every file section of the patch is a write target (a move writes its
+  // destination and removes its source). The planner resolves the same list
+  // when a host authorization provider is installed; this extractor serves
+  // the path check when none is.
+  [TOOL_NAMES.APPLY_PATCH]:    (i) => {
+    const parsed = parsePatchOperations(typeof i.input === 'string' ? i.input : '');
+    if ('error' in parsed) return null;
+    return parsed.operations.flatMap((op): FileToolPathTarget[] => [
+      { path: resolvePatchPath(op.path, null), capability: 'write' },
+      ...(op.type === 'update' && op.moveTo ? [{ path: resolvePatchPath(op.moveTo, null), capability: 'write' as const }] : []),
+    ]);
+  },
   [TOOL_NAMES.DELETE_FILE]:    (i) => typeof i.path === 'string' ? { path: i.path, capability: 'write' } : null,
   [TOOL_NAMES.SEARCH_FILES]:   (i) => typeof i.path === 'string' ? { path: i.path, capability: 'read' } : null,
   [TOOL_NAMES.FIND_FILES]:     (i) => typeof i.path === 'string' ? { path: i.path, capability: 'read' } : null,
@@ -1374,7 +1390,7 @@ export async function checkToolApproval(
     capability: target.purpose === 'write' || target.purpose === 'delete' ? 'write' as const : 'read' as const,
     listing: target.purpose === 'list' || target.purpose === 'traverse',
     followFinalSymlink: target.followFinalSymlink,
-  })) : [pathExtractor?.(input)].filter((target): target is { path: string; capability: 'read' | 'write' } => target != null)
+  })) : [pathExtractor?.(input) ?? null].flat().filter((target): target is FileToolPathTarget => target != null)
     .map(target => ({ ...target, listing: name === TOOL_NAMES.LIST_DIRECTORY, followFinalSymlink: name !== TOOL_NAMES.DELETE_FILE }));
   for (const pathInfo of plannedPaths) {
     if (pathInfo) {
@@ -2582,6 +2598,9 @@ export async function executeAnyTool(
   /** Current context window usage (0-100). Scales truncation limits under pressure. */
   contextUsagePercent?: number
 ): Promise<ToolResult> {
+  // `apply_patch <<'EOF' … EOF` typed as a shell command becomes an
+  // apply_patch call while the patch tool is offered (see applyPatchCommand.ts).
+  ({ name, input } = rewriteShellApplyPatch(name, input, toolContext));
   if (toolContext || requiresHostFileOperations()) toolContext = {
     ...toolContext, files: undefined,
     operationOwner: toolContext?.operationOwner ?? captureFileOperationOwner(),

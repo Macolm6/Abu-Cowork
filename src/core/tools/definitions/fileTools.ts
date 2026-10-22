@@ -60,7 +60,7 @@ function fileChangeAfterWrite(path: string, before: TextBefore | null, after: st
  */
 const fileLocks = new Map<string, string>(); // normalized path → loopId
 
-function acquireFileLock(path: string, loopId?: string): string | null {
+export function acquireFileLock(path: string, loopId?: string): string | null {
   const normalized = path.replace(/\\/g, '/');
   const holder = fileLocks.get(normalized);
   if (holder && loopId && holder !== loopId) {
@@ -70,7 +70,7 @@ function acquireFileLock(path: string, loopId?: string): string | null {
   return null; // Lock acquired
 }
 
-function releaseFileLock(path: string): void {
+export function releaseFileLock(path: string): void {
   fileLocks.delete(path.replace(/\\/g, '/'));
 }
 
@@ -335,7 +335,7 @@ export const writeFileTool: ToolDefinition = {
  * open, and the only ways forward are for them to close it or for the edit to
  * happen inside the application instead.
  */
-function fileBusyMessage(error: unknown, path: string): string | null {
+export function fileBusyMessage(error: unknown, path: string): string | null {
   // EBUSY only. A Windows sharing violation is what an open document produces;
   // EPERM and EACCES are a real permission problem — a protected directory, an
   // ACL — and telling the user to close an application they do not have open
@@ -359,6 +359,9 @@ function fileBusyMessage(error: unknown, path: string): string | null {
 export const editFileTool: ToolDefinition = {
   name: TOOL_NAMES.EDIT_FILE,
   description: 'Edit a file via exact-match replacement. Use for partial file edits; safer than write_file. old_content must exactly match the text in the file, including whitespace and indentation.',
+  descriptionByFamily: {
+    gpt: 'Replace one block of text in an existing file. Read the file first, then copy old_content from it verbatim: the same lines, the same indentation, the same blank lines. Include enough surrounding lines for old_content to occur once in the file; a block that occurs twice is rejected. new_content is inserted in its place exactly as given. For a file that does not exist yet use write_file; for more than one change to a file make one call per change.',
+  },
   inputSchema: {
     type: 'object',
     properties: {

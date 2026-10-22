@@ -46,7 +46,7 @@ function generateId(): string {
 // --- Tool Classification ---
 
 const FILE_READ_TOOLS: string[] = [TOOL_NAMES.READ_FILE, 'read', 'get_file_contents'];
-const FILE_WRITE_TOOLS: string[] = [TOOL_NAMES.WRITE_FILE, 'write', TOOL_NAMES.EDIT_FILE, 'edit'];
+const FILE_WRITE_TOOLS: string[] = [TOOL_NAMES.WRITE_FILE, 'write', TOOL_NAMES.EDIT_FILE, 'edit', TOOL_NAMES.APPLY_PATCH];
 const FILE_CREATE_TOOLS: string[] = ['create_file', 'create'];
 const COMMAND_TOOLS: string[] = [TOOL_NAMES.RUN_COMMAND, 'bash', 'execute', 'shell'];
 const SEARCH_TOOLS: string[] = ['search', 'grep', 'find', TOOL_NAMES.WEB_SEARCH, TOOL_NAMES.SEARCH_FILES, TOOL_NAMES.FIND_FILES];

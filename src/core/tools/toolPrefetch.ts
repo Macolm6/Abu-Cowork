@@ -63,6 +63,8 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   TOOL_NAMES.READ_FILE,
   TOOL_NAMES.WRITE_FILE,
   TOOL_NAMES.EDIT_FILE,
+  // Core like edit_file; selectToolsForProfile keeps one editing style per model.
+  TOOL_NAMES.APPLY_PATCH,
   TOOL_NAMES.LIST_DIRECTORY,
   TOOL_NAMES.SEARCH_FILES,
   TOOL_NAMES.FIND_FILES,

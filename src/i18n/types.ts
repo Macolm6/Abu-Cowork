@@ -5331,6 +5331,31 @@ export interface TranslationDict {
       /** delete_file hard-refused a catastrophic target (filesystem root / home dir) — fail-closed, nothing was deleted. {path} */
       deleteRefusedCatastrophic: string;
     };
+    // apply_patch
+    patch: {
+      /** First line of a successful result; one line per file section follows. */
+      applied: string;
+      /** " (+{added} −{deleted})" appended to an updated or moved file's line. */
+      counts: string;
+      /** {path}, {counts} */
+      updatedLine: string;
+      /** {path}, {lines} */
+      addedLine: string;
+      /** {path} — the file went to the Trash. */
+      deletedLine: string;
+      /** {from}, {to}, {counts} */
+      movedLine: string;
+      /** The patch envelope could not be parsed. {error} */
+      errParse: string;
+      /** An Update or Delete section names a file that is not there. {path} */
+      errFileNotFound: string;
+      /** An Add section (or a Move destination) names a file that already exists. {path} */
+      errAddExists: string;
+      /** A hunk's context does not match the file. {path}, {error} */
+      errContext: string;
+      /** Writing failed after the patch applied in memory. {error} */
+      errApply: string;
+    };
     // send_file (IM outbound media)
     im: {
       /** send_file used outside an IM channel. */
