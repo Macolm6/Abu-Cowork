@@ -15,6 +15,7 @@ import { createLogger } from '../logging/logger';
 import { buildFullChatUrl } from './urlUtils';
 import { applyModelRequestProcessors } from './modelRequestProcessors';
 import { resolveModelProfile } from './modelProfile';
+import { rejectedCapabilities } from './rejectionMemory';
 import type { ReasoningReplay } from './model-data/families';
 import { observeCompatEvent } from '../observability/compatEvents';
 import { createDefaultUsageRecorder, type UsageAttemptRecorder } from './usageRecorder';
@@ -413,15 +414,23 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     const hasTools = !!(options.tools && options.tools.length > 0);
 
     // The profile decides every provider-specific shape below; the adapter
-    // itself never looks at the model id.
+    // itself never looks at the model id. Capabilities this model rejected in
+    // the session come from this process's memory and from the caller (the
+    // agent loop may run in another process).
+    const overrides = new Set([
+      ...rejectedCapabilities(options.accounting?.providerInstanceId, options.model),
+      ...(options.capabilityOverrides ?? []),
+    ]);
     const profile = resolveModelProfile({
       modelId: options.model,
       declared: options.declaredCapabilities,
       requestHost,
+      overrides,
     });
 
+    const supportsVision = overrides.has('image_block') ? false : options.supportsVision;
     const convertedMessages = convertMessages(
-      messages, options.systemPrompt, options.supportsVision, profile.wire.reasoningReplay,
+      messages, options.systemPrompt, supportsVision, profile.wire.reasoningReplay,
     );
     // Volatile context tail rides as the LAST message, after the whole stored
     // history: automatic prefix caching (DeepSeek/OpenAI) then keeps matching
