@@ -2054,3 +2054,134 @@ describe('本地服务的请求选项与首次回答超时', () => {
     }
   });
 });
+
+describe('runAgentLoop 模型档案的两条护栏', () => {
+  beforeAll(async () => {
+    await import('./subagentRunner');
+  });
+
+  // 工具参数修复按模型族默认值生效：deepseek 族打开，claude 族关闭
+  async function setup(modelId: string) {
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const adapters = await import('../llm/selectChatAdapter');
+    const { getToolInvoker, setToolInvoker } = await import('./ports/toolInvoker');
+    const originalInvoker = getToolInvoker();
+    const settings = useSettingsStore.getState();
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: [...p.models.filter((m) => m.id !== modelId), { id: modelId, label: modelId }] }
+          : p),
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 0; });
+    const emit = (events: StreamEvent[]) => async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+      events.forEach(onEvent);
+    };
+    const chat = vi.fn();
+    const selectAdapter = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat });
+    const tools: ToolDefinition[] = [{
+      name: 'read_file',
+      description: 'read',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'path' },
+          limit: { type: 'integer', description: 'limit' },
+        },
+        required: ['path'],
+      },
+      execute: async () => 'ok',
+    }];
+    const executeAnyTool = vi.fn(async () => '# Source');
+    setToolInvoker({ getAllTools: () => tools, toolResultToString: String, executeAnyTool });
+    const conversationId = useChatStore.getState().createConversation();
+    const restore = () => {
+      selectAdapter.mockRestore();
+      setToolInvoker(originalInvoker);
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+      vi.unstubAllGlobals();
+    };
+    const messagesOf = () => useChatStore.getState().conversations[conversationId].messages;
+    return { conversationId, chat, emit, executeAnyTool, messagesOf, restore };
+  }
+
+  const readWithStringLimit: StreamEvent[] = [
+    { type: 'tool_use', id: 'read-1', name: 'read_file', input: { path: '/ws/a.md', limit: '20' } },
+    { type: 'done', stopReason: 'tool_use' },
+  ];
+  const textOnly = (text: string): StreamEvent[] => [{ type: 'text', text }, { type: 'done', stopReason: 'end_turn' }];
+
+  it('档案打开参数修复时，数字文字在交给工具前转成数字', async () => {
+    const { conversationId, chat, emit, executeAnyTool, restore } = await setup('deepseek-chat');
+    chat.mockImplementationOnce(emit(readWithStringLimit)).mockImplementation(emit(textOnly('Read it.')));
+    try {
+      const result = await runAgentLoop(conversationId, 'read the file');
+      expect(result.reason).toBe('completed');
+      expect(executeAnyTool).toHaveBeenCalledOnce();
+      expect(executeAnyTool.mock.calls[0][1]).toEqual({ path: '/ws/a.md', limit: 20 });
+    } finally {
+      restore();
+    }
+  });
+
+  it('档案关闭参数修复时，参数原样交给工具', async () => {
+    const { conversationId, chat, emit, executeAnyTool, restore } = await setup('claude-sonnet-4-5');
+    chat.mockImplementationOnce(emit(readWithStringLimit)).mockImplementation(emit(textOnly('Read it.')));
+    try {
+      const result = await runAgentLoop(conversationId, 'read the file');
+      expect(result.reason).toBe('completed');
+      expect(executeAnyTool.mock.calls[0][1]).toEqual({ path: '/ws/a.md', limit: '20' });
+    } finally {
+      restore();
+    }
+  });
+
+  // 续推护栏首批没有型号打开，这里把档案里的开关临时打开来验证机制
+  async function withNudgeOpened<T>(run: () => Promise<T>): Promise<T> {
+    const profiles = await import('../llm/modelProfile');
+    const original = profiles.resolveModelProfile;
+    const spy = vi.spyOn(profiles, 'resolveModelProfile').mockImplementation((input) => {
+      const profile = original(input);
+      return { ...profile, harness: { ...profile.harness, guards: { ...profile.harness.guards, textOnlyEndTurnNudge: true } } };
+    });
+    try {
+      return await run();
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it('档案打开续推时，做过操作后只说不做的一轮最多被续推两次，之后照常结束', async () => {
+    const { TEXT_ONLY_END_TURN_NUDGE_MESSAGE } = await import('./textOnlyEndTurnNudge');
+    const { conversationId, chat, emit, messagesOf, restore } = await setup('deepseek-chat');
+    chat.mockImplementationOnce(emit(readWithStringLimit)).mockImplementation(emit(textOnly('Next I will edit the file.')));
+    try {
+      const result = await withNudgeOpened(() => runAgentLoop(conversationId, 'edit the file'));
+      expect(result.reason).toBe('completed');
+      // 一轮操作 + 三轮纯文字：第一、二轮纯文字各被续推一次，第三轮结束
+      expect(chat).toHaveBeenCalledTimes(4);
+      const nudges = messagesOf().filter((m) => m.role === 'user' && m.isSystem && m.content === TEXT_ONLY_END_TURN_NUDGE_MESSAGE);
+      expect(nudges).toHaveLength(2);
+      // 续写消息在第三次请求里交给了模型
+      const thirdRequest = chat.mock.calls[2][0] as Array<{ role: string; content: unknown }>;
+      expect(thirdRequest.filter((m) => m.role === 'user' && m.content === TEXT_ONLY_END_TURN_NUDGE_MESSAGE)).toHaveLength(1);
+    } finally {
+      restore();
+    }
+  });
+
+  it('档案关闭续推时（首批所有型号），只说不做的一轮照常结束', async () => {
+    const { conversationId, chat, emit, messagesOf, restore } = await setup('deepseek-chat');
+    chat.mockImplementationOnce(emit(readWithStringLimit)).mockImplementation(emit(textOnly('Next I will edit the file.')));
+    try {
+      const result = await runAgentLoop(conversationId, 'edit the file');
+      expect(result.reason).toBe('completed');
+      expect(chat).toHaveBeenCalledTimes(2);
+      expect(messagesOf().some((m) => m.role === 'user' && m.isSystem)).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+});
