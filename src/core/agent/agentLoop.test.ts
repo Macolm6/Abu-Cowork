@@ -1779,6 +1779,126 @@ describe('服务说内容太长后按真实上限恢复', () => {
   });
 });
 
+describe('请求被接口拒绝后按关掉该能力的档案重发一次', () => {
+  async function setup() {
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const adapters = await import('../llm/selectChatAdapter');
+    const { LLMError } = await import('../llm/adapter');
+    const { resetRejectionMemory, rejectedCapabilities } = await import('../llm/rejectionMemory');
+    resetRejectionMemory();
+    const settings = useSettingsStore.getState();
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: [...p.models.filter((m) => m.id !== 'llama3.2'), { id: 'llama3.2', label: 'llama3.2' }] }
+          : p),
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 0; });
+    const chat = vi.fn().mockImplementation(
+      async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+        onEvent({ type: 'text', text: 'ok' });
+        onEvent({ type: 'done', stopReason: 'end_turn' });
+      },
+    );
+    const selectAdapter = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat });
+    const rejection = () => new LLMError(
+      "Unsupported parameter: 'reasoning_effort' is not supported with this model.",
+      'invalid_request',
+      { statusCode: 400, capabilityRejection: 'reasoning_effort' },
+    );
+    const overridesOf = (call: number) =>
+      (chat.mock.calls[call][1] as { capabilityOverrides?: string[] }).capabilityOverrides ?? [];
+    const restore = () => {
+      selectAdapter.mockRestore();
+      resetRejectionMemory();
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+      vi.unstubAllGlobals();
+    };
+    return { useChatStore, chat, rejection, overridesOf, rejectedCapabilities, restore };
+  }
+
+  it('第一次被拒绝：记进拒绝记忆，带着该类别重发同一请求，这一轮正常结束', async () => {
+    const { useChatStore, chat, rejection, overridesOf, rejectedCapabilities, restore } = await setup();
+    chat.mockRejectedValueOnce(rejection());
+    try {
+      const conversationId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(conversationId, 'hello');
+
+      expect(result.reason).toBe('completed');
+      expect(chat).toHaveBeenCalledTimes(2);
+      expect(overridesOf(0)).toEqual([]);
+      expect(overridesOf(1)).toEqual(['reasoning_effort']);
+      expect([...rejectedCapabilities('ollama', 'llama3.2')]).toEqual(['reasoning_effort']);
+      expect(useChatStore.getState().conversations[conversationId].messages.at(-1)?.content).toBe('ok');
+    } finally {
+      restore();
+    }
+  });
+
+  it('重发仍被同一类别拒绝：按普通错误报告，不再重试', async () => {
+    const { useChatStore, chat, rejection, overridesOf, restore } = await setup();
+    chat.mockRejectedValueOnce(rejection()).mockRejectedValueOnce(rejection());
+    try {
+      const conversationId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(conversationId, 'hello');
+
+      expect(result.reason).toBe('error');
+      expect(chat).toHaveBeenCalledTimes(2);
+      expect(overridesOf(1)).toEqual(['reasoning_effort']);
+      expect(useChatStore.getState().conversations[conversationId].status).toBe('error');
+    } finally {
+      restore();
+    }
+  });
+
+  it('同一模型之后的运行从第一次请求起就带着记忆里的类别', async () => {
+    const { useChatStore, chat, rejection, overridesOf, restore } = await setup();
+    chat.mockRejectedValueOnce(rejection());
+    try {
+      const first = useChatStore.getState().createConversation();
+      expect((await runAgentLoop(first, 'hello')).reason).toBe('completed');
+
+      const second = useChatStore.getState().createConversation();
+      expect((await runAgentLoop(second, 'hello')).reason).toBe('completed');
+      expect(chat).toHaveBeenCalledTimes(3);
+      expect(overridesOf(2)).toEqual(['reasoning_effort']);
+    } finally {
+      restore();
+    }
+  });
+
+  it('第二次运行里又被同一类别拒绝：直接报错，只请求一次', async () => {
+    const { useChatStore, chat, rejection, restore } = await setup();
+    chat.mockRejectedValueOnce(rejection());
+    try {
+      const first = useChatStore.getState().createConversation();
+      expect((await runAgentLoop(first, 'hello')).reason).toBe('completed');
+
+      chat.mockRejectedValueOnce(rejection());
+      const second = useChatStore.getState().createConversation();
+      expect((await runAgentLoop(second, 'hello')).reason).toBe('error');
+      expect(chat).toHaveBeenCalledTimes(3);
+    } finally {
+      restore();
+    }
+  });
+
+  it('不带类别的 400 走原有路径，不重试', async () => {
+    const { useChatStore, chat, restore } = await setup();
+    const { LLMError } = await import('../llm/adapter');
+    chat.mockRejectedValueOnce(new LLMError('bad request', 'invalid_request', { statusCode: 400 }));
+    try {
+      const conversationId = useChatStore.getState().createConversation();
+      expect((await runAgentLoop(conversationId, 'hello')).reason).toBe('error');
+      expect(chat).toHaveBeenCalledTimes(1);
+    } finally {
+      restore();
+    }
+  });
+});
+
 describe('runAgentLoop pinned-model availability guard', () => {
   async function setup(mutate: (p: import('../../types/provider').ProviderInstance) => import('../../types/provider').ProviderInstance | null) {
     const { useChatStore } = await import('../../stores/chatStore');

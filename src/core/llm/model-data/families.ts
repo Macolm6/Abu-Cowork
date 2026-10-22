@@ -154,6 +154,10 @@ export interface ProfileWire {
   stripReasoningParams: boolean;
   /** The efforts the endpoint accepts; a request outside them is clamped to the nearest. */
   supportedEfforts: ReadonlyArray<'low' | 'medium' | 'high'> | null;
+  /** `reasoning_effort` leaves the request; off once the endpoint rejected the field. */
+  sendReasoningEffort: boolean;
+  /** `parallel_tool_calls` may be written; off once the endpoint rejected the field. */
+  sendParallelToolCalls: boolean;
   toolSchemaDialect: ToolSchemaDialect;
   /** `role:tool` messages carry `name` (some gateways require it). */
   toolResultName: boolean;
@@ -192,6 +196,8 @@ const BASE_WIRE: ProfileWire = {
   reasoningEffortWithTools: true,
   stripReasoningParams: false,
   supportedEfforts: null,
+  sendReasoningEffort: true,
+  sendParallelToolCalls: true,
   toolSchemaDialect: 'standard',
   toolResultName: false,
   sendTemperature: true,

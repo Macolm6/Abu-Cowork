@@ -5,8 +5,8 @@
  * read this record and never inspect a model id themselves. It is resolved per
  * field, highest precedence first:
  *
- *   model-level declaration > provider-level declaration > per-id rule
- *   > family default > generic default
+ *   session rejection memory (`overrides`) > model-level declaration
+ *   > provider-level declaration > per-id rule > family default > generic default
  *
  * for the wire and harness fields, while `capabilities` keep their own order
  * (generated table > family fallback, then the user's declaration on top,
@@ -25,6 +25,7 @@ import {
 import { applyDeclaredCapabilities } from './applyDeclaredCapabilities';
 import { resolveModelDeclared } from './resolveModelDeclared';
 import { deriveThinkingFormat } from './model-data/thinkingFormat';
+import type { CapabilityRejectionClass } from './capabilityRejection';
 import {
   FAMILY_PROFILE_DEFAULTS,
   MODEL_ID_RULES,
@@ -57,6 +58,45 @@ export interface ResolveModelProfileInput {
   /** The request URL or its host; the host picks the thinking format and the cache key. */
   baseUrl?: string;
   requestHost?: string;
+  /**
+   * Request capabilities the endpoint rejected in this session
+   * (`rejectionMemory.ts`). Applied last: each class switches its field off,
+   * whatever the declarations and the family say.
+   */
+  overrides?: Iterable<CapabilityRejectionClass>;
+}
+
+/** Switch off the field each rejected class stands for. */
+function applyCapabilityOverrides(
+  overrides: Iterable<CapabilityRejectionClass> | undefined,
+  wire: ProfileWire,
+  capabilities: ModelCapabilities & { parallelToolCalls: boolean },
+): void {
+  for (const rejected of overrides ?? []) {
+    switch (rejected) {
+      case 'thinking':
+        wire.stripReasoningParams = true;
+        break;
+      case 'reasoning_effort':
+        wire.sendReasoningEffort = false;
+        break;
+      case 'max_tokens_field':
+        wire.maxTokensField = wire.maxTokensField === 'max_tokens' ? 'max_completion_tokens' : 'max_tokens';
+        break;
+      case 'parallel_tool_calls':
+        wire.sendParallelToolCalls = false;
+        break;
+      case 'image_block':
+        capabilities.vision = false;
+        break;
+      case 'tool_schema_keyword':
+        // The gemini cleanup strips the draft-7 keywords ($schema, exclusive
+        // bounds) that strict endpoints reject; a dialect that already cleans
+        // the schema stays as it is.
+        if (wire.toolSchemaDialect === 'standard') wire.toolSchemaDialect = 'gemini';
+        break;
+    }
+  }
 }
 
 function hostOf(input: ResolveModelProfileInput): string {
@@ -123,14 +163,16 @@ export function resolveModelProfile(input: ResolveModelProfileInput): ModelProfi
     if (declared.parallelToolCalls !== undefined) parallelToolCalls = declared.parallelToolCalls;
   }
 
-  const capabilities = applyDeclaredCapabilities(resolveCapabilities(modelId), declared);
+  const capabilities = { ...applyDeclaredCapabilities(resolveCapabilities(modelId), declared), parallelToolCalls };
   const agent = resolveAgentModelCapabilities({ modelId, providerSource, declared });
+
+  applyCapabilityOverrides(input.overrides, wire, capabilities);
 
   return {
     family,
     modelId,
     providerId: input.provider?.id,
-    capabilities: { ...capabilities, parallelToolCalls },
+    capabilities,
     agent,
     wire,
     harness,
