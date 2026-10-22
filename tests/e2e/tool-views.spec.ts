@@ -29,6 +29,7 @@ import {
   READY_TIMEOUT,
   closeServer,
   startOpenAiMock,
+  taskRequests,
   waitForApp,
   type MockReplyPlan,
   type OpenAiMock,
@@ -331,17 +332,19 @@ interface SentMessage {
 
 /**
  * The result text the app sent back to the model for the `toolName` call whose
- * arguments hold `argument`, paired by the call's id in the last request.
+ * arguments hold `argument`, paired by the call's id in the last request of the
+ * turn. The memory extraction the app starts once a turn has ended is a request
+ * of its own that can arrive later, so only task requests are read.
  */
 function toolResultSent(toolName: string, argument: string): string {
-  const requests = session!.mock.requests;
+  const requests = taskRequests(session!.mock);
   const messages = ((requests.at(-1)?.body as { messages?: SentMessage[] } | undefined)?.messages) ?? [];
   const call = messages
     .flatMap((message) => (message.role === 'assistant' ? message.tool_calls ?? [] : []))
     .find((candidate) => candidate.function?.name === toolName && (candidate.function.arguments ?? '').includes(argument));
-  if (!call) throw new Error(`the last request holds no ${toolName} call with ${argument}`);
+  if (!call) throw new Error(`the last task request holds no ${toolName} call with ${argument}`);
   const result = messages.find((message) => message.role === 'tool' && message.tool_call_id === call.id);
-  if (!result) throw new Error(`the last request holds no result for ${toolName} (${String(call.id)})`);
+  if (!result) throw new Error(`the last task request holds no result for ${toolName} (${String(call.id)})`);
   return typeof result.content === 'string' ? result.content : JSON.stringify(result.content);
 }
 
