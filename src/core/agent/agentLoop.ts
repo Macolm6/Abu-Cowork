@@ -102,6 +102,12 @@ import { getI18n, getLocale, format } from '../../i18n';
 import { clearSkillHooksByLoop } from '../tools/builtins';
 import { agentToolPolicyForRoute, resolveAgentToolNames } from './agentToolPolicy';
 import { executeToolBatch } from './toolExecutor';
+import { repairToolCallsForProfile } from './toolArgumentRepair';
+import {
+  createTextOnlyEndTurnNudge,
+  TEXT_ONLY_END_TURN_NUDGE_LIMIT,
+  TEXT_ONLY_END_TURN_NUDGE_MESSAGE,
+} from './textOnlyEndTurnNudge';
 import { startConversationTrace, endConversationTrace, startGeneration } from '../observability/langfuse';
 import { calculateTurnCost } from '../llm/costTracker';
 import { formatPlannedStepsForPrompt } from './plannedStepsPrompt';
@@ -1731,6 +1737,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   let maxOutputTokensRecoveryCount = 0;
   const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
   const malformedToolCallGuard = createMalformedToolCallGuard();
+  // 只说不做的续推：计数随本次运行重置，开关按每轮的模型档案读取
+  const textOnlyEndTurnNudge = createTextOnlyEndTurnNudge();
   // 本地服务商每次运行开始问一次实际加载的长度（LM Studio 可以随时换长度重新加载，
   // Ollama 只报告已加载的模型）；用户填了「上下文长度」就不问
   let runProbedContextWindow: number | undefined;
@@ -2898,8 +2906,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           });
         }).catch(() => {});
 
+        // 按工具的 inputSchema 修复写错形状的参数（档案打开该护栏时）；修不好的
+        // 原样交给工具，由工具把错误返回给模型
+        const dispatchToolCalls = repairToolCallsForProfile(collectedToolCalls, tools, modelProfile, logger);
         const batchResult = await executeToolBatch({
-          collectedToolCalls,
+          collectedToolCalls: dispatchToolCalls,
           toolCallToStepId,
           conversationId,
           assistantMsgId,
@@ -3100,6 +3111,54 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         }
       } else {
         consecutiveNoProgress = 0;
+      }
+
+      // 只说不做的续推：做过操作的运行以纯文字的 end_turn 结束，且文字没有向用户
+      // 提问时，注入一条续写消息再跑一轮（每次运行最多两次，档案打开该护栏时才生效）
+      if (
+        !continueLoop
+        && !awaitingUserRecovery
+        && !malformedToolCallGaveUp
+        && !maxTokensRecoveryExhausted
+        && !noProgressAborted
+        && !abortController.signal.aborted
+      ) {
+        chatDelta.flushTokens(conversationId, assistantMsgId);
+        const turnContent = getConversationReader().getConversation(conversationId)
+          ?.messages.find((m) => m.id === assistantMsgId)?.content ?? '';
+        const turnText = typeof turnContent === 'string'
+          ? turnContent
+          : turnContent.map((block) => (block.type === 'text' ? block.text : '')).join('');
+        const nudge = textOnlyEndTurnNudge.observeTurn({
+          enabled: modelProfile.harness.guards.textOnlyEndTurnNudge,
+          stopReason: lastStopReason,
+          toolCalls: collectedToolCalls,
+          text: turnText,
+        });
+        if (nudge) {
+          logger.info('Text-only end_turn nudge', {
+            attempt: textOnlyEndTurnNudge.count,
+            limit: TEXT_ONLY_END_TURN_NUDGE_LIMIT,
+          });
+          chatDelta.setMessageStreamingFlag(conversationId, assistantMsgId, false);
+          chatDelta.addMessage(conversationId, {
+            id: generateId(),
+            role: 'user' as const,
+            content: TEXT_ONLY_END_TURN_NUDGE_MESSAGE,
+            timestamp: Date.now(),
+            loopId,
+            isSystem: true as const,
+          });
+          continueLoop = true;
+        }
+      } else {
+        // 本轮要继续或者已经按别的原因结束：只记录这一轮有没有操作，供后面的轮次判断
+        textOnlyEndTurnNudge.observeTurn({
+          enabled: false,
+          stopReason: lastStopReason,
+          toolCalls: collectedToolCalls,
+          text: '',
+        });
       }
 
       // Internal wake-ups (for example background-agent results) still belong
