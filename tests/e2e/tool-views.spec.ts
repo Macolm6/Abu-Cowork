@@ -311,9 +311,12 @@ async function openView(page: Page, title: string, kind: StepViewKind): Promise<
   return { row, view };
 }
 
-/** The step's title line shows the failure style. */
-async function expectFailureStyle(page: Page, title: string): Promise<void> {
-  await expect(stepTitle(page, title).locator('xpath=..')).toHaveClass(/\btext-danger\b/);
+/** The view shows `reason` as failure text. */
+async function expectFailureText(view: Locator, reason: string): Promise<void> {
+  const failure = view.locator('[data-tool-result]');
+  await expect(failure).toHaveCount(1);
+  await expect(failure).toContainText(reason);
+  await expect(failure).toHaveClass(/\btext-danger\b/);
 }
 
 interface SentMessage {
@@ -345,8 +348,14 @@ async function firstLineNumber(view: Locator): Promise<string> {
     .evaluate((element) => (element.textContent ?? '').split('\n')[0]);
 }
 
-/** Quit the app, run `whileClosed`, start the app again and open the conversation. */
-async function reopenConversation(whileClosed: () => void = () => {}): Promise<Page> {
+/**
+ * Quit the app, run `whileClosed`, start the app again and open the
+ * conversation; `shown` is what the opened conversation shows once it is there.
+ */
+async function reopenConversation(
+  whileClosed: () => void = () => {},
+  shown: (page: Page) => Locator = (opened) => opened.getByText(FINAL_TEXT),
+): Promise<Page> {
   const current = session!;
   await closeAbuElectron(current.app);
   whileClosed();
@@ -362,7 +371,7 @@ async function reopenConversation(whileClosed: () => void = () => {}): Promise<P
   if (await showSidebar.isVisible()) await showSidebar.click();
   await project.click();
   await reopened.getByRole('button', { name: new RegExp(`^${PROMPT}`) }).click();
-  await expect(reopened.getByText(FINAL_TEXT)).toBeVisible();
+  await expect(shown(reopened)).toBeVisible();
   return reopened;
 }
 
@@ -442,7 +451,7 @@ test.describe('story 1, a command that has not ended', () => {
   test.describe.configure({ timeout: 300_000 });
   test.afterEach(endSession);
 
-  test('when the user opens a running command it shows 运行中…, and after 停止 the row says 已停止 and the view holds the command only', async () => {
+  test('when the user opens a running command it shows 运行中…, and after 停止, also after a restart, the row says 已停止 and the view holds the command only', async () => {
     const page = await launchInProject(() => [commandCall('call-sleep', SLEEP)]);
     await send(page);
     const title = commandTitle(SLEEP);
@@ -454,13 +463,38 @@ test.describe('story 1, a command that has not ended', () => {
     const stop = page.getByLabel(/^停止$/);
     await stop.click();
     await expect(stop).toBeHidden({ timeout: READY_TIMEOUT });
-    await showSteps(page);
-    const { row, view } = await openView(page, title, 'command');
-    await expect(view).toContainText(SLEEP);
-    await expect(view.getByText('运行中…', { exact: true })).toHaveCount(0);
-    await expect(view.getByText('没有输出', { exact: true })).toHaveCount(0);
-    await expect(view.locator('[data-tool-result]')).toHaveCount(0);
-    await expect(row.getByRole('status', { name: '已停止' })).toBeVisible();
+    const expectStopped = async (shownPage: Page) => {
+      await showSteps(shownPage);
+      const { row, view } = await openView(shownPage, title, 'command');
+      await expect(view).toContainText(SLEEP);
+      await expect(view.getByText('运行中…', { exact: true })).toHaveCount(0);
+      await expect(view.getByText('没有输出', { exact: true })).toHaveCount(0);
+      await expect(view.locator('[data-tool-result]')).toHaveCount(0);
+      await expect(row.getByRole('status', { name: '已停止' })).toBeVisible();
+      await expect(shownPage.getByText('执行出错', { exact: true })).toHaveCount(0);
+    };
+    await expectStopped(page);
+
+    const reopened = await reopenConversation(
+      () => {},
+      (opened) => opened.getByRole('button', { name: /^你在 .* 后停止了/ }).first(),
+    );
+    await expectStopped(reopened);
+  });
+
+  test('while the turn runs, a command that ended says 命令已结束：', async () => {
+    const page = await launchInProject(() => [
+      commandCall('call-failing', FAILING),
+      { kind: 'hold-open', partialText: '' },
+    ]);
+    await send(page);
+    const row = stepRow(page, commandTitle(FAILING));
+    await expect(row.locator('[data-exit-code="1"]')).toHaveText('退出码 1', { timeout: REPLY_TIMEOUT });
+    await expect(row.getByText(/^命令已结束：/)).toBeVisible();
+
+    const stop = page.getByLabel(/^停止$/);
+    await stop.click();
+    await expect(stop).toBeHidden({ timeout: READY_TIMEOUT });
   });
 
   test('when the user opens a command started in the background, the view holds the command only', async () => {
@@ -525,12 +559,11 @@ test.describe('story 2', () => {
     await expect(view.locator('pre[data-line-numbers]')).toHaveCount(0);
   });
 
-  test('when a file does not exist, the step shows the failure style and the view holds the failure text', async () => {
+  test('when a file does not exist, the view holds the failure text in the failure style', async () => {
     const { view } = await openView(page, '读取 missing.ts', 'file-read');
     const reason = toolResultSent('read_file', 'missing.ts').replace(/^Error reading file: /, '');
     expect(reason).toContain('missing.ts');
-    await expect(view).toContainText(reason);
-    await expectFailureStyle(page, '读取 missing.ts');
+    await expectFailureText(view, reason);
   });
 
   test('when the user opens a read of a file over 256 KB, the view shows the too-large notice as written, without line numbers', async () => {
@@ -659,13 +692,11 @@ test.describe('story 4', () => {
     await expect(view.locator('[data-tool-result]')).toContainText(MISSING_BODY);
   });
 
-  test('when the request itself fails, the step shows the failure style and the view holds the failure text', async () => {
-    const title = '读取网页 abu-e2e-no-such-host.invalid/';
-    const { view } = await openView(page, title, 'web-fetch');
+  test('when the request itself fails, the view holds the failure text in the failure style', async () => {
+    const { view } = await openView(page, '读取网页 abu-e2e-no-such-host.invalid/', 'web-fetch');
     const reason = toolResultSent('http_fetch', UNKNOWN_HOST_URL).replace(/^Error making HTTP request: /, '');
     expect(reason.length).toBeGreaterThan(0);
-    await expect(view).toContainText(reason);
-    await expectFailureStyle(page, title);
+    await expectFailureText(view, reason);
   });
 
   test('when the user opens a web search with 8 results, the view lists all 8 with the links of the sources below the reply', async () => {
@@ -712,10 +743,9 @@ test.describe('after a restart', () => {
   test('when the user opens the exit-code-1 command after a restart, the row still says 退出码 1 and the view keeps the two outputs apart', async () => {
     const title = commandTitle(FAILING);
     await expect(stepRow(page, title).locator('[data-exit-code="1"]')).toHaveText('退出码 1');
-    const { row, view } = await openView(page, title, 'command');
+    const { view } = await openView(page, title, 'command');
     await expect(view.getByText('错误输出', { exact: true })).toBeVisible();
     await expect(view.locator('[data-tool-result]').nth(1)).toHaveText('went wrong');
-    await expect(row.getByText(/^命令已结束：/)).toBeVisible();
   });
 
   test('when the user opens the read of lines 200 to 299 after a restart, the view still says 第 200–299 行，共 1500 行', async () => {
