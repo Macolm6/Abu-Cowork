@@ -331,6 +331,12 @@ function redactToolCall(
     const r = redactText(out.result);
     onRedaction(r);
     out.result = r.text;
+    // The records hold positions into the result text, so they are kept only while that text is unchanged.
+    if (r.count > 0) {
+      delete out.commandOutcome;
+      delete out.fileReadOutcome;
+      delete out.httpFetchOutcome;
+    }
   } else if (out.result !== undefined) {
     const r = redactDeep(out.result);
     onRedaction({ count: r.count, samples: r.samples });
