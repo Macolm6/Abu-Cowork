@@ -55,8 +55,17 @@ function noteText(row: Extract<ToolResultRow, { kind: 'note' }>, t: TranslationD
   return format(template, { count: row.count ?? 0 });
 }
 
+/** A note row of a result on a line of its own. */
+export function ResultNote({ row, t }: { row: Extract<ToolResultRow, { kind: 'note' }>; t: TranslationDict }) {
+  return (
+    <div data-tool-result-note className="my-1 text-caption text-label-tertiary">
+      {noteText(row, t)}
+    </div>
+  );
+}
+
 /** Result rows: runs of the result's own lines in one `<pre>` each, a note on a line of its own. */
-function ResultRows({ rows, t }: { rows: readonly ToolResultRow[]; t: TranslationDict }) {
+export function ResultRows({ rows, t }: { rows: readonly ToolResultRow[]; t: TranslationDict }) {
   const groups: ({ kind: 'text'; lines: string[] } | Extract<ToolResultRow, { kind: 'note' }>)[] = [];
   for (const row of rows) {
     const last = groups.at(-1);
@@ -69,9 +78,7 @@ function ResultRows({ rows, t }: { rows: readonly ToolResultRow[]; t: Translatio
       {groups.map((group, index) => (group.kind === 'text' ? (
         <pre key={index} className="m-0 whitespace-pre-wrap break-all font-code text-mono">{group.lines.join('\n')}</pre>
       ) : (
-        <div key={index} data-tool-result-note className="my-1 text-caption text-label-tertiary">
-          {noteText(group, t)}
-        </div>
+        <ResultNote key={index} row={group} t={t} />
       )))}
     </>
   );
