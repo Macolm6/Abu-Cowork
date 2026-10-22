@@ -187,9 +187,14 @@ function commandTitle(command: string): string {
 // The app
 // ---------------------------------------------------------------------------
 
-async function shot(page: Page, name: string): Promise<void> {
+/** Save the window as `name`, with `focus` scrolled into view first when given. */
+async function shot(page: Page, name: string, focus?: Locator): Promise<void> {
   if (!SCREENSHOT_DIR) return;
   fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
+  if (focus) {
+    await focus.scrollIntoViewIfNeeded();
+    await waitUntilAtRest(focus);
+  }
   await page.screenshot({ path: path.join(SCREENSHOT_DIR, `tool-views-${name}.png`), animations: 'disabled' });
 }
 
@@ -399,6 +404,7 @@ test.describe('story 1', () => {
     ]);
     await runTurn(page);
     await showSteps(page);
+    await shot(page, '00-command-rows', stepTitle(page, commandTitle(THIRTY_LINES)));
   });
   test.afterAll(endSession);
 
@@ -408,7 +414,7 @@ test.describe('story 1', () => {
     await expect(view.getByRole('button', { name: '复制', exact: true })).toBeVisible();
     await expect(view.getByText('输出', { exact: true })).toBeVisible();
     await expect(view.getByText('line 15', { exact: true })).toHaveCount(0);
-    await shot(page, '01-command-folded');
+    await shot(page, '01-command-folded', view);
     await view.getByRole('button', { name: '显示全部 30 行', exact: true }).click();
     await expect(view.locator('[data-tool-result]')).toContainText('line 15');
     await expect(row.locator('[data-exit-code]')).toHaveCount(0);
@@ -426,7 +432,7 @@ test.describe('story 1', () => {
     await expect(sections.nth(1)).toHaveText('went wrong');
     await expect(sections.nth(1)).toHaveClass(/\btext-danger\b/);
     await expect(row.locator('[data-exit-code]')).toHaveCount(1);
-    await shot(page, '02-command-exit-1');
+    await shot(page, '02-command-exit-1', view);
   });
 
   test('when the user opens a command that printed nothing, the view says 没有输出', async () => {
@@ -458,12 +464,12 @@ test.describe('story 1, a command that has not ended', () => {
     await expect(stepTitle(page, title)).toBeVisible({ timeout: REPLY_TIMEOUT });
     const running = await openView(page, title, 'command');
     await expect(running.view.getByText('运行中…', { exact: true })).toBeVisible();
-    await shot(page, '03-command-running');
+    await shot(page, '03-command-running', running.view);
 
     const stop = page.getByLabel(/^停止$/);
     await stop.click();
     await expect(stop).toBeHidden({ timeout: READY_TIMEOUT });
-    const expectStopped = async (shownPage: Page) => {
+    const expectStopped = async (shownPage: Page, shotName: string) => {
       await showSteps(shownPage);
       const { row, view } = await openView(shownPage, title, 'command');
       await expect(view).toContainText(SLEEP);
@@ -472,14 +478,15 @@ test.describe('story 1, a command that has not ended', () => {
       await expect(view.locator('[data-tool-result]')).toHaveCount(0);
       await expect(row.getByRole('status', { name: '已停止' })).toBeVisible();
       await expect(shownPage.getByText('执行出错', { exact: true })).toHaveCount(0);
+      await shot(shownPage, shotName, row);
     };
-    await expectStopped(page);
+    await expectStopped(page, '03-command-stopped');
 
     const reopened = await reopenConversation(
       () => {},
       (opened) => opened.getByRole('button', { name: /^你在 .* 后停止了/ }).first(),
     );
-    await expectStopped(reopened);
+    await expectStopped(reopened, '03-command-stopped-after-restart');
   });
 
   test('while the turn runs, a command that ended says 命令已结束：', async () => {
@@ -535,6 +542,7 @@ test.describe('story 2', () => {
     });
     await runTurn(page);
     await showSteps(page);
+    await shot(page, '04-file-read-rows', stepTitle(page, '读取 app.ts'));
   });
   test.afterAll(endSession);
 
@@ -543,7 +551,7 @@ test.describe('story 2', () => {
     await expect(view.getByText('共 120 行', { exact: true })).toBeVisible();
     expect(await firstLineNumber(view)).toBe('1');
     await expect(view.getByRole('button', { name: '显示全部 120 行', exact: true })).toBeVisible();
-    await shot(page, '04-file-read');
+    await shot(page, '04-file-read', view);
   });
 
   test('when the user opens a read of lines 200 to 299, the view says 第 200–299 行，共 1500 行 and numbers the lines from 200', async () => {
@@ -551,6 +559,7 @@ test.describe('story 2', () => {
     await expect(view.getByText('第 200–299 行，共 1500 行', { exact: true })).toBeVisible();
     expect(await firstLineNumber(view)).toBe('200');
     await expect(view).toContainText('big line 200');
+    await shot(page, '04-file-read-range', view);
   });
 
   test('when the user opens a read of a PDF, the view shows the extracted text without line numbers', async () => {
@@ -564,6 +573,7 @@ test.describe('story 2', () => {
     const reason = toolResultSent('read_file', 'missing.ts').replace(/^Error reading file: /, '');
     expect(reason).toContain('missing.ts');
     await expectFailureText(view, reason);
+    await shot(page, '04-file-read-failed', view);
   });
 
   test('when the user opens a read of a file over 256 KB, the view shows the too-large notice as written, without line numbers', async () => {
@@ -593,6 +603,7 @@ test.describe('story 3', () => {
     ]);
     await runTurn(page);
     await showSteps(page);
+    await shot(page, '05-search-find-list-rows', stepTitle(page, '搜索 "useEffect"'));
   });
   test.afterAll(endSession);
 
@@ -604,7 +615,7 @@ test.describe('story 3', () => {
     await expect(groups).toHaveCount(4);
     const groupNames = (await groups.allInnerTexts()).map((name) => path.basename(name.replace(/\s+/g, ' ').trim()));
     expect(groupNames.sort()).toEqual(['hook1.ts 5 处', 'hook2.ts 4 处', 'hook3.ts 4 处', 'hook4.ts 4 处']);
-    await shot(page, '05-search');
+    await shot(page, '05-search', view);
     await expect(groups.nth(0)).toHaveAttribute('aria-expanded', 'true');
     await groups.nth(0).click();
     await expect(groups.nth(0)).toHaveAttribute('aria-expanded', 'false');
@@ -626,6 +637,7 @@ test.describe('story 3', () => {
     await expect(view.getByText('23 个文件', { exact: true })).toBeVisible();
     await expect(view.getByRole('button', { name: '显示全部 23 行', exact: true })).toBeVisible();
     await expect(view.getByText(/case\d+\.test\.ts$/)).toHaveCount(9);
+    await shot(page, '05-find', view);
   });
 
   test('when the user opens a listing of a folder with 12 entries, the view says 12 个条目', async () => {
@@ -634,6 +646,7 @@ test.describe('story 3', () => {
     await expect(view).toContainText('file1.txt');
     await expect(view).toContainText('folder4');
     await expect(view.getByRole('button', { name: '显示全部 12 行', exact: true })).toBeVisible();
+    await shot(page, '05-list', view);
   });
 
   test('when the user opens a listing of an empty folder, the view says 这个文件夹是空的', async () => {
@@ -665,6 +678,7 @@ test.describe('story 4', () => {
     });
     await runTurn(page);
     await showSteps(page);
+    await shot(page, '06-web-rows', stepTitle(page, `读取网页 ${host}/page`));
   });
   test.afterAll(endSession);
 
@@ -677,12 +691,13 @@ test.describe('story 4', () => {
     const { view } = await openView(page, title, 'web-fetch');
     await expect(view.locator('[data-http-status-line]')).toHaveText('200 OK');
     await expect(view.locator('[data-tool-result]')).toContainText('page line 1');
-    await shot(page, '06-web-fetch');
+    await shot(page, '06-web-fetch', view);
   });
 
   test('when the page text was cut, the view says 内容已截断', async () => {
     const { view } = await openView(page, `读取网页 ${host}/long`, 'web-fetch');
     await expect(view.locator('[data-http-status-line]')).toContainText('内容已截断');
+    await shot(page, '06-web-fetch-cut', view);
   });
 
   test('when the page answers 404, the row says 404 and the view shows the page text', async () => {
@@ -690,6 +705,7 @@ test.describe('story 4', () => {
     await expect(stepRow(page, title).locator('[data-http-status="404"]')).toHaveText('404');
     const { view } = await openView(page, title, 'web-fetch');
     await expect(view.locator('[data-tool-result]')).toContainText(MISSING_BODY);
+    await shot(page, '06-web-fetch-404', view);
   });
 
   test('when the request itself fails, the view holds the failure text in the failure style', async () => {
@@ -697,12 +713,14 @@ test.describe('story 4', () => {
     const reason = toolResultSent('http_fetch', UNKNOWN_HOST_URL).replace(/^Error making HTTP request: /, '');
     expect(reason.length).toBeGreaterThan(0);
     await expectFailureText(view, reason);
+    await shot(page, '06-web-fetch-failed', view);
   });
 
   test('when the user opens a web search with 8 results, the view lists all 8 with the links of the sources below the reply', async () => {
     const { view } = await openView(page, `网页搜索 "${SEARCH_QUERY}"`, 'web-search');
     const links = view.locator('a[target="_blank"]');
     await expect(links).toHaveCount(8);
+    await shot(page, '07-web-search', view);
     const viewLinks = await links.evaluateAll((anchors) => anchors.map((anchor) => anchor.getAttribute('href')));
     await page.getByRole('button', { name: /^来源/ }).click();
     const sources = page.locator('[data-source-index]');
@@ -710,7 +728,7 @@ test.describe('story 4', () => {
     const sourceLinks = await sources.evaluateAll((anchors) => anchors.map((anchor) => anchor.getAttribute('href')));
     expect(new Set(viewLinks)).toEqual(new Set(sourceLinks));
     expect(new Set(viewLinks)).toEqual(new Set(SEARCH_RESULTS.map((result) => result.url)));
-    await shot(page, '07-web-search');
+    await shot(page, '07-web-search-sources', sources.first());
   });
 });
 
