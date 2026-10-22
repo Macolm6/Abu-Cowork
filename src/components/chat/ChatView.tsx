@@ -104,12 +104,11 @@ import {
   canArmTurnScrollAnchor,
   exitTurnScrollAnchor,
   findUserMessageAnchor,
-  getAnchorScrollCorrection,
   isAtBottomFromGeometry,
   isChapterRailAtBottom,
-  reclaimTurnSpacerSurplus,
-  reconcileTurnScrollAnchor,
+  resolveTurnAnchorLayout,
   selectLatestUserAnchor,
+  settleTurnScrollAnchor,
   shouldFollowOutput,
   type TurnScrollAnchor,
   type TurnScrollAnchorExitReason,
@@ -128,7 +127,6 @@ interface MessageListContext {
   showTypingIndicator: boolean;
   retryingLabel: string | null;
   thinkingLabel: string;
-  registerTurnSpacer: (element: HTMLDivElement | null) => void;
 }
 
 // Row wrapper for each virtualized message group. Spacing between groups
@@ -170,21 +168,12 @@ const VirtuosoTypingFooter: NonNullable<Components<Message[], MessageListContext
   // bridges the item-pad vs in-group-gap difference — see chatSpacing.ts.
   const footerConv = useActiveConversation();
   const footerLeader = useConversationTeamLeader(footerConv?.id);
+  if (!context?.showTypingIndicator) return null;
   return (
-    <>
-      {context?.showTypingIndicator && (
-        <div className={cn(TYPING_FOOTER_GAP_COMPENSATION, 'flex gap-3')}>
-          <AssistantRowAvatar avatar={footerLeader ? <AgentAvatar agent={footerLeader.leader} size="md" round /> : undefined} name={footerLeader?.leaderName} />
-          <ThinkingStatusLine label={context.retryingLabel ?? context.thinkingLabel} />
-        </div>
-      )}
-      <div
-        ref={context?.registerTurnSpacer}
-        data-turn-bottom-spacer
-        aria-hidden="true"
-        style={{ height: 0 }}
-      />
-    </>
+    <div className={cn(TYPING_FOOTER_GAP_COMPENSATION, 'flex gap-3')}>
+      <AssistantRowAvatar avatar={footerLeader ? <AgentAvatar agent={footerLeader.leader} size="md" round /> : undefined} name={footerLeader?.leaderName} />
+      <ThinkingStatusLine label={context.retryingLabel ?? context.thinkingLabel} />
+    </div>
   );
 };
 
@@ -462,40 +451,49 @@ export default function ChatView({
   // those measurements through React state would add another render/measure
   // loop on top of Virtuoso's own one.
   const turnAnchorRef = useRef<TurnScrollAnchor | null>(null);
+  // Render mirror of "the anchor holds", for Virtuoso's `followOutput` prop.
+  // Any value but a literal `false` keeps Virtuoso's own bottom-stick active
+  // (it scrolls the list end into view when it sees the list grow while not at
+  // its bottom), and a held turn keeps the list end above the viewport bottom.
+  const [turnAnchorHolds, setTurnAnchorHolds] = useState(false);
+  const commitTurnAnchor = useCallback((anchor: TurnScrollAnchor | null) => {
+    turnAnchorRef.current = anchor;
+    setTurnAnchorHolds(anchor?.phase === 'armed');
+  }, []);
   const pendingTurnAnchorRef = useRef<PendingTurnAnchor | null>(null);
   // The conversation whose first message was sent from the new-task page and has not replaced
   // that page with the chat page yet.
   const firstMessageOfRef = useRef<string | null>(null);
+  // The scrolled content holds the active turn's minimum height; the filler
+  // after the list shows the part of that hold the list does not cover yet.
+  // Both sit outside Virtuoso: its root carries an explicit height from its
+  // own model, so anything inside it reaches scrollHeight a frame late.
+  const turnContentElementRef = useRef<HTMLDivElement | null>(null);
   const turnSpacerElementRef = useRef<HTMLDivElement | null>(null);
-  const turnSpacerHeightRef = useRef(0);
-  /** scrollHeight the last spacer-surplus reclaim expects once Virtuoso
-   *  applies the shrink — further reclaims wait for this catch-up because the
-   *  measured gap is stale until then (see reclaimTurnSpacerSurplus). */
-  const reclaimSettleScrollHeightRef = useRef<number | null>(null);
+  const turnMinContentHeightRef = useRef(0);
   const armAnchorRafRef = useRef(0);
   const runningConversationRef = useRef<string | null>(null);
   const dismissedTurnAnchorRef = useRef<{ conversationId: string; messageId: string } | null>(null);
-  const writeTurnSpacerHeight = useCallback((height: number) => {
+  const writeTurnMinContentHeight = useCallback((height: number) => {
     const nextHeight = Number.isFinite(height) ? Math.max(0, height) : 0;
-    turnSpacerHeightRef.current = nextHeight;
-    const element = turnSpacerElementRef.current;
+    turnMinContentHeightRef.current = nextHeight;
+    const element = turnContentElementRef.current;
     if (!element) return;
-    element.style.height = `${nextHeight}px`;
-    element.dataset.spacerHeight = String(nextHeight);
+    element.style.minHeight = nextHeight > 0 ? `${nextHeight}px` : '';
   }, []);
-  const writeTurnSpacerWithCompensation = useCallback((
+  const writeTurnMinContentHeightWithCompensation = useCallback((
     element: HTMLElement | null,
     height: number,
     mode: 'preserve-position' | 'sync-bottom',
   ) => {
-    const previousHeight = turnSpacerHeightRef.current;
+    const previousHeight = turnMinContentHeightRef.current;
     const previousScrollTop = element?.scrollTop ?? 0;
-    writeTurnSpacerHeight(height);
+    writeTurnMinContentHeight(height);
     if (!element || height !== 0 || previousHeight === 0) return;
 
-    // Clearing physical spacer can clamp scrollTop immediately. Pair the DOM
-    // write with an explicit scroll decision in this layout pass so no later
-    // Virtuoso height callback can deliver the old one-frame hard jump.
+    // Releasing the hold can clamp scrollTop immediately. Pair the DOM write
+    // with an explicit scroll decision in this layout pass so no later
+    // Virtuoso height callback can deliver a one-frame hard jump.
     void element.scrollHeight;
     if (mode === 'sync-bottom') {
       element.scrollTop = element.scrollHeight;
@@ -503,127 +501,85 @@ export default function ChatView({
     }
     const maximumScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
     element.scrollTop = Math.min(previousScrollTop, maximumScrollTop);
-  }, [writeTurnSpacerHeight]);
-  const registerTurnSpacer = useCallback((element: HTMLDivElement | null) => {
-    turnSpacerElementRef.current = element;
+  }, [writeTurnMinContentHeight]);
+  const registerTurnContent = useCallback((element: HTMLDivElement | null) => {
+    turnContentElementRef.current = element;
     if (!element) return;
-    element.style.height = `${turnSpacerHeightRef.current}px`;
-    element.dataset.spacerHeight = String(turnSpacerHeightRef.current);
+    const height = turnMinContentHeightRef.current;
+    element.style.minHeight = height > 0 ? `${height}px` : '';
   }, []);
   const readTurnSpacerHeight = useCallback(() => {
     const element = turnSpacerElementRef.current;
-    return element ? element.getBoundingClientRect().height : turnSpacerHeightRef.current;
+    return element ? element.getBoundingClientRect().height : 0;
   }, []);
-  const measureActiveTailHeight = useCallback((anchorElement: HTMLElement) => {
-    const messageRow = anchorElement.closest<HTMLElement>('[data-index]');
-    const spacerElement = turnSpacerElementRef.current;
-    if (!messageRow || !spacerElement) return null;
-    // Both values come from the same painted coordinate space. Unlike
-    // Virtuoso's total-height callback versus the scroll parent's scrollHeight,
-    // their difference cannot feed the spacer's own height back into the next
-    // measurement. The spacer's top also captures footer/typing hand-offs while
-    // excluding the spacer height itself.
-    return Math.max(
-      0,
-      spacerElement.getBoundingClientRect().top - messageRow.getBoundingClientRect().top,
-    );
-  }, []);
+  const handOffTurnAnchorToBottom = useCallback((
+    el: HTMLElement,
+    anchor: TurnScrollAnchor,
+    totalListHeight?: number,
+  ) => {
+    commitTurnAnchor({ ...anchor, phase: 'exhausted', minContentHeight: 0 });
+    const previousScrollTop = el.scrollTop;
+    writeTurnMinContentHeight(0);
+    void el.scrollHeight;
+    el.scrollTop = el.scrollHeight;
+    emitChatScrollTrace('turn-anchor', 'applied', el, {
+      totalListHeight,
+      scrollDelta: el.scrollTop - previousScrollTop,
+      spacerHeight: readTurnSpacerHeight(),
+      minContentHeight: 0,
+    });
+    updatePinned(true);
+    setIsAtBottom(true);
+  }, [commitTurnAnchor, readTurnSpacerHeight, updatePinned, writeTurnMinContentHeight]);
   const reconcileActiveTurnGeometry = useCallback((el: HTMLElement, totalListHeight?: number) => {
     const anchor = turnAnchorRef.current;
     if (anchor?.phase !== 'armed') return;
     const anchorElement = findUserMessageAnchor(el, anchor.messageId);
-    const contentHeight = anchorElement ? measureActiveTailHeight(anchorElement) : null;
-    const reconciled = reconcileTurnScrollAnchor(anchor, {
-      contentHeight: contentHeight ?? anchor.baselineContentHeight,
-      anchorPresent: anchorElement != null,
+    const content = turnContentElementRef.current;
+    if (!anchorElement || !content) {
+      handOffTurnAnchorToBottom(el, anchor, totalListHeight);
+      return;
+    }
+    const viewportTop = el.getBoundingClientRect().top;
+    const anchorTop = anchorElement.getBoundingClientRect().top - viewportTop;
+    const layout = resolveTurnAnchorLayout({
+      targetTop: anchor.targetTop,
+      anchorTop,
+      contentTop: content.getBoundingClientRect().top - viewportTop,
+      scrollTop: el.scrollTop,
+      clientHeight: el.clientHeight,
     });
-    turnAnchorRef.current = reconciled.anchor;
-    if (reconciled.handoff === 'sync-bottom') {
-      const previousScrollTop = el.scrollTop;
-      writeTurnSpacerWithCompensation(el, 0, 'sync-bottom');
-      emitChatScrollTrace('turn-anchor', 'applied', el, {
-        totalListHeight,
-        scrollDelta: el.scrollTop - previousScrollTop,
-        spacerHeight: 0,
-        contentHeight: reconciled.contentHeight,
-        baselineContentHeight: anchor.baselineContentHeight,
-      });
-      updatePinned(true);
-      setIsAtBottom(true);
+    writeTurnMinContentHeight(layout.minContentHeight);
+    const settled = settleTurnScrollAnchor(anchor, {
+      minContentHeight: layout.minContentHeight,
+      fillerHeight: readTurnSpacerHeight(),
+    });
+    if (settled.phase === 'exhausted') {
+      handOffTurnAnchorToBottom(el, anchor, totalListHeight);
       return;
     }
-    writeTurnSpacerHeight(reconciled.spacerHeight);
-    if (!anchorElement) return;
-
-    const currentTop = anchorElement.getBoundingClientRect().top - el.getBoundingClientRect().top;
-    const correction = getAnchorScrollCorrection(anchor.targetTop, currentTop);
-    if (correction !== 0) {
-      const previousScrollTop = el.scrollTop;
-      emitChatScrollTrace('turn-anchor', 'scheduled', el, {
-        totalListHeight,
-        anchorTop: currentTop,
-        spacerHeight: reconciled.spacerHeight,
-        contentHeight: reconciled.contentHeight,
-        baselineContentHeight: anchor.baselineContentHeight,
-      });
-      el.scrollTop += correction;
-      emitChatScrollTrace('turn-anchor', 'applied', el, {
-        totalListHeight,
-        scrollDelta: el.scrollTop - previousScrollTop,
-        anchorTop: anchorElement.getBoundingClientRect().top - el.getBoundingClientRect().top,
-        spacerHeight: readTurnSpacerHeight(),
-        contentHeight: measureActiveTailHeight(anchorElement) ?? undefined,
-        baselineContentHeight: anchor.baselineContentHeight,
-      });
-    }
-
-    // With the anchor pinned at targetTop, any scroll range still left below
-    // is spacer ledger that never corresponded to missing range (the arm's
-    // settlement spreads over frames — see reclaimTurnSpacerSurplus). Return
-    // it by shrinking the spacer; the viewport does not move.
-    const settled = turnAnchorRef.current;
-    if (settled?.phase !== 'armed') return;
-    if (reclaimSettleScrollHeightRef.current != null) {
-      // The previous reclaim's shrink reaches scrollHeight only on Virtuoso's
-      // next height pass; until then the measured gap still carries the
-      // reclaimed pixels and re-reclaiming would drain the spacer.
-      if (el.scrollHeight > reclaimSettleScrollHeightRef.current) return;
-      reclaimSettleScrollHeightRef.current = null;
-    }
-    const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    const reclaim = reclaimTurnSpacerSurplus(settled, distanceToBottom);
-    if (reclaim.reclaimed === 0) return;
-    reclaimSettleScrollHeightRef.current = el.scrollHeight - reclaim.reclaimed;
-    turnAnchorRef.current = reclaim.anchor;
-    if (reclaim.anchor.phase === 'exhausted') {
-      const previousScrollTop = el.scrollTop;
-      writeTurnSpacerWithCompensation(el, 0, 'sync-bottom');
-      emitChatScrollTrace('turn-anchor', 'applied', el, {
-        totalListHeight,
-        scrollDelta: el.scrollTop - previousScrollTop,
-        spacerHeight: 0,
-        contentHeight: reconciled.contentHeight,
-        baselineContentHeight: anchor.baselineContentHeight,
-      });
-      updatePinned(true);
-      setIsAtBottom(true);
-      return;
-    }
-    writeTurnSpacerHeight(reclaim.spacerHeight);
+    commitTurnAnchor(settled);
+    if (layout.scrollCorrection === 0) return;
+    const previousScrollTop = el.scrollTop;
+    emitChatScrollTrace('turn-anchor', 'scheduled', el, {
+      totalListHeight,
+      anchorTop,
+      spacerHeight: readTurnSpacerHeight(),
+      minContentHeight: layout.minContentHeight,
+    });
+    el.scrollTop += layout.scrollCorrection;
     emitChatScrollTrace('turn-anchor', 'applied', el, {
       totalListHeight,
-      scrollDelta: 0,
+      scrollDelta: el.scrollTop - previousScrollTop,
       anchorTop: anchorElement.getBoundingClientRect().top - el.getBoundingClientRect().top,
       spacerHeight: readTurnSpacerHeight(),
-      contentHeight: measureActiveTailHeight(anchorElement) ?? undefined,
-      baselineContentHeight: reclaim.anchor.baselineContentHeight,
+      minContentHeight: layout.minContentHeight,
     });
   }, [
-    measureActiveTailHeight,
+    commitTurnAnchor,
+    handOffTurnAnchorToBottom,
     readTurnSpacerHeight,
-    updatePinned,
-    writeTurnSpacerHeight,
-    writeTurnSpacerWithCompensation,
+    writeTurnMinContentHeight,
   ]);
   // Fade timer for the search-hit highlight. Kept in a ref (NOT an effect
   // cleanup) — consuming the pending jump re-runs the effect, and a cleanup
@@ -641,17 +597,16 @@ export default function ChatView({
       : null;
     dismissedTurnAnchorRef.current = activeAnchor ?? latestCandidate;
     const exit = exitTurnScrollAnchor(turnAnchorRef.current, reason);
-    turnAnchorRef.current = exit.anchor;
+    commitTurnAnchor(exit.anchor);
     pendingTurnAnchorRef.current = null;
-    reclaimSettleScrollHeightRef.current = null;
-    if (exit.spacerHeight === 0) {
-      writeTurnSpacerWithCompensation(
+    if (exit.minContentHeight === 0) {
+      writeTurnMinContentHeightWithCompensation(
         scrollParentEl,
         0,
         exit.pinned ? 'sync-bottom' : 'preserve-position',
       );
     } else {
-      writeTurnSpacerHeight(exit.spacerHeight);
+      writeTurnMinContentHeight(exit.minContentHeight);
     }
     updatePinned(exit.pinned);
     if (reason === 'user-scroll-intent') {
@@ -665,7 +620,13 @@ export default function ChatView({
     } else {
       setIsAtBottom(true);
     }
-  }, [scrollParentEl, updatePinned, writeTurnSpacerHeight, writeTurnSpacerWithCompensation]);
+  }, [
+    commitTurnAnchor,
+    scrollParentEl,
+    updatePinned,
+    writeTurnMinContentHeight,
+    writeTurnMinContentHeightWithCompensation,
+  ]);
   // Message id to briefly highlight after a search-hit jump (see effect below).
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   // Ids of the compaction rows whose summary is shown. Kept here because the
@@ -1226,8 +1187,7 @@ export default function ChatView({
     const tryArm = () => {
       armAnchorRafRef.current = 0;
       const anchorElement = findUserMessageAnchor(scrollParentEl, candidate.messageId);
-      const contentHeight = anchorElement ? measureActiveTailHeight(anchorElement) : null;
-      if (!anchorElement || contentHeight == null) {
+      if (!anchorElement || !turnContentElementRef.current) {
         attempts += 1;
         if (attempts < 8) {
           armAnchorRafRef.current = requestAnimationFrame(tryArm);
@@ -1251,60 +1211,19 @@ export default function ChatView({
 
       pendingTurnAnchorRef.current = null;
       dismissedTurnAnchorRef.current = null;
-      const viewportTop = scrollParentEl.getBoundingClientRect().top;
-      const anchorTop = anchorElement.getBoundingClientRect().top - viewportTop;
-      const distanceToBottom =
-        scrollParentEl.scrollHeight - scrollParentEl.scrollTop - scrollParentEl.clientHeight;
-      const anchor = armTurnScrollAnchor({
+      turnAnchorRef.current = armTurnScrollAnchor({
         ...candidate,
-        anchorTop,
         targetTop: TURN_ANCHOR_TARGET_TOP_PX,
-        distanceToBottom,
-        contentHeight,
       });
-      turnAnchorRef.current = anchor;
-      reclaimSettleScrollHeightRef.current = null;
-      const previousScrollTop = scrollParentEl.scrollTop;
       emitChatScrollTrace('turn-anchor', 'scheduled', scrollParentEl, {
-        anchorTop,
-        spacerHeight: anchor.spacerHeight,
-        contentHeight: anchor.baselineContentHeight,
-        baselineContentHeight: anchor.baselineContentHeight,
-      });
-      // Route through the compensated writer: on a queue rebind the previous
-      // anchor's spacer may still be non-zero, and writing 0 bare would clamp
-      // scrollTop before the arm's own scroll math runs.
-      writeTurnSpacerWithCompensation(scrollParentEl, anchor.spacerHeight, 'preserve-position');
-      // Force the spacer write into this layout pass so the initial anchor move
-      // and its newly available scroll range land before paint.
-      void scrollParentEl.scrollHeight;
-      const maximumScrollTop = Math.max(0, scrollParentEl.scrollHeight - scrollParentEl.clientHeight);
-      scrollParentEl.scrollTop = Math.min(
-        maximumScrollTop,
-        scrollParentEl.scrollTop + anchor.initialScrollDelta,
-      );
-      const mountedAnchor = findUserMessageAnchor(scrollParentEl, candidate.messageId);
-      if (mountedAnchor) {
-        const currentTop = mountedAnchor.getBoundingClientRect().top - viewportTop;
-        scrollParentEl.scrollTop += getAnchorScrollCorrection(anchor.targetTop, currentTop);
-      }
-      emitChatScrollTrace('turn-anchor', 'applied', scrollParentEl, {
-        scrollDelta: scrollParentEl.scrollTop - previousScrollTop,
-        anchorTop: mountedAnchor
-          ? mountedAnchor.getBoundingClientRect().top - viewportTop
-          : undefined,
+        anchorTop: anchorElement.getBoundingClientRect().top - scrollParentEl.getBoundingClientRect().top,
         spacerHeight: readTurnSpacerHeight(),
-        contentHeight: mountedAnchor ? measureActiveTailHeight(mountedAnchor) ?? undefined : undefined,
-        baselineContentHeight: anchor.baselineContentHeight,
       });
-      if (anchor.phase === 'exhausted') {
-        // Born-exhausted arm (no absorption capacity): hand off to bottom in
-        // this same layout pass. The compensated writer above has already put
-        // the ref at 0, so its previousHeight guard can never fire here —
-        // sync the scroll explicitly instead of relying on it.
-        void scrollParentEl.scrollHeight;
-        scrollParentEl.scrollTop = scrollParentEl.scrollHeight;
-      }
+      // The hold and the scroll move land in this layout pass, before paint. A
+      // queue rebind replaces the previous turn's hold in the same write, so
+      // scrollTop is never clamped in between. An answer that already fills
+      // the viewport hands over to bottom-follow here.
+      reconcileActiveTurnGeometry(scrollParentEl);
     };
 
     tryArm();
@@ -1312,35 +1231,19 @@ export default function ChatView({
   }, [
     activeConvId,
     leaveTurnAnchor,
-    measureActiveTailHeight,
     messageCount,
     readTurnSpacerHeight,
-    scrollParentEl,
-    writeTurnSpacerHeight,
-    writeTurnSpacerWithCompensation,
-  ]);
-  useLayoutEffect(() => {
-    const activeAnchor = turnAnchorRef.current;
-    if (!scrollParentEl || activeAnchor?.phase !== 'armed') return;
-    const anchorElement = findUserMessageAnchor(scrollParentEl, activeAnchor.messageId);
-    const messageRow = anchorElement?.closest<HTMLElement>('[data-index]');
-    if (!messageRow) return;
-
-    const observer = new ResizeObserver(() => {
-      // ResizeObserver runs after layout and before paint. Reading geometry
-      // again here closes the same-frame loop: the growing message row and the
-      // shrinking spacer are presented as one constant-height transaction to
-      // Virtuoso instead of two visible total-height changes.
-      reconcileActiveTurnGeometry(scrollParentEl);
-    });
-    observer.observe(messageRow);
-    return () => observer.disconnect();
-  }, [
-    activeConvId,
-    messageCount,
     reconcileActiveTurnGeometry,
     scrollParentEl,
   ]);
+  // The viewport's own height decides how tall the hold must be (the composer
+  // grows, the window resizes), and no list or content resize reports it.
+  useLayoutEffect(() => {
+    if (!scrollParentEl || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => reconcileActiveTurnGeometry(scrollParentEl));
+    observer.observe(scrollParentEl);
+    return () => observer.disconnect();
+  }, [reconcileActiveTurnGeometry, scrollParentEl]);
   // The bottom lock's last mile. `totalListHeightChanged` reports Virtuoso's
   // own height model and its correction is deferred a frame, so content that
   // reaches the scroller after that write — Virtuoso's final measurement
@@ -1356,6 +1259,12 @@ export default function ChatView({
     if (!content) return;
 
     const observer = new ResizeObserver(() => {
+      // An armed anchor owns its own geometry. The content grows past its
+      // hold only once the list alone fills it, which is the hand-off moment.
+      if (turnAnchorRef.current?.phase === 'armed') {
+        reconcileActiveTurnGeometry(scrollParentEl);
+        return;
+      }
       if (!pinnedRef.current) return;
       // A turn whose anchor has been announced but not yet armed is holding the
       // bottom-pin off on purpose (see shouldSuppressLegacyFollow, whose
@@ -1363,10 +1272,6 @@ export default function ChatView({
       // off). Reading the ref rather than calling that helper keeps this
       // observer out of its suppression budget, which belongs to the callbacks.
       if (pendingTurnAnchorRef.current) return;
-      // An armed anchor owns its own geometry: its spacer ledger deliberately
-      // holds the viewport away from the bottom, so a bottom sync here would
-      // fight the anchor instead of completing it.
-      if (turnAnchorRef.current?.phase === 'armed') return;
       const distanceToBottom =
         scrollParentEl.scrollHeight - scrollParentEl.scrollTop - scrollParentEl.clientHeight;
       // Same dead zone the other writers use, so a settled scroller stays put
@@ -1378,7 +1283,7 @@ export default function ChatView({
     });
     observer.observe(content);
     return () => observer.disconnect();
-  }, [scrollParentEl]);
+  }, [reconcileActiveTurnGeometry, scrollParentEl]);
   useLayoutEffect(() => {
     if (scrollParentEl) reconcileActiveTurnGeometry(scrollParentEl);
   });
@@ -1448,10 +1353,10 @@ export default function ChatView({
       updatePinned(true);
       return;
     }
-    // A user who naturally scrolls through a frozen, post-unpin spacer has
-    // explicitly reached "latest" again. Remove that transient tail and restore
-    // the ordinary pinned/follow contract in one state transition.
-    if (turnSpacerHeightRef.current > 0) {
+    // A user who naturally scrolls down to the end of the list under a frozen,
+    // post-unpin hold has explicitly reached "latest" again. Release the hold
+    // and restore the ordinary pinned/follow contract in one state transition.
+    if (turnMinContentHeightRef.current > 0) {
       leaveTurnAnchor('explicit-latest');
       return;
     }
@@ -1773,8 +1678,9 @@ export default function ChatView({
           <ChapterRail chapters={chapters} currentIndex={currentChapter} onJump={jumpToChapter} />
         )}
         <div
+          ref={registerTurnContent}
           data-chat-scroll-content
-          className="w-full max-w-4xl mx-auto px-6 md:px-10 pt-5 pb-16 overflow-hidden"
+          className="flex flex-col w-full max-w-4xl mx-auto px-6 md:px-10 pt-5 pb-16 overflow-hidden"
         >
           <Virtuoso
             // Remount per conversation so `initialTopMostItemIndex` re-applies
@@ -1794,7 +1700,7 @@ export default function ChatView({
             // text arrives in small, frequent chunks, so instant jumps read
             // as continuous motion without fighting a CSS scroll animation
             // that's still in flight when the next chunk lands.
-            followOutput={handleFollowOutput}
+            followOutput={turnAnchorHolds ? false : handleFollowOutput}
             atBottomStateChange={handleAtBottomStateChange}
             atBottomThreshold={VIRTUOSO_AT_BOTTOM_THRESHOLD_PX}
             // The bottom lock: whenever late-measured content (widget iframes,
@@ -1834,7 +1740,6 @@ export default function ChatView({
               // ("思考中…") here made the "…" blink out at the footer →
               // placeholder hand-off, and reads odd before the animated dots.
               thinkingLabel: t.status.thinking,
-              registerTurnSpacer,
             }}
             itemContent={(index, group) =>
               group.length === 1 && isCompactBoundary(group[0]) ? (
@@ -1884,6 +1789,10 @@ export default function ChatView({
               )
             }
           />
+
+          {/* Active-turn filler: takes the part of the turn's minimum content
+              height that the list does not cover yet. */}
+          <div ref={turnSpacerElementRef} data-turn-bottom-spacer aria-hidden="true" className="grow" />
 
           {/* Bottom sentinel — keeps a sliver of space after last message */}
           <div className="h-px w-full" />

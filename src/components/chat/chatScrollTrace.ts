@@ -25,8 +25,7 @@ export interface ChatScrollTraceDetail {
   scrollDelta?: number;
   anchorTop?: number;
   spacerHeight?: number;
-  contentHeight?: number;
-  baselineContentHeight?: number;
+  minContentHeight?: number;
 }
 
 function scrollGeometry(element: HTMLElement | null): Pick<
