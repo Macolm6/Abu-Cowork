@@ -103,6 +103,22 @@ describe('commandOutputSections', () => {
     expect(sections.whole).toBeNull();
   });
 
+  it('treats a section that starts inside the storage note as not saved', () => {
+    const { text: full, outcome } = commandResult('alpha\nbeta', 'gamma', 1);
+    const kept = full.slice(0, outcome.stderr![0] - 4);
+    const text = `${kept}\n\n${DURABLE_RESULT_OMITTED_NOTE}`;
+    expect(outcome.stderr![0]).toBeGreaterThanOrEqual(kept.length);
+    expect(outcome.stderr![0]).toBeLessThanOrEqual(text.length);
+    const sections = commandOutputSections(text, outcome);
+    expect(sections.stderr).toEqual([{ kind: 'note', note: 'partNotSaved' }]);
+    expect(sections.stdout).toEqual([
+      { kind: 'text', text: 'alpha' },
+      { kind: 'text', text: 'beta' },
+    ]);
+    const rows = [...sections.stdout!, ...sections.stderr!];
+    expect(rows.some((row) => row.kind === 'text' && DURABLE_RESULT_OMITTED_NOTE.includes(row.text) && row.text !== '')).toBe(false);
+  });
+
   it("turns each section's omission line into its note row", () => {
     const stdout = ['out 1', 'out 2', `\n${linesOmittedMarker(40)}\n`, 'out 43'].join('\n');
     const stderr = ['err 1', `\n${linesOmittedMarker(7)}\n`, 'err 9', 'err 10'].join('\n');

@@ -1,5 +1,6 @@
 import stripAnsi from 'strip-ansi';
 import type { CommandOutcome } from '@/types';
+import { DURABLE_RESULT_OMITTED_NOTE } from '@/core/session/durableToolResultContent';
 import { toResultRows, type ToolResultRow } from '@/utils/toolResultFold';
 
 export interface CommandOutputSections {
@@ -10,22 +11,30 @@ export interface CommandOutputSections {
   whole: ToolResultRow[] | null;
 }
 
+const NOT_SAVED: ToolResultRow = { kind: 'note', note: 'partNotSaved' };
+
 /**
- * One section of a saved result. A section that starts past the saved text
- * was dropped by the storage budget, which ended the text with its note.
+ * One section of a saved result. `kept` is the length of the result the
+ * storage budget kept, or null when the text is whole; the budget appends
+ * `\n\n` and its note after what it kept.
  */
-function sectionRows(text: string, range: [number, number] | undefined): ToolResultRow[] | null {
+function sectionRows(text: string, range: [number, number] | undefined, kept: number | null): ToolResultRow[] | null {
   if (!range) return null;
-  if (range[0] > text.length) return [{ kind: 'note', note: 'partNotSaved' }];
-  return toResultRows(stripAnsi(text.slice(range[0], Math.min(range[1], text.length))));
+  const [start, end] = range;
+  if (kept !== null && start >= kept) return [NOT_SAVED];
+  if (kept !== null && end > kept) return [...toResultRows(stripAnsi(text.slice(start, kept))), NOT_SAVED];
+  return toResultRows(stripAnsi(text.slice(start, Math.min(end, text.length))));
 }
 
 /** The output streams of a run_command result, read by the positions run_command recorded. */
 export function commandOutputSections(text: string, outcome: CommandOutcome | undefined): CommandOutputSections {
   if (!outcome) return { stdout: null, stderr: null, whole: toResultRows(stripAnsi(text)) };
+  const kept = text.endsWith(DURABLE_RESULT_OMITTED_NOTE)
+    ? Math.max(0, text.length - DURABLE_RESULT_OMITTED_NOTE.length - 2)
+    : null;
   return {
-    stdout: sectionRows(text, outcome.stdout),
-    stderr: sectionRows(text, outcome.stderr),
+    stdout: sectionRows(text, outcome.stdout, kept),
+    stderr: sectionRows(text, outcome.stderr, kept),
     whole: null,
   };
 }
