@@ -169,6 +169,25 @@ describe('ClaudeAdapter', () => {
   });
 
   describe('API errors', () => {
+    it('a 400 rejecting the thinking field is thrown with the thinking class', async () => {
+      vi.useRealTimers();
+      mockCreate.mockRejectedValue(new APIError(
+        400,
+        `400 ${JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: '"thinking.type.enabled" is not supported for this model. Use "thinking.type.adaptive" and "output_config.effort" to control thinking behavior.' } })}`,
+      ));
+
+      const failure = await new ClaudeAdapter().chat(
+        [{ role: 'user', content: 'hello', id: '1', timestamp: FIXED_TIMESTAMP }],
+        { apiKey: 'k', model: 'claude-opus-5-5', maxTokens: 1024, enableThinking: true, thinkingBudget: 4096 },
+        () => {},
+      ).catch((err: unknown) => err);
+
+      expect(failure).toBeInstanceOf(LLMError);
+      const err = failure as LLMError;
+      expect(err.code).toBe('invalid_request');
+      expect(err.capabilityRejection).toBe('thinking');
+    });
+
     it('erases the request key a provider echoed in its error body', async () => {
       vi.useRealTimers();
       const apiKey = 'abu-test-not-a-secret';

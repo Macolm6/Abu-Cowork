@@ -231,6 +231,23 @@ describe('OpenAICompatibleAdapter — request key echoed in an error body', () =
     expect(JSON.stringify([err.message, err.rawBody, err.upstream])).not.toContain(apiKey);
   });
 
+  it('a 400 naming a rejected request capability is thrown with that class, without a retry of its own', async () => {
+    mockFetch.mockResolvedValueOnce(new Response(
+      JSON.stringify({ error: {
+        message: "Unsupported parameter: 'reasoning_effort' is not supported with this model.",
+        type: 'invalid_request_error', param: 'reasoning_effort', code: 'unsupported_parameter',
+      } }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } },
+    ));
+
+    const err = await failure();
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(err.code).toBe('invalid_request');
+    expect(err.statusCode).toBe(400);
+    expect(err.capabilityRejection).toBe('reasoning_effort');
+  });
+
   it('erases the key from the error thrown after the max_tokens retry', async () => {
     mockFetch
       .mockResolvedValueOnce(new Response(

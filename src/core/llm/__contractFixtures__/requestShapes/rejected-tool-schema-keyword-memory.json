@@ -1,0 +1,56 @@
+{
+  "url": "https://gateway.example.com/v1/chat/completions",
+  "body": {
+    "model": "my-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "hi"
+      }
+    ],
+    "max_tokens": 8192,
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    },
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "read_file",
+          "description": "Read a file",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Path to file"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "set_level",
+          "description": "Set a level",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "level": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "level"
+            ]
+          }
+        }
+      }
+    ]
+  }
+}

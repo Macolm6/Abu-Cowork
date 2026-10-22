@@ -153,6 +153,40 @@ describe('resolveModelProfile', () => {
     });
   });
 
+  describe('session rejection overrides', () => {
+    it('each class switches its field off, over the declaration and the family', () => {
+      const p = resolveModelProfile({
+        modelId: 'my-model',
+        providerSource: 'custom',
+        declared: { supportsImages: true, supportsReasoning: true, parallelToolCalls: false, maxTokensField: 'max_tokens' },
+        overrides: ['thinking', 'reasoning_effort', 'max_tokens_field', 'parallel_tool_calls', 'image_block', 'tool_schema_keyword'],
+      });
+      expect(p.wire.stripReasoningParams).toBe(true);
+      expect(p.wire.sendReasoningEffort).toBe(false);
+      expect(p.wire.maxTokensField).toBe('max_completion_tokens');
+      expect(p.wire.sendParallelToolCalls).toBe(false);
+      expect(p.capabilities.vision).toBe(false);
+      expect(p.wire.toolSchemaDialect).toBe('gemini');
+    });
+
+    it('max_tokens_field swaps whichever name the profile had', () => {
+      expect(resolveModelProfile({ modelId: 'gpt-5.5', overrides: ['max_tokens_field'] }).wire.maxTokensField).toBe('max_tokens');
+      expect(resolveModelProfile({ modelId: 'gpt-4o', overrides: ['max_tokens_field'] }).wire.maxTokensField).toBe('max_completion_tokens');
+    });
+
+    it('tool_schema_keyword leaves a dialect that already cleans the schema alone', () => {
+      expect(resolveModelProfile({ modelId: 'deepseek-chat', overrides: ['tool_schema_keyword'] }).wire.toolSchemaDialect).toBe('deepseek');
+      expect(resolveModelProfile({ modelId: 'google/gemini-3-pro', overrides: ['tool_schema_keyword'] }).wire.toolSchemaDialect).toBe('gemini');
+    });
+
+    it('without overrides the send switches are on', () => {
+      const p = resolveModelProfile({ modelId: 'my-model' });
+      expect(p.wire.sendReasoningEffort).toBe(true);
+      expect(p.wire.sendParallelToolCalls).toBe(true);
+      expect(p.wire.stripReasoningParams).toBe(false);
+    });
+  });
+
   describe('unknown models', () => {
     it('get the generic defaults and never throw', () => {
       const p = resolveModelProfile({ modelId: 'my-private-model', providerSource: 'custom' });
