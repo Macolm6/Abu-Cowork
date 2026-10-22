@@ -35,6 +35,12 @@ describe('blockFullText', () => {
     }
   });
 
+  it('reads a list block as text for a tool view', () => {
+    const results = new Map([['c1', 'full list']]);
+    expect(blockFullText(block({ type: 'list', isTruncated: true }), { toolCallId: 'c1', status: 'completed' }, results, true)).toBe('full list');
+    expect(blockFullText(block({ type: 'list', isTruncated: true }), { toolCallId: 'gone', status: 'completed' }, results, true)).toBeNull();
+  });
+
   it('leaves a step as it is when no map is given (an expert step)', () => {
     expect(blockFullText(block({}), { toolCallId: 'c1', status: 'completed' }, undefined)).toBeUndefined();
   });

@@ -49,7 +49,7 @@ function stepViewText(
   const errorBlock = step.detailBlocks?.find((b) => b.type === 'error');
   const failed = errorBlock !== undefined || step.status === 'error';
   const block = errorBlock ?? step.detailBlocks?.find((b) => b.type === (failed ? 'error' : 'result') || b.type === 'list');
-  const full = block ? blockFullText(block, step, toolResults) : undefined;
+  const full = block ? blockFullText(block, step, toolResults, true) : undefined;
   let view: { text: string; fullUnavailable: boolean; failed: boolean };
   if (typeof full === 'string') view = { text: full, fullUnavailable: false, failed };
   else if (full === null) view = { text: block!.content, fullUnavailable: true, failed };

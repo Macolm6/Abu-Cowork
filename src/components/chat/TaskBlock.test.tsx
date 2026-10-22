@@ -951,6 +951,25 @@ describe('TaskBlock — tool views', () => {
     expect(failureText).toHaveClass('text-danger');
   });
 
+  it('lists every result of a web search whose list block kept only the start of the result', () => {
+    const results = Array.from({ length: 8 }, (_, i) => ({
+      title: `Result ${i + 1}`, url: `https://example.com/article-${i + 1}`, snippet: `Snippet ${i + 1}`, source: 'example.com',
+    }));
+    const whole = `<!--SEARCH_JSON:${JSON.stringify(results)}-->\n\nResults`;
+    const input = { query: 'vitest' };
+    const step = commandStep({
+      type: 'tool', toolName: 'web_search', toolInput: input,
+      detailBlocks: [{
+        id: 'step-1-result', stepId: 'step-1', type: 'list', label: 'Result', labelKey: 'result',
+        content: whole.slice(0, 300), isTruncated: true, fullContentLength: whole.length, isExpanded: false,
+      }],
+    });
+    const { container } = renderOpen([step], { toolResults: new Map([['call-1', whole]]) });
+    fireEvent.click(screen.getByRole('button', { name: labelOf('web_search', input) }));
+    const view = container.querySelector<HTMLElement>('[data-step-view="web-search"]')!;
+    expect(view.querySelectorAll('a[target="_blank"]')).toHaveLength(8);
+  });
+
   it('says the whole result is not in the conversation under the view', () => {
     const { container } = renderOpen([commandStep({ toolInput: npmTest })], { toolResults: new Map() });
     fireEvent.click(screen.getByRole('button', { name: labelOf('run_command', npmTest) }));
