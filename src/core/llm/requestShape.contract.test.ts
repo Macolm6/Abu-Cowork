@@ -27,6 +27,7 @@ vi.mock('./tauriFetch', () => ({
 
 import { OpenAICompatibleAdapter } from './openai-compatible';
 import { ClaudeAdapter } from './claude';
+import { recordCapabilityRejection, resetRejectionMemory } from './rejectionMemory';
 
 const FIXED_TIMESTAMP = 1_700_000_000_000;
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
@@ -132,6 +133,7 @@ const fixture = (name: string) => `./__contractFixtures__/requestShapes/${name}.
 describe('request shapes by model family', () => {
   beforeEach(() => {
     mockFetch.mockReset();
+    resetRejectionMemory();
   });
 
   describe('gpt', () => {
@@ -233,6 +235,56 @@ describe('request shapes by model family', () => {
         declaredCapabilities: { supportsTools: false, supportsReasoning: false, supportsImages: false },
       });
       await expect(body).toMatchFileSnapshot(fixture('custom-declared-no-tools-no-vision'));
+    });
+  });
+
+  describe('a capability the model rejected earlier in the session', () => {
+    const accounting = { source: 'main' as const, conversationId: 'conv-1', skill: null, providerInstanceId: 'p1' };
+
+    it('reasoning_effort in this process\'s memory: the field is withheld, thinking_budget stays', async () => {
+      recordCapabilityRejection('p1', 'my-model', 'reasoning_effort');
+      const body = await recordOpenAI([user('m1', 'hi')], {
+        model: 'my-model', apiKey: 'k', baseUrl: 'https://gateway.example.com/v1',
+        tools: [readFileTool], maxTokens: 8192, reasoningEffort: 'low', thinkingBudget: 2048, accounting,
+      });
+      await expect(body).toMatchFileSnapshot(fixture('rejected-reasoning-effort-memory'));
+    });
+
+    it('max_tokens_field carried by the caller: gpt-4o swaps to max_completion_tokens', async () => {
+      const body = await recordOpenAI([user('m1', 'hi')], {
+        model: 'gpt-4o', apiKey: 'k', baseUrl: 'https://api.openai.com/v1',
+        tools: [readFileTool], maxTokens: 4096, capabilityOverrides: ['max_tokens_field'],
+      });
+      await expect(body).toMatchFileSnapshot(fixture('rejected-max-tokens-field-caller'));
+    });
+
+    it('image_block and parallel_tool_calls: images become text, the parallel flag is withheld', async () => {
+      recordCapabilityRejection('p1', 'my-model', 'image_block');
+      recordCapabilityRejection('p1', 'my-model', 'parallel_tool_calls');
+      const body = await recordOpenAI(imageTurn(), {
+        model: 'my-model', apiKey: 'k', baseUrl: 'https://gateway.example.com/v1',
+        tools: [readFileTool], maxTokens: 8192, supportsVision: true, accounting,
+        declaredCapabilities: { supportsImages: true, parallelToolCalls: false },
+      });
+      await expect(body).toMatchFileSnapshot(fixture('rejected-image-and-parallel-memory'));
+    });
+
+    it('tool_schema_keyword: draft-7 keywords leave the schema on a standard dialect', async () => {
+      recordCapabilityRejection('p1', 'my-model', 'tool_schema_keyword');
+      const body = await recordOpenAI([user('m1', 'hi')], {
+        model: 'my-model', apiKey: 'k', baseUrl: 'https://gateway.example.com/v1',
+        tools: [readFileTool, strictSchemaTool], maxTokens: 8192, accounting,
+      });
+      await expect(body).toMatchFileSnapshot(fixture('rejected-tool-schema-keyword-memory'));
+    });
+
+    it('thinking on the Anthropic protocol: the thinking block and its temperature are withheld', async () => {
+      recordCapabilityRejection('p1', 'claude-opus-5-5', 'thinking');
+      const body = await recordClaude([user('m1', 'hi')], {
+        model: 'claude-opus-5-5', apiKey: 'k', systemPrompt: 'You are Abu.',
+        maxTokens: 16384, enableThinking: true, thinkingBudget: 10000, accounting,
+      });
+      await expect(body).toMatchFileSnapshot(fixture('rejected-thinking-anthropic-memory'));
     });
   });
 

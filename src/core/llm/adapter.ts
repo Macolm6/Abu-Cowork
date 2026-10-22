@@ -2,6 +2,7 @@ import type { StreamEvent, Message, ToolDefinition, BuiltinSearchMethod, Upstrea
 import type { PromptSection } from './promptSections';
 import type { Logger } from '../logging/logger';
 import { redactFailureText } from '../diagnostic/scrub';
+import { classifyCapabilityRejection, type CapabilityRejectionClass } from './capabilityRejection';
 
 /**
  * Chars of a failed tool call's raw `arguments` to keep in the on-disk
@@ -123,6 +124,14 @@ export interface ChatOptions {
    * 随 `llm.chat` 一起序列化进 sidecar（`sidecarAdapter.ts`）。
    */
   accounting?: import('./usageRecorder').UsageAccountingContext;
+  /**
+   * Request capabilities this model has already rejected in the session
+   * (`rejectionMemory.ts`). The agent loop copies its memory here so an adapter
+   * running in another process resolves the same profile; each adapter unions
+   * this list with its own process-local memory. Plain data, crosses the
+   * sidecar boundary inside `llm.chat`.
+   */
+  capabilityOverrides?: CapabilityRejectionClass[];
 }
 
 export interface LLMAdapter {
@@ -192,6 +201,11 @@ export class LLMError extends Error {
   upstream?: UpstreamErrorDetails;
   /** 服务在超长报错里说出的真实上限，只在 context_too_long 时出现 */
   contextLimit?: number;
+  /**
+   * 400 错误文字命中了固定模式表里的某一类请求能力（`capabilityRejection.ts`）；
+   * 只在 invalid_request 时出现。agentLoop 据此关掉对应开关重发一次。
+   */
+  capabilityRejection?: CapabilityRejectionClass;
 
   constructor(
     message: string,
@@ -203,6 +217,7 @@ export class LLMError extends Error {
       rawBody?: string;
       upstream?: UpstreamErrorDetails;
       contextLimit?: number;
+      capabilityRejection?: CapabilityRejectionClass;
     }
   ) {
     // message 会进入日志、聊天记录和界面。连接失败这类本地构造的错误直接使用
@@ -216,6 +231,7 @@ export class LLMError extends Error {
     this.rawBody = options?.rawBody;
     this.upstream = normalizeUpstreamErrorDetails(options?.upstream);
     this.contextLimit = options?.contextLimit;
+    this.capabilityRejection = options?.capabilityRejection;
   }
 }
 
@@ -644,6 +660,7 @@ export function classifyError(
     }
     return new LLMError(message, 'invalid_request', {
       retryable: false, statusCode, rawBody: stored, upstream,
+      capabilityRejection: classifyCapabilityRejection(statusCode, rawMessage),
     });
   }
 

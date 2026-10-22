@@ -23,6 +23,7 @@ import {
   sanitizeUntrustedLlmErrorText,
 } from './adapter';
 import type { Message, StreamEvent, UpstreamErrorDetails } from '../../types';
+import { isCapabilityRejectionClass, type CapabilityRejectionClass } from './capabilityRejection';
 import { request, notifySidecar, onSidecarNotification, SidecarRpcError } from '../sidecar/sidecarManager';
 import { parsePayloadTooLargeError } from '../ipc/payloadTooLarge';
 import { createLogger } from '../logging/logger';
@@ -57,6 +58,7 @@ interface SidecarLlmErrorData {
   statusCode?: number;
   upstream?: UpstreamErrorDetails;
   contextLimit?: number;
+  capabilityRejection?: CapabilityRejectionClass;
   message?: string;
 }
 
@@ -68,6 +70,7 @@ const SIDECAR_LLM_ERROR_DATA_KEYS = new Set([
   'statusCode',
   'upstream',
   'contextLimit',
+  'capabilityRejection',
   'message',
 ]);
 const WIRE_RETRYABLE_LLM_CODES: ReadonlySet<LLMErrorCode> = new Set([
@@ -122,6 +125,10 @@ function isSidecarLlmErrorData(value: unknown): value is SidecarLlmErrorData {
     && (!Number.isSafeInteger(value.contextLimit) || (value.contextLimit as number) <= 0 || value.code !== 'context_too_long')) {
     return false;
   }
+  if (value.capabilityRejection !== undefined
+    && (!isCapabilityRejectionClass(value.capabilityRejection) || value.code !== 'invalid_request')) {
+    return false;
+  }
   return value.message === undefined || typeof value.message === 'string';
 }
 
@@ -162,6 +169,7 @@ function reconstructError(err: unknown): LLMError {
         statusCode: typeof data.statusCode === 'number' ? data.statusCode : undefined,
         upstream,
         contextLimit: data.contextLimit,
+        capabilityRejection: data.capabilityRejection,
       });
     }
     if (isRecord(data) && data.name === 'LLMError') {
