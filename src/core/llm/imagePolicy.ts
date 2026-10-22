@@ -24,6 +24,8 @@
  * no call site needs new plumbing — every consumer already has the model id.
  */
 
+import { resolveModelFamily } from './model-data/families';
+
 export interface ImagePolicy {
   /**
    * The route's own pixel ceiling on either side, as its provider documents it.
@@ -92,18 +94,16 @@ const FALLBACK_POLICY: ImagePolicy = {
 /**
  * Resolve the image policy for a model id.
  *
- * Mirrors `resolveCapabilities`: strip an OpenRouter-style `provider/` prefix,
- * then match on family. Unrecognized ids get the conservative fallback.
+ * Keyed on the model family (`model-data/families.ts`). Unrecognized ids get
+ * the conservative fallback.
  */
 export function resolveImagePolicy(modelId: string): ImagePolicy {
-  const bare = modelId.includes('/') ? modelId.split('/').pop()! : modelId;
-  const id = bare.toLowerCase();
-
-  if (/claude/.test(id)) return ANTHROPIC_POLICY;
-  if (/deepseek/.test(id)) return DEEPSEEK_POLICY;
-  if (/^o[1-9]|gpt-/.test(id)) return OPENAI_POLICY;
-
-  return FALLBACK_POLICY;
+  switch (resolveModelFamily(modelId)) {
+    case 'claude': return ANTHROPIC_POLICY;
+    case 'deepseek': return DEEPSEEK_POLICY;
+    case 'gpt': return OPENAI_POLICY;
+    default: return FALLBACK_POLICY;
+  }
 }
 
 const ALL_POLICIES = [ANTHROPIC_POLICY, DEEPSEEK_POLICY, OPENAI_POLICY, FALLBACK_POLICY];

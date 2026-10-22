@@ -1,8 +1,23 @@
 import { describe, it, expect } from 'vitest';
 import { applyModelRequestProcessors } from './modelRequestProcessors';
+import { resolveModelProfile } from './modelProfile';
+import type { DeclaredCapabilities } from '@/types/provider';
 
-const run = (body: Record<string, unknown>, ctx: Parameters<typeof applyModelRequestProcessors>[1]) => {
-  applyModelRequestProcessors(body, ctx);
+/** The inputs the adapter resolves a profile from: the model, the host it talks to, the user's declaration. */
+interface RequestSetting {
+  modelId: string;
+  requestHost: string;
+  hasTools: boolean;
+  caps?: DeclaredCapabilities;
+}
+
+const run = (body: Record<string, unknown>, setting: RequestSetting) => {
+  const profile = resolveModelProfile({
+    modelId: setting.modelId,
+    requestHost: setting.requestHost,
+    declared: setting.caps,
+  });
+  applyModelRequestProcessors(body, { profile, hasTools: setting.hasTools });
   return body;
 };
 

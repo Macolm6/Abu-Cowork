@@ -1,0 +1,40 @@
+{
+  "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+  "body": {
+    "model": "qwen3-max",
+    "messages": [
+      {
+        "role": "user",
+        "content": "hi"
+      }
+    ],
+    "max_tokens": 8192,
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    },
+    "thinking_budget": 4096,
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "read_file",
+          "description": "Read a file",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Path to file"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
+        }
+      }
+    ],
+    "enable_thinking": true
+  }
+}
