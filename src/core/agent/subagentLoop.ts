@@ -44,6 +44,7 @@ import { promptTokensOf } from '../llm/usageAccounting';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelProfile } from '../llm/modelProfile';
 import { selectToolsForProfile } from '../tools/toolSelection';
+import { repairToolCallsForProfile } from './toolArgumentRepair';
 import { getCapsPort, type CapsPort } from './ports/capsPort';
 import { getWorkspaceReader, type WorkspaceReader } from './ports/workspaceReader';
 import { enforceContextBudget, trimOldScreenshots } from '../context/contextManager';
@@ -1490,9 +1491,12 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             return { id: tc.id, result };
           }
         };
+      // 按工具的 inputSchema 修复写错形状的参数（档案打开该护栏时）；修不好的
+      // 原样交给工具，由工具把错误返回给模型
+      const dispatchToolCalls = repairToolCallsForProfile(collectedToolCalls, tools, startupProfile, logger);
       const toolResults = startupProfile.capabilities.parallelToolCalls
-        ? await Promise.allSettled(collectedToolCalls.map(runToolCall))
-        : await settleSequentially(collectedToolCalls, runToolCall);
+        ? await Promise.allSettled(dispatchToolCalls.map(runToolCall))
+        : await settleSequentially(dispatchToolCalls, runToolCall);
 
       // Build tool result entries
       const toolResultEntries = toolResults.map((r, i) => {
