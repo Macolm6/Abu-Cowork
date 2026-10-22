@@ -355,9 +355,9 @@ interface TaskBlockProps {
 
 type DisplayMode = 'collapsed' | 'expanded';
 
-// The step list's scroll area: at most 400px or half the window, with 24px
+// The step list's scroll area: at most 240px or half the window, with 24px
 // fades at the ends that have more steps beyond them.
-const STEP_LIST = 'max-h-[min(400px,50vh)] overflow-y-auto';
+const STEP_LIST = 'max-h-[min(240px,50vh)] overflow-y-auto';
 const STEP_LIST_FADE_TOP = 'mask-t-from-(--ds-scroll-fade-start)';
 const STEP_LIST_FADE_BOTTOM = 'mask-b-from-(--ds-scroll-fade-start)';
 

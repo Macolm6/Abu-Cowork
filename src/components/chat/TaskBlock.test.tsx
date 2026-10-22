@@ -1046,7 +1046,7 @@ describe('TaskBlock — the step list', () => {
     const { container } = render(<TaskBlock executionSteps={steps(2, { status: 'completed' })} isActive={false} />);
     fireEvent.click(header(container));
     const list = container.querySelector<HTMLElement>('[data-step-list]')!;
-    expect(list).toHaveClass('overflow-y-auto', 'max-h-[min(400px,50vh)]');
+    expect(list).toHaveClass('overflow-y-auto', 'max-h-[min(240px,50vh)]');
     expect(within(list).getByText('Step 1')).toBeInTheDocument();
     expect(within(list).getByText(getI18n().task.done)).toBeInTheDocument();
   });
