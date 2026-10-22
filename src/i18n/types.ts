@@ -995,6 +995,24 @@ export interface TranslationDict {
     runInBackground: string;
     readBackgroundCommandOutput: string;
     stopBackgroundCommand: string;
+    /** Tool views: command, file read, search, directory and web page results */
+    exitCode: string;
+    commandEnded: string;
+    errorOutput: string;
+    noOutput: string;
+    outputPending: string;
+    readAllLines: string;
+    readLineRange: string;
+    searchSummary: string;
+    searchCapped: string;
+    searchNoMatches: string;
+    searchGroupCount: string;
+    foundFiles: string;
+    directoryEntries: string;
+    directoryEmpty: string;
+    webBodyTruncated: string;
+    /** Tool-row label of http_fetch; {url} is the address without its scheme */
+    fetchPage: string;
   };
 
   // Notice menubar summaries (noticeMenubarStore.ts)
