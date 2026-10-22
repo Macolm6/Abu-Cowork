@@ -9,18 +9,25 @@ export interface TurnAnchorCandidate {
   messageId: string;
 }
 
+/**
+ * The active turn's user message held at `targetTop` below the viewport top.
+ *
+ * The hold is a minimum height on the scrolled content: just tall enough that
+ * the anchor's scroll position is reachable. A flex filler after the list takes
+ * up whatever the list does not yet cover, so list growth replaces filler in
+ * the same layout pass — including growth react-virtuoso applies to its own
+ * explicitly sized root a frame after the DOM. Nothing is kept as a running
+ * ledger: every reconcile derives the hold from the geometry it reads.
+ */
 export interface TurnScrollAnchor extends TurnAnchorCandidate {
   phase: 'armed' | 'exhausted';
   targetTop: number;
-  initialScrollDelta: number;
-  initialSpacerHeight: number;
-  spacerHeight: number;
-  baselineContentHeight: number;
+  minContentHeight: number;
 }
 
 export interface TurnScrollAnchorExit {
   anchor: null;
-  spacerHeight: number;
+  minContentHeight: number;
   pinned: boolean;
 }
 
@@ -59,90 +66,52 @@ export function findUserMessageAnchor(root: ParentNode, messageId: string): HTML
 export function armTurnScrollAnchor(input: {
   conversationId: string;
   messageId: string;
-  anchorTop: number;
   targetTop: number;
-  distanceToBottom: number;
-  contentHeight: number;
 }): TurnScrollAnchor {
-  const initialScrollDelta = nonNegative(input.anchorTop - input.targetTop);
-  const existingScrollRange = nonNegative(input.distanceToBottom);
-  // The spacer is real scrollable geometry, so every pixel must correspond to
-  // range that is actually missing. A former +96px measurement reserve left a
-  // matching blind gap and merely delayed the hard return to bottom.
-  const initialSpacerHeight = nonNegative(initialScrollDelta - existingScrollRange);
   return {
     conversationId: input.conversationId,
     messageId: input.messageId,
-    phase: initialSpacerHeight > 0 ? 'armed' : 'exhausted',
+    phase: 'armed',
     targetTop: input.targetTop,
-    initialScrollDelta,
-    initialSpacerHeight,
-    spacerHeight: initialSpacerHeight,
-    baselineContentHeight: input.contentHeight,
-  };
-}
-
-export function reconcileTurnScrollAnchor(
-  anchor: TurnScrollAnchor,
-  input: {
-    contentHeight: number;
-    anchorPresent: boolean;
-  },
-): {
-  anchor: TurnScrollAnchor;
-  contentHeight: number;
-  spacerHeight: number;
-  handoff: 'none' | 'sync-bottom';
-} {
-  const contentHeight = input.contentHeight;
-  const contentDelta = contentHeight - anchor.baselineContentHeight;
-  const computedSpacerHeight = nonNegative(anchor.initialSpacerHeight - contentDelta);
-  const spacerHeight = input.anchorPresent ? computedSpacerHeight : 0;
-  const phase = spacerHeight > 0 ? 'armed' : 'exhausted';
-  return {
-    anchor: { ...anchor, phase, spacerHeight },
-    contentHeight,
-    spacerHeight,
-    handoff: phase === 'exhausted' ? 'sync-bottom' : 'none',
+    minContentHeight: 0,
   };
 }
 
 /**
- * Return surplus bottom scroll range to the spacer ledger.
+ * Where the anchor wants the viewport, from one geometry read.
  *
- * The arm computes its ledger (initialScrollDelta / initialSpacerHeight) in a
- * single layout pass, but the spacer's scroll range materializes
- * asynchronously: react-virtuoso applies its list height on its own
- * measurement cycle, so the arm's scroll clamps and settlement spreads across
- * frames. While that settlement races streamed content, the browser's native
- * scroll anchoring can land the viewport pinned at targetTop with scroll
- * range left over below. Every surplus pixel is a spacer pixel that no longer
- * corresponds to missing range — the same physical-blind-spot defect as the
- * former +96px measurement reserve — so reconciliation shrinks the spacer by
- * the measured surplus. Bottom-only geometry: the anchored viewport does not
- * move. The reduction is written to initialSpacerHeight so later reconciles
- * do not reinstate the reclaimed pixels.
+ * `anchorTop` and `contentTop` are measured from the viewport top. The
+ * returned minimum content height makes exactly the anchor's scroll position
+ * reachable: no reserve, so the hold never leaves blank range below it.
  */
-export function reclaimTurnSpacerSurplus(
-  anchor: TurnScrollAnchor,
-  distanceToBottom: number,
-): { anchor: TurnScrollAnchor; spacerHeight: number; reclaimed: number } {
-  if (anchor.phase !== 'armed' || distanceToBottom <= ANCHOR_TOLERANCE_PX) {
-    return { anchor, spacerHeight: anchor.spacerHeight, reclaimed: 0 };
-  }
-  const reclaimed = Math.min(anchor.spacerHeight, distanceToBottom);
-  if (reclaimed <= 0) return { anchor, spacerHeight: anchor.spacerHeight, reclaimed: 0 };
-  const spacerHeight = anchor.spacerHeight - reclaimed;
+export function resolveTurnAnchorLayout(input: {
+  targetTop: number;
+  anchorTop: number;
+  contentTop: number;
+  scrollTop: number;
+  clientHeight: number;
+}): { minContentHeight: number; scrollCorrection: number } {
+  const targetScrollTop = nonNegative(input.scrollTop + input.anchorTop - input.targetTop);
+  const contentOffset = input.scrollTop + input.contentTop;
   return {
-    anchor: {
-      ...anchor,
-      phase: spacerHeight > 0 ? 'armed' : 'exhausted',
-      initialSpacerHeight: anchor.initialSpacerHeight - reclaimed,
-      spacerHeight,
-    },
-    spacerHeight,
-    reclaimed,
+    minContentHeight: Math.ceil(nonNegative(targetScrollTop + input.clientHeight - contentOffset)),
+    scrollCorrection: getAnchorScrollCorrection(input.targetTop, input.anchorTop),
   };
+}
+
+/**
+ * The anchor holds while the filler still covers part of the hold. Once the
+ * list alone reaches the minimum height the answer fills the viewport below
+ * the anchor, and the turn hands over to bottom-follow.
+ */
+export function settleTurnScrollAnchor(
+  anchor: TurnScrollAnchor,
+  input: { minContentHeight: number; fillerHeight: number },
+): TurnScrollAnchor {
+  if (input.fillerHeight > 0) {
+    return { ...anchor, phase: 'armed', minContentHeight: input.minContentHeight };
+  }
+  return { ...anchor, phase: 'exhausted', minContentHeight: 0 };
 }
 
 export function canArmTurnScrollAnchor(input: {
@@ -185,20 +154,20 @@ export function exitTurnScrollAnchor(
   if (reason === 'user-scroll-intent') {
     return {
       anchor: null,
-      spacerHeight: anchor?.spacerHeight ?? 0,
+      minContentHeight: anchor?.minContentHeight ?? 0,
       pinned: false,
     };
   }
   if (reason === 'search-jump' || reason === 'chapter-jump') {
     return {
       anchor: null,
-      spacerHeight: 0,
+      minContentHeight: 0,
       pinned: false,
     };
   }
   return {
     anchor: null,
-    spacerHeight: 0,
+    minContentHeight: 0,
     pinned: true,
   };
 }
