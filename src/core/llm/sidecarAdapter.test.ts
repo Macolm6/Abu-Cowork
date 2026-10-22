@@ -317,6 +317,32 @@ describe('SidecarLLMAdapter', () => {
         .rejects.toMatchObject({ code: 'context_too_long', contextLimit: 8192 });
     });
 
+    it('carries the rejected capability class across the wire', async () => {
+      requestMock.mockRejectedValue(new SidecarRpcError(-32000, 'unsupported', {
+        name: 'LLMError', code: 'invalid_request', retryable: false, statusCode: 400,
+        capabilityRejection: 'reasoning_effort', message: 'unsupported',
+      }));
+      const adapter = new SidecarLLMAdapter('openai-compatible');
+      await expect(adapter.chat([], { model: 'm', apiKey: 'k' }, () => {}))
+        .rejects.toMatchObject({ code: 'invalid_request', capabilityRejection: 'reasoning_effort' });
+    });
+
+    it('treats an unknown class, or a class on another error code, as a corrupt response', async () => {
+      requestMock.mockRejectedValueOnce(new SidecarRpcError(-32000, 'x', {
+        name: 'LLMError', code: 'invalid_request', retryable: false, statusCode: 400,
+        capabilityRejection: 'cache_control_field', message: 'x',
+      }));
+      const adapter = new SidecarLLMAdapter('openai-compatible');
+      await expect(adapter.chat([], { model: 'm', apiKey: 'k' }, () => {}))
+        .rejects.toMatchObject({ code: 'unknown', message: 'Invalid sidecar LLM error response' });
+
+      requestMock.mockRejectedValueOnce(new SidecarRpcError(-32000, 'x', {
+        name: 'LLMError', code: 'rate_limit', retryable: true, capabilityRejection: 'thinking', message: 'x',
+      }));
+      await expect(adapter.chat([], { model: 'm', apiKey: 'k' }, () => {}))
+        .rejects.toMatchObject({ code: 'unknown', message: 'Invalid sidecar LLM error response' });
+    });
+
     it('treats a context limit on any other error as a corrupt response', async () => {
       requestMock.mockRejectedValue(new SidecarRpcError(-32000, 'x', {
         name: 'LLMError', code: 'rate_limit', retryable: true, contextLimit: 8192, message: 'x',
