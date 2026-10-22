@@ -40,14 +40,19 @@ const STEP_TITLE_BUTTON = 'inline rounded-control text-left transition-colors du
 /**
  * What a step's view reads: its whole result, or the part the conversation
  * kept. A step that holds an error block failed, whatever its status, and its
- * view reads that block.
+ * view reads that block. A call that failed records no outcome, so a step with
+ * a record and no error status succeeded, and an error block there is a result
+ * whose text starts with "Error".
  */
 function stepViewText(
   step: UnifiedStep,
   toolResults: ReadonlyMap<string, string> | undefined,
+  record: ToolViewRecord | undefined,
 ): { text: string; fullUnavailable: boolean; failed: boolean } {
   const errorBlock = step.detailBlocks?.find((b) => b.type === 'error');
-  const failed = errorBlock !== undefined || step.status === 'error';
+  const recordedSuccess = step.status !== 'error'
+    && (record?.commandOutcome ?? record?.fileReadOutcome ?? record?.httpFetchOutcome) !== undefined;
+  const failed = !recordedSuccess && (errorBlock !== undefined || step.status === 'error');
   const block = errorBlock ?? step.detailBlocks?.find((b) => b.type === (failed ? 'error' : 'result') || b.type === 'list');
   const full = block ? blockFullText(block, step, toolResults, true) : undefined;
   let view: { text: string; fullUnavailable: boolean; failed: boolean };
@@ -913,7 +918,7 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t,
         {renderLegacyDetails()}
 
         {viewToolName !== undefined && viewExpanded && (() => {
-          const { text, fullUnavailable, failed } = stepViewText(step, toolResults);
+          const { text, fullUnavailable, failed } = stepViewText(step, toolResults, toolViewRecord);
           return (
             <div className="mt-2">
               <StepToolView

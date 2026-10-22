@@ -951,6 +951,43 @@ describe('TaskBlock — tool views', () => {
     expect(failureText).toHaveClass('text-danger');
   });
 
+  describe('a successful read of a file whose text starts with Error', () => {
+    const text = 'Error: line 1\nline 2';
+    const input = { path: '/w/error.log' };
+    const readStep = () => commandStep({
+      type: 'file-read', toolName: 'read_file', toolInput: input, status: 'completed', toolResult: text,
+      detailBlocks: [{
+        id: 'step-1-error', stepId: 'step-1', type: 'error', label: 'Error', labelKey: 'error',
+        content: text, isTruncated: false, isExpanded: true,
+      }],
+    });
+
+    it('opens the numbered view when the call has a read record', () => {
+      const { container } = renderOpen([readStep()], {
+        toolResults: new Map([['call-1', text]]),
+        toolViewRecords: new Map([['call-1', {
+          input, fileReadOutcome: { kind: 'text', startLine: 1, lineCount: 2, totalLines: 2, bodyStart: 0 },
+        }]]),
+      });
+      fireEvent.click(screen.getByRole('button', { name: labelOf('read_file', input) }));
+      const view = container.querySelector<HTMLElement>('[data-step-view]')!;
+      expect(view.querySelector('[data-line-numbers]')).toHaveTextContent('1 2');
+      expect(view).toHaveTextContent('Error: line 1');
+      expect(view.querySelector('.text-danger')).toBeNull();
+    });
+
+    it('opens the failure view when the call has no record', () => {
+      const { container } = renderOpen([readStep()], {
+        toolResults: new Map([['call-1', text]]),
+        toolViewRecords: new Map([['call-1', { input }]]),
+      });
+      fireEvent.click(screen.getByRole('button', { name: labelOf('read_file', input) }));
+      const view = container.querySelector<HTMLElement>('[data-step-view]')!;
+      expect(view.querySelector('[data-line-numbers]')).toBeNull();
+      expect(view.querySelector('[data-tool-result]')).toHaveClass('text-danger');
+    });
+  });
+
   it('lists every result of a web search whose list block kept only the start of the result', () => {
     const results = Array.from({ length: 8 }, (_, i) => ({
       title: `Result ${i + 1}`, url: `https://example.com/article-${i + 1}`, snippet: `Snippet ${i + 1}`, source: 'example.com',
