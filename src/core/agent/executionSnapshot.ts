@@ -7,6 +7,16 @@ import { firstImageContent } from '../tools/toolResultContent';
 const SNAPSHOT_CONTENT_CHARS = 500;
 
 /**
+ * Whether a snapshot holds only the beginning of a block. snapshotStep keeps a
+ * full length when it cuts a block. Snapshots written before it did so carry
+ * none, but a block they cut is the only content longer than
+ * SNAPSHOT_CONTENT_CHARS ("..." appended).
+ */
+export function isCutSnapshotBlock(block: { content?: string; fullContentLength?: number }): boolean {
+  return block.fullContentLength != null || (block.content?.length ?? 0) > SNAPSHOT_CONTENT_CHARS;
+}
+
+/**
  * Convert full ExecutionStep[] to compact ExecutionStepSnapshot[] for persistence.
  * Strips large fields (toolInput, toolResult) and keeps only display-relevant data.
  */
@@ -84,10 +94,7 @@ export function snapshotToExecutionSteps(snapshots: ExecutionStepSnapshot[]): Ex
       label: b.title,
       labelKey: b.labelKey,
       content: b.content || '',
-      // snapshotStep keeps a full length when it cuts a block. Snapshots written
-      // before it did so carry none, but a block they cut is the only content
-      // longer than SNAPSHOT_CONTENT_CHARS ("..." appended).
-      isTruncated: b.fullContentLength != null || (b.content?.length ?? 0) > SNAPSHOT_CONTENT_CHARS,
+      isTruncated: isCutSnapshotBlock(b),
       fullContentLength: b.fullContentLength,
       isExpanded: false,
     })) ?? [],
