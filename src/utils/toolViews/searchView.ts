@@ -19,15 +19,22 @@ const HEADER_LINE = /^Found (\d+)(\+?) matches:$/;
 const NO_MATCHES = 'No matches found.';
 const MATCH_LINE = /^(.*?):(\d+):(.*)$/;
 
-/** A search_files result as its header and its match lines; lines of another shape are left out. */
+/**
+ * A search_files result as its header and its match lines; lines of another
+ * shape are left out, and so is the line after a characters-left-out note,
+ * which starts in the middle of a line.
+ */
 export function parseSearchResult(text: string): SearchView {
   const rows: SearchRow[] = [];
   let found: { matches: number; capped: boolean } | null = null;
-  for (const row of toResultRows(text)) {
+  const resultRows = toResultRows(text);
+  for (const [index, row] of resultRows.entries()) {
     if (row.kind === 'note') {
       rows.push(row.count === undefined ? { kind: 'note', note: row.note } : { kind: 'note', note: row.note, count: row.count });
       continue;
     }
+    const previous = resultRows[index - 1];
+    if (previous?.kind === 'note' && previous.note === 'charsNotRead') continue;
     const head = HEADER_LINE.exec(row.text);
     if (head) {
       found = { matches: Number(head[1]), capped: head[2] === '+' };

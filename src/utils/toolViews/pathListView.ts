@@ -21,11 +21,21 @@ function noteRow(row: Extract<ToolResultRow, { kind: 'note' }>): PathListRow {
   return row.count === undefined ? { kind: 'note', note: row.note } : { kind: 'note', note: row.note, count: row.count };
 }
 
-/** A find_files result as its file count and one row per path. */
+function isCharsNote(row: ToolResultRow | undefined): boolean {
+  return row?.kind === 'note' && row.note === 'charsNotRead';
+}
+
+/** A line on either side of a characters-left-out note: the cut ends one and starts the other mid-line. */
+function cutByChars(rows: readonly ToolResultRow[], index: number): boolean {
+  return isCharsNote(rows[index - 1]) || isCharsNote(rows[index + 1]);
+}
+
+/** A find_files result as its file count and one row per whole path. */
 export function parseFindResult(text: string): PathListView {
   let count = 0;
   const rows: PathListRow[] = [];
-  for (const row of toResultRows(text)) {
+  const resultRows = toResultRows(text);
+  for (const [index, row] of resultRows.entries()) {
     if (row.kind === 'note') {
       rows.push(noteRow(row));
       continue;
@@ -35,22 +45,24 @@ export function parseFindResult(text: string): PathListView {
       count = Number(head[1]);
       continue;
     }
-    if (row.text === NO_FILES || row.text === '') continue;
+    if (row.text === NO_FILES || row.text === '' || cutByChars(resultRows, index)) continue;
     rows.push({ kind: 'path', path: row.text });
   }
   return { header: { kind: 'files', count }, rows };
 }
 
-/** A list_directory result as one row per entry, each with its kind. */
+/** A list_directory result as one row per whole entry, each with its kind. */
 export function parseListDirectoryResult(text: string): PathListView {
   if (EMPTY_DIRECTORY.test(text)) return { header: { kind: 'empty' }, rows: [] };
   const rows: PathListRow[] = [];
   let count = 0;
-  for (const row of toResultRows(text)) {
+  const resultRows = toResultRows(text);
+  for (const [index, row] of resultRows.entries()) {
     if (row.kind === 'note') {
       rows.push(noteRow(row));
       continue;
     }
+    if (cutByChars(resultRows, index)) continue;
     const entry = ENTRY_LINE.exec(row.text);
     if (!entry) continue;
     rows.push({ kind: 'entry', name: entry[2], directory: entry[1] === 'DIR' });

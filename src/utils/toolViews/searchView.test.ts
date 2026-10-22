@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { linesOmittedMarker } from '@/core/context/truncation';
+import { linesOmittedMarker, truncateToolResult } from '@/core/context/truncation';
+import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { foldRowList } from '@/utils/toolResultFold';
 import { groupSearchRows, parseSearchResult, type SearchRow } from './searchView';
 
@@ -52,6 +53,31 @@ describe('parseSearchResult', () => {
     expect(view.rows.filter((row) => row.kind === 'match')).toHaveLength(6);
     expect(view.rows.filter((row) => row.kind === 'note')).toEqual([{ kind: 'note', note: 'linesNotRead', count: 11 }]);
     expect(view.rows[3]).toEqual({ kind: 'note', note: 'linesNotRead', count: 11 });
+  });
+
+  it('reads a line cut that keeps the head only', () => {
+    const lines = Array.from({ length: 59 }, (_, index) => `src/f${index}.ts:${index + 1}:  ${'x'.repeat(130)}`);
+    const cut = truncateToolResult(TOOL_NAMES.SEARCH_FILES, `Found 59 matches:\n${lines.join('\n')}`);
+    expect(cut.endsWith(`\n\n${linesOmittedMarker(10)}\n`)).toBe(true);
+    const view = parseSearchResult(cut);
+    expect(view.header).toEqual({ kind: 'count', matches: 59, files: 49 });
+    expect(view.rows.filter((row) => row.kind === 'match')).toHaveLength(49);
+    expect(view.rows.at(-1)).toEqual({ kind: 'note', note: 'linesNotRead', count: 10 });
+  });
+
+  it('drops the cut line after a characters-left-out note', () => {
+    const fillers = Array.from({ length: 20 }, (_, index) => `src/f${index}.ts:${index + 1}:  `.padEnd(400, 'x'));
+    const lines = [...fillers, `${'p'.repeat(400)}/components/Foo.tsx:120:  const x`, 'src/z.ts:9:'.padEnd(479, 'y')];
+    const cut = truncateToolResult(TOOL_NAMES.SEARCH_FILES, `Found 22 matches:\n${lines.join('\n')}`);
+    expect(cut).toMatch(/\n\n\[\.\.\. \d+ characters omitted \.\.\.\]\n\noo\.tsx:120: {2}const x\n/);
+    const view = parseSearchResult(cut);
+    const paths = view.rows.flatMap((row) => (row.kind === 'match' ? [row.path] : []));
+    expect(paths).not.toContain('oo.tsx');
+    expect(paths.at(-1)).toBe('src/z.ts');
+    expect(view.rows.filter((row) => row.kind === 'note')).toEqual([
+      { kind: 'note', note: 'charsNotRead', count: expect.any(Number) },
+    ]);
+    expect(view.header).toEqual({ kind: 'count', matches: 22, files: new Set(paths).size });
   });
 });
 
