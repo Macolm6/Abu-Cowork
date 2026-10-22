@@ -1,17 +1,30 @@
 import { useState, useMemo, useEffect, useRef, type ReactNode } from 'react';
-import { ChevronDown, ChevronRight, ExternalLink, ImageOff, Maximize2, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useI18n, format } from '@/i18n';
+import { Button } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Link } from '@/components/ds/link';
+import { Pressable } from '@/components/ds/pressable';
+import { Spinner } from '@/components/ds/spinner';
+import { StatusIcon } from '@/components/ds/status-icon';
+import { useI18n, format, type TranslationDict } from '@/i18n';
 import { getDetailBlockLabel } from '@/utils/toolLabels';
+import { foldToolResult, type ToolResultRow } from '@/utils/toolResultFold';
 import type { DetailBlock } from '@/types/execution';
 import { useChatStore } from '@/stores/chatStore';
+import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import { resolveOutputRefSource } from '@/core/session/outputSnapshots';
 import { loadLocalImage } from '@/utils/pathUtils';
 
 interface DetailBlockViewProps {
   block: DetailBlock;
   onToggle: () => void;
-  onLoadMore?: () => void;
+  /**
+   * The step's whole result: a string shows it folded with a button for all of
+   * it, null says the conversation no longer holds it, undefined keeps the
+   * block's own content (expert steps, lists, images, scripts).
+   */
+  fullText?: string | null;
 }
 
 type OutputRefImageState = 'idle' | 'loading' | 'ready' | 'unavailable';
@@ -25,12 +38,77 @@ function formatImageSize(bytes: number | undefined): string | null {
   return `${mb.toFixed(mb >= 10 ? 0 : 1)} MB`;
 }
 
+/** A JSON result indented by two spaces; text that does not parse stays as it is. */
+function formatJsonText(text: string): string {
+  try {
+    return JSON.stringify(JSON.parse(text), null, 2);
+  } catch {
+    return text;
+  }
+}
+
+function noteText(row: Extract<ToolResultRow, { kind: 'note' }>, t: TranslationDict): string {
+  if (row.note === 'restNotKept') return t.chat.toolResultRestNotKept;
+  if (row.note === 'partNotSaved') return t.chat.toolResultPartNotSaved;
+  const template = row.note === 'linesNotRead' ? t.chat.toolResultLinesNotRead : t.chat.toolResultCharsNotRead;
+  return format(template, { count: row.count ?? 0 });
+}
+
+/** Result rows: runs of the result's own lines in one `<pre>` each, a note on a line of its own. */
+function ResultRows({ rows, t }: { rows: ToolResultRow[]; t: TranslationDict }) {
+  const groups: ({ kind: 'text'; lines: string[] } | Extract<ToolResultRow, { kind: 'note' }>)[] = [];
+  for (const row of rows) {
+    const last = groups.at(-1);
+    if (row.kind === 'note') groups.push(row);
+    else if (last?.kind === 'text') last.lines.push(row.text);
+    else groups.push({ kind: 'text', lines: [row.text] });
+  }
+  return (
+    <>
+      {groups.map((group, index) => (group.kind === 'text' ? (
+        <pre key={index} className="m-0 whitespace-pre-wrap break-all font-code text-mono">{group.lines.join('\n')}</pre>
+      ) : (
+        <div key={index} data-tool-result-note className="my-1 text-caption text-label-tertiary">
+          {noteText(group, t)}
+        </div>
+      )))}
+    </>
+  );
+}
+
+/** A step's whole result: its start and end until the button shows all of it. */
+function WholeResult({ text, isError }: { text: string; isError: boolean }) {
+  const { t } = useI18n();
+  const fold = useMemo(() => foldToolResult(text), [text]);
+  const [showAll, setShowAll] = useState(false);
+  const folded = fold.hidden !== null && !showAll;
+  return (
+    <div
+      data-tool-result
+      className={cn('max-h-[300px] overflow-y-auto px-3 py-2', isError ? 'text-danger' : 'text-label')}
+    >
+      <ResultRows rows={folded ? fold.head : fold.rows} t={t} />
+      {folded && fold.hidden && (
+        <div className="py-1">
+          <Button variant="plain" size="sm" onClick={() => setShowAll(true)}>
+            {format(
+              fold.hidden.unit === 'lines' ? t.chat.toolResultShowAllLines : t.chat.toolResultShowAllChars,
+              { count: fold.hidden.count },
+            )}
+          </Button>
+        </div>
+      )}
+      {folded && <ResultRows rows={fold.tail} t={t} />}
+    </div>
+  );
+}
+
 /**
  * DetailBlockView - Collapsible content area for tool input/output
  * Supports multiple types: script, result, error, list, json, diff, table
  * Uses local state for toggle with optional store sync via onToggle.
  */
-export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailBlockViewProps) {
+export default function DetailBlockView({ block, onToggle, fullText }: DetailBlockViewProps) {
   const { locale, t } = useI18n();
   const outputRef = block.type === 'image' ? block.imageData?.outputRef : undefined;
   const activeConversationId = useChatStore((state) => (
@@ -38,8 +116,9 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
   ));
   // Local expanded state — syncs with block.isExpanded from store when available
   const [localExpanded, setLocalExpanded] = useState(block.isExpanded);
-  const [imageFullscreen, setImageFullscreen] = useState(false);
   const [outputRefSrc, setOutputRefSrc] = useState<string | null>(null);
+  // The file `outputRefSrc` was read from.
+  const outputRefPathRef = useRef<string | null>(null);
   const [outputRefState, setOutputRefState] = useState<OutputRefImageState>(() => (
     outputRef?.relPath ? 'loading' : 'idle'
   ));
@@ -68,6 +147,7 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
   const imageSrc = inlineImageSrc ?? outputRefSrc;
 
   useEffect(() => {
+    outputRefPathRef.current = null;
     if (block.type !== 'image' || inlineImageSrc || !outputRef?.relPath) {
       setOutputRefState('idle');
       if (outputRefObjectUrlRef.current) {
@@ -100,6 +180,7 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
           return;
         }
         outputRefObjectUrlRef.current = blobUrl;
+        outputRefPathRef.current = resolved.path;
         setOutputRefSrc(blobUrl);
         setOutputRefState('ready');
       })
@@ -120,54 +201,6 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
     }
   }, []);
 
-  // Style based on block type
-  const styles = useMemo(() => {
-    switch (block.type) {
-      case 'error':
-        return {
-          labelBg: 'bg-[var(--abu-danger-bg)]',
-          labelText: 'text-[var(--abu-danger)]',
-          contentBg: 'bg-[var(--abu-danger-bg)]',
-          borderColor: 'border-[var(--abu-danger)]',
-        };
-      case 'script':
-        return {
-          labelBg: 'bg-[var(--abu-bg-hover)]',
-          labelText: 'text-[var(--abu-text-tertiary)]',
-          contentBg: 'bg-[var(--abu-bg-muted)]',
-          borderColor: 'border-[var(--abu-bg-hover)]',
-        };
-      case 'list':
-        return {
-          labelBg: 'bg-[var(--abu-info-bg)]',
-          labelText: 'text-[var(--abu-info)]',
-          contentBg: 'bg-[var(--abu-info-bg)]',
-          borderColor: 'border-[var(--abu-info)]',
-        };
-      case 'json':
-        return {
-          labelBg: 'bg-purple-50',
-          labelText: 'text-purple-600',
-          contentBg: 'bg-purple-50/50',
-          borderColor: 'border-purple-100',
-        };
-      case 'image':
-        return {
-          labelBg: 'bg-[var(--abu-success-bg)]',
-          labelText: 'text-[var(--abu-success)]',
-          contentBg: 'bg-[var(--abu-bg-base)]',
-          borderColor: 'border-[var(--abu-success)]',
-        };
-      default:
-        return {
-          labelBg: 'bg-[var(--abu-bg-hover)]',
-          labelText: 'text-[var(--abu-text-muted)]',
-          contentBg: 'bg-[var(--abu-bg-muted)]',
-          borderColor: 'border-[var(--abu-bg-hover)]',
-        };
-    }
-  }, [block.type]);
-
   // Render content based on type
   const renderContent = () => {
     switch (block.type) {
@@ -184,35 +217,33 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
     }
   };
 
+  const renderFullUnavailable = () => (
+    <div className="border-t border-separator px-3 py-2 text-caption text-label-tertiary">
+      {t.chat.toolResultFullUnavailable}
+    </div>
+  );
+
   // Render plain text/code content
   const renderTextContent = () => (
     <>
       {/* Language tag */}
       {block.language && (
-        <div className="px-3 py-1.5 text-caption text-[var(--abu-text-muted)] bg-[var(--abu-bg-hover)] border-b border-[var(--abu-bg-hover)]">
+        <div className="border-b border-separator px-3 py-1 text-caption text-label-tertiary">
           {block.language}
         </div>
       )}
 
-      {/* Content area */}
-      <pre className={cn(
-        'px-3 py-2 text-minor font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-[300px] overflow-y-auto',
-        block.type === 'error' ? 'text-[var(--abu-danger)]' : 'text-[var(--abu-text-tertiary)]'
-      )}>
-        {block.content}
-      </pre>
-
-      {/* Load more button */}
-      {block.isTruncated && onLoadMore && (
-        <div className="px-3 py-2 border-t border-[var(--abu-bg-hover)]">
-          <button
-            onClick={onLoadMore}
-            className="text-caption text-[var(--abu-clay)] hover:underline"
-          >
-            {t.chat.viewMore} ({(block.fullContentLength || 0) - block.content.length} {t.chat.characters})
-          </button>
-        </div>
+      {typeof fullText === 'string' ? (
+        <WholeResult text={fullText} isError={block.type === 'error'} />
+      ) : (
+        <pre className={cn(
+          'px-3 py-2 font-code text-mono whitespace-pre-wrap break-all overflow-x-auto max-h-[300px] overflow-y-auto',
+          block.type === 'error' ? 'text-danger' : 'text-label'
+        )}>
+          {block.content}
+        </pre>
       )}
+      {fullText === null && renderFullUnavailable()}
     </>
   );
 
@@ -222,79 +253,74 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
     const size = formatImageSize(outputRef?.sizeBytes);
     const metadata = size ? `${filename} · ${size}` : filename;
 
+    // The app's image viewer shows it enlarged. A saved image goes there as the very file this
+    // block read: the viewer finds files by name, and two tool images can share one name.
+    const openInViewer = (thumbnail: HTMLElement) => {
+      if (!block.imageData) return;
+      useImageLightboxStore.getState().open([{
+        id: outputRef?.relPath ?? block.id,
+        mediaType: block.imageData.mediaType,
+        data: block.imageData.base64 ?? '',
+        filePath: outputRefPathRef.current ?? undefined,
+        conversationId: activeConversationId ?? undefined,
+      }], 0, thumbnail);
+    };
+
+    const frameClass = 'relative group flex h-[200px] w-[320px] items-center justify-center overflow-hidden rounded-control border border-separator bg-fill';
     const renderImageFrame = (children: ReactNode, interactive: boolean) => (
       <div className="p-2">
-        <div
-          className={cn(
-            'relative group w-[320px] h-[200px] rounded border border-[var(--abu-bg-hover)] overflow-hidden bg-[var(--abu-bg-muted)] flex items-center justify-center',
-            interactive && 'cursor-pointer',
-          )}
-          onClick={interactive ? () => setImageFullscreen(true) : undefined}
-        >
-          {children}
-          {interactive && (
-            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
-              <Maximize2 className="h-5 w-5 text-white opacity-0 group-hover:opacity-80 transition-opacity" />
-            </div>
-          )}
-        </div>
-        <div className="mt-1 text-caption text-[var(--abu-text-muted)] truncate max-w-[320px]">{metadata}</div>
+        {interactive ? (
+          <Pressable className={cn(frameClass, 'cursor-pointer')} onClick={(event) => openInViewer(event.currentTarget)}>
+            {children}
+            <span className="absolute inset-0 flex items-center justify-center transition-colors group-hover:bg-scrim group-focus-visible:bg-scrim">
+              <span className="rounded-control bg-raised p-1 text-label opacity-0 shadow-float transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+                <Icon icon={AppIcons.enlarge} size="md" />
+              </span>
+            </span>
+          </Pressable>
+        ) : (
+          <div className={frameClass}>{children}</div>
+        )}
+        <div className="mt-1 max-w-[320px] truncate text-caption text-label-tertiary">{metadata}</div>
       </div>
     );
 
     if (!imageSrc) {
       if (outputRef?.relPath && outputRefState === 'loading') {
         return renderImageFrame(
-          <div className="text-caption text-[var(--abu-text-muted)]">{t.chat.imageLoading}</div>,
+          <Spinner size="sm" labelHidden label={t.chat.imageLoading} />,
           false,
         );
       }
       return renderImageFrame(
         <div className="flex flex-col items-center gap-2 px-4 text-center">
-          <ImageOff className="h-6 w-6 text-[var(--abu-text-muted)]" />
-          <div className="text-caption text-[var(--abu-text-muted)]">{t.chat.imageUnavailable}</div>
+          <Icon icon={AppIcons.imageMissing} size="lg" className="text-label-tertiary" />
+          <div className="text-caption text-label-tertiary">{t.chat.imageUnavailable}</div>
           {outputRef?.relPath && (
-            <button
-              type="button"
+            <Button
+              variant="plain"
+              size="sm"
+              icon={AppIcons.retry}
               onClick={(e) => {
                 e.stopPropagation();
                 setRetryNonce((value) => value + 1);
               }}
-              className="inline-flex items-center gap-1 text-caption text-[var(--abu-link)] hover:text-[var(--abu-link-hover)]"
             >
-              <RefreshCw className="h-3 w-3" />
               {t.chat.imageRetry}
-            </button>
+            </Button>
           )}
         </div>,
         false,
       );
     }
 
-    return (
-      <>
-        {renderImageFrame(
-            <img
-              src={imageSrc}
-              alt={block.content || 'Image'}
-              className="max-w-full max-h-full object-contain"
-            />,
-            true,
-        )}
-        {imageFullscreen && (
-          <div
-            data-electron-no-drag
-            className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-8 cursor-pointer"
-            onClick={() => setImageFullscreen(false)}
-          >
-            <img
-              src={imageSrc}
-              alt={block.content || 'Image (full)'}
-              className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
-            />
-          </div>
-        )}
-      </>
+    return renderImageFrame(
+      <img
+        src={imageSrc}
+        alt={block.content || 'Image'}
+        className="max-w-full max-h-full object-contain"
+      />,
+      true,
     );
   };
 
@@ -305,27 +331,27 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
     }
 
     return (
-      <div className="divide-y divide-[var(--abu-bg-hover)]">
+      <div className="divide-y divide-separator">
         {block.parsedItems.slice(0, 5).map((item, index) => (
-          <div key={index} className="px-3 py-2 hover:bg-[var(--abu-bg-hover)] transition-colors">
+          <div key={index} className="px-3 py-2 transition-colors hover:bg-fill-hover">
             <div className="flex items-start gap-2">
-              {item.icon && <span className="text-minor">{item.icon}</span>}
+              {item.icon && <span className="text-ui-sm">{item.icon}</span>}
               <div className="flex-1 min-w-0">
                 {item.url ? (
-                  <a
+                  <Link
                     href={item.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-minor text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] font-medium flex items-center gap-1"
+                    className="inline-flex items-center gap-1 text-ui-sm font-medium"
                   >
                     {item.title}
-                    <ExternalLink className="h-3 w-3 opacity-50" />
-                  </a>
+                    <Icon icon={AppIcons.openExternal} size="sm" />
+                  </Link>
                 ) : (
-                  <div className="text-minor text-[var(--abu-text-tertiary)] font-medium">{item.title}</div>
+                  <div className="text-ui-sm font-medium text-label">{item.title}</div>
                 )}
                 {item.description && (
-                  <div className="text-caption text-[var(--abu-text-muted)] mt-0.5 line-clamp-2">
+                  <div className="mt-1 line-clamp-2 text-caption text-label-tertiary">
                     {item.description}
                   </div>
                 )}
@@ -334,7 +360,7 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
           </div>
         ))}
         {block.parsedItems.length > 5 && (
-          <div className="px-3 py-2 text-caption text-[var(--abu-text-muted)]">
+          <div className="px-3 py-2 text-caption text-label-tertiary">
             {format(t.chat.moreItems, { count: block.parsedItems.length - 5 })}
           </div>
         )}
@@ -344,18 +370,14 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
 
   // Render JSON content with syntax highlighting
   const renderJsonContent = () => {
-    let formattedJson = block.content;
-    try {
-      const parsed = JSON.parse(block.content);
-      formattedJson = JSON.stringify(parsed, null, 2);
-    } catch {
-      // If parsing fails, show as-is
-    }
-
+    if (typeof fullText === 'string') return <WholeResult text={formatJsonText(fullText)} isError={false} />;
     return (
-      <pre className="px-3 py-2 text-minor text-[var(--abu-text-tertiary)] font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-[300px] overflow-y-auto">
-        {formattedJson}
-      </pre>
+      <>
+        <pre className="px-3 py-2 font-code text-mono text-label whitespace-pre-wrap break-all overflow-x-auto max-h-[300px] overflow-y-auto">
+          {formatJsonText(block.content)}
+        </pre>
+        {fullText === null && renderFullUnavailable()}
+      </>
     );
   };
 
@@ -369,11 +391,11 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
 
     return (
       <div className="overflow-x-auto">
-        <table className="w-full text-minor">
+        <table className="w-full text-ui-sm">
           <thead>
-            <tr className="bg-[var(--abu-bg-hover)]">
+            <tr className="bg-fill">
               {headers.map((header, i) => (
-                <th key={i} className="px-3 py-1.5 text-left text-[var(--abu-text-tertiary)] font-medium border-b border-[var(--abu-bg-hover)]">
+                <th key={i} className="border-b border-separator px-3 py-1 text-left font-medium text-label">
                   {header}
                 </th>
               ))}
@@ -381,9 +403,9 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
           </thead>
           <tbody>
             {rows.slice(0, 10).map((row, i) => (
-              <tr key={i} className="hover:bg-[var(--abu-bg-muted)]">
+              <tr key={i} className="hover:bg-fill-hover">
                 {row.map((cell, j) => (
-                  <td key={j} className="px-3 py-1.5 text-[var(--abu-text-tertiary)] border-b border-[var(--abu-bg-hover)]">
+                  <td key={j} className="border-b border-separator px-3 py-1 text-label">
                     {cell}
                   </td>
                 ))}
@@ -392,7 +414,7 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
           </tbody>
         </table>
         {rows.length > 10 && (
-          <div className="px-3 py-2 text-caption text-[var(--abu-text-muted)] border-t border-[var(--abu-bg-hover)]">
+          <div className="border-t border-separator px-3 py-2 text-caption text-label-tertiary">
             {format(t.chat.moreRows, { count: rows.length - 10 })}
           </div>
         )}
@@ -403,41 +425,24 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
   return (
     <div className="mt-1">
       {/* Label button */}
-      <button
+      <Pressable
         onClick={handleToggle}
-        className={cn(
-          'inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-caption',
-          'transition-colors',
-          styles.labelBg,
-          styles.labelText,
-          'hover:opacity-80'
-        )}
+        aria-expanded={localExpanded}
+        className="inline-flex h-5 items-center gap-1 rounded-control bg-fill px-2 text-caption text-label-secondary transition-colors hover:bg-fill-hover"
       >
-        {localExpanded ? (
-          <ChevronDown className="h-3 w-3" />
-        ) : (
-          <ChevronRight className="h-3 w-3" />
-        )}
+        <Icon icon={localExpanded ? AppIcons.expand : AppIcons.disclose} size="sm" />
+        {block.type === 'error' && <StatusIcon tone="danger" size="sm" />}
         {headerLabel}
-        {block.isTruncated && !localExpanded && (
-          <span className="text-caption opacity-70">
-            ({block.fullContentLength} {t.chat.characters})
-          </span>
-        )}
         {block.type === 'list' && block.parsedItems && (
-          <span className="text-caption opacity-70">
+          <span>
             ({block.parsedItems.length})
           </span>
         )}
-      </button>
+      </Pressable>
 
       {/* Expanded content */}
       {localExpanded && (
-        <div className={cn(
-          'mt-2 rounded-lg overflow-hidden border',
-          styles.contentBg,
-          styles.borderColor
-        )}>
+        <div className="mt-2 overflow-hidden rounded-panel bg-code">
           {renderContent()}
         </div>
       )}

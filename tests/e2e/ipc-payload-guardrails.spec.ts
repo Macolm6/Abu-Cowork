@@ -18,7 +18,7 @@
  */
 import { expect, test } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
-import type { ElectronApplication, Page } from 'playwright';
+import type { ElectronApplication } from 'playwright';
 import {
   closeAbuElectron,
   configureLocalMockProvider,
@@ -35,6 +35,7 @@ import {
   waitForApp,
   type OpenAiMock,
 } from './openAiMock';
+import { readRuntimeEvents, sentPayloadBytes } from './runtimeEvents';
 
 /** The ordinary turn both launches send, kept identical so the measurement transfers. */
 const NORMAL_TURN_TEXT = 'short warm-up';
@@ -68,39 +69,6 @@ const WRITE_LIMIT_MARGIN_BYTES = 256 * 1024;
  */
 const OVERSIZE_TURN_CHARS = 250_000;
 const OVERSIZE_TURN_TEXT_BYTES = OVERSIZE_TURN_CHARS * 3;
-
-interface RuntimeEvent extends Record<string, unknown> {
-  event?: string;
-  fieldMessagesTextBytes?: number;
-  method?: string;
-  payloadBytes?: number;
-}
-
-/** Runtime-observability lines as the main process currently holds them. */
-async function readRuntimeEvents(page: Page): Promise<RuntimeEvent[]> {
-  const diagnostics = await page.evaluate(async () => {
-    const shell = (window as unknown as {
-      __ABU_SHELL__: { getRuntimeDiagnostics: () => Promise<{ recentEventLines: string[] }> };
-    }).__ABU_SHELL__;
-    return shell.getRuntimeDiagnostics();
-  });
-  return diagnostics.recentEventLines.flatMap((line) => {
-    try {
-      return [JSON.parse(line) as RuntimeEvent];
-    } catch {
-      return [];
-    }
-  });
-}
-
-/** Byte counts the renderer recorded for the RPCs a normal turn sends. */
-function sentPayloadBytes(events: RuntimeEvent[], method?: string): number[] {
-  return events
-    .filter((event) => event.event === 'renderer.sidecar_rpc_sent'
-      && (method === undefined || event.method === method)
-      && typeof event.payloadBytes === 'number')
-    .map((event) => event.payloadBytes as number);
-}
 
 let app: ElectronApplication | undefined;
 let dataRoots: ElectronDataRoot[] = [];
@@ -147,8 +115,9 @@ test.describe.serial('#549 IPC payload guardrails — real Electron', () => {
     const baselineEvents = await readRuntimeEvents(baselinePage);
     const agentStartBytes = Math.max(...sentPayloadBytes(baselineEvents, 'agent.start'));
     // The cap applies to every mcp_write, not just agent.start, so take the
-    // largest RPC the normal turn sent (agent.run and llm.chat carry the same
-    // conversation) as the number the limit has to clear.
+    // largest RPC the normal turn sent as the number the limit has to clear.
+    // `agent.start` is that RPC: it carries the turn plus the run's constants,
+    // while `agent.run` carries three ids.
     const normalTurnBytes = Math.max(...sentPayloadBytes(baselineEvents));
     const writeLimitBytes = normalTurnBytes + WRITE_LIMIT_MARGIN_BYTES;
     // The long turn below has to clear the cap this run actually computed.
@@ -188,15 +157,17 @@ test.describe.serial('#549 IPC payload guardrails — real Electron', () => {
     await input.fill(oversizeTurn);
     await input.press('Enter');
 
-    // The failure line sits next to its button inside one flex row under the
-    // user's message (MessageBubble.tsx), so the row is the text node's parent.
-    const failedRow = page.getByText('这段对话太长，无法继续。').locator('..');
+    // The failure line and its button share one alert under the user's message
+    // (the InlineMessage in MessageBubble.tsx).
+    const failedRow = page.getByRole('alert').filter({ hasText: '这段对话太长，无法继续。' });
     await expect(failedRow).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(failedRow.getByRole('button', { name: '新建对话' })).toBeVisible();
     await expect(failedRow.getByRole('button', { name: '重试' })).toHaveCount(0);
-    // ToastContainer renders nothing while the toast store is empty; the only
-    // other live-region status in the app is screen-reader-only.
-    await expect(page.locator('[role="status"][aria-live="polite"]:not(.sr-only)')).toHaveCount(0);
+    // The notification region is always on the page and holds one list item
+    // per toast: no item, no toast.
+    const notifications = page.getByRole('region', { name: /^(通知|Notifications)$/ });
+    await expect(notifications).toHaveCount(1);
+    await expect(notifications.getByRole('listitem')).toHaveCount(0);
     // The oversize turn never reached the model: only the ordinary turn did.
     expect(taskRequests(mock)).toHaveLength(1);
 
@@ -212,7 +183,23 @@ test.describe.serial('#549 IPC payload guardrails — real Electron', () => {
       const fields = Object.entries(event).filter(([key]) => key.startsWith('field'));
       expect(fields.length).toBeGreaterThan(0);
       for (const [, value] of fields) expect(typeof value).toBe('number');
-      expect(event.fieldMessagesTextBytes as number).toBeGreaterThanOrEqual(OVERSIZE_TURN_TEXT_BYTES);
+      // The turn's text travels as the top-level `userMessage` and again as the
+      // route's clean input, so both name the long turn's size; the history is
+      // not on the wire at all, so the messages of the conversation snapshot
+      // measure nothing.
+      expect(
+        event.fieldUserMessageBytes as number,
+        `the oversize turn's text no longer reaches userMessage (${String(event.fieldUserMessageBytes)} bytes)`,
+      ).toBeGreaterThanOrEqual(OVERSIZE_TURN_TEXT_BYTES);
+      expect(
+        event.fieldRouteBytes as number,
+        `the oversize turn's text no longer reaches the route's clean input (${String(event.fieldRouteBytes)} bytes)`,
+      ).toBeGreaterThanOrEqual(OVERSIZE_TURN_TEXT_BYTES);
+      expect(
+        event.fieldMessagesTextBytes as number,
+        `the conversation snapshot carried ${String(event.fieldMessagesTextBytes)} bytes of message text;`
+        + ' on the ledger form it carries none',
+      ).toBe(0);
     }
     // Neither the filler nor the turn's unique opening words reach the trace.
     const serializedEvents = JSON.stringify(events);
@@ -228,7 +215,8 @@ test.describe.serial('#549 IPC payload guardrails — real Electron', () => {
       matchesFailedTurn: true,
     });
     // Carrying the turn into a new conversation raises no toast either.
-    await expect(page.locator('[role="status"][aria-live="polite"]:not(.sr-only)')).toHaveCount(0);
+    await expect(notifications).toHaveCount(1);
+    await expect(notifications.getByRole('listitem')).toHaveCount(0);
   });
 
   test('a turn carrying U+2028 and U+2029 is answered', async () => {

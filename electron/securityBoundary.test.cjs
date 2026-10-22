@@ -13,6 +13,7 @@ const {
   registerPrivilegedWebContents,
   assertTrustedIpcSender,
   assertTrustedMainIpcSender,
+  isTrustedMainWindowPage,
   validateInvokePayload,
   assertResourceOwner,
   canonicalFilePage,
@@ -95,6 +96,25 @@ test('main-only direct IPC accepts main and rejects other privileged windows', (
     () => assertTrustedMainIpcSender(trustedEvent(pet)),
     /main window/
   );
+});
+
+test('permission handlers trust only the main window on its registered page', () => {
+  const mainPage = fileUrl('main.html');
+  const main = new FakeWebContents(mainPage);
+  registerPrivilegedWebContents(main, mainPage, { label: 'main' });
+
+  const petPage = fileUrl('pet.html');
+  const pet = new FakeWebContents(petPage);
+  registerPrivilegedWebContents(pet, petPage, { label: 'pet' });
+
+  assert.equal(isTrustedMainWindowPage(main, `${mainPage}?boot=1#top`), true);
+  assert.equal(isTrustedMainWindowPage(main, petPage), false);
+  assert.equal(isTrustedMainWindowPage(main, 'https://example.com/'), false);
+  assert.equal(isTrustedMainWindowPage(pet, petPage), false);
+  assert.equal(isTrustedMainWindowPage(new FakeWebContents(mainPage), mainPage), false);
+  assert.equal(isTrustedMainWindowPage(null, mainPage), false);
+  main.destroyed = true;
+  assert.equal(isTrustedMainWindowPage(main, mainPage), false);
 });
 
 test('Windows drive and UNC paths are recognized as file pages before URL parsing', () => {
@@ -300,6 +320,29 @@ test('pet, overlay, and stop-button windows only receive their required commands
       args: { event: 'computer-use-abort' },
     })
   );
+});
+
+test('background command controls are open to the main window only', () => {
+  const commands = [
+    ['background_command_list', { conversationId: 'c1' }],
+    ['background_command_output', { conversationId: 'c1', id: 'bg-0123abcd', since: 0 }],
+    ['background_command_stop', { conversationId: 'c1', id: 'bg-0123abcd' }],
+    ['background_command_clear', { conversationId: 'c1' }],
+    ['background_command_stop_conversation', { conversationId: 'c1' }],
+    ['background_command_running_count', {}],
+  ];
+  for (const label of ['pet', 'overlay', 'overlay-strip', 'stop-button']) {
+    for (const [cmd, args] of commands) {
+      assert.throws(
+        () => validateInvokePayload(trustedRecord(label), { cmd, args }),
+        /cannot invoke/,
+        `${label} ${cmd}`,
+      );
+    }
+  }
+  for (const [cmd, args] of commands) {
+    assert.doesNotThrow(() => validateInvokePayload(trustedRecord('main'), { cmd, args }), cmd);
+  }
 });
 
 test('the pet may move itself and report where, but not raise or focus windows', () => {
@@ -700,12 +743,17 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
 
   const shellBridge = exposed.get('__ABU_SHELL__');
   assert.deepEqual(Object.keys(shellBridge).sort(), [
+    'appPage',
     'authorizeUserAttachment',
     'canonicalizePathForPolicy',
+    'deepLinkScheme',
+    'fileOperation',
     'getPathForFile',
     'getRuntimeDiagnostics',
     'getSidecarBridgeSnapshot',
+    'inspectPathNameComparison',
     'mainSupervisesSidecar',
+    'microphone',
     'persistDelegatedMedia',
     'pluginAuthor',
     'pluginOperation',
@@ -714,11 +762,45 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
     'readDelegatedMedia',
     'readUserAttachment',
     'recordRuntimeEvent',
+    'registerQuitParticipant',
     'releaseUserAttachment',
     'saveImageAttachment',
     'selectUserAttachments',
+    'speech',
     'subscribeSidecarEvents',
+    'subscribeSpeechEvents',
+    'windowMaterial',
   ]);
+  await shellBridge.fileOperation('read', { session: 'file-session', reference: 'file-reference' });
+  assert.deepEqual(JSON.parse(JSON.stringify(invoked.pop())), {
+    channel: 'abu:file-operation',
+    payload: {
+      action: 'read',
+      request: { session: 'file-session', reference: 'file-reference' },
+    },
+  });
+  // Voice input: the renderer names an action, never a URL or a permission.
+  await shellBridge.microphone('status');
+  assert.equal(invoked.at(-1).channel, 'abu:microphone');
+  assert.deepEqual(Object.entries(invoked.at(-1).payload), [['action', 'status']]);
+  // Voice input: only named actions, and only a bounded WAV byte array crosses.
+  await assert.rejects(shellBridge.speech('rm', {}), /unsupported action/);
+  await assert.rejects(shellBridge.speech('transcribe', { audio: 'RIFF' }), /WAV byte array/);
+  await assert.rejects(
+    shellBridge.speech('transcribe', { audio: new Uint8Array(44 + 150 * 16000 * 2 + 2) }),
+    /WAV byte array/,
+  );
+  await shellBridge.speech('prepare', { source: 'hf-mirror', extra: 'dropped' });
+  assert.equal(invoked.at(-1).channel, 'abu:speech');
+  assert.deepEqual(Object.entries(invoked.at(-1).payload.request), [['source', 'hf-mirror']]);
+  invoked.pop();
+  invoked.pop(); // keep the invocation log below scoped to the file bridges
+  // This sandbox has no `process`, which is the point: assembling the bridge
+  // must never depend on a Node global. Without the launch flag the scheme
+  // stays on the production default rather than throwing at preload eval.
+  assert.equal(shellBridge.deepLinkScheme, 'abu');
+  // Without the launch flag there is no system material behind the page.
+  assert.equal(shellBridge.windowMaterial, 'none');
   assert.equal(
     await shellBridge.canonicalizePathForPolicy('/native/report.png'),
     '/canonical/native/report.png',
@@ -1024,4 +1106,44 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
     type: 'close', payload: '', sequence: 3, generation: 1,
   });
   assert.equal(sidecarEvents.length, 1);
+});
+
+// Evaluates preload.cjs with the given launch arguments and returns the shell bridge.
+function loadShellBridgeWithArgv(argv) {
+  const exposed = new Map();
+  const context = {
+    process: { argv },
+    require(id) {
+      assert.equal(id, 'electron');
+      return {
+        contextBridge: { exposeInMainWorld: (key, value) => exposed.set(key, value) },
+        ipcRenderer: {
+          invoke: async () => undefined,
+          on: () => {},
+          send: () => {},
+          sendSync: () => null,
+        },
+        webUtils: { getPathForFile: () => '' },
+      };
+    },
+  };
+  context.globalThis = context;
+  const preloadSource = fs.readFileSync(path.join(__dirname, 'preload.cjs'), 'utf8');
+  vm.runInNewContext(preloadSource, context, { filename: 'preload.cjs' });
+  return exposed.get('__ABU_SHELL__');
+}
+
+test('preload reports the window material main passed on the command line', () => {
+  for (const material of ['vibrancy', 'mica', 'none']) {
+    const bridge = loadShellBridgeWithArgv(['electron', '.', `--abu-window-material=${material}`]);
+    assert.equal(bridge.windowMaterial, material);
+  }
+  assert.equal(loadShellBridgeWithArgv(['electron', '.']).windowMaterial, 'none');
+});
+
+test('preload refuses a window material main never sends', () => {
+  assert.throws(
+    () => loadShellBridgeWithArgv(['electron', '.', '--abu-window-material=acrylic']),
+    /Unknown window material: acrylic/,
+  );
 });

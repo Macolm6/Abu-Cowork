@@ -16,6 +16,7 @@
  */
 import { exists, stat } from '@tauri-apps/plugin-fs';
 import type { PreToolCallEvent } from '../lifecycleHooks';
+import { FileOperationDenied, type ToolFileAccess } from '@/core/tools/fileOperation';
 import { TOOL_NAMES } from '../../tools/toolNames';
 import { checkReadPath, isInScopedAuthorizedWorkspace } from '../../tools/pathSafety';
 import {
@@ -45,16 +46,17 @@ function buildBlockReason(path: string, size: number): string {
  * intentionally probes file metadata.  The pre-tool hook does that itself;
  * registry.ts calls it only after its file-permission flow has completed.
  */
-export async function getLargeWriteBlockReason(path: string): Promise<string | null> {
+export async function getLargeWriteBlockReason(path: string, files?: ToolFileAccess): Promise<string | null> {
   try {
-    if (!(await exists(path))) return null;
+    if (!(await (files ? files.exists(path) : exists(path)))) return null;
 
-    const info = await stat(path);
+    const info = await (files ? files.stat(path) : stat(path));
     const size = typeof info?.size === 'number' ? info.size : 0;
     return size >= LARGE_WRITE_THRESHOLD_BYTES
       ? buildBlockReason(path, size)
       : null;
-  } catch {
+  } catch (error) {
+    if (error instanceof FileOperationDenied) throw error;
     // The real write path will surface sandbox/IO errors.  This data-integrity
     // guard must not replace those errors with a misleading metadata failure.
     return null;

@@ -2,9 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [dev, main]
+    # feat/design-system-next collects design-system batches 3–9 before they reach dev.
+    branches: [dev, main, feat/design-system-next]
   pull_request:
-    branches: [main, dev]
+    branches: [main, dev, feat/design-system-next]
     # Re-evaluate body/label-based gate exemptions when their inputs change.
     types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 
@@ -127,6 +128,10 @@ jobs:
       - name: TESTING.md inventory is up to date
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run test:inventory:check
+
+      - name: Official plugin market validates
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run market:check
 
       - name: Upload coverage report
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
@@ -313,8 +318,13 @@ jobs:
           node-version: 24
       - name: npm audit (production deps, high+, allowlist-aware)
         run: |
+          # Every lockfile whose production deps ship in the app: the root, the
+          # bridge bundled into chrome-bridge-runtime, and the speech runtime
+          # copied as an extraResource. abu-chrome-extension has no production deps.
           # npm audit exits non-zero whenever it finds anything; the checker decides.
-          npm audit --omit=dev --json > audit.json || true
-          node scripts/npm-audit-check.mjs audit.json | tee -a "$GITHUB_STEP_SUMMARY"
+          for dir in . abu-browser-bridge electron/speech-runtime; do
+            (cd "$dir" && npm audit --omit=dev --json > audit.json) || true
+          done
+          node scripts/npm-audit-check.mjs audit.json abu-browser-bridge/audit.json electron/speech-runtime/audit.json | tee -a "$GITHUB_STEP_SUMMARY"
           status=${PIPESTATUS[0]}
           exit "$status"

@@ -84,6 +84,7 @@ import {
 } from '../sidecar/sidecarManager';
 import {
   buildSubagentMcpPreflightFailure,
+  buildSubagentModelUnavailableFailure,
   runSubagentLoop,
   resolveSubagentInteractionMode,
   SubagentResult,
@@ -106,6 +107,8 @@ import { isPayloadTooLargeError } from '../ipc/payloadTooLarge';
 import { paramsBuildDisplayMessage } from './paramsBuildFailure';
 import { isUpstreamErrorDetails, sanitizeUntrustedLlmErrorText } from '../llm/adapter';
 import type { LoopContext } from './permissionBridge';
+import { captureToolOperationOwner } from '../tools/operationAuthorization';
+import { requiresHostFileExecution } from '../tools/fileToolTargets';
 import { attachTrustedSkillCommandApproval } from './skillCommandApproval';
 import { normalizeIMRunCapability } from '../permissions/runPermissionCeiling';
 import {
@@ -120,10 +123,10 @@ const logger = createLogger('subagent-transport');
 /** Security boundary for tool-triggered nesting: inherit the parent run's
  * frozen provider/model snapshot and conversation identity as one unit. */
 export function getSubagentRunInheritance(
-  loopContext: Pick<LoopContext, 'loopId' | 'conversationId' | 'settingsReader' | 'authorizationScopeId' | 'runPermissionCeiling' | 'imReplyTarget' | 'triggerId' | 'scheduledTaskId' | 'initiatedBy' | 'reportBrowserDenial' | 'reportBrowserAllow'> | null | undefined,
+  loopContext: Pick<LoopContext, 'loopId' | 'conversationId' | 'settingsReader' | 'authorizationScopeId' | 'runPermissionCeiling' | 'imReplyTarget' | 'triggerId' | 'scheduledTaskId' | 'initiatedBy' | 'reportBrowserDenial' | 'reportBrowserAllow' | 'operationOwner'> | null | undefined,
   authorizationScopeId?: string,
   workspacePath?: string | null,
-): Pick<SubagentLoopOptions, 'parentLoopId' | 'parentConversationId' | 'settingsReader' | 'authorizationScopeId' | 'runPermissionCeiling' | 'workspaceReader' | 'imContext' | 'triggerId' | 'scheduledTaskId' | 'initiatedBy' | 'reportBrowserDenial' | 'reportBrowserAllow'> {
+): Pick<SubagentLoopOptions, 'parentLoopId' | 'parentConversationId' | 'settingsReader' | 'authorizationScopeId' | 'runPermissionCeiling' | 'workspaceReader' | 'imContext' | 'triggerId' | 'scheduledTaskId' | 'initiatedBy' | 'reportBrowserDenial' | 'reportBrowserAllow' | 'operationOwner'> {
   const imReplyTarget = loopContext?.imReplyTarget;
   const runPermissionCeiling = loopContext?.runPermissionCeiling;
   const imContext = imReplyTarget && runPermissionCeiling?.source === 'im'
@@ -136,6 +139,7 @@ export function getSubagentRunInheritance(
     : undefined;
   return {
     parentLoopId: loopContext?.loopId,
+    ...(loopContext?.operationOwner ? { operationOwner: loopContext.operationOwner } : {}),
     parentConversationId: loopContext?.conversationId,
     settingsReader: loopContext?.settingsReader,
     authorizationScopeId: authorizationScopeId ?? loopContext?.authorizationScopeId,
@@ -163,6 +167,8 @@ import { getToolInvoker } from './ports/toolInvoker';
 import { getSettingsReader } from './ports/settingsReader';
 import { getWorkspaceReader } from './ports/workspaceReader';
 import { getActiveApiKey, getActiveProvider } from '../../utils/settingsSelectors';
+import { resolveDelegatedModelCapabilities } from './delegatedModelCapabilities';
+import type { ComputerUseModelTier, ModelCapabilitySource } from '../llm/modelCapabilities';
 import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 import { getI18n, getLocale } from '../../i18n';
 import { buildSubagentUiStrings } from './subagentUiStrings';
@@ -192,11 +198,17 @@ export interface SerializableToolDefinition {
   name: string;
   description: string;
   inputSchema: ToolDefinition['inputSchema'];
+  execution?: ToolDefinition['execution'];
+  executionRoute?: 'host';
 }
 
 /** Exported for reuse by agentLoopRunner.ts's `tool.list` REQUEST handler (P1-3b-2 item 5) — same wire-safe tool projection, no need for a second copy. */
 export function toSerializableTool(t: ToolDefinition): SerializableToolDefinition {
-  return { name: t.name, description: t.description, inputSchema: t.inputSchema };
+  return {
+    name: t.name, description: t.description, inputSchema: t.inputSchema,
+    ...(t.execution ? { execution: t.execution } : {}),
+    ...(requiresHostFileExecution(t.name) ? { executionRoute: 'host' as const } : {}),
+  };
 }
 
 /** The `subagent.run` request params — see this file's module doc for the wire protocol. */
@@ -234,6 +246,8 @@ export interface SubagentRunParams {
   initiatedBy?: import('./runInteractionMode').RunInitiator;
   /** Hand-off key so the member loop (wherever it runs) can take direct instructions. */
   dispatchKey?: string;
+  /** The run is the user turn itself, so the sidecar loop builds the same roster and prompt as the shell. */
+  ownsUserTurn?: boolean;
   locale: string;
   uiStrings: ReturnType<typeof buildSubagentUiStrings>;
   settingsSnapshot: ReturnType<ReturnType<typeof getSettingsReader>['getSnapshot']>;
@@ -273,11 +287,13 @@ export type SubagentWireBackedLoopOptionField = Extract<
 >;
 
 export const SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS = [
+  'operationOwner',
   'signal',
   'commandConfirmCallback',
   'filePermissionCallback',
   'onProgress',
   'settingsReader',
+  'liveSettingsReader',
   'toolInvoker',
   'capsPort',
   'workspaceReader',
@@ -376,6 +392,14 @@ interface RunSession {
   imReplyTarget?: { platform: string; chatId: string };
   /** Frozen shell-side mirror of the roster sent to the sidecar loop. */
   offeredToolNames: ReadonlySet<string>;
+  /**
+   * 子代理实际使用的模型、能力来源、电脑操控档位与能否看图。外壳用派发时的设置快照
+   * 算出，工具执行时以这份为准，不用 sidecar 发来的副本。
+   */
+  modelId: string;
+  modelCapabilitySource: ModelCapabilitySource;
+  computerUseTier: ComputerUseModelTier;
+  supportsVision: boolean;
   /** Set true the instant handleToolInvoke sees ≥1 call for this runId — see module doc's "Fallback discipline". */
   firstToolInvokeArrived: boolean;
   /** Progress received before the sidecar run reaches a no-rerun commit point. */
@@ -395,6 +419,7 @@ function buildTrustedSubagentToolContext(
 ): ToolExecutionContext {
   const trustedContext: ToolExecutionContext = {
     ...incoming,
+    operationOwner: session.options.operationOwner,
     workspacePath: session.options.workspaceReader?.getCurrentPath() ?? null,
     authorizationScopeId: session.options.authorizationScopeId,
     runPermissionCeiling: session.options.runPermissionCeiling,
@@ -403,6 +428,9 @@ function buildTrustedSubagentToolContext(
     agentRunId: session.runId,
     agentName: session.options.agent.name,
     teamApprovalDispatch: session.options.teamApprovalDispatch,
+    // The team task keys the leader's hand-off bounds; a member never
+    // dispatches, and a sidecar-supplied value must not reach that key.
+    teamTaskId: undefined,
     imReplyTarget: session.imReplyTarget ? { ...session.imReplyTarget } : undefined,
     interactionMode: resolveSubagentInteractionMode(session.options),
     // Inherited from the parent run at delegation time — the sidecar's copy
@@ -415,6 +443,13 @@ function buildTrustedSubagentToolContext(
     reportBrowserDenial: session.options.reportBrowserDenial,
     reportBrowserAllow: session.options.reportBrowserAllow,
     abortSignal: session.options.signal,
+    // 本次运行给子代理的工具名单由 shell 自己保存，不用 sidecar 发来的副本
+    offeredToolNames: [...session.offeredToolNames],
+    // 模型、档位与能否看图决定电脑操控放不放行、提示里写哪个模型，同样用 shell 自己算的值
+    modelId: session.modelId,
+    modelCapabilitySource: session.modelCapabilitySource,
+    computerUseTier: session.computerUseTier,
+    supportsVision: session.supportsVision,
   };
   return attachTrustedSkillCommandApproval(trustedContext, {
     commandConfirmCallback: session.options.commandConfirmCallback,
@@ -505,7 +540,7 @@ async function handleToolInvoke(rawParams: unknown): Promise<unknown> {
   if (!session) {
     throw new SidecarRequestError(-32000, `Unknown subagent runId: ${runId}`);
   }
-  if (session.options.signal?.aborted) {
+  if (session.options.signal?.aborted || session.options.operationOwner?.isCurrent() === false) {
     throw new SidecarRequestError(-32000, `Subagent run is stopping: ${runId}`);
   }
   const boundaryError = checkDispatchToolBoundary(
@@ -513,6 +548,7 @@ async function handleToolInvoke(rawParams: unknown): Promise<unknown> {
     session.options.allowedTools,
     toolName,
     (params.input as Record<string, unknown>) ?? {},
+    { ownsUserTurn: session.options.ownsUserTurn === true },
   );
   if (boundaryError) throw new SidecarRequestError(-32602, boundaryError);
 
@@ -725,6 +761,7 @@ function buildSubagentRunParams(
     preloadedSkills: options.preloadedSkills,
     initiatedBy: options.initiatedBy,
     dispatchKey: options.dispatchKey,
+    ownsUserTurn: options.ownsUserTurn,
     locale: getLocale(),
     uiStrings: buildSubagentUiStrings(getI18n()),
     settingsSnapshot,
@@ -811,8 +848,25 @@ function cancelledSubagentResult(): SubagentResult {
  * module doc for the wire protocol and the failure discipline (#549).
  */
 export async function runSubagent(options: SubagentLoopOptions): Promise<SubagentResult> {
+  const owner = options.operationOwner ?? captureToolOperationOwner();
+  const ownerController = owner ? new AbortController() : undefined;
+  const parentSignal = options.signal;
+  const abortFromParent = () => ownerController?.abort(parentSignal?.reason);
+  let unsubscribeOwner: (() => void) | undefined;
   const release = acquirePluginUse(pluginOwnerForAgent(options.agent));
-  try { return await runAdmittedSubagent(options); } finally { release(); }
+  try {
+    if (ownerController) {
+      if (parentSignal?.aborted) abortFromParent();
+      else parentSignal?.addEventListener('abort', abortFromParent, { once: true });
+      unsubscribeOwner = owner?.onInvalidated?.(() => ownerController.abort('operation-owner-changed'));
+      if (owner?.isCurrent() === false) ownerController.abort('operation-owner-changed');
+    }
+    return await runAdmittedSubagent({ ...options, ...(owner && ownerController ? { operationOwner: owner, signal: ownerController.signal } : {}) });
+  } finally {
+    unsubscribeOwner?.();
+    parentSignal?.removeEventListener('abort', abortFromParent);
+    release();
+  }
 }
 
 async function runAdmittedSubagent(options: SubagentLoopOptions): Promise<SubagentResult> {
@@ -885,7 +939,7 @@ async function runLocalSubagentLoop(options: SubagentLoopOptions): Promise<Subag
 }
 
 async function runSubagentForSignal(options: SubagentLoopOptions): Promise<SubagentResult> {
-  if (options.signal?.aborted) {
+  if (options.signal?.aborted || options.operationOwner?.isCurrent() === false) {
     return cancelledSubagentResult();
   }
 
@@ -896,6 +950,16 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
   const availableTools = (options.toolInvoker ?? getToolInvoker()).getAllTools();
   const mcpPreflightFailure = buildSubagentMcpPreflightFailure(options.agent, availableTools);
   if (mcpPreflightFailure) return mcpPreflightFailure;
+
+  // Same placement for the model: the shell store is the freshest view of the
+  // user's providers, so a model made unusable mid-run never reaches either
+  // runtime (the loop repeats the check for the in-sidecar nested path).
+  const modelFailure = buildSubagentModelUnavailableFailure(
+    options.agent,
+    (options.settingsReader ?? getSettingsReader()).getSnapshot(),
+    getSettingsReader().getSnapshot(),
+  );
+  if (modelFailure) return modelFailure;
 
   // Resolve `agent.skills` HERE, before either runtime is chosen: this is the
   // shell, the only place the skill loader's index is populated (the sidecar
@@ -912,6 +976,9 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
       ...options,
       preloadedSkills: (await resolvePreloadedSkills(options.agent)) ?? undefined,
     };
+  }
+  if (options.signal?.aborted || options.operationOwner?.isCurrent() === false) {
+    return cancelledSubagentResult();
   }
 
   // Generate an app-owned scope for EVERY runtime path. Provider tool-call ids
@@ -937,7 +1004,7 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
     try {
       await waitForSidecarVenue({ signal: options.signal, allowRestart: false });
     } catch (err) {
-      if (options.signal?.aborted) return cancelledSubagentResult();
+      if (options.signal?.aborted || options.operationOwner?.isCurrent() === false) return cancelledSubagentResult();
       logger.warn('subagent could not reach the sidecar', {
         runId,
         error: err instanceof Error ? err.message : String(err),
@@ -955,6 +1022,9 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
     }
   }
 
+  if (options.signal?.aborted || options.operationOwner?.isCurrent() === false) {
+    return cancelledSubagentResult();
+  }
   ensureHandlersRegistered();
 
   logger.debug('subagent path selected', { path: 'sidecar', runId, agent: options.agent?.name });
@@ -983,6 +1053,10 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
     ...withPreloadedSkills,
     workspaceReader: { getCurrentPath: () => params.workspacePathSnapshot },
   };
+  // 算法与子代理循环相同，输入是派发给 sidecar 的完整设置快照；sidecar 里的循环读取共享
+  // 设置镜像、只把 activeModel 固定为这份快照里的值（sidecar/src/subagentHost.ts）。
+  // 工具执行时以这里的结果为准。
+  const delegatedCapabilities = resolveDelegatedModelCapabilities(options.agent.model, params.settingsSnapshot);
   const session: RunSession = {
     runId,
     options: sessionOptions,
@@ -995,8 +1069,13 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
         options.agent,
         options.allowedTools,
         options.blockedTools,
+        { ownsUserTurn: options.ownsUserTurn === true },
       ).map((tool) => tool.name),
     ),
+    modelId: delegatedCapabilities.modelId,
+    modelCapabilitySource: delegatedCapabilities.capabilitySource,
+    computerUseTier: delegatedCapabilities.computerUseTier,
+    supportsVision: delegatedCapabilities.vision,
     firstToolInvokeArrived: false,
     bufferedProgress: [],
     progressApplyTail: Promise.resolve(),
@@ -1031,10 +1110,14 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
   // timeoutMs: 0 — a subagent run is unbounded (same discipline as llm.chat
   // / SidecarLLMAdapter.chat()); hang protection is the abort-grace timer
   // above, armed only once an abort actually happens.
-  const requestPromise = sidecarRequest('subagent.run', params, 0);
-  requestPromise.catch(() => {}); // avoid an unhandled rejection if the grace timer wins the race below
-
   try {
+    // A cancellation before listener registration does not replay its event.
+    // Keep this check adjacent to dispatch and inside the resource cleanup.
+    if (signal?.aborted || options.operationOwner?.isCurrent() === false) {
+      return cancelledSubagentResult();
+    }
+    const requestPromise = sidecarRequest('subagent.run', params, 0);
+    requestPromise.catch(() => {}); // avoid an unhandled rejection if the grace timer wins the race below
     const raw = signal && options.authorizationScopeId === undefined
       ? await Promise.race([requestPromise, gracePromise])
       : await requestPromise;

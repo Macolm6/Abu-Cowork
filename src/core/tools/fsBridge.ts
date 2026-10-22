@@ -60,6 +60,12 @@ import {
 } from '@tauri-apps/plugin-fs';
 import { request as sidecarRequest, getSidecarStatus, SidecarRpcError } from '../sidecar/sidecarManager';
 import { createLogger } from '../logging/logger';
+import {
+  walkWorkspaceFiles,
+  type WorkspaceFileList,
+  type WorkspaceListLimits,
+  type WorkspaceWalkIo,
+} from '../files/workspaceFileWalk';
 
 const logger = createLogger('fs-transport');
 
@@ -146,7 +152,11 @@ async function withSidecarFallback<T>(
     if (isFsErrorResponse(err)) {
       // Real fs error (ENOENT etc.) — surface faithfully, no retry.
       logger.debug('fs op via sidecar hit a real fs error — not retrying', { method, path, code: err.data.code });
-      throw new Error(err.data.message, { cause: err });
+      // Carry the errno forward. Callers that tell a locked file apart from a
+      // missing one read `code`; dropping it here left them matching on
+      // message text, or — worse — silently doing nothing, because the shape
+      // they were written against never reached them.
+      throw Object.assign(new Error(err.data.message, { cause: err }), { code: err.data.code });
     }
     // Transport-shaped failure — the sidecar hiccuped, not the file system.
     logger.warn('fs op via sidecar failed (transport) — retrying locally once', {
@@ -196,6 +206,29 @@ export async function readDir(path: string): Promise<FsDirEntry[]> {
     path,
     async () => (await sidecarRequest('fs.readDir', { path }, FS_REQUEST_TIMEOUT_MS)) as FsDirEntry[],
     () => tauriReadDir(path),
+  );
+}
+
+const localWalkIo: WorkspaceWalkIo = {
+  readDir: (path) => tauriReadDir(path),
+  stat: async (path) => {
+    const info = await tauriStat(path);
+    return { size: info.size, mtimeMs: info.mtime ? info.mtime.getTime() : null };
+  },
+};
+
+/**
+ * The regular files under a workspace folder with size and modification time,
+ * or `{ exceeded: true }` past `limits.maxEntries`. Runs where `readDir` runs:
+ * in the sidecar while it is up, through plugin-fs otherwise. The caller has
+ * checked that the folder may be read (`core/files/workspaceFiles.ts`).
+ */
+export async function listWorkspaceFiles(root: string, limits: WorkspaceListLimits): Promise<WorkspaceFileList> {
+  return withSidecarFallback<WorkspaceFileList>(
+    'fs.listWorkspaceFiles',
+    root,
+    async () => (await sidecarRequest('fs.listWorkspaceFiles', { path: root, limits }, FS_REQUEST_TIMEOUT_MS)) as WorkspaceFileList,
+    () => walkWorkspaceFiles(root, limits, localWalkIo),
   );
 }
 

@@ -8,7 +8,7 @@ async function openBrowser(page: Page) {
   const guide = page.locator('[data-abu-guide-modal="true"]');
   await guide.waitFor({ state: 'visible', timeout: 1500 }).catch(() => {});
   if (await guide.isVisible()) await guide.getByRole('button', {name:'我知道了', exact:true}).click();
-  await page.getByRole('button',{name:/^(我|Me)$/}).click();
+  await page.getByRole('button',{name:/^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/}).click();
   await page.getByRole('menuitem',{name:/^(设置|Settings)$/}).click();
   await page.getByRole('button',{name:/^(能力|Capabilities)$/}).click();
   await page.getByRole('button',{name:/^(阿布内置浏览器|Abu built-in browser)/}).click();
@@ -18,15 +18,15 @@ test('resource permission is confirmed on disk and survives a real relaunch',asy
  try {
   let page=await launched.app.firstWindow();await openBrowser(page);
   await expect(page.getByText('自动任务',{exact:true})).toHaveCount(0);
-  const browse=page.getByRole('button',{name:/^浏览网页:/});
+  const browse=page.getByRole('combobox',{name:'浏览网页',exact:true});
   await expect(browse).toContainText('允许');
-  await browse.click();await page.getByRole('button',{name:/^禁止 /}).click();
+  await browse.click();await page.getByRole('option',{name:'禁止',exact:true}).click();
   await expect.poll(()=>page.evaluate(()=>JSON.parse(localStorage.getItem('abu-settings')!).state.browserPermissionConfigV2.defaults.browse)).toBe('deny');
   await closeAbuElectron(launched.app);launched=await launchAbuElectron(root);
   page=await launched.app.firstWindow();await openBrowser(page);
-  await expect(page.getByRole('button',{name:/^浏览网页:/})).toContainText('禁止');
-  await expect(page.getByRole('button',{name:/^上传文件:/})).toContainText('每次询问');
-  await expect(page.getByRole('button',{name:/^运行脚本:/})).toContainText('每次询问');
+  await expect(page.getByRole('combobox',{name:'浏览网页',exact:true})).toContainText('禁止');
+  await expect(page.getByRole('combobox',{name:'上传文件',exact:true})).toContainText('每次询问');
+  await expect(page.getByRole('combobox',{name:'运行脚本',exact:true})).toContainText('每次询问');
   await page.screenshot({path:'test-results/browser-alpha-after-restart.png'});
  } finally {await closeAbuElectron(launched.app);removeElectronDataRoot(root);}
 });

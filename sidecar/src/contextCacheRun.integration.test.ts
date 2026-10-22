@@ -5,6 +5,7 @@ import { getConversationReader, setConversationReader } from '@/core/agent/ports
 import { getToolInvoker, setToolInvoker, type ToolInvoker } from '@/core/agent/ports/toolInvoker';
 import * as adapters from '@/core/llm/selectChatAdapter';
 import { createCompactBoundaryMarker } from '@/core/context/compactBoundary';
+import { estimateTokens } from '@/core/context/tokenEstimator';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import type { Conversation, Message, StreamEvent, ToolDefinition } from '@/types';
@@ -17,13 +18,28 @@ import { createFrameChatDelta } from './portFrameSenders';
 // pair and count the summarisation calls the provider receives.
 
 const TOOL_TURNS = 5;
-const ROUND_TEXT = 'The quarterly report covers revenue, churn and the hiring plan in detail. '.repeat(260);
+// A user setting below every model cap (including LOCAL_ESTIMATE_CAP for
+// Ollama models) so the input budget is deterministic.
+const CONTEXT_WINDOW = 20_000;
+const MAX_OUTPUT = 4_000;
+const SEED_ROUNDS = 8;
+const SENTENCE = 'The quarterly report covers revenue, churn and the hiring plan in detail. ';
+
+// Sized from the estimator: the seeded history is ~80% of the input budget —
+// above the 65% compression trigger, and after compression (first round +
+// summary + last 4 rounds) well below the 85% persistent-compaction gate, so
+// the ephemeral cache path is the only compaction path exercised.
+function roundText(): string {
+  const targetPerMessage = Math.floor(((CONTEXT_WINDOW - MAX_OUTPUT) * 0.8) / (SEED_ROUNDS * 2));
+  return SENTENCE.repeat(Math.ceil(targetPerMessage / estimateTokens(SENTENCE)));
+}
 
 function seededMessages(userMessageId: string): Message[] {
+  const text = roundText();
   const messages: Message[] = [];
-  for (let round = 0; round < 8; round++) {
-    messages.push({ id: `u${round}`, role: 'user', content: `question ${round} ${ROUND_TEXT}`, timestamp: round * 2 });
-    messages.push({ id: `a${round}`, role: 'assistant', content: `answer ${round} ${ROUND_TEXT}`, timestamp: round * 2 + 1 });
+  for (let round = 0; round < SEED_ROUNDS; round++) {
+    messages.push({ id: `u${round}`, role: 'user', content: `question ${round} ${text}`, timestamp: round * 2 });
+    messages.push({ id: `a${round}`, role: 'assistant', content: `answer ${round} ${text}`, timestamp: round * 2 + 1 });
   }
   messages.push({ id: userMessageId, role: 'user', content: 'continue the analysis', timestamp: 100 });
   return messages;
@@ -44,8 +60,8 @@ function createSidecarRunHarness(extraSeed: Message[] = []): SidecarRunHarness {
   const settings = useSettingsStore.getState();
   useSettingsStore.setState({
     activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
-    contextWindowSize: 60_000,
-    maxOutputTokens: 4_000,
+    contextWindowSize: CONTEXT_WINDOW,
+    maxOutputTokens: MAX_OUTPUT,
     providers: settings.providers.map((p) =>
       p.id === 'ollama'
         ? { ...p, enabled: true, models: p.models.some((m) => m.id === 'llama3.2') ? p.models : [...p.models, { id: 'llama3.2', label: 'llama3.2' }] }

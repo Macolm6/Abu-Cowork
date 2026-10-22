@@ -7,7 +7,11 @@ import type { MediaRef } from '@/core/subagent/delegatedUserTurn';
 
 interface AbuShellBridge {
   mainSupervisesSidecar?: boolean;
+  /** The system material the shell draws behind the window: 'vibrancy', 'mica' or 'none'. */
+  windowMaterial?: string;
   canonicalizePathForPolicy?: (path: string, followFinalSymlink?: boolean) => Promise<string>;
+  inspectPathNameComparison?: (path: string, followFinalSymlink?: boolean) => Promise<ElectronPathNameComparison>;
+  fileOperation?: (action: string, request: Record<string, unknown>) => Promise<unknown>;
   getPathForFile?: (file: File) => string;
   saveImageAttachment?: (request: ElectronImageSaveRequest) => Promise<ElectronImageSaveResult>;
   authorizeUserAttachment?: (file: File, request: ElectronUserAttachmentAuthorizeRequest) => Promise<ElectronUserAttachmentToken>;
@@ -20,6 +24,27 @@ interface AbuShellBridge {
   getSidecarBridgeSnapshot?: (afterSequence?: number) => Promise<ElectronSidecarBridgeSnapshot>;
   recordRuntimeEvent?: (event: Record<string, unknown>) => void;
   getRuntimeDiagnostics?: () => Promise<ElectronRuntimeDiagnostics>;
+}
+
+export interface ElectronPathComponentComparison {
+  name: string;
+  parentPath: string;
+  caseMode: 'sensitive' | 'insensitive' | 'unknown';
+  directoryIdentity: string | null;
+  platform: string;
+  filesystem: string | null;
+  reason?: string;
+}
+
+export interface ElectronPathNameFacts {
+  path: string;
+  root: string;
+  components: ElectronPathComponentComparison[];
+}
+
+export interface ElectronPathNameComparison {
+  lexical: ElectronPathNameFacts;
+  canonical: ElectronPathNameFacts;
 }
 
 export interface ElectronImageSaveRequest {
@@ -129,6 +154,8 @@ export interface ElectronRuntimeDiagnostics {
   sidecars: Array<Record<string, unknown>>;
   pendingRendererAcks: Array<Record<string, unknown>>;
   nativeHelpers: Array<Record<string, unknown>>;
+  /** Host's pure, privacy-allowlisted projection; not executable recovery state. */
+  computerUseReplay?: Record<string, unknown>;
 }
 
 function getRuntime() {
@@ -154,6 +181,11 @@ export function hasElectronCommandHost(): boolean {
  */
 export function hasElectronRawBodyInvoke(): boolean {
   return getRuntime().__ABU_SHELL__?.mainSupervisesSidecar === true;
+}
+
+/** The window material the Electron shell reports; undefined outside the shell. */
+export function getElectronWindowMaterial(): string | undefined {
+  return getRuntime().__ABU_SHELL__?.windowMaterial;
 }
 
 /** Resolve the native path of a user-provided Electron File object. */
@@ -285,6 +317,18 @@ export async function canonicalizeElectronPathForPolicy(
 ): Promise<string | null> {
   const canonicalize = getRuntime().__ABU_SHELL__?.canonicalizePathForPolicy;
   return canonicalize ? await canonicalize(path, followFinalSymlink) : null;
+}
+
+export async function inspectElectronPathNameComparison(path: string, followFinalSymlink = true): Promise<ElectronPathNameComparison> {
+  const inspect = getRuntime().__ABU_SHELL__?.inspectPathNameComparison;
+  if (!inspect) throw new Error('Filesystem name comparison is unavailable');
+  return inspect(path, followFinalSymlink);
+}
+
+export async function invokeElectronFileOperation<T>(action: string, request: Record<string, unknown>): Promise<T> {
+  const invoke = getRuntime().__ABU_SHELL__?.fileOperation;
+  if (!invoke) throw new Error('Controlled file access is unavailable');
+  return await invoke(action, request) as T;
 }
 
 export function subscribeElectronSidecarEvents(

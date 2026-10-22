@@ -28,6 +28,8 @@ import { buildShareBundle, SHARE_SCHEMA_VERSION } from './shareBundle';
 import { createCompactBoundaryMarker } from '@/core/context/compactBoundary';
 import { createMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
 import { createBrowserRunReportMessage } from '@/core/observability/browserRunReport';
+import { snapshotExecutionSteps } from '@/core/agent/executionSnapshot';
+import type { ExecutionStep } from '@/types/execution';
 
 function makeConv(messages: Message[], overrides: Partial<Conversation> = {}): Conversation {
   return {
@@ -116,6 +118,290 @@ describe('buildShareBundle', () => {
     expect(bundle.stats.redactionCount).toBeGreaterThan(0);
     expect(JSON.stringify(bundle)).not.toContain('sk-ant-abc');
     expect(JSON.stringify(bundle)).toContain('[REDACTED:anthropic-key]');
+  });
+
+  it('redacts the command a background-command tool call recorded', async () => {
+    const conv = makeConv([
+      {
+        id: 'm1',
+        role: 'assistant',
+        content: 'stopped',
+        timestamp: 1,
+        toolCalls: [{
+          id: 't1',
+          name: 'stop_background_command',
+          input: { id: 'bg-0a1b2c3d' },
+          result: 'Stop requested',
+          backgroundCommand: { command: 'API_KEY=sk-ant-abcdefghijklmnopqrstuvwxyz123456 npm run dev' },
+        }],
+      },
+    ]);
+
+    const bundle = await buildShareBundle(conv);
+
+    expect(bundle.messages[0].toolCalls?.[0].backgroundCommand?.command).toContain('[REDACTED:anthropic-key]');
+    expect(JSON.stringify(bundle)).not.toContain('sk-ant-abc');
+    expect(conv.messages[0].toolCalls?.[0].backgroundCommand?.command).toContain('sk-ant-abc');
+  });
+
+  describe('fields without a rule of their own', () => {
+    const KEY = 'sk-ant-abcdefghijklmnopqrstuvwxyz123456';
+
+    it('redacts the step snapshot a restored conversation shows, nested steps included', async () => {
+      const conv = makeConv([{
+        id: 'm1',
+        role: 'assistant',
+        content: 'done',
+        timestamp: 1,
+        executionSteps: [{
+          id: 's1', type: 'command', label: 'Run cat /Users/alice/.env', status: 'completed', toolName: 'run_command',
+          completionMessage: `read ${KEY}`,
+          detailBlocks: [{ id: 's1-result', title: 'Result', type: 'result', content: `API_KEY=${KEY}` }],
+          childSteps: [{
+            id: 'c1', type: 'command', label: 'Run env', status: 'completed', toolName: 'run_command',
+            detailBlocks: [{ id: 'c1-result', title: 'Result', type: 'result', content: `TOKEN=${KEY}` }],
+          }],
+        }],
+        plannedSteps: [{ index: 0, description: `Use ${KEY} to call the API`, status: 'completed' }],
+      }]);
+
+      const bundle = await buildShareBundle(conv);
+      const json = JSON.stringify(bundle.messages);
+
+      expect(json).not.toContain('sk-ant-abc');
+      expect(json).not.toContain('/Users/alice');
+      expect(bundle.messages[0].executionSteps?.[0].detailBlocks?.[0].content).toBe('API_KEY=[REDACTED:anthropic-key]');
+      expect(bundle.messages[0].executionSteps?.[0].childSteps?.[0].detailBlocks?.[0].content).toBe('TOKEN=[REDACTED:anthropic-key]');
+      expect(bundle.stats.redactionCount).toBe(5);
+      expect(conv.messages[0].executionSteps?.[0].detailBlocks?.[0].content).toContain('sk-ant-abc');
+    });
+
+    it('redacts the text blocks of a tool result and what an interface or the user added to a tool call', async () => {
+      const conv = makeConv([{
+        id: 'm1',
+        role: 'assistant',
+        content: 'done',
+        timestamp: 1,
+        toolCalls: [{
+          id: 't1',
+          name: 'read_file',
+          input: { path: 'config.txt' },
+          result: 'read',
+          resultContent: [{ type: 'text', text: `key=${KEY}` }],
+          modelContext: `context ${KEY}`,
+        }],
+      }]);
+
+      const bundle = await buildShareBundle(conv);
+
+      expect(JSON.stringify(bundle.messages)).not.toContain('sk-ant-abc');
+      expect(bundle.messages[0].toolCalls?.[0].resultContent?.[0]).toEqual({ type: 'text', text: 'key=[REDACTED:anthropic-key]' });
+      expect(bundle.stats.redactionCount).toBe(2);
+    });
+
+    it('redacts a key inside the content of a very long file the agent wrote', async () => {
+      const content = `${'row,value\n'.repeat(20_000)}API_KEY=${KEY}\n`;
+      const conv = makeConv([{
+        id: 'm1',
+        role: 'assistant',
+        content: 'written',
+        timestamp: 1,
+        toolCalls: [{ id: 't1', name: 'write_file', input: { path: 'data.csv', content }, result: 'ok' }],
+      }]);
+
+      const bundle = await buildShareBundle(conv);
+      const written = bundle.messages[0].toolCalls?.[0].input.content as string;
+
+      expect(written).not.toContain('sk-ant-abc');
+      expect(written.endsWith('API_KEY=[REDACTED:anthropic-key]\n')).toBe(true);
+      expect(bundle.stats.redactionCount).toBe(1);
+    });
+
+    describe('a step snapshot cut through a key or a path', () => {
+      function stepWithResult(result: string): ExecutionStep {
+        return {
+          id: 's1', executionId: 'e1', toolCallId: 't1', type: 'command', label: 'Run', status: 'completed',
+          toolName: 'run_command', toolInput: {}, source: 'agent',
+          detailBlocks: [{
+            id: 's1-result', stepId: 's1', type: 'result', label: 'Result', labelKey: 'result',
+            content: result, isTruncated: false, isExpanded: false,
+          }],
+        };
+      }
+
+      async function exportedSnapshotText(result: string): Promise<string | undefined> {
+        const conv = makeConv([{
+          id: 'm1', role: 'assistant', content: 'done', timestamp: 1,
+          executionSteps: snapshotExecutionSteps([stepWithResult(result)]),
+        }]);
+        const bundle = await buildShareBundle(conv);
+        return bundle.messages[0].executionSteps?.[0].detailBlocks?.[0].content;
+      }
+
+      it('drops the half of a key the cut left, which no rule can recognize', async () => {
+        const content = await exportedSnapshotText(`${'x '.repeat(231)}AIza${'Q'.repeat(35)} tail`);
+
+        expect(content).not.toContain('AIza');
+        expect(content?.endsWith('...')).toBe(true);
+        expect(content).toContain('x x x');
+      });
+
+      it('drops a home path the cut stopped inside, user name and all', async () => {
+        const content = await exportedSnapshotText(`${'y '.repeat(244)}open /Users/alice`);
+
+        expect(content).not.toContain('/Users');
+        expect(content).toContain('open');
+      });
+
+      it('keeps the end of a block the snapshot did not cut', async () => {
+        expect(await exportedSnapshotText('exit code: 0')).toBe('exit code: 0');
+      });
+    });
+
+    it('leaves image data as it is, even where its base64 happens to look like a key', async () => {
+      const data = `iVBOR${'AIza'}${'B'.repeat(35)}xyz`;
+      const conv = makeConv([{
+        id: 'm1',
+        role: 'assistant',
+        content: 'shot',
+        timestamp: 1,
+        toolCalls: [{
+          id: 't1',
+          name: 'computer',
+          input: { action: 'screenshot' },
+          result: 'Screenshot taken',
+          resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data } }],
+        }],
+        toolCallsForContext: [{
+          id: 't1',
+          name: 'computer',
+          input: { action: 'screenshot' },
+          result: 'Screenshot taken',
+          resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data } }],
+        }],
+      }]);
+
+      const bundle = await buildShareBundle(conv);
+      const block = bundle.messages[0].toolCalls?.[0].resultContent?.[0];
+      const contextBlock = bundle.messages[0].toolCallsForContext?.[0].resultContent?.[0];
+
+      expect(block?.type === 'image' && block.source.data).toBe(data);
+      expect(contextBlock?.type === 'image' && contextBlock.source.data).toBe(data);
+      expect(bundle.stats.redactionCount).toBe(0);
+    });
+  });
+
+  describe('tool call file change', () => {
+    function fileChangeConv(fileChange: NonNullable<NonNullable<Message['toolCalls']>[number]['fileChange']>): Conversation {
+      return makeConv([
+        {
+          id: 'm1',
+          role: 'assistant',
+          content: 'edited',
+          timestamp: 1,
+          toolCalls: [{ id: 't1', name: 'edit_file', input: { path: fileChange.path }, result: 'Successfully edited', fileChange }],
+        },
+      ]);
+    }
+
+    it('redacts the path and drops the hunks that hold a credential', async () => {
+      const conv = fileChangeConv({
+        path: '/Users/alice/projects/secret/config.ts',
+        kind: 'modify',
+        added: 1,
+        deleted: 1,
+        hunks: [{
+          oldStart: 1,
+          oldLines: 2,
+          newStart: 1,
+          newLines: 2,
+          lines: [
+            ' import x from "./x";',
+            '-const key = "old";',
+            '+const key = "sk-ant-abcdefghijklmnopqrstuvwxyz123456";',
+          ],
+        }],
+      });
+
+      const bundle = await buildShareBundle(conv);
+      const fileChange = bundle.messages[0].toolCalls?.[0].fileChange;
+
+      expect(fileChange?.path).toBe(bundle.messages[0].toolCalls?.[0].input.path);
+      expect(fileChange?.path).not.toContain('alice');
+      expect(fileChange).toEqual({ path: fileChange?.path, kind: 'modify', added: 1, deleted: 1, cut: true });
+      expect(JSON.stringify(bundle)).not.toContain('sk-ant-abc');
+      expect(bundle.stats.redactionCount).toBeGreaterThan(0);
+      expect(conv.messages[0].toolCalls?.[0].fileChange?.hunks).toHaveLength(1);
+    });
+
+    it('drops the hunks that hold a private key spread over several lines', async () => {
+      const keyBody = 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj';
+      const conv = fileChangeConv({
+        path: '/work/deploy/id_rsa',
+        kind: 'create',
+        added: 4,
+        deleted: 0,
+        hunks: [{
+          oldStart: 0,
+          oldLines: 0,
+          newStart: 1,
+          newLines: 4,
+          lines: [
+            '+-----BEGIN RSA PRIVATE KEY-----',
+            `+${keyBody}`,
+            `+${keyBody.split('').reverse().join('')}`,
+            '+-----END RSA PRIVATE KEY-----',
+          ],
+        }],
+      });
+
+      const bundle = await buildShareBundle(conv);
+      const fileChange = bundle.messages[0].toolCalls?.[0].fileChange;
+
+      expect(fileChange).toEqual({ path: '/work/deploy/id_rsa', kind: 'create', added: 4, deleted: 0, cut: true });
+      expect(JSON.stringify(bundle)).not.toContain(keyBody);
+      expect(bundle.stats.redactionCount).toBeGreaterThan(0);
+    });
+
+    it('drops the hunks of a change whose lines were shortened', async () => {
+      // A credential cut short by the line limit no longer has the shape a rule matches.
+      const shortened = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkw';
+      const conv = fileChangeConv({
+        path: '/work/session.txt',
+        kind: 'modify',
+        added: 1,
+        deleted: 0,
+        cut: true,
+        hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, lines: [' token:', `+${shortened}`] }],
+      });
+
+      const bundle = await buildShareBundle(conv);
+      const fileChange = bundle.messages[0].toolCalls?.[0].fileChange;
+
+      expect(fileChange).toEqual({ path: '/work/session.txt', kind: 'modify', added: 1, deleted: 0, cut: true });
+      expect(JSON.stringify(bundle)).not.toContain(shortened);
+    });
+
+    it('keeps the hunks of a change without sensitive text', async () => {
+      const hunks = [{
+        oldStart: 1,
+        oldLines: 2,
+        newStart: 1,
+        newLines: 2,
+        lines: [' # Notes', '-first draft', '+second draft'],
+      }];
+      const conv = fileChangeConv({ path: '/work/notes.md', kind: 'modify', added: 1, deleted: 1, hunks });
+
+      const bundle = await buildShareBundle(conv);
+
+      expect(bundle.messages[0].toolCalls?.[0].fileChange).toEqual({
+        path: '/work/notes.md',
+        kind: 'modify',
+        added: 1,
+        deleted: 1,
+        hunks,
+      });
+    });
   });
 
   it('allowlists and redacts provider error details before sharing', async () => {
@@ -315,13 +601,24 @@ describe('buildShareBundle', () => {
   });
 
   describe('Standard tier — attachment classification', () => {
+    // Every fixture entry carries refId 'r1': the tool call below for a tool
+    // output, the user message below for an upload.
+    const toolOutputOwner: Message = {
+      id: 'm1',
+      role: 'assistant',
+      content: 'done',
+      timestamp: 1,
+      toolCalls: [{ id: 'r1', name: 'write_file', input: { path: '/Users/alice/out' }, result: 'ok' }],
+    };
+    const uploadOwner: Message = { id: 'r1', role: 'user', content: 'here', timestamp: 1 };
+
     it('embeds tool-output attachments as base64', async () => {
       mockListSnapshots.mockResolvedValue([
         snapshot({ source: 'tool-output', basename: 'report.xlsx', originalPath: '/Users/alice/report.xlsx' }),
       ]);
       mockReadSnapshotBytes.mockResolvedValue(new Uint8Array([1, 2, 3, 4, 5]));
 
-      const bundle = await buildShareBundle(makeConv([]));
+      const bundle = await buildShareBundle(makeConv([toolOutputOwner]));
       const att = Object.values(bundle.attachments)[0];
       expect(att.source).toBe('tool-output');
       expect(att.data).toBeTruthy();
@@ -334,7 +631,7 @@ describe('buildShareBundle', () => {
         snapshot({ source: 'user-upload', basename: 'secret.pdf', originalPath: '/Users/alice/secret.pdf' }),
       ]);
 
-      const bundle = await buildShareBundle(makeConv([]));
+      const bundle = await buildShareBundle(makeConv([uploadOwner]));
       const att = Object.values(bundle.attachments)[0];
       expect(att.data).toBeUndefined();
       expect(att.skipReason).toBe('user-upload-excluded');
@@ -347,7 +644,7 @@ describe('buildShareBundle', () => {
       ]);
       mockReadSnapshotBytes.mockResolvedValue(null);
 
-      const bundle = await buildShareBundle(makeConv([]));
+      const bundle = await buildShareBundle(makeConv([toolOutputOwner]));
       const att = Object.values(bundle.attachments)[0];
       expect(att.skipReason).toBe('missing');
     });
@@ -358,9 +655,22 @@ describe('buildShareBundle', () => {
       ]);
       mockReadSnapshotBytes.mockResolvedValue(new Uint8Array([1]));
 
-      const bundle = await buildShareBundle(makeConv([]));
+      const bundle = await buildShareBundle(makeConv([toolOutputOwner]));
       const keys = Object.keys(bundle.attachments);
       expect(keys[0]).toBe('~/file.png');
+    });
+
+    it('leaves out an attachment no exported message accounts for', async () => {
+      mockListSnapshots.mockResolvedValue([
+        snapshot({ source: 'tool-output', basename: 'report.xlsx', originalPath: '/Users/alice/report.xlsx' }),
+        snapshot({ source: 'user-upload', basename: 'secret.pdf', originalPath: '/Users/alice/secret.pdf' }),
+      ]);
+      mockReadSnapshotBytes.mockResolvedValue(new Uint8Array([1, 2, 3, 4, 5]));
+
+      const bundle = await buildShareBundle(makeConv([{ id: 'm2', role: 'user', content: 'hi', timestamp: 1 }]));
+      expect(bundle.attachments).toEqual({});
+      expect(bundle.stats.attachmentCount).toBe(0);
+      expect(bundle.stats.embeddedCount).toBe(0);
     });
   });
 

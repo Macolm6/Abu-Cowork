@@ -45,6 +45,43 @@ describe('shareRedactor', () => {
       expect(r.count).toBe(1);
     });
 
+    it('redacts each complete private key block among headers that have no end line', () => {
+      const header = '-----BEGIN PRIVATE KEY-----\n';
+      const block = '-----BEGIN EC PRIVATE KEY-----\nMHcCAQEE\n-----END EC PRIVATE KEY-----';
+      const r = redactText(`${header}x\n${header}a\n${block}\n${header.repeat(3)}tail`);
+      expect(r.text).toBe(`[REDACTED:private-key-block]\n${header.repeat(3)}tail`);
+      expect(r.count).toBe(1);
+    });
+
+    it('redacts a private key block whose header shares its closing dashes with an end line', () => {
+      const r = redactText('-----BEGIN PRIVATE KEY-----END PRIVATE KEY-----END PRIVATE KEY-----');
+      expect(r.text).toBe('[REDACTED:private-key-block]');
+      expect(r.count).toBe(1);
+    });
+
+    it('redacts a JWT that follows other token characters, keeping them', () => {
+      const r = redactText('abceyJhbGciOiJIUzI1NiIs.eyJzdWIiOiIxMjM0NTY3ODkw.SflKxwRJSMeKKF2QT end');
+      expect(r.text).toBe('abc[REDACTED:jwt] end');
+      expect(r.count).toBe(1);
+    });
+
+    it('redacts a JWT whose first part holds another "eyJ"', () => {
+      const r = redactText('x eyJhbGeyJciOiJI.eyJzdWIiOiIxMjM0.SflKxwRJSMeKK');
+      expect(r.text).toBe('x [REDACTED:jwt]');
+    });
+
+    it('leaves a long run of "eyJ" with no dot alone', () => {
+      const text = 'eyJ'.repeat(50_000);
+      expect(redactText(text).text).toBe(text);
+    });
+
+    it('leaves private key headers alone when no end line follows', () => {
+      const text = `-----END RSA PRIVATE KEY-----\n${'-----BEGIN PRIVATE KEY-----\n'.repeat(5)}`;
+      const r = redactText(text);
+      expect(r.text).toBe(text);
+      expect(r.count).toBe(0);
+    });
+
     it('collapses macOS home paths to ~', () => {
       const r = redactText('read /Users/alice/Documents/file.txt');
       expect(r.text).toBe('read ~/Documents/file.txt');
@@ -104,12 +141,37 @@ describe('shareRedactor', () => {
       expect(value).toEqual({ n: 42, b: true, x: null });
     });
 
-    it('skips oversized strings to avoid scanning base64 blobs', () => {
-      const huge = 'a'.repeat(200_000) + 'sk-ant-abcdefghijklmnopqrstuvwxyz1234567';
-      const { value, count } = redactDeep({ img: huge });
-      // The large string is passed through unchanged (no redaction attempt).
-      expect((value as { img: string }).img.length).toBe(huge.length);
+    it('returns an object the keep test accepts as it is, and redacts its siblings', () => {
+      const kept = { type: 'base64', data: `AIza${'B'.repeat(35)}` };
+      const input = { source: kept, note: 'sk-ant-abcdefghijklmnopqrstuvwxyz1234567' };
+      const { value, count } = redactDeep(input, (node) => node.type === 'base64');
+      const v = value as typeof input;
+      expect(v.source).toBe(kept);
+      expect(v.note).toBe('[REDACTED:anthropic-key]');
+      expect(count).toBe(1);
+    });
+
+    it('redacts a credential at the end of a very long string', () => {
+      const huge = 'a '.repeat(200_000) + 'sk-ant-abcdefghijklmnopqrstuvwxyz1234567';
+      const { value, count } = redactDeep({ content: huge });
+      const content = (value as { content: string }).content;
+      expect(content).not.toContain('sk-ant-');
+      expect(content.endsWith('[REDACTED:anthropic-key]')).toBe(true);
+      expect(count).toBe(1);
+    });
+
+    it('returns a base64 data URL as it is', () => {
+      const url = `data:image/png;base64,iVBOR${'AIza'}${'B'.repeat(35)}${'A'.repeat(2_000)}==`;
+      const { value, count } = redactDeep({ image: url });
+      expect((value as { image: string }).image).toBe(url);
       expect(count).toBe(0);
+    });
+
+    it('redacts text that only begins like a data URL', () => {
+      const stream = 'data: {"token":"sk-ant-abcdefghijklmnopqrstuvwxyz1234567"};base64,AAAA';
+      const { value, count } = redactDeep({ output: stream });
+      expect((value as { output: string }).output).not.toContain('sk-ant-');
+      expect(count).toBe(1);
     });
   });
 });

@@ -19,6 +19,7 @@ import {
   type AuthorizationScopeId,
 } from './pathSafety';
 import { getI18n, format } from '../../i18n';
+import { offeredToolsHint } from './offeredToolsHint';
 import { useMCPStore } from '@/stores/mcpStore';
 import { mergeToolInventory, summarizeMcpConnectionError, type InventoryCandidate, type InventoryReason } from './toolInventory';
 import { truncateToolResult } from '../context/truncation';
@@ -48,6 +49,7 @@ import {
   browserUploadRefusalText,
 } from '../permissions/browserDenialReasonText';
 import {
+  readFileIdPin,
   resolveUploadFiles,
   summarizeUploadFiles,
   type ApprovedUploadFile,
@@ -124,9 +126,20 @@ export function isToolGatedOff(name: string): boolean {
 export function getToolLabsGateId(name: string): string | undefined {
   return LABS_GATED_TOOLS[name];
 }
-import { getCurrentPolicy } from '@/core/enterprise/policy/enforcer';
-import { checkTool } from '@/core/enterprise/policy/matcher';
-import { showPolicyConfirm } from '@/components/enterprise/policyConfirmQueue';
+import {
+  beginToolOperationAuthorization,
+  captureFilePlanningGuard,
+  captureFileOperationOwner,
+  requiresHostFileOperations,
+  freezeToolInput,
+  type OperationAuthorizationDecision,
+} from './operationAuthorization';
+import { finalizeToolApproval, rememberToolApproval, filesForToolApproval, scopeForToolApproval, releaseToolApproval } from './approvalFinalization';
+import { snapshotToolOutputs, type OutputCapture } from '../session/outputSnapshots';
+import { FileOperationDenied, type ToolFileAccess } from '@/core/tools/fileOperation';
+import { uint8ArrayToBase64 } from '@/core/tools/helpers/toolHelpers';
+import { hasToolFileTargets, planToolFiles } from '@/core/tools/fileToolTargets';
+export { finalizeToolApproval } from './approvalFinalization';
 
 // Cache home dir for command-boundary resolution (only resolved on first safe write command).
 let cachedHomeDir: string | null = null;
@@ -300,11 +313,11 @@ function browserRunMode(toolContext?: ToolExecutionContext): 'attended' | 'unatt
 }
 
 /** Disabled services must leave a refusal trace without contacting their browser. */
-function recordDisabledBrowserDenial(name: string, input: Record<string, unknown>, context?: ToolExecutionContext): void {
+function recordBrowserBoundaryDenial(name: string, input: Record<string, unknown>, context?: ToolExecutionContext, reason: BrowserDenialReasonCode = 'server-disabled'): void {
   const opClass = classifyBrowserTool(name, input);
   if (opClass === null) return;
   safeRecordBrowserSignal(() => buildBrowserSignalRecord(
-    { kind: 'gate_denied', tool: name, opClass, reason: 'server-disabled', runMode: browserRunMode(context) },
+    { kind: 'gate_denied', tool: name, opClass, reason, runMode: browserRunMode(context) },
     buildBrowserSignalContext(browserChannelForTool(name) ?? 'builtin', context?.conversationId, Date.now(), context?.loopId),
   ));
 }
@@ -486,6 +499,8 @@ export interface ToolApprovalDecision {
   reason?: string;
   /** Canonical file path that the executor must use for an approved file tool. */
   executionPath?: string;
+  /** Complete captured parameters; executors must consume this exact request. */
+  executionInput?: Readonly<Record<string, unknown>>;
   /** Browser-only: approval-time facts the executor must carry to the host. */
   browserExecution?: BrowserExecutionPin;
 }
@@ -1135,13 +1150,45 @@ export async function checkToolApproval(
   toolContext?: ToolExecutionContext,
   onRequireConfirmation?: CommandConfirmCallback,
   onRequireFilePermission?: FilePermissionCallback,
+  retainFileAccess = false,
 ): Promise<ToolApprovalDecision> {
+  const operation = beginToolOperationAuthorization(name, input, toolContext);
+  if (operation) input = operation.input;
+  const filePlanning = operation && hasToolFileTargets(name) ? captureFilePlanningGuard() : undefined;
   let teamFileScope: string | undefined;
+  let files: ToolFileAccess | undefined;
+  let transferred = false;
   try {
+  const inspectionBeforePlanning = operation?.authorization.inspect();
+  if (inspectionBeforePlanning?.decision === 'deny') {
+    recordBrowserBoundaryDenial(name, input, toolContext, 'enterprise-policy-denied');
+    return { decision: 'deny', reason: inspectionBeforePlanning.reason };
+  }
+  const filePlan = operation ? await planToolFiles(name, input, toolContext) : null;
+  filePlanning?.assertCurrent();
+  if (filePlan && operation) {
+    input = filePlan.input;
+    for (const target of filePlan.targets) {
+      const checked = await operation.authorization.authorizeFile({
+        inputPath: target.inputPath, lexicalPath: target.path, canonicalPath: target.path,
+        capability: target.purpose === 'write' || target.purpose === 'delete' ? 'write' : 'read',
+        followFinalSymlink: target.followFinalSymlink, purpose: target.purpose, phase: 'lexical',
+        pathContext: { homePath: filePlan.homePath, workspacePath: filePlan.workspacePath },
+      });
+      if (checked.decision === 'deny') {
+        recordBrowserBoundaryDenial(name, input, toolContext, 'enterprise-policy-denied');
+        return { decision: 'deny', reason: checked.reason };
+      }
+    }
+    filePlanning?.assertCurrent();
+    files = operation.authorization.createFiles?.(filePlan, {
+      toolContext, getScopeId: () => teamFileScope ?? toolContext?.authorizationScopeId,
+    });
+  }
   const t = getI18n();
   const disabledReason = disabledMcpToolReason(name);
   if (disabledReason) {
-    recordDisabledBrowserDenial(name, input, toolContext);
+    recordBrowserBoundaryDenial(name, input, toolContext);
     return { decision: 'deny', reason: disabledReason };
   }
   const conversation = toolContext?.conversationId
@@ -1212,7 +1259,7 @@ export async function checkToolApproval(
    * the diagnostic bundle and the card read.
    */
   let recordBrowserGateDenial: ((reason: BrowserDenialReasonCode) => void) | null = null;
-  let recheckBrowserPermission: (() => Promise<ToolApprovalDecision | null>) | undefined;
+  let recheckBrowserPermission: (() => ToolApprovalDecision | null | Promise<ToolApprovalDecision | null>) | undefined;
   let reportBrowserConsent: (() => void) | undefined;
 
   // Safety check for run_command tool
@@ -1314,7 +1361,7 @@ export async function checkToolApproval(
           agentName: toolContext?.agentName,
         }, toolContext?.loopId);
         if (!confirmed) {
-          return { decision: 'deny', reason: toolContext?.teamRoster ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
+          return { decision: 'deny', reason: isTeam ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
         }
       }
     }
@@ -1322,19 +1369,25 @@ export async function checkToolApproval(
 
   // File permission check for file-related tools
   const pathExtractor = FILE_TOOL_PATH_MAP[name];
-  if (pathExtractor) {
-    const pathInfo = pathExtractor(input);
+  const plannedPaths = filePlan ? filePlan.targets.map(target => ({
+    path: target.path,
+    capability: target.purpose === 'write' || target.purpose === 'delete' ? 'write' as const : 'read' as const,
+    listing: target.purpose === 'list' || target.purpose === 'traverse',
+    followFinalSymlink: target.followFinalSymlink,
+  })) : [pathExtractor?.(input)].filter((target): target is { path: string; capability: 'read' | 'write' } => target != null)
+    .map(target => ({ ...target, listing: name === TOOL_NAMES.LIST_DIRECTORY, followFinalSymlink: name !== TOOL_NAMES.DELETE_FILE }));
+  for (const pathInfo of plannedPaths) {
     if (pathInfo) {
       // Use the appropriate check function based on capability
       const checkFn = pathInfo.capability === 'write'
         ? (candidate: string, id?: AuthorizationScopeId) => checkWritePath(
           candidate,
           id,
-          { followFinalSymlink: name !== TOOL_NAMES.DELETE_FILE },
+          { followFinalSymlink: pathInfo.followFinalSymlink },
         )
-        : (name === TOOL_NAMES.LIST_DIRECTORY ? checkListPath : checkReadPath);
+        : (pathInfo.listing ? checkListPath : checkReadPath);
 
-      const scopeId = toolContext?.authorizationScopeId;
+      const scopeId = teamFileScope ?? toolContext?.authorizationScopeId;
       const fileCeilingDecision = decideFileUnderRunPermissionCeiling(
         runPermissionCeiling,
         pathInfo.capability,
@@ -1380,7 +1433,7 @@ export async function checkToolApproval(
                   toolName: name,
                   agentName: toolContext?.agentName,
                   ...(isTeam ? {
-                    teamIdentity: await buildTeamConfirmationIdentity(name, input, toolContext, { path: pathCheck.permissionPath, capabilities: [cap, ...additionalCapabilities] }),
+                    teamIdentity: await buildTeamConfirmationIdentity(name, input, toolContext, { path: pathCheck.permissionPath, capabilities: [cap, ...additionalCapabilities], isFolder: pathCheck.permissionIsFolder === true }),
                     teamAuthorizationScopeId: teamFileScope,
                     additionalCapabilities,
                   } : {}),
@@ -1389,7 +1442,7 @@ export async function checkToolApproval(
               if (!granted) {
                 return {
                   decision: 'deny',
-                  reason: toolContext?.teamRoster
+                  reason: isTeam
                     ? `${t.commandConfirm.teamPendingConfirmation} (${pathCheck.permissionPath})`
                     : `[${t.toolErrors.userDeniedAccess} ${pathCheck.permissionPath}]`,
                 };
@@ -1429,7 +1482,7 @@ export async function checkToolApproval(
           reason: `Error: ${pathCheck.reason || t.toolErrors.pathAccessDenied}`,
         };
       }
-      approvedExecutionPath = pathCheck.resolvedPath;
+      if (pathInfo.path === input.path) approvedExecutionPath = pathCheck.resolvedPath;
 
       if (name === TOOL_NAMES.WRITE_FILE) {
         // The overwrite-safety read-precheck below calls checkReadPath, which
@@ -1444,6 +1497,9 @@ export async function checkToolApproval(
       }
     }
   }
+
+  filePlanning?.assertCurrent();
+  await files?.prepare();
 
   // Browser automation acts inside the user's live, logged-in sessions — the
   // same consequence Computer Use already gates for browser apps, so the
@@ -1806,6 +1862,7 @@ export async function checkToolApproval(
         opClass, runMode, permissionMode, runPermissionCeiling, toolTargetsPage,
         originResolved: origin !== null, answersPageDialog: answersPageDialog(name), loginRequired,
         confirmationChannelAvailable: Boolean(onRequireConfirmation), originKnown: origin !== null, highRisk,
+        scriptInEmbeddedRegion: permissionResource === 'script' && permissionTargets.some((item) => item.embeddedIn),
       };
       const gate = evaluateBrowserPermissionGate({ ...gateFacts, configured: configuredPermission });
 
@@ -1823,7 +1880,7 @@ export async function checkToolApproval(
         if (runMode === 'unattended') return await denyUnattendedBrowser(reason);
         recordGateDenial(reason);
         if (reason === 'user-cancelled') {
-          return { decision: 'deny', reason: toolContext?.teamRoster ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
+          return { decision: 'deny', reason: isTeam ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
         }
         const text = reason === 'approval-refused'
           ? t.commandConfirm.browserDenied
@@ -1882,7 +1939,7 @@ export async function checkToolApproval(
           checkReadPath: (candidate) =>
             checkReadPath(candidate, toolContext?.authorizationScopeId),
           lstat: async (candidate) => {
-            const info = await lstat(candidate);
+            const info = await (files ? files.stat(candidate) : lstat(candidate));
             // `mtime`/`ino`/`dev` are the identity pin (review F1): size alone
             // does not survive the window between this check and the read the
             // runtime does after the user has answered.
@@ -1892,8 +1949,14 @@ export async function checkToolApproval(
               isSymlink: info.isSymlink === true,
               size: typeof info.size === 'number' ? info.size : 0,
               mtimeMs: Number.isFinite(mtime) ? Math.floor(mtime) : 0,
-              ino: typeof info.ino === 'number' ? info.ino : null,
-              dev: typeof info.dev === 'number' ? info.dev : null,
+              // plugin-fs declares `ino` as `number | null`, and its
+              // `parseFileInfo` copies across whatever the host actually put
+              // on the field: the Electron and sidecar filesystem hosts write
+              // the exact 64-bit id as a decimal string, the Tauri shell a
+              // JSON number (see `ApprovedUploadFile.ino`). Read it as it
+              // arrives rather than as the type declares it.
+              ino: readFileIdPin((info as { ino?: unknown }).ino) ?? null,
+              dev: readFileIdPin((info as { dev?: unknown }).dev) ?? null,
             };
           },
         });
@@ -2139,7 +2202,12 @@ export async function checkToolApproval(
         consented = 'dialog';
       }
 
-      recheckBrowserPermission = async () => {
+      recheckBrowserPermission = () => {
+        const currentOperation = operation?.authorization.inspect();
+        if (currentOperation?.decision === 'deny') {
+          recordOperationDenial(currentOperation);
+          return { decision: 'deny' as const, reason: currentOperation.reason };
+        }
         if (toolContext?.abortSignal?.aborted) return refuseBrowser('user-cancelled');
         const freshGate = evaluateBrowserPermissionGate({ ...gateFacts,
           configured: configuredFor(getSettingsReader().getSnapshot().browserPermissionConfigV2),
@@ -2278,41 +2346,19 @@ export async function checkToolApproval(
           agentName: toolContext?.agentName,
         }, toolContext?.loopId);
         if (!confirmed) {
-          return { decision: 'deny', reason: toolContext?.teamRoster ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
+          return { decision: 'deny', reason: isTeam ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
         }
       }
     }
   }
 
-  // Enterprise policy pre-check — runs before builtin and MCP tools
-  {
-    const policy = getCurrentPolicy()
-    const summary = typeof input === 'object'
-      ? JSON.stringify(input).slice(0, 200)
-      : String(input).slice(0, 200)
-    const policyCheck = checkTool(policy, name, summary)
-    if (policyCheck.decision === 'deny') {
-      // A browser action refused here is refused as surely as one the gate
-      // above refused, so it belongs in the same taxonomy (B3). No-op for
-      // every non-browser tool.
-      recordBrowserGateDenial?.('enterprise-policy-denied')
-      return { decision: 'deny', reason: `Error: [policy] ${policyCheck.reason}` }
-    }
-    if (policyCheck.decision === 'confirm') {
-      if (toolContext?.interactionMode === 'background') {
-        // The policy demanded a confirmation an unattended run cannot give —
-        // the policy is still what stopped it.
-        recordBrowserGateDenial?.('enterprise-policy-denied')
-        return { decision: 'deny', reason: `Error: [policy] ${policyCheck.reason ?? 'confirmation unavailable in background run'}` }
-      }
-      const allowed = await showPolicyConfirm(policyCheck.reason ?? '此操作需要企业策略二次确认')
-      if (!allowed) {
-        // Here the human is the one who said no, which is a different fact
-        // from the policy blocking it — same code the attended dialog uses.
-        recordBrowserGateDenial?.('user-cancelled')
-        return { decision: 'deny', reason: `Error: [policy] user declined confirmation` }
-      }
-    }
+  const recordOperationDenial = (decision: Exclude<OperationAuthorizationDecision, { decision: 'allow' }>): void => {
+    recordBrowserGateDenial?.(decision.denialKind === 'user-cancelled' ? 'user-cancelled' : 'enterprise-policy-denied');
+  };
+  const inspection = operation?.authorization.inspect();
+  if (inspection?.decision === 'deny') {
+    recordOperationDenial(inspection);
+    return { decision: 'deny', reason: inspection.reason };
   }
 
   if (largeWritePathAfterApproval) {
@@ -2335,7 +2381,7 @@ export async function checkToolApproval(
       const granted = await onRequireFilePermission({
         ...(isTeam ? {
           teamAuthorizationScopeId: teamFileScope,
-          teamIdentity: await buildTeamConfirmationIdentity(name, input, toolContext, { path: readCheck.permissionPath, capabilities: ['read'] }),
+          teamIdentity: await buildTeamConfirmationIdentity(name, input, toolContext, { path: readCheck.permissionPath, capabilities: ['read'], isFolder: readCheck.permissionIsFolder === true }),
         } : {}),
         path: readCheck.permissionPath,
         capability: 'read',
@@ -2355,7 +2401,7 @@ export async function checkToolApproval(
         reason: 'Error: write_file requires read authorization for its overwrite safety check; authorize read access to this path, then retry',
       };
     }
-    const blockReason = await getLargeWriteBlockReason(largeWritePathAfterApproval);
+    const blockReason = await getLargeWriteBlockReason(largeWritePathAfterApproval, files);
     if (blockReason) {
       return { decision: 'deny', reason: blockReason };
     }
@@ -2364,15 +2410,52 @@ export async function checkToolApproval(
   // Enterprise confirmation may wait while the user revokes browser access.
   const browserRevocation = await recheckBrowserPermission?.();
   if (browserRevocation) return browserRevocation;
-  reportBrowserConsent?.();
-
-  return {
+  const executionInput = files?.executionInput ?? (operation ? freezeToolInput(approvedExecutionPath && FILE_TOOL_PATH_MAP[name]
+    ? { ...input, path: approvedExecutionPath } : input) : undefined);
+  if (operation && executionInput) {
+    const authorized = await operation.authorization.authorize(executionInput);
+    if (authorized.decision === 'deny') {
+      recordOperationDenial(authorized);
+      return { decision: 'deny', reason: authorized.reason };
+    }
+    const afterAuthorization = await recheckBrowserPermission?.();
+    if (afterAuthorization) return afterAuthorization;
+  }
+  filePlanning?.assertCurrent();
+  const decision: ToolApprovalDecision = {
     decision: 'allow',
+    ...(executionInput ? { executionInput } : {}),
     ...(approvedExecutionPath ? { executionPath: approvedExecutionPath } : {}),
     ...(browserExecutionPin ? { browserExecution: browserExecutionPin } : {}),
   };
+  if (operation || teamFileScope || files) {
+    let reported = false;
+    rememberToolApproval(decision, {
+      authorization: operation?.authorization,
+      input: executionInput ?? input,
+      files: retainFileAccess ? files : undefined,
+      release: retainFileAccess ? () => disposeAuthorizationScope(teamFileScope) : undefined,
+      getScopeId: () => teamFileScope ?? toolContext?.authorizationScopeId,
+      recordDenial: recordOperationDenial,
+      checkPermissions: recheckBrowserPermission,
+      reportConsent: () => {
+        if (reported) return;
+        reported = true;
+        reportBrowserConsent?.();
+      },
+    });
+    transferred = retainFileAccess;
+  } else reportBrowserConsent?.();
+  return decision;
+  } catch (error) {
+    if (error instanceof FileOperationDenied) return { decision: 'deny', reason: error.message };
+    throw error;
   } finally {
-    if (teamFileScope) disposeAuthorizationScope(teamFileScope);
+    filePlanning?.dispose();
+    if (!transferred) {
+      try { await files?.dispose(); }
+      finally { disposeAuthorizationScope(teamFileScope); }
+    }
   }
 }
 
@@ -2478,6 +2561,13 @@ export function filterTabsBySitePermissions(
   return JSON.stringify(sanitized, null, 2);
 }
 
+/** 工具名不存在：附上本轮给过模型的工具名，让它重选。 */
+function unknownToolResult(name: string, context: ToolExecutionContext | undefined): string {
+  const base = `Error: Unknown tool "${name}"`;
+  const hint = offeredToolsHint(context?.offeredToolNames);
+  return hint ? `${base}. ${hint}` : base;
+}
+
 /**
  * Execute a tool by name, checking both builtin and MCP tools
  * With optional dangerous command confirmation and file permission callbacks.
@@ -2492,6 +2582,11 @@ export async function executeAnyTool(
   /** Current context window usage (0-100). Scales truncation limits under pressure. */
   contextUsagePercent?: number
 ): Promise<ToolResult> {
+  if (toolContext || requiresHostFileOperations()) toolContext = {
+    ...toolContext, files: undefined,
+    operationOwner: toolContext?.operationOwner ?? captureFileOperationOwner(),
+  };
+  const outputPlanning = requiresHostFileOperations() ? captureFilePlanningGuard() : undefined;
   const throwIfAborted = (): void => {
     if (!toolContext?.abortSignal?.aborted) return;
     const error = new Error('Tool execution aborted');
@@ -2499,10 +2594,31 @@ export async function executeAnyTool(
     throw error;
   };
 
-  throwIfAborted();
   // P1-3d-3: approval chain extracted to checkToolApproval — see its doc.
   // Behavior-preserving: same deny-reason strings, same order, same callbacks.
-  const approval = await checkToolApproval(name, input, toolContext, onRequireConfirmation, onRequireFilePermission);
+  let initialApproval: ToolApprovalDecision | undefined;
+  let outputCapture: OutputCapture | undefined;
+  const assertOutputCurrent = (): void => {
+    throwIfAborted();
+    outputPlanning?.assertCurrent();
+    if (outputCapture && toolContext?.operationOwner && !toolContext.operationOwner.isCurrent()) {
+      throw new FileOperationDenied('Error: output capture owner changed');
+    }
+  };
+  try {
+  try {
+  throwIfAborted();
+  let approval = await checkToolApproval(name, input, toolContext, onRequireConfirmation, onRequireFilePermission, true);
+  initialApproval = approval;
+  while (true) {
+    const finalized = finalizeToolApproval(approval);
+    if (finalized instanceof Promise) {
+      approval = await finalized;
+      continue;
+    }
+    approval = finalized;
+    break;
+  }
   if (approval.decision === 'deny') {
     return approval.reason ?? `Error: tool "${name}" was denied`;
   }
@@ -2511,15 +2627,43 @@ export async function executeAnyTool(
   // starting a builtin/MCP side effect after the run crossed its abort fence.
   throwIfAborted();
 
-  const executionInput = approval.executionPath && FILE_TOOL_PATH_MAP[name]
+  const files = filesForToolApproval(initialApproval);
+  if (files) {
+    await files.assertCurrent();
+    toolContext = { ...toolContext, files };
+  }
+
+  const executionInput = approval.executionInput ?? (approval.executionPath && FILE_TOOL_PATH_MAP[name]
     ? { ...input, path: approval.executionPath }
-    : input;
+    : input);
+
+  const captureOutputs = async (result: ToolResult): Promise<void> => {
+    if (!outputPlanning) return;
+    toolContext?.reportMetadata?.({ outputSnapshotsHandled: true });
+    const assertActive = () => {
+      outputPlanning.assertCurrent();
+      throwIfAborted();
+      if (toolContext?.operationOwner && !toolContext.operationOwner.isCurrent()) {
+        throw new FileOperationDenied('Error: output capture owner changed');
+      }
+    };
+    assertActive();
+    if (!toolContext?.conversationId) return;
+    outputCapture = await snapshotToolOutputs(toolContext.conversationId, {
+      id: toolContext.toolCallId ?? '', name, input: executionInput,
+      result: browserSignalToolResultToString(result),
+    }, toolContext.workspacePath, {
+      ...toolContext, authorizationScopeId: scopeForToolApproval(initialApproval!),
+    }, { assertCurrent: async () => { assertActive(); }, assertActive }) ?? undefined;
+  };
 
   // First check builtin tools. A Labs-gated-off tool stays in the registry but
   // is treated as absent here too, so a stale/hallucinated tool_use falls
   // through to the "Unknown tool" fail-safe instead of silently executing.
   if (toolRegistry.has(name) && !isToolGatedOff(name)) {
     const result = await toolRegistry.execute(name, executionInput, toolContext);
+    await files?.assertCurrent();
+    await captureOutputs(result);
     // Only truncate string results; rich content (images) passes through
     if (typeof result === 'string') {
       // File-tool OS-permission errors get a friendly grant-guide (not
@@ -2549,7 +2693,7 @@ export async function executeAnyTool(
     // Recheck after an approval await: the user may have disabled the server.
     const disabledReason = disabledMcpToolReason(name);
     if (disabledReason) {
-      recordDisabledBrowserDenial(name, executionInput, toolContext);
+      recordBrowserBoundaryDenial(name, executionInput, toolContext);
       return disabledReason;
     }
     if (mcpManager.isConnected(serverName)) {
@@ -2557,10 +2701,31 @@ export async function executeAnyTool(
       const startedAt = Date.now();
       let result: ToolResult;
       try {
+        let uploads = approval.browserExecution?.approvedUploadFiles;
+        if (files && uploads) {
+          const captured: ApprovedUploadFile[] = [];
+          for (const [index, file] of uploads.entries()) {
+            const checkCapturedFile = async () => {
+              const info = await files.stat(file.path);
+              const mtime = info.mtime instanceof Date ? Math.floor(info.mtime.getTime()) : 0;
+              if (!info.isFile || info.isSymlink || info.size !== file.size || mtime !== file.mtimeMs) {
+                throw new FileOperationDenied('Error: upload file changed during operation');
+              }
+            };
+            await checkCapturedFile();
+            const bytes = await files.readFile(file.path);
+            if (bytes.length !== file.size) throw new FileOperationDenied('Error: upload file changed during operation');
+            await checkCapturedFile();
+            captured.push(Object.freeze({ ...file, path: `memory:file-${index}`, base64: uint8ArrayToBase64(bytes) }));
+          }
+          await files.assertCurrent();
+          uploads = captured;
+        }
         result = await mcpManager.callTool(serverName, toolName, executionInput, {
           conversationId: toolContext?.conversationId,
           agentRunId: toolContext?.agentRunId,
           signal: toolContext?.abortSignal,
+          ...(files ? { beforeDispatch: () => files.assertActive() } : {}),
           // Approval-time origin pin — rides `_meta`, never the tool schema, so
           // the model can neither read nor forge it. See `BrowserExecutionPin`.
           ...(approval.browserExecution?.expectedOrigin !== undefined
@@ -2575,8 +2740,8 @@ export async function executeAnyTool(
           // T5 — the approved file list. Absent for every tool but
           // `upload_file`, and its absence THERE is what makes the bridge
           // refuse rather than fall back to the model's own paths.
-          ...(approval.browserExecution?.approvedUploadFiles !== undefined
-            ? { approvedUploadFiles: approval.browserExecution.approvedUploadFiles }
+          ...(uploads !== undefined
+            ? { approvedUploadFiles: uploads }
             : {}),
           ...(approval.browserExecution?.runMode === 'unattended'
             ? { unattended: true }
@@ -2600,6 +2765,7 @@ export async function executeAnyTool(
           // Observability must never change product behavior.
         }
       }
+      await files?.assertCurrent();
       if (toolName === 'get_downloads' && isBrowserTool) {
         const snapshot = getSettingsReader().getSnapshot();
         result = filterDownloadsByOrigin(
@@ -2628,6 +2794,7 @@ export async function executeAnyTool(
         result = `${result}\n\n${getI18n().commandConfirm.browserLoginRequiredHint}`;
       }
       // Only truncate string results; rich content (images) passes through
+      await captureOutputs(result);
       if (typeof result === 'string') {
         return truncateToolResult(name, result, contextUsagePercent);
       }
@@ -2635,7 +2802,23 @@ export async function executeAnyTool(
     }
   }
 
-  return `Error: Unknown tool "${name}"`;
+  return unknownToolResult(name, toolContext);
+  } finally {
+    let completed = false;
+    try {
+      if (initialApproval) await releaseToolApproval(initialApproval);
+      assertOutputCurrent();
+      completed = true;
+      await outputCapture?.commit();
+    } finally {
+      outputPlanning?.dispose();
+      if (!completed) await outputCapture?.rollback();
+    }
+  }
+  } catch (error) {
+    if (error instanceof FileOperationDenied) return error.message;
+    throw error;
+  }
 }
 
 // ── OS Permission Error Detection ──

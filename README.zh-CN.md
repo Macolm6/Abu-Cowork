@@ -63,8 +63,8 @@
 <td align="center"><b>桌宠 · 活动通知条</b><br/>桌面浮窗常驻，活动条实时显示阿布状态<br/><br/><img src="website/assets/screenshot-pet.png" width="100%" /></td>
 </tr>
 <tr>
-<td align="center"><b>主题切换 · 暗色</b><br/>精心打磨的暗色主题<br/><br/><img src="website/assets/screenshot-theme.png" width="100%" /></td>
-<td align="center"><b>主题切换 · 亮色</b><br/>亮色 / 暗色 / 跟随系统一键切换<br/><br/><img src="website/assets/screenshot-theme-light.png" width="100%" /></td>
+<td align="center"><b>主题切换 · 深色</b><br/>精心打磨的深色主题<br/><br/><img src="website/assets/screenshot-theme.png" width="100%" /></td>
+<td align="center"><b>主题切换 · 浅色</b><br/>浅色 / 深色 / 跟随系统一键切换<br/><br/><img src="website/assets/screenshot-theme-light.png" width="100%" /></td>
 </tr>
 <tr>
 <td align="center" colspan="2"><b>实验室（Labs）</b><br/>打磨中的新功能，默认关闭、按需开启（当前收录：桌宠）<br/><br/><img src="website/assets/screenshot-labs.png" width="60%" /></td>
@@ -87,7 +87,7 @@
 </tr>
 <tr>
 <td align="center"><b>个人记忆</b><br/>记住你的偏好和工作习惯<br/><br/><img src="website/assets/screenshot-memory.png" width="100%" /></td>
-<td align="center"><b>安全沙箱</b><br/>Seatbelt 沙箱 + 网络隔离，保护隐私<br/><br/><img src="website/assets/screenshot-security.png" width="100%" /></td>
+<td align="center"><b>安全沙箱</b><br/>Seatbelt 沙箱（macOS）+ 基于代理的网络隔离<br/><br/><img src="website/assets/screenshot-security.png" width="100%" /></td>
 </tr>
 <tr>
 <td align="center"><b>性格设置（Soul）</b><br/>主动度三档预设 + SOUL.md 自定义语气、称呼、回复风格<br/><br/><img src="website/assets/screenshot-soul.png" width="100%" /></td>
@@ -112,7 +112,7 @@
 - **Projects 管理** — 工作区可升级成 Project，同一方向的对话自动聚合，每个项目独立配置图标、默认模型、技能集、MCP
 - **多 Agent 后台并行** — 支持同时运行多个后台 Agent（最多 5 个），各自独立执行任务，进度实时可见
 - **桌宠模式**（实验室）— 透明浮窗常驻桌面，跨 Spaces 跟随；左键唤起主窗口、右键菜单、可拖拽吸边隐藏；**活动通知条** 实时显示阿布状态（处理中 / 等待授权 / 完成），等待输入时可就地回复
-- **主题切换** — 亮色 / 暗色 / 跟随系统，设置 → 外观一键切换
+- **主题切换** — 浅色 / 深色 / 跟随系统，设置 → 外观一键切换
 - **实验室（Labs）** — 打磨中的新功能默认关闭、按需开启，可能随时调整或移除（当前收录：桌宠）
 - **对话分享 / 导出** — 一键把对话导出成 JSON 分享给同事；自动脱敏 API Key 与本地路径
 - **29 个内置技能** — PDF/PPTX/DOCX/Excel 生成、前端设计、画布设计、算法艺术、Mermaid/SVG/信息图、阿布内置浏览器、可选 Chrome 桥接、深度研究、Agent 自我反思（reflect）、工作流自动化等，一键安装，支持自定义
@@ -174,10 +174,10 @@
 
 - **三档权限模式** — 请求批准（工作区内自由读写，越界写入和危险命令需确认，默认）/ 替我审批（越界操作交 AI 审核：放行低风险、拦截高风险、不确定才问你）/ 完全自主（除系统红线外全部自动执行）；可设全局默认，也能在对话输入框上方按对话临时切换
 - **内容安全扫描** — 扫描 agent 写入的 skill / 记忆，拦截危险指令、prompt 注入、硬件指令等 120+ 类风险
-- **OS 沙箱** — macOS Seatbelt (`sandbox-exec`) / Windows PowerShell ConstrainedLanguage，隔离 shell 命令的文件访问范围
-- **网络隔离** — 本地代理 + 域名白名单 + 私有网络访问开关，可控制每条请求的目标
+- **OS 沙箱（仅 macOS）** — macOS Seatbelt (`sandbox-exec`) 把 shell 命令的文件访问限制在工作区内。**Windows 上没有 OS 强制的沙箱**：PowerShell ConstrainedLanguage 限制的是进程内的语言特性，不限制文件访问，子 `powershell.exe` 也不继承该限制。Windows 上请把 shell 隔离视为提示性的，不是安全边界
+- **网络隔离** — 本地代理 + 域名白名单 + 私有网络访问开关。**靠环境变量生效，不是 OS 强制**：绕过代理的命令（`curl --noproxy`、自带代理设置的运行时）仍能联网。Windows 上该开关未在设置界面暴露，默认关闭
 - **路径与命令双重校验** — 敏感目录（系统目录、SSH 密钥等）默认拦截；危险命令（`rm -rf /` 等）静态识别
-- **电脑操控防护** — 敏感应用黑名单（钥匙串/系统设置/微信/Slack 等 15+）、危险按键拦截（Cmd+Q、Cmd+Tab、Force Quit 等）、会话级窗口隐藏、5 分钟超时熔断
+- **电脑操控防护** — 敏感应用红线（终端、系统设置、凭据管理器、IDE 等）、危险按键拦截（Cmd+Q、Cmd+Tab、Force Quit、Win+R 等）、可撤销的按应用授权、有后果动作逐次确认、5 分钟超时熔断。这些管的是「操作电脑」工具；**它们不约束 shell 工具**——在没有 OS 沙箱的情况下，shell 仍有别的途径触达桌面
 - **API Key 加密存储** — Windows DPAPI / macOS AES-256-GCM（硬件 UUID 派生），不再明文写 localStorage
 - **本地优先** — 数据存在本地，API Key 存在本地，不经过第三方服务器
 - **跨平台** — 支持 macOS (Apple Silicon / Intel) 和 Windows
@@ -269,7 +269,7 @@
 | 工具协议 | MCP (`@modelcontextprotocol/sdk`) |
 | 联网搜索 | Bing / Brave / Tavily / SearXNG |
 | 安全沙箱 | macOS Seatbelt + 路径/命令双重校验 |
-| UI 组件 | Radix UI + Lucide Icons + shadcn 风格 |
+| UI 组件 | 阿布自己的组件库（`src/components/ds/`），基于 Radix UI + Lucide Icons |
 | 测试 | Vitest + happy-dom（覆盖核心 store / agent / skill / memdir 等模块） |
 | 评测 | 自带 OpenAI 协议工具调用评测器（`npm run eval:tool-selection`） |
 
@@ -332,12 +332,12 @@ src/
 │   ├── chat/         # 对话界面、消息气泡、模型选择器
 │   ├── sidebar/      # 侧边栏导航（含 Recents 折叠搜索）
 │   ├── panel/        # 右侧详情面板（工作区、项目记忆/指令）
-│   ├── customize/    # 自定义（技能、Agent、模型）
+│   ├── customize/    # 自定义（技能、Agent、MCP 连接器）
 │   ├── schedule/     # 定时任务视图
 │   ├── trigger/      # 触发器（值班）管理视图
 │   ├── settings/     # 系统设置（16 个面板，详见 settings/sections/）
 │   ├── preview/      # 文件预览（PDF/Office/图片/Markdown）
-│   └── ui/           # 基础 UI 组件 (shadcn/Radix)
+│   └── ds/           # 设计系统组件库（只有这里导入 Radix 与 Lucide）
 ├── core/             # 核心引擎（非 UI）
 │   ├── agent/        # Agent 循环、后台 Agent、project rules
 │   ├── llm/          # LLM 适配层（Claude / OpenAI-compatible / Ollama）

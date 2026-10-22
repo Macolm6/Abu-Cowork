@@ -1,4 +1,4 @@
-import { beforeAll, afterEach, describe, it, expect, vi } from 'vitest';
+import { beforeAll, beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
 import {
   buildUserMessageContent,
   isInteractiveDesktop,
@@ -8,6 +8,8 @@ import {
   isVisionUnsupportedError,
   getCapabilityPrompt,
   resolveTools,
+  prefetchSkills,
+  skillBlockedTools,
   buildVolatileContextTail,
   buildDirectDelegateSubagentOptions,
   buildInterruptedToolCallContext,
@@ -16,8 +18,11 @@ import {
   runAgentLoop,
 } from './agentLoop';
 import { trimOldScreenshots } from '../context/contextManager';
+import { resetCalibration } from '../context/tokenEstimator';
 import { resolveSubagentToolNames } from './subagentToolRoster';
 import { applyTeamLeaderRoute } from '../team/leaderRoute';
+import { collectPresentedFiles } from '../../utils/presentedFiles';
+import { collectTurnFilePaths } from '../../utils/turnFileMentions';
 import type { Message, ToolDefinition, ToolResultContent, SubagentDefinition, StreamEvent } from '../../types';
 import type { ToolInvoker } from './ports/toolInvoker';
 import {
@@ -33,6 +38,17 @@ import {
   getQueuedInputs,
   subscribeToInputQueue,
 } from './userInputQueue';
+
+// 本地服务商运行开始会询问窗口；测试里不发真实请求
+const { mockProbeContextWindow } = vi.hoisted(() => ({ mockProbeContextWindow: vi.fn() }));
+vi.mock('../llm/contextWindowProbe', () => ({ probeContextWindow: mockProbeContextWindow }));
+
+beforeEach(() => {
+  mockProbeContextWindow.mockReset();
+  mockProbeContextWindow.mockResolvedValue(undefined);
+  // 跑过的用例会按上报的用量校准估算比例（模块级状态），不清掉会让后面用例的估算变小
+  resetCalibration();
+});
 
 describe('runAgentLoop live-run queue ownership', () => {
   const conversationId = 'conv-live-observer-failure';
@@ -171,6 +187,8 @@ describe('resolveTools · per-run restrictions', () => {
   const prefetch = { userInput: 'hello', computerUseEnabled: false, activeSkills: [], turnCount: 1 };
   const roleTools = ['read_file', 'write_file', 'notes__read', 'notes__write', 'tool_search', 'use_skill', 'report_plan', 'delegate_to_agent', 'run_agent_batch'];
   const roleInvoker: ToolInvoker = { getAllTools: () => roleTools.map(makeTool), executeAnyTool: async () => 'ok', toolResultToString: String };
+  const computerTools = [...roleTools, 'computer', 'update_memory'];
+  const computerInvoker: ToolInvoker = { getAllTools: () => computerTools.map(makeTool), executeAnyTool: async () => 'ok', toolResultToString: String };
   const roleRoute = (extra: Partial<SubagentDefinition> = {}) => applyTeamLeaderRoute(
     { type: 'general', name: 'abu', cleanInput: 'hello' },
     { teamId: 't', teamName: 'team', leader: { name: 'leader', description: '', systemPrompt: '', ...extra } as SubagentDefinition, members: [] },
@@ -184,6 +202,42 @@ describe('resolveTools · per-run restrictions', () => {
       .toEqual(resolveSubagentToolNames(roleTools, { tools: ['read_*', 'notes__*'], disallowedTools: ['notes__write', 'run_agent_batch'] }).toolNames);
   });
 
+  describe('present_files', () => {
+    const withPresent = [...roleTools, 'present_files'];
+    const presentInvoker: ToolInvoker = { getAllTools: () => withPresent.map(makeTool), executeAnyTool: async () => 'ok', toolResultToString: String };
+    const offered = (resolved: { tools: ToolDefinition[]; deferredTools: ToolDefinition[] }) =>
+      [...resolved.tools, ...resolved.deferredTools].map((tool) => tool.name);
+
+    it('stays with a team leader whose role lists other tools only', () => {
+      const resolved = resolveTools(presentInvoker, roleRoute({ tools: ['read_file', 'write_file'] }), false, undefined, prefetch);
+      expect(offered(resolved)).toEqual(['read_file', 'write_file', 'report_plan', 'delegate_to_agent', 'run_agent_batch', 'present_files']);
+    });
+
+    it('leaves a team leader whose deny list names it', () => {
+      const resolved = resolveTools(presentInvoker, roleRoute({ tools: ['read_file'], disallowedTools: ['present_files'] }), false, undefined, prefetch);
+      expect(offered(resolved)).toEqual(['read_file', 'report_plan', 'delegate_to_agent', 'run_agent_batch']);
+    });
+
+    it('is narrowed away by a skill allowed-tools list, as report_plan is', () => {
+      const skillRoute = {
+        type: 'skill' as const, name: 'init', cleanInput: '',
+        skill: { name: 'init', description: '', allowedTools: ['read_file', 'write_file'] },
+      } as unknown as Parameters<typeof resolveTools>[1];
+      const resolved = resolveTools(presentInvoker, skillRoute, false, undefined, prefetch);
+      expect(offered(resolved)).toEqual(['read_file', 'write_file']);
+    });
+
+    it.each([
+      ['a run allowlist that leaves it out', ['read_file', 'write_file'], undefined],
+      ['a run block list that names it', undefined, ['present_files']],
+    ])('is not offered under %s', (_label, allowedTools, blockedTools) => {
+      const general = { type: 'general' as const, name: 'abu', cleanInput: 'hello' };
+      const resolved = resolveTools(presentInvoker, general, false, blockedTools, prefetch, allowedTools);
+      expect(offered(resolved)).not.toContain('present_files');
+      expect(offered(resolved)).toContain('read_file');
+    });
+  });
+
   it.each([undefined, []])('keeps deferred discovery with inherited role tools %j while removing denied core and deferred tools', (tools) => {
     const resolved = resolveTools(roleInvoker, roleRoute({ tools, disallowedTools: ['write_*', 'notes__*'] }), false, undefined, prefetch);
     const names = [...resolved.tools, ...resolved.deferredTools].map(t => t.name);
@@ -192,6 +246,73 @@ describe('resolveTools · per-run restrictions', () => {
     expect(names).not.toContain('write_file');
     expect(names).not.toContain('notes__read');
     expect(names).not.toContain('notes__write');
+  });
+
+  /// Regression: the document skills declare `computer` in blocked-tools so
+  /// that editing a document never becomes driving its application's UI, but
+  /// the filter read the list off `route.skill`, which only the explicit
+  /// `/name` route fills in. On the path the model actually takes — calling
+  /// use_skill, which records the skill in activeSkills and leaves the route
+  /// 'general' — the declaration filtered nothing at all.
+  it('honours an active skill\'s blocked-tools on the route the model actually takes', () => {
+    const generalRoute = { type: 'general', name: 'abu', cleanInput: 'hello' } as const;
+    const withSkill = {
+      ...prefetch,
+      activeSkills: [{ blockedTools: ['computer'] }],
+    } as unknown as typeof prefetch;
+
+    const resolved = resolveTools(computerInvoker, generalRoute, false, undefined, withSkill);
+    const names = [...resolved.tools, ...resolved.deferredTools].map(t => t.name);
+    expect(names).not.toContain('computer');
+    expect(names).toContain('read_file');
+  });
+
+  /// The document skills each block fifteen tools, most of them housekeeping
+  /// for a focused `/docx` run. Carrying all of them onto the path the model
+  /// takes meant "read this .docx and remember the date" lost the ability to
+  /// remember for the rest of the turn, over work the skill has no opinion
+  /// about.
+  it('does not let a skill the model activated strip tools unrelated to the channel', () => {
+    const generalRoute = { type: 'general', name: 'abu', cleanInput: 'hello' } as const;
+    const docSkill = {
+      ...prefetch,
+      activeSkills: [{ blockedTools: ['computer', 'update_memory', 'notes__*'] }],
+    } as unknown as typeof prefetch;
+
+    const resolved = resolveTools(computerInvoker, generalRoute, false, undefined, docSkill);
+    const names = [...resolved.tools, ...resolved.deferredTools].map(t => t.name);
+    expect(names).not.toContain('computer');
+    expect(names).toContain('update_memory');
+    expect(names).toContain('notes__read');
+  });
+
+  /// Typing `/docx` is the user asking for that skill and nothing else, so
+  /// there the whole declaration still holds.
+  it('keeps the full declaration for a skill the user asked for by name', () => {
+    expect(skillBlockedTools({ blockedTools: ['computer', 'update_memory'] }, undefined))
+      .toEqual(['computer', 'update_memory']);
+  });
+
+  /// The upstream lookup filters `s !== undefined` while claiming NonNullable,
+  /// and a missing skill resolves to null, so a null reaches this list. Nothing
+  /// dereferenced it until now, which is exactly why it went unnoticed.
+  it("survives a skill name that resolved to nothing", () => {
+    expect(skillBlockedTools(undefined, [null, undefined, { blockedTools: ["computer"] }]))
+      .toEqual(["computer"]);
+  });
+
+  it('merges the routed skill and the active skills rather than choosing one', () => {
+    expect(skillBlockedTools({ blockedTools: ['a', 'b'] }, [{ blockedTools: ['b', 'computer'] }]))
+      .toEqual(['a', 'b', 'computer']);
+    expect(skillBlockedTools(undefined, undefined)).toEqual([]);
+  });
+
+  it('loads the tools of a skill reached by /name on that same turn', () => {
+    const builder = { name: 'abu-app-builder', description: '', content: '' } as import('../../types').Skill;
+    const other = { name: 'other', description: '', content: '' } as import('../../types').Skill;
+    expect(prefetchSkills(builder, [other]).map((skill) => skill.name)).toEqual(['abu-app-builder', 'other']);
+    expect(prefetchSkills(builder, [builder, other])).toHaveLength(2);
+    expect(prefetchSkills(undefined, [other])).toEqual([other]);
   });
 
   it('applies an exact empty run snapshot even to the team protocols', () => {
@@ -641,7 +762,7 @@ describe('getCapabilityPrompt — visual-output variant selection', () => {
     // not promise it ALWAYS auto-opens.
     expect(prompt).toContain('can then be opened in the side preview panel');
     expect(prompt).not.toContain('opens automatically');
-    expect(prompt).toContain("let Abu's side preview/file card handle it");
+    expect(prompt).toContain('To satisfy "open/preview", write the file and, when the present_files tool is available, call it with the file — Abu\'s file card and side preview take it from there;');
     expect(prompt).toContain('do NOT run a system-shell `open`/`start` command');
   });
 
@@ -1009,6 +1130,653 @@ describe('runAgentLoop expert execution', () => {
       useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
     }
   });
+
+  it('lets the expert of a delegate route present files and keeps its file calls on the reply', async () => {
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const adapters = await import('../llm/selectChatAdapter');
+    const { getToolInvoker, setToolInvoker } = await import('./ports/toolInvoker');
+    const originalInvoker = getToolInvoker();
+    const settings = useSettingsStore.getState();
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: p.models.some((m) => m.id === 'llama3.2') ? p.models : [...p.models, { id: 'llama3.2', label: 'llama3.2' }] }
+          : p),
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 0; });
+    const conversationId = useChatStore.getState().createConversation();
+    const expert = { name: '专家', description: 'specialist', systemPrompt: 'help', tools: ['read_file', 'write_file'], filePath: '/agents/expert/AGENT.md' };
+    const emit = (events: StreamEvent[]) => async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+      events.forEach(onEvent);
+    };
+    const expertChat = vi.fn().mockImplementationOnce(emit([
+      { type: 'tool_use', id: 'expert-read', name: 'read_file', input: { path: '/ws/source.md' } },
+      { type: 'tool_use', id: 'expert-write', name: 'write_file', input: { path: '/ws/report.md', content: '# Report' } },
+      { type: 'done', stopReason: 'tool_use' },
+    ])).mockImplementationOnce(emit([
+      { type: 'tool_use', id: 'expert-present', name: 'present_files', input: { files: [{ path: 'report.md', description: 'The report' }] } },
+      { type: 'done', stopReason: 'tool_use' },
+    ])).mockImplementation(emit([{ type: 'text', text: 'The report is ready.' }, { type: 'done', stopReason: 'end_turn' }]));
+    const selectAdapter = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat: expertChat });
+    const tools: ToolDefinition[] = ['read_file', 'write_file', 'present_files', 'delegate_to_agent', 'ask_user_question'].map(name => ({ name, description: name, inputSchema: { type: 'object', properties: {} }, execute: async () => 'ok' }));
+    const executeAnyTool = vi.fn(async (name: string) => (name === 'present_files' ? 'Presented /ws/report.md' : 'ok'));
+    setToolInvoker({ getAllTools: () => tools, toolResultToString: String, executeAnyTool });
+    try {
+      const result = await runAgentLoop(conversationId, '@专家 写报告', { orchestration: {
+        route: { type: 'delegate', name: '专家', cleanInput: '写报告', delegateAgent: expert }, systemPromptSections: [],
+      } });
+      expect(result.reason).toBe('completed');
+
+      const offered = expertChat.mock.calls[0][1] as { tools: ToolDefinition[]; systemPrompt: string };
+      expect(offered.tools.map((tool) => tool.name)).toEqual(['read_file', 'write_file', 'present_files']);
+      expect(offered.systemPrompt).toContain('call present_files with it near the end of the turn');
+      expect(executeAnyTool.mock.calls.map(([name]) => name)).toEqual(['read_file', 'write_file', 'present_files']);
+
+      const reply = useChatStore.getState().conversations[conversationId].messages.findLast((message) => message.role === 'assistant')!;
+      expect(reply.content).toBe('The report is ready.');
+      expect(reply.fileCards).toBe('declared');
+      expect(reply.toolCalls).toEqual([
+        { id: expect.any(String), name: 'write_file', input: { path: '/ws/report.md' }, result: 'ok', hidden: true, fromSubagent: true },
+        {
+          id: expect.any(String), name: 'present_files',
+          input: { files: [{ path: 'report.md', description: 'The report' }] },
+          result: 'Presented /ws/report.md', hidden: true, fromSubagent: true,
+        },
+      ]);
+      expect(collectPresentedFiles(reply.toolCalls!)).toEqual([{ path: '/ws/report.md', description: 'The report' }]);
+      expect(collectTurnFilePaths(reply.toolCalls!, null)).toEqual(['/ws/report.md']);
+    } finally {
+      selectAdapter.mockRestore();
+      setToolInvoker(originalInvoker);
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('writes the step labels of a turn in the interface language', async () => {
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const adapters = await import('../llm/selectChatAdapter');
+    const { getToolInvoker, setToolInvoker } = await import('./ports/toolInvoker');
+    const originalInvoker = getToolInvoker();
+    const settings = useSettingsStore.getState();
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: p.models.some((m) => m.id === 'llama3.2') ? p.models : [...p.models, { id: 'llama3.2', label: 'llama3.2' }] }
+          : p),
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 0; });
+    const conversationId = useChatStore.getState().createConversation();
+    const emit = (events: StreamEvent[]) => async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+      events.forEach(onEvent);
+    };
+    const chat = vi.fn().mockImplementationOnce(emit([
+      { type: 'tool_use', id: 'read-source', name: 'read_file', input: { path: '/ws/source.md' } },
+      { type: 'done', stopReason: 'tool_use' },
+    ])).mockImplementation(emit([{ type: 'text', text: 'Read it.' }, { type: 'done', stopReason: 'end_turn' }]));
+    const selectAdapter = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat });
+    const tools: ToolDefinition[] = [{ name: 'read_file', description: 'read_file', inputSchema: { type: 'object', properties: {} }, execute: async () => 'ok' }];
+    setToolInvoker({ getAllTools: () => tools, toolResultToString: String, executeAnyTool: vi.fn(async () => '# Source') });
+    try {
+      const result = await runAgentLoop(conversationId, 'read the source');
+      expect(result.reason).toBe('completed');
+
+      const steps = useChatStore.getState().conversations[conversationId].messages
+        .flatMap((message) => message.executionSteps ?? []);
+      const readStep = steps.find((step) => step.toolName === 'read_file')!;
+      expect(readStep.label).toBe('Read source.md');
+      expect(readStep.detailBlocks?.map((block) => block.title)).toEqual(['Result']);
+    } finally {
+      selectAdapter.mockRestore();
+      setToolInvoker(originalInvoker);
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('offers a dispatched member neither present_files nor the instruction to call it', async () => {
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const { runSubagentLoop } = await import('./subagentLoop');
+    const adapters = await import('../llm/selectChatAdapter');
+    const settings = useSettingsStore.getState();
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: p.models.some((m) => m.id === 'llama3.2') ? p.models : [...p.models, { id: 'llama3.2', label: 'llama3.2' }] }
+          : p),
+    });
+    const memberChat = vi.fn(async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+      onEvent({ type: 'text', text: 'done' });
+      onEvent({ type: 'done', stopReason: 'end_turn' });
+    });
+    const selectAdapter = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat: memberChat });
+    const tools: ToolDefinition[] = ['read_file', 'write_file', 'present_files'].map(name => ({ name, description: name, inputSchema: { type: 'object', properties: {} }, execute: async () => 'ok' }));
+    try {
+      const member = { name: 'writer', description: 'writes', systemPrompt: 'write', filePath: '__preset__' };
+      await runSubagentLoop({
+        agent: member, task: 'write report',
+        toolInvoker: { getAllTools: () => tools, toolResultToString: String, executeAnyTool: vi.fn() },
+      });
+      const offered = memberChat.mock.calls[0][1] as { tools: ToolDefinition[]; systemPrompt: string };
+      expect(offered.tools.map((tool) => tool.name)).toEqual(['read_file', 'write_file']);
+      expect(offered.systemPrompt).not.toContain('present_files');
+    } finally {
+      selectAdapter.mockRestore();
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+    }
+  });
+});
+
+describe('runAgentLoop 用量合并', () => {
+  it('结束事件只报输出时，流内拿到的缓存读写仍然留在本轮用量里', async () => {
+    // Anthropic 的 message_start 带输入与缓存，message_delta 只带输出。结束分支
+    // 整体替换整个用量对象，缓存读写就会每轮归零——用户看到的缓存命中率恒为 0。
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const adapters = await import('../llm/selectChatAdapter');
+    const settings = useSettingsStore.getState();
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: p.models.some((m) => m.id === 'llama3.2') ? p.models : [...p.models, { id: 'llama3.2', label: 'llama3.2' }] }
+          : p),
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 0; });
+    const conversationId = useChatStore.getState().createConversation();
+    const chat = vi.fn().mockImplementation(
+      async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+        onEvent({
+          type: 'usage',
+          usage: {
+            inputTokens: 1000,
+            outputTokens: 1,
+            cacheReadInputTokens: 800,
+            cacheCreationInputTokens: 200,
+          },
+        });
+        onEvent({ type: 'text', text: '好' });
+        onEvent({ type: 'done', stopReason: 'end_turn', usage: { inputTokens: 1000, outputTokens: 500 } });
+      },
+    );
+    const selectAdapter = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat });
+    try {
+      await runAgentLoop(conversationId, '你好');
+      // 结束事件不带缓存字段，合并之后它们仍在；整体替换会把这两项抹成 undefined。
+      expect(useChatStore.getState().currentUsage).toMatchObject({
+        inputTokens: 1000,
+        outputTokens: 500,
+        cacheReadInputTokens: 800,
+        cacheCreationInputTokens: 200,
+      });
+    } finally {
+      selectAdapter.mockRestore();
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('runAgentLoop start hold', () => {
+  it('releases the start hold once the conversation is running, before the loop ends', async () => {
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const adapters = await import('../llm/selectChatAdapter');
+    const { holdConversationStarts, waitForConversationStarts } = await import('./conversationStartHold');
+    const settings = useSettingsStore.getState();
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: p.models.some((m) => m.id === 'llama3.2') ? p.models : [...p.models, { id: 'llama3.2', label: 'llama3.2' }] }
+          : p),
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 0; });
+    const conversationId = useChatStore.getState().createConversation();
+    const hold = holdConversationStarts(conversationId);
+    expect(hold).not.toBeNull();
+    let statusAtRelease: string | undefined;
+    const waiter = waitForConversationStarts(conversationId).then(() => {
+      statusAtRelease = useChatStore.getState().conversations[conversationId].status;
+    });
+    let releasedWhenModelCalled = false;
+    const chat = vi.fn().mockImplementation(
+      async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+        releasedWhenModelCalled = statusAtRelease !== undefined;
+        onEvent({ type: 'text', text: 'ok' });
+        onEvent({ type: 'done', stopReason: 'end_turn' });
+      },
+    );
+    const selectAdapter = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat });
+    try {
+      const result = await runAgentLoop(conversationId, 'hello', { startHold: hold! });
+      expect(result.reason).toBe('completed');
+      expect(chat).toHaveBeenCalled();
+      expect(releasedWhenModelCalled).toBe(true);
+      await waiter;
+      expect(statusAtRelease).toBe('running');
+    } finally {
+      hold!.release();
+      selectAdapter.mockRestore();
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('运行开始询问本地服务的窗口', () => {
+  beforeAll(async () => {
+    await import('./subagentRunner');
+  });
+
+  async function setup(maxInputTokens?: number) {
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const adapters = await import('../llm/selectChatAdapter');
+    const contextWindow = await import('../llm/contextWindow');
+    const settings = useSettingsStore.getState();
+    const savedModel = {
+      id: 'llama3.2', label: 'llama3.2', contextWindow: 65536,
+      ...(maxInputTokens !== undefined ? { declaredCapabilities: { maxInputTokens } } : {}),
+    };
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: [...p.models.filter((m) => m.id !== 'llama3.2'), savedModel] }
+          : p),
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 0; });
+    const chat = vi.fn().mockImplementation(
+      async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+        onEvent({ type: 'text', text: 'ok' });
+        onEvent({ type: 'done', stopReason: 'end_turn' });
+      },
+    );
+    const selectAdapter = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat });
+    const resolveWindow = vi.spyOn(contextWindow, 'resolveContextWindow');
+    const restore = () => {
+      selectAdapter.mockRestore();
+      resolveWindow.mockRestore();
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+      vi.unstubAllGlobals();
+    };
+    return { useChatStore, resolveWindow, restore };
+  }
+
+  async function runMain(useChatStore: Awaited<ReturnType<typeof setup>>['useChatStore']) {
+    const conversationId = useChatStore.getState().createConversation();
+    const result = await runAgentLoop(conversationId, 'hello');
+    expect(result.reason).toBe('completed');
+  }
+
+  async function runSub() {
+    const { runSubagentLoop } = await import('./subagentLoop');
+    const agent = { name: 'helper', description: 'helps', systemPrompt: 'help', tools: [], filePath: '__preset__' };
+    const result = await runSubagentLoop({
+      agent, task: 'hello',
+      toolInvoker: { getAllTools: () => [], toolResultToString: String, executeAnyTool: vi.fn() },
+    });
+    expect(result.stopReason).toBe('completed');
+  }
+
+  it.each([['runAgentLoop', runMain], ['runSubagentLoop', runSub]] as const)(
+    '%s：服务报告的窗口优先于获取模型时保存的值',
+    async (_name, run) => {
+      const { useChatStore, resolveWindow, restore } = await setup();
+      mockProbeContextWindow.mockResolvedValue(98304);
+      try {
+        await run(useChatStore);
+        expect(mockProbeContextWindow).toHaveBeenCalledWith(expect.objectContaining({ id: 'ollama' }), 'llama3.2');
+        expect(resolveWindow).toHaveBeenCalledWith(expect.objectContaining({ probed: 98304 }));
+        expect(resolveWindow).not.toHaveBeenCalledWith(expect.objectContaining({ probed: 65536 }));
+      } finally {
+        restore();
+      }
+    },
+  );
+
+  it.each([['runAgentLoop', runMain], ['runSubagentLoop', runSub]] as const)(
+    '%s：服务没有回答时用获取模型时保存的值',
+    async (_name, run) => {
+      const { useChatStore, resolveWindow, restore } = await setup();
+      try {
+        await run(useChatStore);
+        expect(mockProbeContextWindow).toHaveBeenCalledOnce();
+        expect(resolveWindow).toHaveBeenCalledWith(expect.objectContaining({ probed: 65536 }));
+      } finally {
+        restore();
+      }
+    },
+  );
+
+  it.each([['runAgentLoop', runMain], ['runSubagentLoop', runSub]] as const)(
+    '%s：用户填了上下文长度就不询问',
+    async (_name, run) => {
+      const { useChatStore, resolveWindow, restore } = await setup(81920);
+      mockProbeContextWindow.mockResolvedValue(98304);
+      try {
+        await run(useChatStore);
+        expect(mockProbeContextWindow).not.toHaveBeenCalled();
+        expect(resolveWindow).toHaveBeenCalledWith(expect.objectContaining({ userSetting: 81920, probed: 65536 }));
+      } finally {
+        restore();
+      }
+    },
+  );
+
+});
+
+describe('回答预留按模型自己的窗口计算', () => {
+  beforeAll(async () => {
+    await import('./subagentRunner');
+  });
+
+  async function setup(provider: Partial<import('../../types/provider').ProviderInstance>, modelId: string) {
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const adapters = await import('../llm/selectChatAdapter');
+    const settings = useSettingsStore.getState();
+    const base = settings.providers.find((p) => p.id === provider.id) ?? {
+      ...settings.providers[0], source: 'custom' as const, name: 'Gateway', apiKey: 'k', userAdded: true,
+    };
+    useSettingsStore.setState({
+      activeModel: { providerId: provider.id!, modelId },
+      providers: [
+        ...settings.providers.filter((p) => p.id !== provider.id),
+        { ...base, ...provider, enabled: true, models: [{ id: modelId, label: modelId }] },
+      ],
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 0; });
+    const chat = vi.fn().mockImplementation(
+      async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+        onEvent({ type: 'text', text: 'ok' });
+        onEvent({ type: 'done', stopReason: 'end_turn' });
+      },
+    );
+    const selectAdapter = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat });
+    const restore = () => {
+      selectAdapter.mockRestore();
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+      vi.unstubAllGlobals();
+    };
+    return { useChatStore, chat, restore };
+  }
+
+  async function runMain(useChatStore: Awaited<ReturnType<typeof setup>>['useChatStore']) {
+    const conversationId = useChatStore.getState().createConversation();
+    const result = await runAgentLoop(conversationId, 'hello');
+    expect(result.reason).toBe('completed');
+  }
+
+  async function runSub() {
+    const { runSubagentLoop } = await import('./subagentLoop');
+    const agent = { name: 'helper', description: 'helps', systemPrompt: 'help', tools: [], filePath: '__preset__' };
+    const result = await runSubagentLoop({
+      agent, task: 'hello',
+      toolInvoker: { getAllTools: () => [], toolResultToString: String, executeAnyTool: vi.fn() },
+    });
+    expect(result.stopReason).toBe('completed');
+  }
+
+  it.each([['runAgentLoop', runMain], ['runSubagentLoop', runSub]] as const)(
+    '%s：云端长窗口模型保持自己的回答预算，不被全局上限压小',
+    async (_name, run) => {
+      const { useChatStore, chat, restore } = await setup(
+        { id: 'gw', apiFormat: 'openai-compatible', baseUrl: 'https://gw.example.net/v1' },
+        'gpt-5.5',
+      );
+      try {
+        await run(useChatStore);
+        // 模型表：gpt-5.5 窗口 1050000、输出上限 128000；全局上限 200000 只约束输入
+        expect((chat.mock.calls[0][1] as { maxTokens: number }).maxTokens).toBe(128000);
+      } finally {
+        restore();
+      }
+    },
+  );
+
+  // 主循环的系统说明加工具定义约 12K，8K 窗口在发请求前就报「放不下」，所以主循环用 24K 窗口验证
+  it.each([
+    ['runAgentLoop', runMain, 'qwen3-8b', 24576, 6144],
+    ['runSubagentLoop', runSub, 'llama3.2', 8192, 2048],
+  ] as const)(
+    '%s：本地小窗口仍只给回答留四分之一',
+    async (_name, run, modelId, window, expectedMaxTokens) => {
+      const { useChatStore, chat, restore } = await setup({ id: 'ollama', baseUrl: 'http://127.0.0.1:11434' }, modelId);
+      mockProbeContextWindow.mockResolvedValue(window);
+      try {
+        await run(useChatStore);
+        expect((chat.mock.calls[0][1] as { maxTokens: number }).maxTokens).toBe(expectedMaxTokens);
+      } finally {
+        restore();
+      }
+    },
+  );
+});
+
+describe('服务说内容太长后按真实上限恢复', () => {
+  async function setup() {
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const adapters = await import('../llm/selectChatAdapter');
+    const { LLMError } = await import('../llm/adapter');
+    const { getCapsPort, setCapsPort } = await import('./ports/capsPort');
+    const settings = useSettingsStore.getState();
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: [...p.models.filter((m) => m.id !== 'llama3.2'), { id: 'llama3.2', label: 'llama3.2' }] }
+          : p),
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 0; });
+    const chat = vi.fn().mockImplementation(
+      async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+        onEvent({ type: 'text', text: 'ok' });
+        onEvent({ type: 'done', stopReason: 'end_turn' });
+      },
+    );
+    const selectAdapter = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat });
+    const defaultCapsPort = getCapsPort();
+    const recordContextWindow = vi.fn();
+    setCapsPort({ ...defaultCapsPort, get: () => undefined, recordContextWindow });
+    const restore = () => {
+      selectAdapter.mockRestore();
+      setCapsPort(defaultCapsPort);
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+      vi.unstubAllGlobals();
+    };
+    return { useChatStore, LLMError, chat, selectAdapter, recordContextWindow, restore };
+  }
+
+  it('Ollama 走自己的适配器，重试按学到的上限安排内容', async () => {
+    const { useChatStore, LLMError, chat, selectAdapter, restore } = await setup();
+    mockProbeContextWindow.mockResolvedValue(32768);
+    chat.mockRejectedValueOnce(new LLMError('too long', 'context_too_long', { statusCode: 400, contextLimit: 16384 }));
+    try {
+      const conversationId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(conversationId, 'hello');
+
+      expect(result.reason).toBe('completed');
+      expect(selectAdapter).toHaveBeenCalledWith('ollama');
+      expect(chat).toHaveBeenCalledTimes(2);
+      // 首次请求按运行开始问到的 32768 预留回答；重试按学到的 16384，水位分母也换成它
+      expect((chat.mock.calls[0][1] as { maxTokens: number }).maxTokens).toBeLessThanOrEqual(32768 / 4);
+      expect((chat.mock.calls[1][1] as { maxTokens: number }).maxTokens).toBeLessThanOrEqual(16384 / 4);
+      expect(useChatStore.getState().conversations[conversationId].contextUsage?.tokensMax).toBe(16384);
+    } finally {
+      restore();
+    }
+  });
+
+  it('Ollama 报错带上限而运行开始时模型没加载：补问一次，之后用户调大长度时学到的值作废', async () => {
+    const { useChatStore, LLMError, chat, restore } = await setup();
+    const { getCapsPort, setCapsPort } = await import('./ports/capsPort');
+    const learned = new Map<string, { contextWindow: number; contextWindowProbe?: number; source: 'error-derived'; updatedAt: number }>();
+    const fakeCapsPort = getCapsPort();
+    setCapsPort({
+      ...fakeCapsPort,
+      get: (providerId: string, modelId: string) => learned.get(`${providerId}:${modelId}`),
+      recordContextWindow: (providerId: string, modelId: string, contextWindow: number, contextWindowProbe?: number) => {
+        learned.set(`${providerId}:${modelId}`, { contextWindow, contextWindowProbe, source: 'error-derived', updatedAt: 0 });
+      },
+    });
+    // 第一次运行：开始时 /api/ps 里没有这个模型；Ollama 按默认 4096 加载后转交 llama-server 的报错，带上限 4096
+    mockProbeContextWindow.mockResolvedValueOnce(undefined).mockResolvedValueOnce(4096);
+    chat.mockRejectedValueOnce(new LLMError(
+      'request (9000 tokens) exceeds the available context size (4096 tokens), try increasing it',
+      'context_too_long',
+      { statusCode: 400, contextLimit: 4096 },
+    ));
+    try {
+      const first = useChatStore.getState().createConversation();
+      // 4096 放不下阿布的说明，这次运行按「模型能记的太少」结束；学到的值在整理之前就已记下
+      await runAgentLoop(first, 'hello');
+      expect(mockProbeContextWindow).toHaveBeenCalledTimes(2);
+      expect(learned.get('ollama:llama3.2')).toMatchObject({ contextWindow: 4096, contextWindowProbe: 4096 });
+
+      // 用户按提示在 Ollama 里把长度调到 32768：下一次运行 /api/ps 报 32768，窗口跟着变
+      mockProbeContextWindow.mockResolvedValue(32768);
+      const second = useChatStore.getState().createConversation();
+      expect((await runAgentLoop(second, 'hello')).reason).toBe('completed');
+      expect(useChatStore.getState().conversations[second].contextUsage?.tokensMax).toBe(32768);
+    } finally {
+      setCapsPort(fakeCapsPort);
+      restore();
+    }
+  });
+
+  it('记住报错里的上限并带上运行开始时服务报告的值，按新上限重试', async () => {
+    const { useChatStore, LLMError, chat, recordContextWindow, restore } = await setup();
+    mockProbeContextWindow.mockResolvedValue(32768);
+    chat.mockRejectedValueOnce(new LLMError('too long', 'context_too_long', { statusCode: 400, contextLimit: 16384 }));
+    try {
+      const conversationId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(conversationId, 'hello');
+
+      expect(result.reason).toBe('completed');
+      expect(chat).toHaveBeenCalledTimes(2);
+      // 报错已经说了上限，不再询问服务
+      expect(mockProbeContextWindow).toHaveBeenCalledOnce();
+      expect(recordContextWindow).toHaveBeenCalledWith('ollama', 'llama3.2', 16384, 32768);
+      const retryOptions = chat.mock.calls[1][1] as { maxTokens: number };
+      expect(retryOptions.maxTokens).toBeLessThanOrEqual(16384 / 4);
+      const conversation = useChatStore.getState().conversations[conversationId];
+      expect(conversation.contextUsage?.tokensMax).toBe(16384);
+      const assistantText = conversation.messages
+        .filter((message) => message.role === 'assistant')
+        .map((message) => typeof message.content === 'string' ? message.content : '')
+        .join('\n');
+      // 提示单独成段，重试后的回答另起一段，markdown 的斜体才能闭合
+      expect(assistantText).toContain('*The conversation is long, tidying up the earlier part…*\n\nok');
+    } finally {
+      restore();
+    }
+  });
+
+  it('报错没说上限时再问一次本地服务', async () => {
+    const { useChatStore, LLMError, chat, recordContextWindow, restore } = await setup();
+    mockProbeContextWindow.mockResolvedValueOnce(undefined).mockResolvedValueOnce(12288);
+    chat.mockRejectedValueOnce(new LLMError('too long', 'context_too_long', { statusCode: 400 }));
+    try {
+      const conversationId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(conversationId, 'hello');
+
+      expect(result.reason).toBe('completed');
+      expect(mockProbeContextWindow).toHaveBeenCalledTimes(2);
+      expect(mockProbeContextWindow).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'ollama' }), 'llama3.2');
+      // 再问一次得到的就是服务当时报告的值，随学到的上限一起记下
+      expect(recordContextWindow).toHaveBeenCalledWith('ollama', 'llama3.2', 12288, 12288);
+      const retryOptions = chat.mock.calls[1][1] as { maxTokens: number };
+      expect(retryOptions.maxTokens).toBeLessThanOrEqual(12288 / 4);
+      expect(useChatStore.getState().conversations[conversationId].contextUsage?.tokensMax).toBe(12288);
+    } finally {
+      restore();
+    }
+  });
+
+  it('再问一次学到的上限，在用户之后调大服务端长度时作废', async () => {
+    const { useChatStore, LLMError, chat, restore } = await setup();
+    const { getCapsPort, setCapsPort } = await import('./ports/capsPort');
+    const learned = new Map<string, { contextWindow: number; contextWindowProbe?: number; source: 'error-derived'; updatedAt: number }>();
+    const fakeCapsPort = getCapsPort();
+    setCapsPort({
+      ...fakeCapsPort,
+      get: (providerId: string, modelId: string) => learned.get(`${providerId}:${modelId}`),
+      recordContextWindow: (providerId: string, modelId: string, contextWindow: number, contextWindowProbe?: number) => {
+        learned.set(`${providerId}:${modelId}`, { contextWindow, contextWindowProbe, source: 'error-derived', updatedAt: 0 });
+      },
+    });
+    // 第一次运行：开始时没问到，报错没说上限，再问一次得到 24576
+    mockProbeContextWindow.mockResolvedValueOnce(undefined).mockResolvedValueOnce(24576);
+    chat.mockRejectedValueOnce(new LLMError('too long', 'context_too_long', { statusCode: 400 }));
+    try {
+      const first = useChatStore.getState().createConversation();
+      expect((await runAgentLoop(first, 'hello')).reason).toBe('completed');
+      expect(learned.get('ollama:llama3.2')).toMatchObject({ contextWindow: 24576, contextWindowProbe: 24576 });
+
+      // 第二次运行：用户在服务里把长度调到 32768，学到的 24576 已经过时
+      mockProbeContextWindow.mockResolvedValue(32768);
+      const second = useChatStore.getState().createConversation();
+      expect((await runAgentLoop(second, 'hello')).reason).toBe('completed');
+      expect(useChatStore.getState().conversations[second].contextUsage?.tokensMax).toBe(32768);
+    } finally {
+      restore();
+    }
+  });
+
+  // 思考预算要跟着新窗口重新计算，否则重试时思考预算会超过回答预算
+  it.each([
+    {
+      label: 'qwen 类',
+      caps: { thinking: 'qwen' as const, maxOutputTokens: 8192, contextWindow: 32768 },
+      probed: 32768,
+      // 按原窗口 32768 算出的思考预算是 4096；学到 16384 后回答预算为 4096，
+      // 思考预算不重新计算就会等于回答预算
+      learned: 16384,
+      // 回答预算不超过学到窗口的四分之一
+      expectedMaxTokens: 16384 / 4,
+      expectedEnableThinking: undefined,
+    },
+    {
+      label: 'Claude 类',
+      caps: { thinking: 'anthropic' as const, maxOutputTokens: 64000, contextWindow: 200000 },
+      probed: 200000,
+      learned: 32768,
+      // Claude 的回答预算最少 16384（思考预算 10000 计入其中）
+      expectedMaxTokens: Math.max(32768 / 4, 16384),
+      expectedEnableThinking: true,
+    },
+  ])('$label：重试请求的思考预算按学到的窗口重新计算', async ({ caps, probed, learned, expectedMaxTokens, expectedEnableThinking }) => {
+    const { useChatStore, LLMError, chat, restore } = await setup();
+    const modelCapabilities = await import('../llm/modelCapabilities');
+    const resolveCaps = vi.spyOn(modelCapabilities, 'resolveCapabilities').mockReturnValue({
+      vision: false, toolResultImages: 'none', documentBlock: false, ...caps,
+    });
+    mockProbeContextWindow.mockResolvedValue(probed);
+    chat.mockRejectedValueOnce(new LLMError('too long', 'context_too_long', { statusCode: 400, contextLimit: learned }));
+    try {
+      const conversationId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(conversationId, 'hello');
+
+      expect(result.reason).toBe('completed');
+      expect(chat).toHaveBeenCalledTimes(2);
+      const retryOptions = chat.mock.calls[1][1] as { maxTokens: number; thinkingBudget?: number; enableThinking?: boolean };
+      expect(retryOptions.maxTokens).toBe(expectedMaxTokens);
+      expect(retryOptions.thinkingBudget).toBeDefined();
+      expect(retryOptions.thinkingBudget!).toBeLessThan(retryOptions.maxTokens);
+      expect(retryOptions.enableThinking).toBe(expectedEnableThinking);
+    } finally {
+      resolveCaps.mockRestore();
+      restore();
+    }
+  });
 });
 
 describe('runAgentLoop pinned-model availability guard', () => {
@@ -1139,6 +1907,279 @@ describe('runAgentLoop pinned-model availability guard', () => {
       const last = useChatStore.getState().conversations[conversationId].messages.at(-1);
       expect(last?.role).toBe('assistant');
       expect(last?.content).toBe('请先在设置中配置你的 API Key。');
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe('本地服务的请求选项与首次回答超时', () => {
+  beforeAll(async () => {
+    await import('./subagentRunner');
+  });
+
+  async function setup(maxInputTokens?: number) {
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const adapters = await import('../llm/selectChatAdapter');
+    const { LLMError } = await import('../llm/adapter');
+    const settings = useSettingsStore.getState();
+    const savedModel = {
+      id: 'llama3.2', label: 'llama3.2', contextWindow: 65536,
+      ...(maxInputTokens !== undefined ? { declaredCapabilities: { maxInputTokens } } : {}),
+    };
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: [...p.models.filter((m) => m.id !== 'llama3.2'), savedModel] }
+          : p),
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 0; });
+    const chat = vi.fn().mockImplementation(
+      async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+        onEvent({ type: 'text', text: 'ok' });
+        onEvent({ type: 'done', stopReason: 'end_turn' });
+      },
+    );
+    const selectAdapter = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat });
+    const restore = () => {
+      selectAdapter.mockRestore();
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+      vi.unstubAllGlobals();
+    };
+    return { useChatStore, LLMError, chat, restore };
+  }
+
+  type Setup = Awaited<ReturnType<typeof setup>>;
+
+  async function runMain(useChatStore: Setup['useChatStore']) {
+    const conversationId = useChatStore.getState().createConversation();
+    const result = await runAgentLoop(conversationId, 'hello');
+    const text = useChatStore.getState().conversations[conversationId].messages
+      .filter((message) => message.role === 'assistant')
+      .map((message) => typeof message.content === 'string' ? message.content : '')
+      .join('\n');
+    return { ended: result.reason, text };
+  }
+
+  async function runSub() {
+    const { runSubagentLoop } = await import('./subagentLoop');
+    const agent = { name: 'helper', description: 'helps', systemPrompt: 'help', tools: [], filePath: '__preset__' };
+    const result = await runSubagentLoop({
+      agent, task: 'hello',
+      toolInvoker: { getAllTools: () => [], toolResultToString: String, executeAnyTool: vi.fn() },
+    });
+    return { ended: result.stopReason, text: result.text };
+  }
+
+  type RequestOptions = { requestedContextLength?: number; localServer?: boolean };
+
+  it.each([['runAgentLoop', runMain], ['runSubagentLoop', runSub]] as const)(
+    '%s：用户没填上下文长度时，不把估计或问到的窗口交给 Ollama 运行',
+    async (_name, run) => {
+      const { useChatStore, chat, restore } = await setup();
+      mockProbeContextWindow.mockResolvedValue(98304);
+      try {
+        expect((await run(useChatStore)).ended).toBe('completed');
+        const options = chat.mock.calls[0][1] as RequestOptions;
+        expect(options.requestedContextLength).toBeUndefined();
+        expect(options.localServer).toBe(true);
+        expect('contextWindow' in options).toBe(false);
+      } finally {
+        restore();
+      }
+    },
+  );
+
+  it.each([['runAgentLoop', runMain], ['runSubagentLoop', runSub]] as const)(
+    '%s：用户填了上下文长度时，只把这个值交给 Ollama 运行',
+    async (_name, run) => {
+      const { useChatStore, chat, restore } = await setup(24576);
+      try {
+        expect((await run(useChatStore)).ended).toBe('completed');
+        expect(chat.mock.calls[0][1] as RequestOptions).toMatchObject({ requestedContextLength: 24576, localServer: true });
+      } finally {
+        restore();
+      }
+    },
+  );
+
+  it.each([['runAgentLoop', runMain], ['runSubagentLoop', runSub]] as const)(
+    '%s：本地服务首次回答超时不重试，回答里是概念对照表那句普通说明',
+    async (_name, run) => {
+      const { useChatStore, LLMError, chat, restore } = await setup();
+      const { getI18n } = await import('../../i18n');
+      chat.mockRejectedValue(new LLMError('本地服务 600 秒内没有开始回答', 'local_server_timeout', { retryable: false }));
+      try {
+        const { ended, text } = await run(useChatStore);
+        expect(ended).toBe('error');
+        expect(chat).toHaveBeenCalledTimes(1);
+        expect(text).toContain(getI18n().chat.localServerNoFirstResponse);
+        expect(text).not.toContain('本地服务 600 秒内没有开始回答');
+      } finally {
+        restore();
+      }
+    },
+  );
+
+  it('runAgentLoop：超时说明前面不带 Error 前缀', async () => {
+    const { useChatStore, LLMError, chat, restore } = await setup();
+    chat.mockRejectedValue(new LLMError('本地服务 600 秒内没有开始回答', 'local_server_timeout', { retryable: false }));
+    try {
+      const { text } = await runMain(useChatStore);
+      expect(text).not.toContain('Error:');
+    } finally {
+      restore();
+    }
+  });
+
+  it('runAgentLoop：云端的连接超时照旧重试', async () => {
+    const { useChatStore, LLMError, chat, restore } = await setup();
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const settings = useSettingsStore.getState();
+    useSettingsStore.setState({
+      activeModel: { providerId: 'deepseek', modelId: 'deepseek-chat' },
+      providers: settings.providers.map((p) =>
+        p.id === 'deepseek' ? { ...p, enabled: true, apiKey: 'sk-test', models: [{ id: 'deepseek-chat', label: 'deepseek-chat' }] } : p),
+    });
+    chat.mockRejectedValueOnce(new LLMError('连接超时：180 秒未收到服务器响应头', 'network_error', { retryable: true, retryAfterMs: 1 }));
+    try {
+      const { ended } = await runMain(useChatStore);
+      expect(ended).toBe('completed');
+      expect(chat).toHaveBeenCalledTimes(2);
+      expect((chat.mock.calls[0][1] as RequestOptions).localServer).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe('runAgentLoop 模型档案的两条护栏', () => {
+  beforeAll(async () => {
+    await import('./subagentRunner');
+  });
+
+  // 工具参数修复按模型族默认值生效：deepseek 族打开，claude 族关闭
+  async function setup(modelId: string) {
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const adapters = await import('../llm/selectChatAdapter');
+    const { getToolInvoker, setToolInvoker } = await import('./ports/toolInvoker');
+    const originalInvoker = getToolInvoker();
+    const settings = useSettingsStore.getState();
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: [...p.models.filter((m) => m.id !== modelId), { id: modelId, label: modelId }] }
+          : p),
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 0; });
+    const emit = (events: StreamEvent[]) => async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+      events.forEach(onEvent);
+    };
+    const chat = vi.fn();
+    const selectAdapter = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat });
+    const tools: ToolDefinition[] = [{
+      name: 'read_file',
+      description: 'read',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'path' },
+          limit: { type: 'integer', description: 'limit' },
+        },
+        required: ['path'],
+      },
+      execute: async () => 'ok',
+    }];
+    const executeAnyTool = vi.fn(async () => '# Source');
+    setToolInvoker({ getAllTools: () => tools, toolResultToString: String, executeAnyTool });
+    const conversationId = useChatStore.getState().createConversation();
+    const restore = () => {
+      selectAdapter.mockRestore();
+      setToolInvoker(originalInvoker);
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+      vi.unstubAllGlobals();
+    };
+    const messagesOf = () => useChatStore.getState().conversations[conversationId].messages;
+    return { conversationId, chat, emit, executeAnyTool, messagesOf, restore };
+  }
+
+  const readWithStringLimit: StreamEvent[] = [
+    { type: 'tool_use', id: 'read-1', name: 'read_file', input: { path: '/ws/a.md', limit: '20' } },
+    { type: 'done', stopReason: 'tool_use' },
+  ];
+  const textOnly = (text: string): StreamEvent[] => [{ type: 'text', text }, { type: 'done', stopReason: 'end_turn' }];
+
+  it('档案打开参数修复时，数字文字在交给工具前转成数字', async () => {
+    const { conversationId, chat, emit, executeAnyTool, restore } = await setup('deepseek-chat');
+    chat.mockImplementationOnce(emit(readWithStringLimit)).mockImplementation(emit(textOnly('Read it.')));
+    try {
+      const result = await runAgentLoop(conversationId, 'read the file');
+      expect(result.reason).toBe('completed');
+      expect(executeAnyTool).toHaveBeenCalledOnce();
+      expect(executeAnyTool.mock.calls[0][1]).toEqual({ path: '/ws/a.md', limit: 20 });
+    } finally {
+      restore();
+    }
+  });
+
+  it('档案关闭参数修复时，参数原样交给工具', async () => {
+    const { conversationId, chat, emit, executeAnyTool, restore } = await setup('claude-sonnet-4-5');
+    chat.mockImplementationOnce(emit(readWithStringLimit)).mockImplementation(emit(textOnly('Read it.')));
+    try {
+      const result = await runAgentLoop(conversationId, 'read the file');
+      expect(result.reason).toBe('completed');
+      expect(executeAnyTool.mock.calls[0][1]).toEqual({ path: '/ws/a.md', limit: '20' });
+    } finally {
+      restore();
+    }
+  });
+
+  // 续推护栏首批没有型号打开，这里把档案里的开关临时打开来验证机制
+  async function withNudgeOpened<T>(run: () => Promise<T>): Promise<T> {
+    const profiles = await import('../llm/modelProfile');
+    const original = profiles.resolveModelProfile;
+    const spy = vi.spyOn(profiles, 'resolveModelProfile').mockImplementation((input) => {
+      const profile = original(input);
+      return { ...profile, harness: { ...profile.harness, guards: { ...profile.harness.guards, textOnlyEndTurnNudge: true } } };
+    });
+    try {
+      return await run();
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it('档案打开续推时，做过操作后只说不做的一轮最多被续推两次，之后照常结束', async () => {
+    const { TEXT_ONLY_END_TURN_NUDGE_MESSAGE } = await import('./textOnlyEndTurnNudge');
+    const { conversationId, chat, emit, messagesOf, restore } = await setup('deepseek-chat');
+    chat.mockImplementationOnce(emit(readWithStringLimit)).mockImplementation(emit(textOnly('Next I will edit the file.')));
+    try {
+      const result = await withNudgeOpened(() => runAgentLoop(conversationId, 'edit the file'));
+      expect(result.reason).toBe('completed');
+      // 一轮操作 + 三轮纯文字：第一、二轮纯文字各被续推一次，第三轮结束
+      expect(chat).toHaveBeenCalledTimes(4);
+      const nudges = messagesOf().filter((m) => m.role === 'user' && m.isSystem && m.content === TEXT_ONLY_END_TURN_NUDGE_MESSAGE);
+      expect(nudges).toHaveLength(2);
+      // 续写消息在第三次请求里交给了模型
+      const thirdRequest = chat.mock.calls[2][0] as Array<{ role: string; content: unknown }>;
+      expect(thirdRequest.filter((m) => m.role === 'user' && m.content === TEXT_ONLY_END_TURN_NUDGE_MESSAGE)).toHaveLength(1);
+    } finally {
+      restore();
+    }
+  });
+
+  it('档案关闭续推时（首批所有型号），只说不做的一轮照常结束', async () => {
+    const { conversationId, chat, emit, messagesOf, restore } = await setup('deepseek-chat');
+    chat.mockImplementationOnce(emit(readWithStringLimit)).mockImplementation(emit(textOnly('Next I will edit the file.')));
+    try {
+      const result = await runAgentLoop(conversationId, 'edit the file');
+      expect(result.reason).toBe('completed');
+      expect(chat).toHaveBeenCalledTimes(2);
+      expect(messagesOf().some((m) => m.role === 'user' && m.isSystem)).toBe(false);
     } finally {
       restore();
     }

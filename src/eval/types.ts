@@ -136,6 +136,108 @@ export interface EvalReport {
   results: CaseResult[];
 }
 
+// ─── L3: File-edit cases (per-model file-editing eval) ───
+
+export type FileEditCategory =
+  | 'single-replace'
+  | 'multi-replace'
+  | 'create'
+  | 'delete-fragment'
+  | 'special-chars'
+  | 'multi-file'
+  | 'read-then-edit';
+
+export interface FileEditCase {
+  id: string;
+  category: FileEditCategory;
+  difficulty: 'easy' | 'medium' | 'hard';
+  /** User instruction, written in Chinese (Abu's users write Chinese). */
+  instruction: string;
+  /** Initial workspace files: path relative to the case directory → content. */
+  files: Record<string, string>;
+  /**
+   * Expected final files: relative path → exact content. Every path listed
+   * here must exist with this content after the run. A path present in
+   * `files` but absent here must be left unchanged.
+   */
+  expected: Record<string, string>;
+}
+
+export interface FileEditToolCallRecord {
+  name: string;
+  /** The `path` argument when the tool call carried one. */
+  path?: string;
+  isError: boolean;
+}
+
+export type FileEditMismatchReason = 'missing' | 'content' | 'unexpected-change';
+
+export interface FileEditMismatch {
+  path: string;
+  reason: FileEditMismatchReason;
+  expected?: string;
+  actual?: string;
+}
+
+export interface FileEditCaseResult {
+  caseId: string;
+  target: EvalTarget;
+  passed: boolean;
+  toolCalls: FileEditToolCallRecord[];
+  toolCallCount: number;
+  /** Calls to write_file or edit_file (whether or not they succeeded). */
+  writeToolCallCount: number;
+  /**
+   * The model ended the run without ever calling write_file or edit_file.
+   * This is the "says it will change the file but never does" symptom the
+   * end-turn nudge guard is meant to catch; a run that ended in a transport
+   * error is not counted.
+   */
+  textOnlyEndTurn: boolean;
+  /** Model requests made for this case. */
+  turns: number;
+  tokenUsage: { input: number; output: number };
+  latencyMs: number;
+  mismatches: FileEditMismatch[];
+  /** Files present after the run that neither `files` nor `expected` named. */
+  extraFiles: string[];
+  /** Text of the model's last turn. */
+  finalText: string;
+  error?: string;
+}
+
+export interface FileEditTargetSummary {
+  passRate: number;
+  passCount: number;
+  failCount: number;
+  errorCount: number;
+  textOnlyEndTurnCount: number;
+  avgToolCalls: number;
+  avgWriteToolCalls: number;
+  avgTurns: number;
+  avgLatencyMs: number;
+  totalTokens: { input: number; output: number };
+}
+
+export interface FileEditReport {
+  metadata: {
+    timestamp: string;
+    runId: string;
+    target: EvalTarget;
+    family: string;
+    dataset: 'file-edit';
+    totalCases: number;
+    /** Tools the model was offered, by name. */
+    toolNames: string[];
+    maxTurns: number;
+  };
+  summary: FileEditTargetSummary & {
+    byCategory: Record<string, CategoryStats>;
+    byDifficulty: Record<string, CategoryStats>;
+  };
+  results: FileEditCaseResult[];
+}
+
 // ─── L4: Judge Scores ───
 
 export interface JudgeScore {

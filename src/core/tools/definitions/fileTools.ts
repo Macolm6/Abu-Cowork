@@ -2,7 +2,7 @@ import { readTextFile, readFile as readBinFile, writeTextFile, readDir, exists, 
 import { invoke } from '@tauri-apps/api/core';
 import type { ToolDefinition, ToolResultContent } from '../../../types';
 import { isWindows } from '../../../utils/platform';
-import { ensureParentDir } from '../../../utils/pathUtils';
+import { ensureParentDir, normalizeSeparators } from '../../../utils/pathUtils';
 import { isSandboxEnabled, isNetworkIsolationEnabled } from '../../sandbox/config';
 import { isCatastrophicDeleteTarget } from '../pathSafety';
 import {
@@ -10,6 +10,7 @@ import {
   IMAGE_EXTENSIONS,
   IMAGE_MEDIA_TYPES,
   resizeImageIfNeeded,
+  uint8ArrayToBase64,
   OFFICE_EXTENSIONS,
   ARCHIVE_EXTENSIONS,
   extractOfficeText,
@@ -21,9 +22,36 @@ import { invokeTaskCommand, isTaskCommandAbortedError } from '../helpers/scopedC
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
 import { bindWorkspaceFromWrite } from '../../agent/defaultWorkspace';
-import { snapshotBeforeAiEdit } from '@/utils/aiEditSnapshots';
+import { captureTurnFileBefore, snapshotBeforeAiEdit } from '@/utils/aiEditSnapshots';
 import { formatFileSize } from '@/utils/formatFileSize';
 import { fuzzyFindAndReplace } from '../../skill/fuzzyPatch';
+import { computeFileChange, MAX_COMPARABLE_TEXT_BYTES, type FileChange } from '@/core/files/fileChange';
+import type { ToolFileAccess } from '@/core/tools/fileOperation';
+import { Minimatch } from 'minimatch';
+
+/** What a path held before a write, as far as the reported file change needs it. */
+type TextBefore =
+  | { state: 'absent' }
+  | { state: 'text'; text: string }
+  /** The path exists; it is no regular file or its text is over the comparable size. */
+  | { state: 'unread' };
+
+/** Reads the text a write is about to replace. */
+async function readTextBefore(path: string, files?: ToolFileAccess): Promise<TextBefore> {
+  const io = files ?? { exists, stat, readTextFile };
+  if (!(await io.exists(path))) return { state: 'absent' };
+  const info = await io.stat(path);
+  if (!info.isFile || info.size > MAX_COMPARABLE_TEXT_BYTES) return { state: 'unread' };
+  return { state: 'text', text: await io.readTextFile(path) };
+}
+
+function fileChangeAfterWrite(path: string, before: TextBefore | null, after: string | null): FileChange | null {
+  if (before === null) return null;
+  if (before.state === 'unread') {
+    return { path: normalizeSeparators(path), kind: after === null ? 'delete' : 'modify' };
+  }
+  return computeFileChange({ path, before: before.state === 'text' ? before.text : null, after });
+}
 
 /**
  * Simple pessimistic file lock for concurrent agent safety.
@@ -73,6 +101,7 @@ export const readFileTool: ToolDefinition = {
     required: ['path'],
   },
   execute: async (input, context) => {
+    const io = context?.files ?? { readFile: readBinFile, readTextFile, stat };
     const filePath = input.path as string;
     const ext = getFileExtension(filePath);
     const offset = typeof input.offset === 'number' ? Math.max(0, Math.floor(input.offset)) : undefined;
@@ -89,19 +118,30 @@ export const readFileTool: ToolDefinition = {
         if (context?.supportsVision === false) {
           return format(getI18n().toolResult.file.imageSkipNoVision, { path: filePath, mediaType });
         }
-        const bytes = new Uint8Array(await readBinFile(filePath));
-        const { data, resized } = await resizeImageIfNeeded(bytes, 1280, context);
+        const bytes = new Uint8Array(await io.readFile(filePath));
+        const needsNativeResize = Boolean(context?.files && bytes.length > 2 * 1024 * 1024);
+        const resizedBytes = needsNativeResize
+          ? await context!.files!.processImage(filePath, null, 'fit-width', { width: 1280 }) : null;
+        if (needsNativeResize && !(resizedBytes instanceof Uint8Array)) throw new Error('Image processing returned no bytes');
+        const { data, resized } = resizedBytes instanceof Uint8Array
+          ? { data: uint8ArrayToBase64(resizedBytes), resized: true }
+          : await resizeImageIfNeeded(bytes, 1280, context);
         const sizeKB = Math.round(bytes.length / 1024);
         const resizeNote = resized ? ' (auto-resized to 1280px width)' : '';
 
         return [
           { type: 'text', text: `Image: ${filePath} (${sizeKB}KB, ${mediaType})${resizeNote}` },
-          { type: 'image', source: { type: 'base64', media_type: mediaType, data } },
+          { type: 'image', source: { type: 'base64', media_type: resizedBytes ? 'image/png' : mediaType, data } },
         ] as ToolResultContent[];
       }
 
       // --- PDF files: extract text ---
       if (ext === '.pdf') {
+        if (context?.files) {
+          const output = await context.files.runProcessor(filePath, isWindows() ? 'python' : 'python3',
+            ['-c', PDFPLUMBER_SCRIPT, null]);
+          return output.code === 0 ? output.stdout : `Error reading PDF file: ${output.stderr}`;
+        }
         // Strategy 1: pdftotext (macOS/Linux — fast, native)
         if (!isWindows()) {
           try {
@@ -153,21 +193,21 @@ export const readFileTool: ToolDefinition = {
       }
 
       // --- Text files: read as UTF-8 with size gating and pagination ---
-      const fileStat = await stat(filePath);
+      const fileStat = await io.stat(filePath);
       const fileSize = fileStat.size;
       const hasRange = offset !== undefined || limit !== undefined;
 
       // File exceeds size limit and no range specified → reject with guidance
       if (fileSize > MAX_TEXT_READ_SIZE && !hasRange) {
         // Still read a small portion to count total lines via a fast heuristic
-        const fullContent = await readTextFile(filePath);
+        const fullContent = await io.readTextFile(filePath);
         const totalLines = fullContent.split('\n').length;
         return `File is too large to read at once (${formatFileSize(fileSize)}, ${totalLines} lines). ` +
           `Use offset and limit parameters to read specific portions, or use search_files to find relevant content.\n` +
           `Example: read_file(path, offset=0, limit=${DEFAULT_LINE_LIMIT}) to read the first ${DEFAULT_LINE_LIMIT} lines.`;
       }
 
-      const content = await readTextFile(filePath);
+      const content = await io.readTextFile(filePath);
       const allLines = content.split('\n');
       const totalLines = allLines.length;
 
@@ -246,7 +286,7 @@ export const writeFileTool: ToolDefinition = {
     }
 
     try {
-      await ensureParentDir(path);
+      await (context?.files ? context.files.ensureParentDir(path) : ensureParentDir(path));
       // Add UTF-8 BOM for CSV files so Excel opens them with correct encoding
       let finalContent = content;
       if (ext === '.csv' && !content.startsWith('\uFEFF')) {
@@ -254,14 +294,18 @@ export const writeFileTool: ToolDefinition = {
       } else if (ext === '.html' || ext === '.htm') {
         finalContent = ensureHtmlCharset(content);
       }
+      const before = context?.reportMetadata ? await readTextBefore(path, context.files) : null;
       // Pre-edit snapshot: capture the on-disk "before" state so this AI turn
       // shows up in the preview panel's version history. Fail-open — the
       // helper never throws and must not delay-fail the write.
       await snapshotBeforeAiEdit(path, {
         loopId: context?.loopId,
         conversationId: context?.conversationId,
+        files: context?.files,
       });
-      await writeTextFile(path, finalContent);
+      await (context?.files ? context.files.writeTextFile(path, finalContent) : writeTextFile(path, finalContent));
+      const fileChange = fileChangeAfterWrite(path, before, finalContent);
+      if (fileChange) context?.reportMetadata?.({ fileChange });
       // Lazily bind a managed default workspace only for a shell-confirmed
       // foreground turn. Background IM/schedule/trigger runs carry scoped,
       // per-run grants; persisting one here would silently widen that temporary
@@ -272,13 +316,45 @@ export const writeFileTool: ToolDefinition = {
       }
       return `Successfully wrote ${content.length} characters to ${path}`;
     } catch (err) {
-      return `Error writing file: ${err instanceof Error ? err.message : String(err)}`;
+      return fileBusyMessage(err, path)
+        ?? `Error writing file: ${err instanceof Error ? err.message : String(err)}`;
     } finally {
       releaseFileLock(path);
     }
   },
   isConcurrencySafe: false,
 };
+
+/**
+ * Turns a Windows sharing violation into something the model can act on.
+ *
+ * Office and WPS hold a document open with a share mode that denies writes, so
+ * editing a spreadsheet the user is looking at fails with EBUSY. Handed back
+ * raw, that reads as a transient glitch and invites a retry loop against a lock
+ * that will not clear on its own. It is not transient: someone has the file
+ * open, and the only ways forward are for them to close it or for the edit to
+ * happen inside the application instead.
+ */
+function fileBusyMessage(error: unknown, path: string): string | null {
+  // EBUSY only. A Windows sharing violation is what an open document produces;
+  // EPERM and EACCES are a real permission problem — a protected directory, an
+  // ACL — and telling the user to close an application they do not have open
+  // would send them after the wrong thing.
+  //
+  // Matched on the message as well as the code: the errno survives the sidecar
+  // transport, but the local plugin-fs path crosses Electron IPC, which
+  // serializes only name/message/stack. Node's own text is `EBUSY: resource
+  // busy or locked, ...`.
+  const code = (error as { code?: unknown } | null)?.code;
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  if (code !== 'EBUSY' && !/^EBUSY\b/.test(message)) return null;
+  const t = getI18n().toolResult.file;
+  // Naming the tool here, rather than only in a prompt section, is what
+  // reaches a user who has Computer Use switched off: the channel-gate
+  // section ships with it, this message ships with the failure.
+  return format(t.errFileHeldByAnotherApp, { path })
+    + (isWindows() ? t.errFileHeldCheckHint : '');
+}
 
 export const editFileTool: ToolDefinition = {
   name: TOOL_NAMES.EDIT_FILE,
@@ -305,11 +381,11 @@ export const editFileTool: ToolDefinition = {
 
     try {
       // Check file exists
-      if (!(await exists(path))) {
+      if (!(await (context?.files ? context.files.exists(path) : exists(path)))) {
         return `Error: File not found: ${path}`;
       }
 
-      const content = await readTextFile(path);
+      const content = await (context?.files ? context.files.readTextFile(path) : readTextFile(path));
 
       // Count occurrences
       const occurrences = content.split(oldContent).length - 1;
@@ -327,8 +403,12 @@ export const editFileTool: ToolDefinition = {
             loopId: context?.loopId,
             conversationId: context?.conversationId,
             knownContent: content,
+            files: context?.files,
           });
-          await writeTextFile(path, fuzzy.newContent);
+          await (context?.files ? context.files.writeTextFile(path, fuzzy.newContent) : writeTextFile(path, fuzzy.newContent));
+          context?.reportMetadata?.({
+            fileChange: computeFileChange({ path, before: content, after: fuzzy.newContent }),
+          });
           const oldLines = oldContent.split('\n').length;
           const newLines = newContent.split('\n').length;
           return `Successfully edited ${path}: replaced ${oldLines} line(s) with ${newLines} line(s) ` +
@@ -369,6 +449,7 @@ export const editFileTool: ToolDefinition = {
         loopId: context?.loopId,
         conversationId: context?.conversationId,
         knownContent: content,
+        files: context?.files,
       });
 
       // Perform replacement. Use a function replacer so new_content is inserted
@@ -376,13 +457,17 @@ export const editFileTool: ToolDefinition = {
       // `` $` ``, `$'` in new_content as special patterns (even with a string
       // search), silently corrupting any content containing a literal `$`.
       const updated = content.replace(oldContent, () => newContent);
-      await writeTextFile(path, updated);
+      await (context?.files ? context.files.writeTextFile(path, updated) : writeTextFile(path, updated));
+      context?.reportMetadata?.({
+        fileChange: computeFileChange({ path, before: content, after: updated }),
+      });
 
       const oldLines = oldContent.split('\n').length;
       const newLines = newContent.split('\n').length;
       return `Successfully edited ${path}: replaced ${oldLines} line(s) with ${newLines} line(s)`;
     } catch (err) {
-      return `Error editing file: ${err instanceof Error ? err.message : String(err)}`;
+      return fileBusyMessage(err, path)
+        ?? `Error editing file: ${err instanceof Error ? err.message : String(err)}`;
     } finally {
       releaseFileLock(path);
     }
@@ -405,7 +490,7 @@ export const deleteFileTool: ToolDefinition = {
     },
     required: ['path'],
   },
-  execute: async (input) => {
+  execute: async (input, context) => {
     const path = input.path as string;
     // Hard block — enforced regardless of permission mode. checkWritePath alone only
     // returns needsPermission:true for the filesystem root / home dir, which resolves
@@ -414,7 +499,12 @@ export const deleteFileTool: ToolDefinition = {
       return format(getI18n().toolResult.file.deleteRefusedCatastrophic, { path });
     }
     try {
-      await invoke('move_to_trash', { path });
+      await context?.files?.prepareDelete(path);
+      const before = context?.reportMetadata ? await readTextBefore(path, context.files) : null;
+      await (context?.files ? captureTurnFileBefore(path, context?.loopId, context.files) : captureTurnFileBefore(path, context?.loopId));
+      await (context?.files ? context.files.moveToTrash(path) : invoke('move_to_trash', { path }));
+      const fileChange = fileChangeAfterWrite(path, before, null);
+      if (fileChange) context?.reportMetadata?.({ fileChange });
       return format(getI18n().toolResult.file.movedToTrash, { path });
     } catch (err) {
       // Fail-closed: never fall back to a permanent delete.
@@ -436,11 +526,11 @@ export const listDirectoryTool: ToolDefinition = {
     },
     required: ['path'],
   },
-  execute: async (input) => {
+  execute: async (input, context) => {
     const dirPath = input.path as string;
 
     try {
-      const entries = await readDir(dirPath);
+      const entries = await (context?.files ? context.files.readDir(dirPath) : readDir(dirPath));
       if (entries.length === 0) {
         return `Directory "${dirPath}" is empty.`;
       }
@@ -478,6 +568,28 @@ export const searchFilesTool: ToolDefinition = {
     const searchPath = input.path as string;
     const include = input.include as string | undefined;
     const safeMaxResults = Math.min(Math.max(1, Math.floor(Number(input.max_results) || 50)), 500);
+
+    if (context?.files) {
+      try {
+        if (!pattern || pattern.length > 4096 || (include?.length ?? 0) > 4096) {
+          return 'Error: Search pattern is empty or exceeds the supported limit.';
+        }
+        const includeMatcher = include ? new Minimatch(include, { dot: true, platform: 'linux' }) : undefined;
+        const entries = context.files.walkFiles(searchPath);
+        const lines: string[] = [];
+        for await (const entry of entries) {
+          if (includeMatcher && !includeMatcher.match(entry.name)) continue;
+          const result = await context.files.searchLines(entry.path, pattern, safeMaxResults - lines.length);
+          for (const match of result.matches) lines.push(`${entry.path}:${match.lineNumber}:${match.line}`);
+          if (lines.length >= safeMaxResults) break;
+        }
+        return lines.length
+          ? `Found ${lines.length}${lines.length >= safeMaxResults ? '+' : ''} matches:\n${lines.join('\n')}`
+          : 'No matches found.';
+      } catch (err) {
+        return `Error searching files: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
 
     // Sanitize inputs to prevent injection (strip newlines then escape quotes)
     const safePattern = pattern.replace(/[\n\r]/g, ' ').replace(/'/g, "'\\''");
@@ -548,6 +660,25 @@ export const findFilesTool: ToolDefinition = {
     const searchPath = input.path as string;
     const safeMaxResults = Math.min(Math.max(1, Math.floor(Number(input.max_results) || 100)), 500);
 
+    if (context?.files) {
+      try {
+        if (!pattern || pattern.length > 4096) return 'Error: File pattern is empty or exceeds the supported limit.';
+        const matcher = new Minimatch(pattern, { dot: true, platform: 'linux' });
+        const entries = context.files.walkFiles(searchPath, { excludeNames: ['.git', 'node_modules'] });
+        const paths: string[] = [];
+        for await (const entry of entries) {
+          if (!matcher.match(entry.name)) continue;
+          paths.push(entry.path);
+          if (paths.length >= safeMaxResults) break;
+        }
+        return paths.length
+          ? `Found ${paths.length}${paths.length >= safeMaxResults ? '+' : ''} files:\n${paths.join('\n')}`
+          : 'No files found matching the pattern.';
+      } catch (err) {
+        return `Error finding files: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+
     // Sanitize inputs (strip newlines then escape quotes)
     const safePattern = pattern.replace(/[\n\r]/g, ' ').replace(/'/g, "'\\''");
     const safePath = searchPath.replace(/[\n\r]/g, ' ').replace(/'/g, "'\\''");
@@ -582,6 +713,90 @@ export const findFilesTool: ToolDefinition = {
     } catch (err) {
       return `Error finding files: ${err instanceof Error ? err.message : String(err)}`;
     }
+  },
+  isConcurrencySafe: true,
+};
+
+/** What the Host reports about one document a running Office/WPS has open. */
+interface OpenDocumentMatch {
+  app: string;
+  name: string;
+  path: string;
+  unsaved: boolean;
+  samePath: boolean;
+}
+
+interface OpenDocumentReport {
+  supported: boolean;
+  complete: boolean;
+  documents: OpenDocumentMatch[];
+}
+
+/**
+ * Is the user sitting in this document right now?
+ *
+ * The write itself already fails when they are — Office holds a share-mode
+ * lock — but finding out that way is too late to be useful: the failure lands
+ * mid-task, says nothing about which application or whether their edits are
+ * saved, and the only honest thing left to say is "something went wrong".
+ *
+ * Asking first turns that into a question the user can answer. The unsaved
+ * flag is the part no other channel can supply, and it is the part that
+ * decides the answer: "close it and I'll edit the file" is fine when their
+ * work is on disk and destroys it when it is not.
+ */
+export const checkOpenDocumentTool: ToolDefinition = {
+  name: TOOL_NAMES.CHECK_OPEN_DOCUMENT,
+  description: 'Windows only. Ask whether one file is currently open in Excel, Word, PowerPoint or WPS, and whether it has unsaved edits. Use it before rewriting a document the user may be working in, and whenever writing one fails with a permission or sharing error. It reads nothing else about the file and never opens an application.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Absolute path of the document to ask about' },
+    },
+    required: ['path'],
+  },
+  execute: async (input, context) => {
+    const path = input.path as string;
+    const t = getI18n().toolResult.file;
+    let report: OpenDocumentReport;
+    try {
+      report = context?.files ? await context.files.openDocument(path)
+        : await invoke<OpenDocumentReport>('office_open_documents', { path });
+    } catch (err) {
+      // An unreachable helper is "could not tell", not "not open" — the two
+      // lead the user to opposite places.
+      return format(t.docCheckUnknown, { path }) + `\n(${err instanceof Error ? err.message : String(err)})`;
+    }
+
+    if (!report.supported) return t.docCheckUnsupported;
+
+    // The Host reports a stable token (`wps-spreadsheets`); what the user
+    // reads is their own name for it. An unknown token falls through as
+    // itself rather than becoming a blank in the sentence.
+    const displayName = (token: string): string => t.docCheckApps[token] ?? token;
+
+    const open = report.documents.find((document) => document.samePath);
+    if (open) {
+      return format(open.unsaved ? t.docCheckOpenUnsaved : t.docCheckOpenSaved, {
+        name: open.name,
+        app: displayName(open.app),
+      });
+    }
+
+    // Nothing at this path. A same-named document open from somewhere else is
+    // worth one line: without it the model has no way to explain why a window
+    // titled with this file name is on screen and the write still succeeded.
+    const elsewhere = report.documents[0];
+    if (elsewhere) {
+      const namesake = format(t.docCheckSameNameElsewhere, {
+        name: elsewhere.name,
+        app: displayName(elsewhere.app),
+        otherPath: elsewhere.path,
+      });
+      return report.complete ? namesake : `${format(t.docCheckUnknown, { path })}\n${namesake}`;
+    }
+
+    return report.complete ? format(t.docCheckNotOpen, { path }) : format(t.docCheckUnknown, { path });
   },
   isConcurrencySafe: true,
 };

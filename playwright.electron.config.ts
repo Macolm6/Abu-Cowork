@@ -17,6 +17,7 @@ export default defineConfig({
   // Playwright's default testMatch (`**/*.@(spec|test).*`) would otherwise
   // load — and thereby execute — during collection.
   testMatch: '**/*.spec.ts',
+  testIgnore: process.env.ABU_BUILD_TARGET === 'enterprise' ? [] : ['**/app-enterprise.spec.ts'],
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: 0,
@@ -26,5 +27,11 @@ export default defineConfig({
   reporter: [['list']],
   use: {
     trace: 'retain-on-failure',
+  },
+  // Visual baselines live next to the specs and are produced on the CI macOS runner
+  // (the only place they are compared; local font rendering differs).
+  snapshotPathTemplate: '{testDir}/__screenshots__/{testFilePath}/{arg}{ext}',
+  expect: {
+    toHaveScreenshot: { animations: 'disabled', caret: 'hide', maxDiffPixelRatio: 0.01 },
   },
 });

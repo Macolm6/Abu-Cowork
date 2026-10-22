@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
@@ -17,6 +18,12 @@ function jobBlock(source, name) {
   assert.ok(start > -1, `${name} job missing`);
   const next = source.slice(start + 1).search(/\n  [a-z][\w-]*:/);
   return next === -1 ? source.slice(start) : source.slice(start, start + 1 + next);
+}
+
+function auditedLockfileDirs(auditJob) {
+  const match = auditJob.match(/for dir in ([^;\n]+); do/);
+  assert.ok(match, 'audit job must loop over the lockfile directories it audits');
+  return match[1].trim().split(/\s+/);
 }
 
 // Steps that used to live in the monolithic `check` job now sit in one of the
@@ -131,7 +138,7 @@ test('vitest emits junit + machine-readable coverage for CI reports', () => {
 test('CI checks changed-line coverage against the pull request base with full history', () => {
   assert.match(
     ci,
-    /pull_request:\n\s+branches: \[main, dev\]\n(?:\s+#[^\n]*\n)*\s+types: \[opened, synchronize, reopened, edited, labeled, unlabeled\]/,
+    /pull_request:\n\s+branches: \[main, dev, feat\/design-system-next\]\n(?:\s+#[^\n]*\n)*\s+types: \[opened, synchronize, reopened, edited, labeled, unlabeled\]/,
     'body and label edits must re-evaluate gate exemptions',
   );
   const testJob = jobBlock(ci, 'test');
@@ -244,6 +251,7 @@ test('parallel gates preserve their commands, full installs, and blocking outcom
     ['test', 'Test with coverage', 'npm run test:coverage'],
     ['test', 'Test-infra scripts (node:test)', 'npm run test:infra'],
     ['test', 'TESTING.md inventory is up to date', 'npm run test:inventory:check'],
+    ['test', 'Official plugin market validates', 'npm run market:check'],
     ['build', 'Build frontend', 'npm run build'],
   ]) {
     assert.ok(requiredCheckStep(step, job).includes(`run: ${command}\n`));
@@ -268,12 +276,34 @@ test('npm audit job is allowlist-aware and fails for real (no continue-on-error)
   assert.ok(!audit.includes('continue-on-error'), 'audit must not be advisory: the allowlist is the escape hatch');
   // Production deps only, machine-readable, and `|| true` because npm audit exits
   // non-zero on any finding — the checker script is what decides pass/fail.
-  assert.match(audit, /npm audit --omit=dev --json > audit\.json \|\| true/);
-  assert.match(audit, /node scripts\/npm-audit-check\.mjs audit\.json \| tee -a "\$GITHUB_STEP_SUMMARY"/);
+  assert.match(audit, /\(cd "\$dir" && npm audit --omit=dev --json > audit\.json\) \|\| true/);
+  const dirs = auditedLockfileDirs(audit);
+  const reports = dirs.map((dir) => (dir === '.' ? 'audit.json' : `${dir}/audit.json`)).join(' ');
+  assert.ok(
+    audit.includes(`node scripts/npm-audit-check.mjs ${reports} | tee -a "$GITHUB_STEP_SUMMARY"`),
+    `the checker must read the report of every audited directory: ${reports}`,
+  );
   // Without an explicit shell: GitHub runs bash without pipefail, so tee would
   // swallow the checker's exit status.
   assert.ok(audit.includes('PIPESTATUS[0]'), 'audit step must capture the checker exit status through tee');
   assert.ok(audit.includes('exit "$status"'), 'audit step must propagate the captured exit status');
+});
+
+test('npm audit covers every committed lockfile that has production packages', () => {
+  const audited = new Set(auditedLockfileDirs(jobBlock(ci, 'audit')));
+  const lockfiles = execFileSync('git', ['ls-files', '*package-lock.json'], { cwd: repoRoot, encoding: 'utf8' })
+    .split('\n')
+    .filter(Boolean);
+  assert.ok(lockfiles.includes('package-lock.json'), 'the root lockfile must be tracked');
+  for (const lockfile of lockfiles) {
+    const dir = path.posix.dirname(lockfile);
+    const { packages } = JSON.parse(readFileSync(path.join(repoRoot, lockfile), 'utf8'));
+    // `--omit=dev` audits exactly the packages npm does not flag as dev.
+    const production = Object.entries(packages).filter(([key, entry]) => key !== '' && !entry.dev);
+    if (production.length > 0) {
+      assert.ok(audited.has(dir), `${lockfile} has ${production.length} production packages but the audit job skips ${dir}`);
+    }
+  }
 });
 
 test('CI checks that TESTING.md test inventory is up to date', () => {

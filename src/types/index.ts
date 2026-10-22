@@ -9,6 +9,9 @@ import type {
   BrowserAllowConsent,
   BrowserDenialKind,
 } from '@/core/agent/browserDenialTracker';
+import type { FileChange } from './fileChange';
+
+export type { FileChange, FileChangeHunk } from './fileChange';
 
 // --- Messages & Conversations ---
 
@@ -98,10 +101,66 @@ export type SandboxRecoveryAction =
  * through ToolExecutor/ChatDelta separately from stdout so imported messages
  * and command output cannot manufacture privileged UI.
  */
+/** How one computer tool call ended, as the run report card shows it. */
+export type ComputerStepOutcome =
+  | 'verified-change'   // Host verified the expected UI change
+  | 'no-change'         // dispatched, nothing changed
+  | 'ambiguous'         // dispatched, change could not be attributed
+  | 'done'              // completed without a verification step (activate, wait)
+  | 'observed'          // an observation, not an action
+  | 'not-executed'      // refused before reaching the app; re-observed
+  | 'handoff'           // turn handed back to the user
+  | 'boundary'          // platform boundary (secure desktop, elevated window…)
+  | 'paused'            // the user took over the mouse/keyboard
+  | 'stopped'           // the run was stopped
+  | 'mismatch'          // the expected effect was not what happened
+  | 'outcome-unknown'   // dispatched, result unknown; replay blocked
+  | 'error';
+
+/**
+ * Per-step evidence for the Computer Use run report. Deliberately carries no
+ * typed text, labels or screenshots — ids, counts and outcomes only; the tool
+ * call's own input/resultContent hold the rest.
+ */
+export interface ComputerStepReport {
+  action: string;
+  targetApp: string | null;
+  /** The declared consequence category ('none' when harmless). */
+  consequence: string;
+  /** The model's one-line summary the user saw in the native approval dialog. */
+  consequenceDetail?: string;
+  outcome: ComputerStepOutcome;
+  /** Short machine code (helper/boundary code), never user content. */
+  detail?: string;
+  durationMs?: number;
+}
+
 export interface ToolExecutionMetadata {
+  /** Trusted host has joined output capture within the original operation. */
+  outputSnapshotsHandled?: boolean;
   sandboxRecovery?: SandboxRecoveryPayload;
+  /** Trusted computer tool: how this step ended, for the run report card. */
+  computerStep?: ComputerStepReport;
+  /** Trusted tool says the current agent turn must stop until the user fixes
+   * an external precondition (for example, opening an explicitly named app). */
+  requiresUserRecovery?:
+    | 'computer-target-unavailable'
+    | 'computer-manual-handoff'
+    | 'computer-platform-boundary'
+    | 'computer-user-takeover'
+    | 'computer-verification-mismatch'
+    | 'computer-outcome-unknown-new-turn';
   subagentStopReason?: SubagentStopReason;
   batchTerminalSummary?: BatchTerminalSummary;
+  /** write_file, edit_file, delete_file: what the call did to its file. */
+  fileChange?: FileChange;
+  /** background_command_output, stop_background_command: the command the call acted on. */
+  backgroundCommand?: BackgroundCommandRef;
+}
+
+/** The command a background-command tool call acted on, kept for its tool row. */
+export interface BackgroundCommandRef {
+  command: string;
 }
 
 /** Payload for a "save this as a skill?" proposal card. */
@@ -257,6 +316,8 @@ export interface ToolCall {
   sandboxRecovery?: SandboxRecoveryPayload;
   /** Persisted user choice for the recovery card. */
   sandboxRecoveryAction?: SandboxRecoveryAction;
+  /** Computer Use step evidence (see ComputerStepReport); drives the run report card. */
+  computerStep?: ComputerStepReport;
   /**
    * User's answers to an ask_user_question tool call. Set once the user
    * submits — drives settled read-only rendering. undefined = still
@@ -267,6 +328,10 @@ export interface ToolCall {
   subagentStopReason?: SubagentStopReason;
   /** Minimal persisted terminal summary for run_agent_batch. */
   batchTerminalSummary?: BatchTerminalSummary;
+  /** Line counts and hunks of a write_file, edit_file or delete_file call. */
+  fileChange?: FileChange;
+  /** The command a background_command_output or stop_background_command call acted on. */
+  backgroundCommand?: BackgroundCommandRef;
   /**
    * MCP Apps interface for this step (extension `io.modelcontextprotocol/ui`).
    *
@@ -378,6 +443,13 @@ export interface Message {
   content: string | MessageContent[];
   timestamp: number;
   isStreaming?: boolean;
+  /**
+   * Set when the reply's stream ended and the reply was finished
+   * (`finishStreaming`). A ledger row written while the reply was still
+   * streaming, such as a periodic stream snapshot, does not carry it; on disk
+   * `isStreaming` is false either way.
+   */
+  streamEnded?: true;
   /** Persisted terminal reason for an assistant turn that the user stopped. */
   stopReason?: 'user';
   /**
@@ -397,9 +469,27 @@ export interface Message {
   runErrorDetails?: UpstreamErrorDetails;
   /** Why a run failed before the sidecar accepted it (#549); drives the failed-row UI. */
   runErrorKind?: 'payload_too_large' | 'sidecar_unavailable' | 'dispatch_failed';
+  /** Set on an interrupted run that the application closed on; a run the user stopped carries none. */
+  runInterruptCause?: 'app_exit';
   toolCalls?: ToolCall[];
+  /** Set on assistant messages created after present_files shipped; file cards read declarations instead of inferring from tool calls. */
+  fileCards?: 'declared';
   // Extended thinking content
   thinking?: string;
+  /**
+   * Anthropic's signature over `thinking`. The API only accepts a replayed
+   * thinking block together with the signature it issued, so a Claude turn
+   * records it here and `claude.ts` sends `{thinking, signature}` back. A
+   * thinking text without one (an older record, or a turn produced by
+   * another model family) cannot be replayed as a thinking block.
+   */
+  thinkingSignature?: string;
+  /**
+   * Opaque `redacted_thinking` payloads, in arrival order. Anthropic emits
+   * these in place of readable thinking when its safety systems flag the
+   * reasoning; they carry no text and are replayed verbatim.
+   */
+  redactedThinking?: string[];
   // Thinking duration in seconds
   thinkingDuration?: number;
   // Token usage for this message
@@ -427,6 +517,10 @@ export interface Message {
   plannedSteps?: import('./execution').PlannedStep[];
   // System-injected messages (e.g. max_tokens recovery) — hidden from chat UI
   isSystem?: boolean;
+  // Goal mode: set on the (isSystem) user message that opens an automatic goal
+  // round, so the UI can render a round marker and the goal tool can tell an
+  // automatic round from a human-initiated run.
+  goalRound?: { goalId: string; revision: number; round: number };
   // Crash-recovery notices remain internal for context/export purposes, but
   // must be visible so the user understands why an earlier task stopped.
   isRecoveryNotice?: boolean;
@@ -519,6 +613,8 @@ export interface Conversation {
   scheduledTaskId?: string;  // If set, this conversation was created by a scheduled task
   triggerId?: string;  // If set, this conversation was created by a trigger
   teamId?: string;      // If set, the main loop runs as this team's leader (in-conversation team, 2026-09-04); cleared = ordinary chat
+  goal?: import('../core/goal/goalTypes').GoalState;  // Goal mode: the conversation's persistent objective (absent = no goal)
+  appBinding?: import('./app').ConversationAppBinding;  // The app (and mode / scene) this conversation was started in; absent = general shell
   imChannelId?: string;  // If set, this conversation was created by an IM channel
   imPlatform?: string;  // IM platform name (dchat/feishu/dingtalk/wecom/slack)
   projectId?: string;  // If set, this conversation belongs to a project
@@ -620,6 +716,10 @@ export interface ToolParameter {
 
 /** Runtime context passed to tool execute(), e.g. the effective workspace for this conversation */
 export interface ToolExecutionContext {
+  /** Trusted host-only access for this invocation; never accepted from the wire. */
+  files?: import('@/core/tools/fileOperation').ToolFileAccess;
+  /** Process-local authority owner; never accepted from model or wire context. */
+  operationOwner?: import('../core/tools/operationAuthorization').ToolOperationOwner;
   /** Resolved workspace path (from IMContext or global store) */
   workspacePath?: string | null;
   /** Loop ID for multi-agent context lookup */
@@ -701,6 +801,12 @@ export interface ToolExecutionContext {
    */
   deferredToolNames?: string[];
   /**
+   * Names of every tool this turn offered the model (active + deferred). Set by
+   * the trusted agent runtime only; wire-safe. Used to answer a hallucinated
+   * tool name with the real choices.
+   */
+  offeredToolNames?: string[];
+  /**
    * In-conversation team mode: exact agent names the leader may delegate to.
    * Set by the trusted runtime from the pinned team's roster (never from model
    * input); delegate_to_agent / run_agent_batch refuse any other agent or
@@ -709,6 +815,12 @@ export interface ToolExecutionContext {
   teamRoster?: string[];
   /** Strict team (先确认分工): report_plan must get the user's approval before anything is dispatched. */
   teamRequirePlanApproval?: boolean;
+  /**
+   * Shell-owned team task this call belongs to (teamConfirmationStore's
+   * beginTask). Keys the task's hand-off bounds and refusal streak, so a
+   * sidecar-supplied value is always overwritten.
+   */
+  teamTaskId?: string;
   /**
    * In-process cancellation signal. This is intentionally local-only: it must
    * never be relied on across JSON/RPC serialization, where AbortSignal would
@@ -755,6 +867,12 @@ export interface ToolDefinition {
     required?: string[];
   };
   execute: (input: Record<string, unknown>, context?: ToolExecutionContext) => Promise<ToolResult>;
+  /** Runtime-only contract, not part of the model-facing input schema.
+   * Computer-use presentation also requires ordered batch/status handling.
+   * Host Gate owns approval-aware time/step limits; the executor adds no timer
+   * and does not retry tools automatically.
+   */
+  execution?: { presentation: 'computer-use' };
   /**
    * Whether this tool can safely execute in parallel with other concurrent-safe tools.
    * - `true` or returns `true`: tool only reads data, no side effects
@@ -825,10 +943,16 @@ export interface TokenUsage {
 export type StreamEvent =
   | { type: 'text'; text: string }
   | { type: 'thinking'; thinking: string }
+  /** Signature Anthropic issued for the thinking block that just ended (see `Message.thinkingSignature`). */
+  | { type: 'thinking_signature'; signature: string }
+  /** One opaque `redacted_thinking` block (see `Message.redactedThinking`). */
+  | { type: 'redacted_thinking'; data: string }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
   | { type: 'tool_result'; toolUseId: string; result: string }
   | { type: 'usage'; usage: TokenUsage }
   | { type: 'done'; stopReason: string; usage?: TokenUsage }
+  /** 正文里出现了操作的开头却识别不出（没闭合、JSON 写坏）。原文不显示给用户。 */
+  | { type: 'malformed_tool_call'; raw: string }
   | { type: 'error'; error: string };
 
 // --- Skill ---
@@ -880,7 +1004,11 @@ export type SkillUXCategory =
 
 export interface SkillMetadata {
   name: string;
+  /** What the model reads to decide when to use the skill. */
   description: string;
+  /** Per-locale description for the interface (`display-description` in SKILL.md).
+   *  The interface shows `displayDescription[locale] ?? description`; the model never sees it. */
+  displayDescription?: Partial<Record<AgentLocale, string>>;
   source?: SkillSource;       // Where this skill was discovered (set by loader)
   trigger?: string;           // When to auto-invoke, e.g. "用户要求深度调研某个主题"
   doNotTrigger?: string;      // When NOT to auto-invoke, e.g. "用户只是随口问个简单问题"
@@ -917,7 +1045,7 @@ export interface Skill extends SkillMetadata {
 
 /** Locale code used for i18n overrides. Mirrors SupportedLocale from i18n/types.ts
  *  — declared inline here to avoid pulling the i18n module into core agent code. */
-type AgentLocale = 'zh-CN' | 'en-US';
+export type AgentLocale = 'zh-CN' | 'en-US';
 
 /** Metadata attached to definitions supplied by a runtime extension. The host
  * keeps this contract generic; enterprise catalog transport and policy stay in

@@ -26,6 +26,7 @@ import { setComputerUseBatchMode, setSkipAutoScreenshot } from '../tools/builtin
 import { setComputerUseActive, incrementComputerUseStep, setCurrentAction, isSessionWindowHidden, setSessionWindowHidden, pauseComputerUseStatus } from './computerUseStatus';
 import { getI18n } from '../../i18n';
 import { TOOL_NAMES } from '../tools/toolNames';
+import { withOfferedToolsHint } from '../tools/offeredToolsHint';
 import { isReadOnlyCommand } from '../tools/readOnlyDetector';
 import { invoke } from '@tauri-apps/api/core';
 import { getChatDelta } from './ports/chatDelta';
@@ -38,6 +39,9 @@ import { startToolSpan } from '../observability/langfuse';
 import { checkAgentToolCall, type AgentToolPolicy } from './agentToolPolicy';
 import { matchesToolPattern, matchesToolName } from '../skill/toolFilter';
 import { groupToolCallsByConcurrency, resolveToolConcurrencySafety } from './toolConcurrency';
+import { isMacOS } from '../../utils/platform';
+import { isToolResultError } from './toolResultErrors';
+import { TOOL_RESULT_CANCELLED_MARKER, TOOL_RESULT_HOOK_BLOCKED_MARKER } from './toolResultMarkers';
 import { batchSummaryHasNonSuccess } from './batchTerminalSummary';
 import { getExecutionPort } from './ports/executionPort';
 import { firstImageContent } from '../tools/toolResultContent';
@@ -45,16 +49,7 @@ import { snapshotResultImage } from '../session/outputSnapshots';
 
 const logger = createLogger('toolExecutor');
 
-/**
- * Result markers for tool calls that never actually executed. Written with
- * error:false (they are not model mistakes), so consumers that need to
- * distinguish "skipped" from "succeeded" must compare against these
- * constants — e.g. ShowWidgetCard renders a muted "cancelled" row instead
- * of mounting the widget. Pre-existing literal values kept verbatim (they
- * are persisted in conversation history).
- */
-export const TOOL_RESULT_CANCELLED_MARKER = '[已取消]';
-export const TOOL_RESULT_HOOK_BLOCKED_MARKER = '[被 hook 拦截]';
+export { TOOL_RESULT_CANCELLED_MARKER, TOOL_RESULT_HOOK_BLOCKED_MARKER };
 
 /** Human-readable description of a computer use action for the status bar. */
 function actionToDescription(action: string, input: Record<string, unknown>): string {
@@ -118,6 +113,12 @@ export interface ToolBatchParams {
   continueLoop: boolean;
   /** Current context window usage (0-100). Scales tool result truncation under pressure. */
   contextUsagePercent?: number;
+  /**
+   * The model profile's `capabilities.parallelToolCalls`. `false` runs every
+   * call of the batch one after another, in the model's order, whatever the
+   * tools' own concurrency verdicts say. Omitted means `true`.
+   */
+  parallelToolCalls?: boolean;
 }
 
 export interface ToolBatchResult {
@@ -176,6 +177,10 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
   // (e.g. dynamically-registered MCP tools).
   const blockedTools = params.blockedTools ?? [];
   const allowedTools = params.allowedTools ?? [];
+  const computerToolNames = new Set(toolInvoker.getAllTools()
+    .filter(tool => tool.execution?.presentation === 'computer-use')
+    .map(tool => tool.name));
+  const isComputerTool = (tc: ToolCall) => computerToolNames.has(tc.name);
   const isScopedRun = toolContext.authorizationScopeId !== undefined;
 
   // Update the assistant message with tool calls
@@ -186,6 +191,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
 
   // Expose loop context for delegate_to_agent tool (per-loop, supports concurrent agents)
   setLoopContext(loopId, {
+    ...(toolContext.operationOwner ? { operationOwner: toolContext.operationOwner } : {}),
     commandConfirmCallback: confirmCb,
     filePermissionCallback: filePermCb,
     signal: abortController.signal,
@@ -209,7 +215,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
   let completedCount = 0;
   const totalCount = collectedToolCalls.length;
 
-  const checkToolBoundary = (name: string, input: Record<string, unknown>): string | null => {
+  const boundaryRefusal = (name: string, input: Record<string, unknown>): string | null => {
     const roleError = params.agentToolPolicy && checkAgentToolCall(params.agentToolPolicy, name, input);
     if (roleError) return roleError;
     if (allowedTools.length > 0 && !allowedTools.some((pattern) => matchesToolPattern(name, pattern, input))) {
@@ -219,6 +225,10 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       return `Error: tool "${name}" is blocked for this agent run`;
     }
     return null;
+  };
+  const checkToolBoundary = (name: string, input: Record<string, unknown>): string | null => {
+    const refusal = boundaryRefusal(name, input);
+    return refusal && withOfferedToolsHint(refusal, name, toolContext.offeredToolNames);
   };
 
   const executeSingleTool = async (tc: typeof collectedToolCalls[number]): Promise<ToolExecResult> => {
@@ -349,11 +359,18 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       const resultStr = toolInvoker.toolResultToString(rawResult);
       const resultContent: ToolResultContent[] | undefined =
         typeof rawResult !== 'string' ? rawResult : undefined;
-      const requiresUserRecovery = Boolean(metadata?.sandboxRecovery);
+      const requiresUserRecovery = Boolean(
+        metadata?.sandboxRecovery || metadata?.requiresUserRecovery,
+      );
       const structuredSubagentFailure = metadata?.subagentStopReason !== undefined
         && metadata.subagentStopReason !== 'completed';
       const batchTerminalFailure = batchSummaryHasNonSuccess(metadata?.batchTerminalSummary);
-      const isError = requiresUserRecovery || structuredSubagentFailure || batchTerminalFailure;
+      // Computer tools report failures as result-string envelopes rather than
+      // throwing, so their error flag must also read the result text.
+      const isError = requiresUserRecovery
+        || structuredSubagentFailure
+        || batchTerminalFailure
+        || (isComputerTool(tc) && isToolResultError(resultStr));
       // Emit postToolCall hook
       await emitHook({
         type: 'postToolCall',
@@ -410,7 +427,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
 
   // If batch contains any computer tool call, execute ALL sequentially
   // (e.g. click → wait → type must run in order, not race each other)
-  const hasComputerTool = collectedToolCalls.some(tc => tc.name === TOOL_NAMES.COMPUTER);
+  const hasComputerTool = collectedToolCalls.some(isComputerTool);
 
   const allRunCommand = collectedToolCalls.every(tc => tc.name === TOOL_NAMES.RUN_COMMAND);
 
@@ -422,7 +439,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
   // max. isReadOnlyCommand is called directly rather than through the tool
   // registry: the registry's isConcurrencySafe is a function and does not
   // cross the sidecar RPC boundary (SerializableToolDefinition carries only
-  // name/description/inputSchema), so a registry lookup would silently
+  // wire-safe schema/execution data), so a registry lookup would silently
   // disable this on the sidecar-hosted loop. The pure classifier works
   // identically in both planes.
   const allCommandsConcurrencySafe = allRunCommand &&
@@ -439,13 +456,17 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
   // it groups calls by each one's isConcurrencySafe verdict
   // (groupToolCallsByConcurrency in toolConcurrency.ts), so a batch mixing
   // safe and unsafe calls still serializes around the unsafe ones.
+  // A model whose profile says it cannot take parallel tool calls gets the
+  // plain sequential path for every non-computer batch.
   const strategy = hasComputerTool
     ? 'computer-sequential'
-    : !allRunCommand
-      ? 'concurrency-grouped'
-      : allCommandsConcurrencySafe
-        ? 'command-parallel'
-        : 'command-sequential';
+    : params.parallelToolCalls === false
+      ? 'command-sequential'
+      : !allRunCommand
+        ? 'concurrency-grouped'
+        : allCommandsConcurrencySafe
+          ? 'command-parallel'
+          : 'command-sequential';
   logger.info('Tool batch started', { toolCount: collectedToolCalls.length, strategy });
 
   let results: PromiseSettledResult<ToolExecResult>[];
@@ -456,14 +477,24 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     // Pure screenshot batches use capture_screen_excluding and don't need window hide.
     const ACTION_TYPES = new Set(['click', 'move', 'scroll', 'drag', 'type', 'key']);
     const hasInteractiveAction = collectedToolCalls.some(tc =>
-      tc.name === TOOL_NAMES.COMPUTER && ACTION_TYPES.has(tc.input.action as string)
+      isComputerTool(tc) && ACTION_TYPES.has(tc.input.action as string)
     );
 
     // Session-level window management: only hide on first interactive batch.
     // Subsequent batches in the same agent loop skip hide/show to avoid flickering.
     if (hasInteractiveAction && !isSessionWindowHidden()) {
-      try { await invoke('show_screen_border', { stopLabel: getI18n().computerUse.stopControl }); } catch { /* ignore */ }
-      try { await invoke('window_hide'); } catch { /* ignore */ }
+      try {
+        await invoke('show_screen_border', {
+          stopLabel: getI18n().computerUse.stopControl,
+          unresponsiveLabel: getI18n().computerUse.unresponsive,
+          pausedLabel: getI18n().computerUse.pausedByTakeover,
+          resumeLabel: getI18n().computerUse.resume,
+          endLabel: getI18n().computerUse.end,
+        });
+      } catch { /* ignore */ }
+      if (isMacOS()) {
+        try { await invoke('window_hide'); } catch { /* ignore */ }
+      }
       await new Promise(r => setTimeout(r, 200));
       setSessionWindowHidden(true);
     }
@@ -475,16 +506,35 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       for (let i = 0; i < collectedToolCalls.length; i++) {
         const tc = collectedToolCalls[i];
         // Only auto-screenshot on the last computer tool in the batch
-        const hasMoreComputerTools = collectedToolCalls.slice(i + 1).some(t => t.name === TOOL_NAMES.COMPUTER);
-        setSkipAutoScreenshot(tc.name === TOOL_NAMES.COMPUTER && hasMoreComputerTools);
+        const hasMoreComputerTools = collectedToolCalls.slice(i + 1).some(isComputerTool);
+        setSkipAutoScreenshot(isComputerTool(tc) && hasMoreComputerTools);
         try {
-          if (tc.name === TOOL_NAMES.COMPUTER) {
+          if (isComputerTool(tc)) {
             const action = tc.input.action as string;
             setCurrentAction(actionToDescription(action, tc.input));
             incrementComputerUseStep(action);
           }
           const value = await executeSingleTool(tc);
           sequentialResults.push({ status: 'fulfilled', value });
+          if (value.metadata?.requiresUserRecovery) {
+            // A missing explicitly named GUI target is a user precondition,
+            // not an invitation for the model to escape through run_command
+            // and launch/retarget another app. Fail the rest of this already-
+            // emitted batch closed, then agentLoop stops the turn below.
+            for (const skipped of collectedToolCalls.slice(i + 1)) {
+              sequentialResults.push({
+                status: 'fulfilled',
+                value: {
+                  id: skipped.id,
+                  result: 'Error: skipped because Computer Use requires user review before dependent actions can continue.',
+                  resultContent: undefined,
+                  error: true,
+                  duration: 0,
+                },
+              });
+            }
+            break;
+          }
         } catch (err) {
           sequentialResults.push({ status: 'rejected', reason: err });
         }
@@ -575,7 +625,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       // Determine hideScreenshot for computer tool
       let hideScreenshot: boolean | undefined;
       const matchedTc = collectedToolCalls[i];
-      if (matchedTc?.name === TOOL_NAMES.COMPUTER) {
+      if (matchedTc && isComputerTool(matchedTc)) {
         const showUser = matchedTc.input.show_user;
         const action = matchedTc.input.action as string;
         if (typeof showUser === 'boolean') {
@@ -602,7 +652,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       // Uses the un-offloaded toolResult so extractFileOutputs can still parse stdout.
       if (!error && matchedTc) {
         const workspacePath = getConversationReader().getConversation(conversationId)?.workspacePath ?? null;
-        import('../session/outputSnapshots').then(({ snapshotToolOutputs }) => {
+        if (!metadata?.outputSnapshotsHandled) import('../session/outputSnapshots').then(({ snapshotToolOutputs }) => {
           snapshotToolOutputs(conversationId, {
             id,
             name: matchedTc.name,
@@ -616,9 +666,9 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
           // A scoped/background run must not re-read a user path after its
           // authority owner can be released. Persist the immutable bytes the
           // tool already returned and join that internal write before the
-          // batch settles. Foreground runs retain the existing non-blocking
-          // path-copy behavior.
-          const sourcePath = !isScopedRun
+          // batch settles. Runs without host output capture retain the
+          // existing non-blocking path-copy behavior.
+          const sourcePath = !isScopedRun && !metadata?.outputSnapshotsHandled
             && matchedTc.name === TOOL_NAMES.READ_FILE
             && typeof matchedTc.input.path === 'string'
             ? matchedTc.input.path
@@ -629,7 +679,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
           if (!isPersistedExplicitScreenshot) {
             const snapshotPromise = snapshotResultImage(conversationId, id, image, sourcePath)
               .catch((e) => logger.warn('snapshot tool result image failed', { tool: matchedTc.name, err: e }));
-            if (isScopedRun) {
+            if (isScopedRun || metadata?.outputSnapshotsHandled) {
               await snapshotPromise;
             } else {
               void snapshotPromise;
@@ -682,7 +732,9 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     tc.name === 'install_mcp_server' || tc.name === 'uninstall_mcp_server'
   );
   const requiresUserRecovery = results.some(
-    (result) => result.status === 'fulfilled' && Boolean(result.value.metadata?.sandboxRecovery),
+    (result) => result.status === 'fulfilled' && Boolean(
+      result.value.metadata?.sandboxRecovery || result.value.metadata?.requiresUserRecovery,
+    ),
   );
 
   const observations = results.map((result, index) => {

@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
+import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import type { Conversation } from '@/types';
 import type { DetailBlock } from '@/types/execution';
 import DetailBlockView from './DetailBlockView';
@@ -70,6 +71,7 @@ describe('DetailBlockView outputRef image loading', () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    useImageLightboxStore.getState().close();
   });
 
   it('loads an outputRef image into the fixed image frame', async () => {
@@ -100,5 +102,212 @@ describe('DetailBlockView outputRef image loading', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(mockResolveOutputRefSource).toHaveBeenCalledTimes(2));
+  });
+
+  it('names its loading spinner while the saved image is read', () => {
+    mockResolveOutputRefSource.mockReturnValue(new Promise(() => {}));
+
+    render(<DetailBlockView block={outputRefImageBlock()} onToggle={() => {}} />);
+
+    const status = screen.getByRole('status');
+    expect(status).toHaveTextContent('Loading image...');
+    expect(status.querySelector('[data-ds-spinner]')).not.toBeNull();
+  });
+
+  it('opens the image viewer from the image button, with the saved file it shows', async () => {
+    mockResolveOutputRefSource.mockResolvedValue({ status: 'available', path: '/snapshot/result.png', isFromSnapshot: true });
+    mockLoadLocalImage.mockResolvedValue('blob:result');
+
+    render(<DetailBlockView block={outputRefImageBlock()} onToggle={() => {}} />);
+
+    const image = await screen.findByRole('img', { name: /line_chart/ });
+    const button = image.closest('button')!;
+    expect(button).not.toBeNull();
+    fireEvent.click(button);
+
+    const viewer = useImageLightboxStore.getState();
+    expect(viewer.isOpen).toBe(true);
+    expect(viewer.activeIndex).toBe(0);
+    expect(viewer.items).toEqual([{
+      id: 'files/hash/result.png',
+      mediaType: 'image/png',
+      data: '',
+      // The very file the block read, not a path the viewer would have to look up by name.
+      filePath: '/snapshot/result.png',
+      conversationId: 'conv-1',
+    }]);
+    expect(viewer.returnFocus).toBe(button);
+    // The enlarged image is the viewer's to draw: the block draws no layer of its own.
+    expect(screen.getAllByRole('img', { name: /line_chart/ })).toHaveLength(1);
+    expect(document.querySelector('.fixed')).toBeNull();
+  });
+
+  it('opens the image viewer with the bytes of an inline image', () => {
+    const block = outputRefImageBlock({ imageData: { mediaType: 'image/png', base64: 'iVBORw0KGgo=' } });
+    render(<DetailBlockView block={block} onToggle={() => {}} />);
+
+    fireEvent.click(screen.getByRole('img', { name: /line_chart/ }).closest('button')!);
+
+    const viewer = useImageLightboxStore.getState();
+    expect(viewer.isOpen).toBe(true);
+    expect(viewer.items).toEqual([{
+      id: 'block-image',
+      mediaType: 'image/png',
+      data: 'iVBORw0KGgo=',
+      filePath: undefined,
+      conversationId: undefined,
+    }]);
+  });
+});
+
+function textBlock(overrides: Partial<DetailBlock>): DetailBlock {
+  return {
+    id: 'block-text',
+    stepId: 'step-1',
+    type: 'script',
+    label: 'Details',
+    content: 'echo hi',
+    isTruncated: false,
+    isExpanded: true,
+    ...overrides,
+  };
+}
+
+describe('DetailBlockView neutral surfaces', () => {
+  beforeEach(() => {
+    initLanguage('en-US');
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('draws every block kind in neutral grey on the code surface', () => {
+    render(<DetailBlockView block={textBlock({ type: 'json', content: '{"a":1}' })} onToggle={() => {}} />);
+
+    const chip = screen.getByRole('button', { name: /Details/ });
+    expect(chip).toHaveClass('bg-fill');
+    expect(chip).toHaveClass('text-label-secondary');
+    expect(chip).toHaveAttribute('aria-expanded', 'true');
+    const pre = screen.getByText(/"a": 1/);
+    expect(pre).toHaveClass('font-code');
+    expect(pre.closest('.bg-code')).not.toBeNull();
+    expect(document.body.innerHTML).not.toMatch(/purple/);
+  });
+
+  it('marks an error block with the danger status icon', () => {
+    render(<DetailBlockView block={textBlock({ type: 'error', content: 'boom' })} onToggle={() => {}} />);
+
+    const chip = screen.getByRole('button', { name: /Details/ });
+    expect(chip.querySelector('svg.lucide-circle-x')).not.toBeNull();
+    expect(screen.getByText('boom')).toHaveClass('text-danger');
+  });
+
+  it('opens list results as links in the browser', () => {
+    render(
+      <DetailBlockView
+        block={textBlock({ type: 'list', parsedItems: [{ title: 'Result page', url: 'https://example.com/a' }] })}
+        onToggle={() => {}}
+      />,
+    );
+
+    const link = screen.getByRole('link', { name: /Result page/ });
+    expect(link).toHaveAttribute('href', 'https://example.com/a');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(link).toHaveClass('text-link');
+  });
+});
+
+describe('DetailBlockView whole result', () => {
+  beforeEach(() => {
+    initLanguage('zh-CN');
+  });
+
+  afterEach(() => {
+    cleanup();
+    initLanguage('en-US');
+  });
+
+  const resultBlock = (overrides: Partial<DetailBlock> = {}): DetailBlock => ({
+    id: 'r', stepId: 's', type: 'result', label: '结果', labelKey: 'result',
+    content: 'line 1', isTruncated: true, fullContentLength: 4000, isExpanded: true, ...overrides,
+  });
+  const sixty = Array.from({ length: 60 }, (_, i) => `line ${i + 1}`).join('\n');
+
+  it('folds a long result to its first and last lines and shows all of it on the button', () => {
+    render(<DetailBlockView block={resultBlock()} onToggle={() => {}} fullText={sixty} />);
+
+    expect(screen.getByText(/line 5$/)).toBeInTheDocument();
+    expect(screen.getByText(/^line 57/)).toBeInTheDocument();
+    expect(screen.queryByText(/line 30/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '显示全部 60 行' }));
+    expect(screen.getByText(/line 30/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '显示全部 60 行' })).toBeNull();
+  });
+
+  it('writes the notes in words the user reads', () => {
+    const text = 'a\n\n[... 4820 lines omitted ...]\n\nb\n[truncated: output too large]';
+    render(<DetailBlockView block={resultBlock()} onToggle={() => {}} fullText={text} />);
+
+    expect(screen.getByText('内容过长，阿布没有读取中间的 4820 行')).toBeInTheDocument();
+    expect(screen.getByText('内容过长，后面的部分没有留下')).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('omitted');
+  });
+
+  it('says part of the step was not saved where the conversation record ran out of room', () => {
+    const text = 'Screenshot taken\n\n[Rich tool result omitted from durable history to stay within the storage budget]';
+    render(<DetailBlockView block={resultBlock()} onToggle={() => {}} fullText={text} />);
+
+    expect(screen.getByText('这一步有部分内容没有保存下来')).toBeInTheDocument();
+    expect(screen.queryByText('内容过长，后面的部分没有留下')).toBeNull();
+  });
+
+  it('folds one long line by characters', () => {
+    render(<DetailBlockView block={resultBlock()} onToggle={() => {}} fullText={'x'.repeat(3000)} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '显示全部 3000 个字符' }));
+    expect(screen.getByText('x'.repeat(3000))).toBeInTheDocument();
+  });
+
+  it('folds a long error the same way, in the danger color', () => {
+    render(<DetailBlockView block={resultBlock({ type: 'error', labelKey: 'error' })} onToggle={() => {}} fullText={sixty} />);
+
+    expect(screen.getByRole('button', { name: '显示全部 60 行' }).closest('[data-tool-result]')).toHaveClass('text-danger');
+  });
+
+  it('says when the conversation has no whole result for the step', () => {
+    render(<DetailBlockView block={resultBlock({ content: 'first part...' })} onToggle={() => {}} fullText={null} />);
+
+    expect(screen.getByText('first part...')).toBeInTheDocument();
+    expect(screen.getByText('这段对话里没有这一步的完整结果')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /显示全部/ })).toBeNull();
+  });
+
+  it('shows the summary block of an expert step with the same fold', () => {
+    render(<DetailBlockView block={resultBlock({ labelKey: 'summary', label: '执行摘要' })} onToggle={() => {}} fullText={sixty} />);
+
+    expect(screen.getByRole('button', { name: '显示全部 60 行' })).toBeInTheDocument();
+  });
+
+  it('labels a collapsed block with its name only', () => {
+    render(<DetailBlockView block={resultBlock({ isExpanded: false })} onToggle={() => {}} fullText={sixty} />);
+
+    expect(screen.getByRole('button', { name: '结果' })).toBeInTheDocument();
+  });
+
+  it('formats a JSON result before folding it', () => {
+    const json = JSON.stringify(Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`k${i}`, i])));
+    render(<DetailBlockView block={resultBlock({ type: 'json' })} onToggle={() => {}} fullText={json} />);
+
+    expect(screen.getByRole('button', { name: '显示全部 22 行' })).toBeInTheDocument();
+  });
+
+  it('keeps a block as it was when no whole text is given', () => {
+    render(<DetailBlockView block={resultBlock({ content: 'first part' })} onToggle={() => {}} />);
+
+    expect(screen.getByText('first part')).toBeInTheDocument();
+    expect(screen.queryByText('这段对话里没有这一步的完整结果')).toBeNull();
+    expect(screen.queryByRole('button', { name: /显示全部/ })).toBeNull();
   });
 });

@@ -1,14 +1,19 @@
 import { homeDir } from '@tauri-apps/api/path';
 import { readInstalledResult } from '@/core/plugin/installedStore';
 import type { ToolDefinition } from '@/types';
+import type { ParsedPluginTeam } from '@/types/app';
 import { usePluginAuthorStore } from '@/stores/pluginAuthorStore';
 import { releasePreparedInstall } from '@/core/plugin/installer';
 import { TOOL_NAMES } from '../toolNames';
 
+function describeTeams(teams: ParsedPluginTeam[] | undefined) {
+  return (teams ?? []).map(team => ({ id: team.id, name: team.name, leader: team.leaderRoleId, members: team.memberRoleIds }));
+}
+
 /** Validation only: never accepts a path, installs, grants or executes a plugin. */
 export const preparePluginTool: ToolDefinition = {
   name: TOOL_NAMES.PLUGIN_PREPARE,
-  description: 'Validate the local plugin belonging to this plugin-creation conversation. Use after writing its manifest and components. Returns validation results only; the user installs or updates from Extensions > Plugins > Mine.',
+  description: 'Validate the local plugin belonging to this plugin-creation conversation. Use after writing its manifest and components. Returns validation results only, including the teams the user will see; the user installs or updates from Extensions > Plugins > Mine.',
   inputSchema: { type: 'object', properties: {} },
   execute: async (_input, context) => {
     if (Object.keys(_input).length) throw new Error('Plugin preparation accepts no arguments');
@@ -26,6 +31,7 @@ export const preparePluginTool: ToolDefinition = {
           : 'Ask the user to open Extensions > Plugins > Mine and review installation or check for updates. Nothing has been installed or enabled.';
       return JSON.stringify({ name: author.name, status, version: disclosure.version, skills: disclosure.skills,
         agents: disclosure.agents, connectors: disclosure.mcpServers.map(server => server.name),
+        teams: describeTeams(disclosure.teams),
         unsupported: disclosure.ignoredPayloads, next });
     } finally { if (disclosure.preparedToken) await releasePreparedInstall(disclosure.preparedToken); }
   },

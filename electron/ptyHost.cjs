@@ -40,6 +40,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const pty = require('node-pty');
+const { ownedChildProcesses } = require('./ownedChildProcesses.cjs');
 
 /**
  * node-pty ships its POSIX spawn helper as a prebuilt binary at
@@ -137,6 +138,7 @@ function isDir(p) {
  * rejects on failure (Tauri command errors reject the frontend's invoke()).
  */
 function ptySpawn({ id, cols, rows, cwd }) {
+  ownedChildProcesses.assertAdmission();
   if (sessions.has(id)) {
     return Promise.reject(new Error(`pty session '${id}' already running`));
   }
@@ -163,6 +165,9 @@ function ptySpawn({ id, cols, rows, cwd }) {
   }
 
   sessions.set(id, ptyProcess);
+  let exited = false;
+  const completion = new Promise(resolve => ptyProcess.onExit(() => { exited = true; resolve(); }));
+  ownedChildProcesses.trackCompletion(completion, () => { if (!exited) ptyProcess.kill(); });
 
   ptyProcess.onData((chunk) => {
     // encoding: null makes node-pty forward raw Buffer chunks; Array.from

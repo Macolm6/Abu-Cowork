@@ -12,6 +12,7 @@ import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 // recorded in a helper nobody calls is the same as no signal.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { checkToolApproval, executeAnyTool } from './registry';
+import { setToolAuthorizationProvider, type OperationAuthorizationDecision } from './operationAuthorization';
 import { createBrowserPermissionConfig, emptyBrowserSiteRule } from '../permissions/browserPermissionConfig';
 import { createBrowserDenialTracker } from '../agent/browserDenialTracker';
 import { mcpManager } from '../mcp/client';
@@ -30,21 +31,14 @@ import {
   type StoredBrowserSignalRecord,
 } from '../observability/browserSignals';
 
-// Mutable so one describe below can make the enterprise policy REFUSE. The
-// OSS stub always allows, so that exit is only reachable in an enterprise
-// build — but the deny itself lives in this (public) registry, which is where
-// it has to be recorded.
-const policyMocks = vi.hoisted(() => ({
-  showPolicyConfirm: vi.fn(async () => true),
-  checkTool: vi.fn(() => ({ decision: 'allow' as 'allow' | 'confirm' | 'deny', reason: undefined as string | undefined })),
-}));
-
-vi.mock('@/core/enterprise/policy/enforcer', () => ({
-  getCurrentPolicy: () => ({ mode: 'test-policy' }),
-}));
-vi.mock('@/core/enterprise/policy/matcher', () => ({
-  checkTool: (...args: unknown[]) => policyMocks.checkTool(...(args as [])),
-}));
+function authorizationExtension(authorize: () => Promise<OperationAuthorizationDecision>): void {
+  setToolAuthorizationProvider({ begin: () => ({
+    inspect: () => ({ decision: 'allow' }),
+    authorize,
+    authorizeFile: async () => ({ decision: 'allow' }),
+    validate: () => ({ decision: 'allow' }),
+  }) });
+}
 
 const ALLOWED_SITE = 'https://allowed.com';
 const ALLOWED_URL = `${ALLOWED_SITE}/report`;
@@ -89,11 +83,11 @@ describe('browser gate — denial and approval signals', () => {
     });
     __resetBrowserGrantsForTests();
     __resetUnattendedConfirmationForTests();
-    policyMocks.checkTool.mockReturnValue({ decision: 'allow', reason: undefined });
-    policyMocks.showPolicyConfirm.mockImplementation(async () => true);
+    setToolAuthorizationProvider(null);
   });
 
   afterEach(() => {
+    setToolAuthorizationProvider(null);
     (mcpManager as unknown as { servers: Map<string, unknown> }).servers.delete('abu-browser');
     __resetUnattendedConfirmationForTests();
     __resetBrowserGrantsForTests();
@@ -112,14 +106,13 @@ describe('browser gate — denial and approval signals', () => {
     expect(decision.decision).toBe('allow');
     expect(tracker.consecutiveDenials).toBe(1);
   });
-  it('audit-runtime: revocation while waiting for enterprise confirmation must stop execution', async () => {
+  it('audit-runtime: revocation while waiting for external authorization must stop execution', async () => {
     setMigratedBrowserSettings({ browserPermissionConfigV2: createBrowserPermissionConfig() });
-    policyMocks.checkTool.mockReturnValue({decision:'confirm',reason:'review'});
-    policyMocks.showPolicyConfirm.mockImplementation(async () => {
+    authorizationExtension(async () => {
       const denied = createBrowserPermissionConfig();
       denied.sites[ALLOWED_SITE] = {...emptyBrowserSiteRule(),blocked:true};
       setMigratedBrowserSettings({browserPermissionConfigV2:denied});
-      return true;
+      return { decision: 'allow' };
     });
     const result = await executeAnyTool('abu-browser__navigate', {tabId:1,url:ALLOWED_URL}, undefined, undefined, {conversationId:'audit-conv'});
     expect(result).toMatch(/^Error:/);
@@ -299,7 +292,7 @@ describe('browser gate — denial and approval signals', () => {
     });
 
     it('records a hard policy deny under its own reason', async () => {
-      policyMocks.checkTool.mockReturnValue({ decision: 'deny', reason: 'blocked by org policy' });
+      authorizationExtension(async () => ({ decision: 'deny', reason: 'Error: [policy] blocked by authorization extension', denialKind: 'policy-denied' }));
 
       const decision = await checkToolApproval(
         'abu-browser__navigate', { tabId: 1, url: ALLOWED_URL }, unattended, (async () => true) as never,
@@ -317,7 +310,7 @@ describe('browser gate — denial and approval signals', () => {
     });
 
     it('records the confirmation an unattended run cannot answer', async () => {
-      policyMocks.checkTool.mockReturnValue({ decision: 'confirm', reason: 'needs a second pair of eyes' });
+      authorizationExtension(async () => ({ decision: 'deny', reason: 'Error: [policy] approval unavailable', denialKind: 'policy-denied' }));
 
       const decision = await checkToolApproval(
         'abu-browser__navigate', { tabId: 1, url: ALLOWED_URL }, unattended, (async () => true) as never,
@@ -328,7 +321,7 @@ describe('browser gate — denial and approval signals', () => {
     });
 
     it('stays out of the browser buffer for a NON-browser tool', async () => {
-      policyMocks.checkTool.mockReturnValue({ decision: 'deny', reason: 'blocked by org policy' });
+      authorizationExtension(async () => ({ decision: 'deny', reason: 'Error: [policy] blocked by authorization extension', denialKind: 'policy-denied' }));
 
       const decision = await checkToolApproval(
         'read_file', { path: '/tmp/x' }, unattended, (async () => true) as never,
@@ -350,5 +343,3 @@ describe('browser gate — denial and approval signals', () => {
     });
   });
 });
-
-vi.mock('@/components/enterprise/policyConfirmQueue', () => ({ showPolicyConfirm: () => policyMocks.showPolicyConfirm() }));

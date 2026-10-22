@@ -10,15 +10,8 @@ import { isPluginSkillAllowed, pluginOwnerForSkill } from '../plugin/activationP
 import type { Skill, ToolExecutionContext } from '../../types';
 import { registerHook } from '../agent/lifecycleHooks';
 import type { PreToolCallEvent, PostToolCallEvent } from '../agent/lifecycleHooks';
-import { invokeTaskCommand } from '../tools/helpers/scopedCommand';
 import { matchWildcard } from './toolFilter';
-import { explainBlockedSkillCommand } from './preprocessor';
-
-interface CommandOutput {
-  stdout: string;
-  stderr: string;
-  code: number;
-}
+import { executeApprovedSkillCommand } from './preprocessor';
 
 function eventBelongsToActivation(
   event: PreToolCallEvent | PostToolCallEvent,
@@ -66,19 +59,10 @@ async function executeHookCommand(
   try {
     release = acquirePluginUse(pluginOwnerForSkill(skillDir));
     if (!isPluginSkillAllowed({ skillDir })) return true;
-    if (await explainBlockedSkillCommand(command, skillDir, context)) {
-      return false;
-    }
-    if (!isPluginSkillAllowed({ skillDir })) return true;
-    const output = await invokeTaskCommand<CommandOutput>('run_shell_command', {
-      command,
-      cwd: skillDir,
-      background: false,
-      timeout: 10,
-      sandboxEnabled: true,
-      extraWritablePaths: [skillDir],
-    }, context, { commandIdPrefix: 'skill-hook' });
-    return output.code === 0;
+    const execution = await executeApprovedSkillCommand(command, skillDir, context, 'skill-hook');
+    if ('blocked' in execution) return false;
+    if ('skipped' in execution) return true;
+    return execution.output.code === 0;
   } catch {
     return false;
   } finally { release?.(); }

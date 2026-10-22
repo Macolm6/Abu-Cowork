@@ -33,8 +33,12 @@
 import { readTextFile, writeTextFile, mkdir, exists } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 import { joinPath, normalizeSeparators } from '../../utils/pathUtils';
-import { MANIFEST_CANDIDATES, parsePluginManifest, type ResolvedPluginManifest, type McpServerSpec } from './manifest';
-import { resolvePluginMcpServers, discoverPluginSkills } from './packageComponents';
+import { MANIFEST_CANDIDATES, parsePluginManifest, PluginManifestError, type ScannedManifest, type ResolvedPluginManifest, type McpServerSpec } from './manifest';
+import { resolvePluginMcpServers, discoverPluginSkills, readPluginTeams } from './packageComponents';
+import { assertMinAbuVersionDeclared, checkMinAbuVersion, PLUGIN_AGENT_ROLE_PREFIX } from '../../../electron/shared/pluginSpec.mjs';
+import type { ParsedPluginTeam } from '@/types/app';
+import { APP_VERSION } from '@/utils/version';
+import { format, getI18n } from '@/i18n';
 import type { MarketplaceEntry, PluginSource } from './marketplace';
 import { pluginInstallDir, pluginKey, pluginRoot } from './paths';
 import { collectPluginSymlinks, scanPluginPackage, type PackageScan } from './fsOps';
@@ -110,7 +114,7 @@ export function resolveSourceDir(source: PluginSource, marketplaceDir: string): 
  * order: `.abu-plugin`, then `.claude-plugin`, then `.codex-plugin`. The
  * first one present wins, even if a later one would also parse.
  */
-export async function readManifestFrom(packageDir: string): Promise<ResolvedPluginManifest> {
+export async function readManifestFrom(packageDir: string): Promise<ScannedManifest> {
   return readManifestWith(packageDir, scanPluginPackage(packageDir));
 }
 
@@ -118,7 +122,7 @@ export async function readManifestFrom(packageDir: string): Promise<ResolvedPlug
  * The scanning half of {@link readManifestFrom}, so `planInstall` can share one
  * {@link PackageScan} across every scan it does.
  */
-async function readManifestWith(packageDir: string, scan: PackageScan, readText: (path: string) => Promise<string> = readTextFile): Promise<ResolvedPluginManifest> {
+async function readManifestWith(packageDir: string, scan: PackageScan, readText: (path: string) => Promise<string> = readTextFile): Promise<ScannedManifest> {
   for (const candidate of MANIFEST_CANDIDATES) {
     // A candidate reached through a link is not the package's own file: the
     // copy will skip it, so approving name / version / `mcpServers` read from
@@ -381,6 +385,12 @@ export interface InstallDisclosure {
    * has to tell "no agents" apart from "this surface did not look".
    */
   agents: PluginAgentDisclosure[];
+  /**
+   * Teams the package ships (`teams/*.json`), references already resolved to
+   * role ids. `planInstall` always sets it (empty when the package ships none);
+   * optional for the same reason as `skippedSymlinks` below.
+   */
+  teams?: ParsedPluginTeam[];
   capabilities?: string[];
   /**
    * Top-level payload dirs Abu does NOT consume (commands / hooks — the
@@ -401,6 +411,26 @@ export interface InstallDisclosure {
    * and such a surface has nothing to report. `planInstall` always sets it.
    */
   skippedSymlinks?: string[];
+}
+
+/**
+ * A team member may name one of the package's own experts that will NOT be
+ * installed (`conflict` set by {@link discloseAgents}). The package validated
+ * on its own terms, so the failure is reported against the reference, naming
+ * the conflict: an install that silently produced a team missing its leader
+ * would be worse than a refused one.
+ */
+function assertNoConflictingReferences(teams: ParsedPluginTeam[], agents: PluginAgentDisclosure[]): void {
+  const conflicts = new Map(agents.filter(agent => agent.conflict).map(agent => [`${PLUGIN_AGENT_ROLE_PREFIX}${agent.name}`, agent.conflict!]));
+  if (conflicts.size === 0) return;
+  const refuse = (roleId: string, field: string) => {
+    const conflict = conflicts.get(roleId);
+    if (conflict) throw new PluginManifestError(`${field}: expert "${roleId.slice(PLUGIN_AGENT_ROLE_PREFIX.length)}" will not be installed (${conflict})`, field, 'unknown-reference');
+  };
+  for (const team of teams) {
+    refuse(team.leaderRoleId, `teams.${team.id}.leader`);
+    team.memberRoleIds.forEach((roleId, index) => refuse(roleId, `teams.${team.id}.members[${index}]`));
+  }
 }
 
 /** Payload dirs the ecosystem uses that Abu deliberately does not consume. */
@@ -541,17 +571,26 @@ async function planInstallWithHistory(opts: PlanInstallOptions, reader?: Awaited
   // approves is what the copy will actually leave out.
   const skippedSymlinks = reader ? [] : await collectPluginSymlinks(sourceDir);
   const readText = reader?.readText ?? readTextFile;
-  const manifest = await readManifestWith(sourceDir, scan, readText);
+  const scanned = await readManifestWith(sourceDir, scan, readText);
 
-  if (manifest.name !== opts.entry.name) {
+  if (scanned.name !== opts.entry.name) {
     throw new PluginSecurityError(
-      `Marketplace advertises "${opts.entry.name}" but the package identifies as "${manifest.name}"`,
+      `Marketplace advertises "${opts.entry.name}" but the package identifies as "${scanned.name}"`,
     );
   }
 
-  const skillEntries = await discoverPluginSkills(sourceDir, scan, manifest.skills, readText);
-  const key = pluginKey(manifest.name, opts.marketplaceName);
+  const skillEntries = await discoverPluginSkills(sourceDir, scan, scanned.skills, readText);
+  const key = pluginKey(scanned.name, opts.marketplaceName);
   const payloadAgents = await readPayloadAgents(scan, sourceDir, key, readText);
+  // Teams are validated against what THIS package ships, so they come after
+  // the skill and agent scans and before anything is disclosed.
+  const teams = await readPluginTeams(sourceDir, scan, { agentNames: payloadAgents.map(agent => agent.name) }, readText);
+  assertMinAbuVersionDeclared(scanned, { hasTeams: teams.length > 0 });
+  const compat = checkMinAbuVersion(scanned, APP_VERSION);
+  if (!compat.ok) {
+    throw new PluginManifestError(format(getI18n().toolbox.pluginsRequiresNewerAbu, { version: compat.required ?? '' }), 'minAbuVersion', 'version');
+  }
+  const manifest: ResolvedPluginManifest = scanned;
   // Without a home there is no install record to read, so every taken name
   // counts as a conflict — the conservative direction: an agent is skipped
   // rather than a user's own one silently replaced.
@@ -561,6 +600,7 @@ async function planInstallWithHistory(opts: PlanInstallOptions, reader?: Awaited
       : [],
   );
   const agents = await discloseAgents(payloadAgents, previouslyContributed);
+  assertNoConflictingReferences(teams, agents);
   const ignoredPayloads = await discoverIgnoredPayloads(scan);
   const mcpServers = Object.entries(manifest.mcpServers ?? {}).map(([name, spec]) => ({
     name,
@@ -580,6 +620,7 @@ async function planInstallWithHistory(opts: PlanInstallOptions, reader?: Awaited
       skills: skillEntries.map(skill => skill.name),
       mcpServers,
       agents,
+      teams,
       capabilities: manifest.interface?.capabilities,
       ignoredPayloads,
       skippedSymlinks,
@@ -664,6 +705,7 @@ async function describeInstallation(opts: InstallPluginOptions) {
       // Preflight the largest approved contribution set. After copying,
       // replace this with only the agents actually materialized.
       agents: disclosure.agents.filter(agent => !agent.conflict).map(agent => agent.name),
+      teams: (disclosure.teams ?? []).map(team => team.id),
     },
   };
   await validateInstalledRecord(opts.home, record);

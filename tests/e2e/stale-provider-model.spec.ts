@@ -15,6 +15,7 @@ import {
   createElectronDataRoot,
   dismissFirstRunOverlays,
   launchAbuElectron,
+  pressWhenSettled,
   removeElectronDataRoot,
   type ElectronDataRoot,
 } from './electronHelpers';
@@ -140,7 +141,7 @@ function messagesWith(page: Page, text: string): Locator {
 }
 
 function composerModelButton(page: Page, label: string): Locator {
-  return page.getByTestId('composer-toolbar').locator(`button[title="${label}"]`);
+  return page.getByTestId('composer-toolbar').getByRole('button', { name: label, exact: true });
 }
 
 /** Add provider B next to the configured provider A and reload. */
@@ -170,7 +171,7 @@ async function addProviderB(page: Page, baseUrl: string): Promise<void> {
 }
 
 function providerCard(dialog: Locator, name: string): Locator {
-  return dialog.locator('div.group', { hasText: name }).first();
+  return dialog.getByTestId('provider-card').filter({ hasText: name }).first();
 }
 
 async function openModelSettings(page: Page): Promise<Locator> {
@@ -179,7 +180,7 @@ async function openModelSettings(page: Page): Promise<Locator> {
     await sidebarToggle.click();
     await expect(sidebarToggle).not.toHaveAttribute('aria-label', /^显示/);
   }
-  await page.getByRole('button', { name: '我', exact: true }).first().click();
+  await page.getByRole('button', { name: /^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/ }).first().click();
   await page.getByText('设置', { exact: true }).last().click();
   const dialog = page.locator('[data-abu-settings-dialog]');
   await expect(dialog).toBeVisible({ timeout: READY_TIMEOUT });
@@ -208,7 +209,9 @@ async function expectBlockedSend(
   await input.fill(marker);
   await input.press('Enter');
 
-  await expect(page.getByRole('status').getByText(toast, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+  await expect(
+    page.getByRole('region', { name: /^(通知|Notifications)$/ }).getByText(toast, { exact: true }),
+  ).toBeVisible({ timeout: READY_TIMEOUT });
   await expect(input).toHaveValue(marker);
   await expect(messagesWith(page, marker)).toHaveCount(0);
   await expect(page.getByRole('button', { name: '停止' })).toHaveCount(0);
@@ -312,9 +315,9 @@ test.describe('stale provider pin', () => {
       const dialog = await openModelSettings(page);
       const card = providerCard(dialog, PROVIDER_A.name);
       await card.hover();
-      await card.getByTitle('删除', { exact: true }).click();
-      await page.getByRole('button', { name: '确认', exact: true }).last().click();
-      await expect(dialog.locator('div.group', { hasText: PROVIDER_A.name })).toHaveCount(0);
+      await card.getByRole('button', { name: '删除', exact: true }).click();
+      await pressWhenSettled(page.getByRole('button', { name: '确认', exact: true }).last());
+      await expect(dialog.getByTestId('provider-card').filter({ hasText: PROVIDER_A.name })).toHaveCount(0);
       await closeSettings(page);
 
       // With the provider gone the label falls back to the model id.
@@ -328,7 +331,7 @@ test.describe('stale provider pin', () => {
       const tasksOnA = taskCount(a);
       await composerModelButton(page, 'model-a（不可用）').click();
       // Picker rows are role=button divs; the provider list is the last section.
-      const row = page.locator('div[role="button"]').filter({ hasText: /^Model B$/ }).last();
+      const row = page.locator('div[role="button"]').filter({ has: page.getByText('Model B', { exact: true }) }).last();
       await expect(row).toBeVisible();
       await row.click();
       await expect(composerModelButton(page, 'Model B')).toBeVisible();

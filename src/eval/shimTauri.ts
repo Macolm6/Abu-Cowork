@@ -12,10 +12,15 @@
   if (typeof g.__ENTERPRISE_BUILD__ === 'undefined') g.__ENTERPRISE_BUILD__ = false;
 }
 
-// Shim window minimally (stores check typeof window !== 'undefined')
+// Shim window minimally (stores check typeof window !== 'undefined'; the
+// settings store also subscribes to window events at module load).
 if (typeof globalThis.window === 'undefined') {
   // @ts-expect-error — intentional minimal shim
-  globalThis.window = {};
+  globalThis.window = {
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => true,
+  };
 }
 
 // Shim localStorage (Zustand persist middleware needs it)

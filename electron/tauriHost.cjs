@@ -29,10 +29,11 @@
  */
 'use strict';
 
-const { ipcMain, nativeTheme, screen, BrowserWindow, dialog } = require('electron');
+const { ipcMain, nativeTheme, powerMonitor, screen, BrowserWindow, dialog } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const { abuAppDataDir, resourceRoot, REPO_ROOT } = require('./appEnv.cjs');
 const { isTauriTransitionBuild } = require('./releaseMetadata.cjs');
 const { initSecretStore, secretDispatch } = require('./secretStore.cjs');
@@ -51,12 +52,17 @@ const {
   resolveDeviceId,
 } = require('./deviceIdStore.cjs');
 const { updaterDispatch, UPDATER_MISS } = require('./updaterHost.cjs');
-const { fsDispatch, FS_MISS, canonicalizeForPathPolicy } = require('./fsHost.cjs');
+const { createQuitPreparation } = require('./quitPreparation.cjs');
+const { createExitSaveController } = require('./exitSaveController.cjs');
+const { fsDispatch, FS_MISS, canonicalizeForPathPolicy, inspectPathNameComparison } = require('./fsHost.cjs');
+const { FILE_OPERATION_CHANNEL, createFileOperationHost } = require('./fileOperationHost.cjs');
 const { pluginGitDispatch, PLUGIN_GIT_MISS } = require('./pluginGitHost.cjs');
+const { createMarketSourceHost, marketSourceDispatch, MARKET_SOURCE_MISS } = require('./marketSourceHost.cjs');
 const { PLUGIN_SNAPSHOT_CHANNEL, createPluginSnapshotHost } = require('./pluginSnapshotHost.cjs');
 const { createOperationSession } = require('./pluginOperationSession.cjs');
 const { PLUGIN_REGISTRY_CHANNEL, createPluginRegistryHost } = require('./pluginRegistryHost.cjs');
 const { PLUGIN_AUTHOR_CHANNEL, createPluginAuthorHost } = require('./pluginAuthorHost.cjs');
+const { APP_PAGE_CHANNEL, createAppPageHost } = require('./appPageHost.cjs');
 const { PLUGIN_OPERATION_CHANNEL, createPluginOperationHost } = require('./pluginOperationHost.cjs');
 const {
   SAVE_IMAGE_ATTACHMENT_CHANNEL,
@@ -84,6 +90,7 @@ const {
   cleanupFsWatchesForSender,
 } = require('./fsWatchHost.cjs');
 const { mcpDispatch } = require('./mcpBridge.cjs');
+const { ownedChildProcesses } = require('./ownedChildProcesses.cjs');
 const { SIDECAR_BRIDGE_STATE_CHANNEL } = require('./sidecarEventChannel.cjs');
 const { sidecarRunRegistry } = require('./sidecarRunRegistry.cjs');
 const {
@@ -94,6 +101,7 @@ const {
   runtimeState,
 } = require('./runtimeObservability.cjs');
 const FS_CANONICALIZE_FOR_POLICY_CHANNEL = 'abu:fs-canonicalize-for-policy';
+const FS_NAME_COMPARISON_CHANNEL = 'abu:fs-name-comparison';
 const { desktopDispatch, DESKTOP_MISS } = require('./desktopHost.cjs');
 const { popupWindowsMenu, syncMainWindowChromeTheme } = require('./windowChrome.cjs');
 const {
@@ -106,11 +114,15 @@ const {
   NATIVE_HELPER_MISS,
   killNativeHelper,
   getNativeHelperGeneration,
+  getNativeHelperDriverCapabilities,
+  subscribeNativeHelperEvents,
 } = require('./nativeHelperManager.cjs');
 const {
   createComputerUseGate,
   COMPUTER_USE_GATE_MISS,
 } = require('./computerUseGate.cjs');
+const { createComputerUseTurnStopStore } = require('./computerUseTurnStopStore.cjs');
+const { createComputerUseGrantStore } = require('./computerUseGrantStore.cjs');
 const {
   buildActionApprovalDialogOptions,
 } = require('./computerUseActionPolicy.cjs');
@@ -126,17 +138,39 @@ const {
   teardownComputerUsePermissionGuide,
 } = require('./computerUsePermissionGuide.cjs');
 const {
+  officeDocumentsDispatch,
+  OFFICE_DOCUMENTS_MISS,
+} = require('./officeDocumentsHost.cjs');
+const { withWindowInFront } = require('./windowShowPolicy.cjs');
+const {
   computerUsePermissionHostDispatch,
   COMPUTER_USE_PERMISSION_HOST_MISS,
 } = require('./computerUsePermissionHost.cjs');
+const { MICROPHONE_CHANNEL, createMicrophoneHost } = require('./microphonePermissions.cjs');
+const { SPEECH_CHANNEL, SPEECH_EVENT_CHANNEL, createSpeechHost } = require('./speechHost.cjs');
 // guiHost.cjs (GUI-families slice) — same lazy-back-require pattern as
 // browserHost.cjs: it needs emitEvent/getMainWindow/requestAppExit from this
 // module, required lazily inside its own function bodies.
-const { guiDispatch, GUI_MISS, initGuiHost, teardownGuiHost } = require('./guiHost.cjs');
+const {
+  guiDispatch,
+  GUI_MISS,
+  initGuiHost,
+  teardownGuiHost,
+  updateComputerUseOverlayBounds,
+  noteComputerUseNativeCommand,
+} = require('./guiHost.cjs');
 const { previewDispatch, PREVIEW_MISS } = require('./previewServer.cjs');
 const { catalogDispatch, CATALOG_MISS } = require('./catalogDb.cjs');
 const { noticeDispatch, NOTICE_MISS } = require('./noticeDb.cjs');
-const { commandDispatch, COMMAND_MISS, teardownCommandHost } = require('./commandHost.cjs');
+const { usageDispatch, USAGE_MISS } = require('./usageDb.cjs');
+const {
+  commandDispatch,
+  COMMAND_MISS,
+  teardownCommandHost,
+  installBackgroundCommands,
+  legacyConsoleEncoding,
+} = require('./commandHost.cjs');
+const { createBackgroundCommands } = require('./backgroundCommands.cjs');
 const { triggerDispatch, TRIGGER_MISS } = require('./triggerServer.cjs');
 const { networkProxyDispatch, NETWORK_PROXY_MISS } = require('./networkProxy.cjs');
 const { httpDispatch, HTTP_MISS } = require('./httpHost.cjs');
@@ -153,6 +187,7 @@ const {
   assertResourceOwner,
 } = require('./securityBoundary.cjs');
 const { wireRendererResourceCleanup } = require('./rendererLifecycle.cjs');
+const { createQuitGate } = require('./quitGate.cjs');
 
 // Window-family state (Phase 2 slice D). `mainWindow` is set by main.cjs right
 // after createWindow() via setMainWindow(); `quitting` is the standard
@@ -161,10 +196,19 @@ const { wireRendererResourceCleanup } = require('./rendererLifecycle.cjs');
 // prevent-loop.
 let mainWindow = null;
 let quitting = false;
+// The handshake every quit goes through before any teardown (quitGate.cjs);
+// created in registerTauriHost. `sessionEnding` is set when the OS is shutting
+// down or logging out, and tells the renderer to ask the user nothing.
+let quitGate = null;
+let sessionEnding = false;
 let computerUseGate = null;
+let computerUseGrantStore = null;
+let unsubscribeNativeHelperEvents = null;
 let migrationStartupBlock = null;
 let migrationStartupPending = false;
 let migrationBackupPath = null;
+/** Markets added by address; created on first use, once `app` knows the home directory. */
+let marketSourceHost = null;
 
 function setMigrationStartupBlock(reason) {
   migrationStartupBlock = String(reason || 'migration-incomplete');
@@ -242,8 +286,26 @@ function isQuitting() {
  * @param {import('electron').App} app
  */
 function requestAppExit(app) {
-  quitting = true;
   app.quit();
+}
+
+let exitPreparation = null;
+let externalExitPending = false;
+async function prepareAppExit(external = false) {
+  if (external) externalExitPending = true;
+  try {
+    await exitPreparation?.prepare();
+  } catch (error) {
+    cancelAppExitPreparation();
+    throw error;
+  }
+}
+function cancelAppExitPreparation() {
+  quitting = false;
+  externalExitPending = false;
+  exitPreparation?.cancel();
+  ownedChildProcesses.resume();
+  quitGate?.reset();
 }
 
 /**
@@ -259,6 +321,9 @@ function requestAppExit(app) {
  */
 function markQuitting() {
   quitting = true;
+  // Update callers await prepareAppExit before closing windows. Their user
+  // confirmation also covers interruption of running work.
+  quitGate?.allow();
 }
 
 /** True iff any live subscription exists for `event`. */
@@ -293,6 +358,16 @@ function wireWindowEvents(win) {
     e.preventDefault();
     emitEvent('close-requested', null);
   });
+  // Windows ends the session through the window; macOS and Linux report it on
+  // powerMonitor (registerTauriHost).
+  win.on('session-end', () => {
+    sessionEnding = true;
+  });
+  // A handshake has nobody to answer it once the window is closed or its
+  // renderer process has ended. A page that only stopped responding is found
+  // out by the next quit attempt (quitGate.cjs, `request` while asking).
+  win.on('closed', () => quitGate?.rendererGone());
+  win.webContents.on('render-process-gone', () => quitGate?.rendererGone());
   // Purge this renderer's resources only when its top-level document is being
   // replaced. Child-frame loads (notably HTML widget `srcdoc` previews) keep
   // the renderer alive and must not disconnect its main→renderer event bridge.
@@ -302,6 +377,8 @@ function wireWindowEvents(win) {
     cleanupGlobalShortcutsForSender(win.webContents);
     computerUseGate?.revokeSender(win.webContents);
     runtimeState.noteRendererResourcesCleared({ reason, subscriptionCount });
+    // The page a quit handshake was talking to has been replaced.
+    quitGate?.rendererGone();
   });
 }
 
@@ -801,6 +878,10 @@ function windowDispatch(app, cmd, args, callerWin) {
     case 'app_exit':
       requestAppExit(app);
       return null;
+    case 'app_quit_report':
+      // The main window's answer to 'quit-requested' (quitGate.cjs).
+      if (callerWin === win) quitGate?.report(Number(a.requestId), String(a.stage));
+      return null;
     case 'window_hide':
       if (win) win.hide();
       return null;
@@ -851,9 +932,25 @@ function dispatch(app, cmd, args) {
 
 /** @param {import('electron').App} app */
 function registerTauriHost(app, options = {}) {
+  const backgroundCommandTable = createBackgroundCommands({
+    emit: emitEvent,
+    now: Date.now,
+    randomId: crypto.randomBytes,
+    legacyEncoding: legacyConsoleEncoding,
+  });
+  installBackgroundCommands(backgroundCommandTable);
   const pluginOperationSession = createOperationSession(app.getPath('home'));
   const pluginSnapshots = createPluginSnapshotHost({ home: app.getPath('home'), mutate: input => pluginOperationSession.mutate(input) });
   const pluginAuthors = createPluginAuthorHost({ home: app.getPath('home'), session: pluginOperationSession, snapshots: pluginSnapshots });
+  const electronForAppPages = require('electron');
+  const appPages = createAppPageHost({
+    home: app.getPath('home'),
+    getMainWindow,
+    emit: emitEvent,
+    createView: webPreferences => new electronForAppPages.WebContentsView({ webPreferences }),
+    sessionFor: partition => electronForAppPages.session.fromPartition(partition),
+    openExternal: url => { void electronForAppPages.shell.openExternal(url); },
+  });
   const pluginRegistry = createPluginRegistryHost({ home: app.getPath('home'), mutate: input => pluginOperationSession.registry(input) });
   const { safeStorage } = require('electron');
   const pluginOperations = createPluginOperationHost({
@@ -870,7 +967,28 @@ function registerTauriHost(app, options = {}) {
   // safeStorage is only reliably usable once the app is ready — registerTauriHost
   // itself is only ever called from the app.whenReady() path, so this is safe here.
   initSecretStore(app);
+  // Remembered per-app grants ("始终允许") and the user's denied list: identity
+  // key, signer binding, timestamps — no task, no content (L2 §2.1). Only the
+  // Host Gate reads and writes it.
+  computerUseGrantStore = createComputerUseGrantStore({
+    filePath: path.join(app.getPath('userData'), 'computer-use-grants.json'),
+    onError: (error) => {
+      console.warn('[computer-use] grant store unavailable', error);
+    },
+  });
   computerUseGate = createComputerUseGate({
+    // BrowserWindow HWNDs and native Electron consent dialogs belong to the
+    // main process. Passing the PID lets the Host Gate reject Abu itself even
+    // in development, where the executable is the generic `electron.exe` and
+    // cannot be recognized safely from a filename policy entry.
+    selfProcessId: process.pid,
+    turnStopStore: createComputerUseTurnStopStore({
+      filePath: path.join(app.getPath('userData'), 'computer-use-stopped-turns.json'),
+      onError: (error) => {
+        console.warn('[computer-use] stopped-turn store unavailable', error);
+      },
+    }),
+    grantStore: computerUseGrantStore,
     nativeDispatch: async (cmd, args) => {
       const permissionResult = await computerUsePermissionHostDispatch(cmd);
       if (permissionResult !== COMPUTER_USE_PERMISSION_HOST_MISS) {
@@ -880,20 +998,19 @@ function registerTauriHost(app, options = {}) {
       if (result === NATIVE_HELPER_MISS) {
         throw new Error(`native helper does not own Computer Use command ${cmd}`);
       }
-      return await result;
-    },
-    // Computer Use must not depend on Apple Events/System Events on macOS. The
-    // native helper resolves NSWorkspace identity there; Windows keeps its
-    // existing foreground-window process probe. Both return the stable
-    // bundle/process identity required by the Host Gate.
-    getActiveWindow: async () => {
+      const value = await result;
       if (process.platform === 'win32') {
-        const result = await guiDispatch(app, 'get_active_window', {});
-        if (result === GUI_MISS) {
-          throw new Error('Windows frontmost-app provider unavailable');
-        }
-        return result;
+        if (cmd.startsWith('capture_screen')) updateComputerUseOverlayBounds(value);
+        // Virtual cursor, click ripples and display-follow for the on-screen
+        // chrome (guiHost.cjs). Only completed commands count; a refused one
+        // never touched the pointer.
+        noteComputerUseNativeCommand(cmd, args, value);
       }
+      return value;
+    },
+    // Computer Use identity is resolved in the native helper on both desktop
+    // platforms. Windows must not depend on a PowerShell Add-Type subprocess.
+    getActiveWindow: async () => {
       const result = nativeHelperDispatch('frontmost_app_identity', {});
       if (result === NATIVE_HELPER_MISS) {
         throw new Error('native frontmost-app provider unavailable');
@@ -901,6 +1018,7 @@ function registerTauriHost(app, options = {}) {
       return await result;
     },
     getNativeHelperGeneration,
+    getDriverCapabilities: getNativeHelperDriverCapabilities,
     killNativeHelper,
     requestTaskApproval: async ({ target, mode }) => {
       if (shouldAutoDeclineCuApprovals(app)) return false;
@@ -934,7 +1052,7 @@ function registerTauriHost(app, options = {}) {
         : await dialog.showMessageBox(options);
       return result.response === 0;
     },
-    requestAppApproval: async ({ target, classification, scope, permissionMode }) => {
+    requestAppApproval: async ({ target, classification, scope, permissionMode, rememberable }) => {
       if (shouldAutoDeclineCuApprovals(app)) return false;
       const isZh = app.getLocale().toLowerCase().startsWith('zh');
       const canControl = scope === 'ui-control';
@@ -954,13 +1072,17 @@ function registerTauriHost(app, options = {}) {
           : 'Abu wants to view the current screen');
       const detail = isZh
         ? [
-            '授权仅对当前任务有效，任务结束或 Abu 重启后自动失效。',
+            rememberable
+              ? '「仅本次」只对当前任务有效；「始终允许」会记住这个应用，以后不再询问，可在 设置 › 安全 › 操作电脑 里撤销。有后果的动作（发送、删除、覆盖等）每次仍会单独确认。'
+              : '授权仅对当前任务有效，任务结束或 Abu 重启后自动失效。',
             classification === 'approval-required'
               ? '该应用可能包含网页、通信或其他敏感内容，或尚未被 Abu 明确识别，因此所有权限模式都需要你确认。'
               : `当前权限模式为「${permissionMode}」，首次操作此应用需要你确认。`,
           ].join('\n')
         : [
-            'This permission only applies to the current task and expires when the task ends or Abu restarts.',
+            rememberable
+              ? '"This task only" expires when the task ends. "Always allow" remembers this app so Abu stops asking; revoke it under Settings › Security › Computer Use. Consequential actions (send, delete, overwrite) are still confirmed one by one.'
+              : 'This permission only applies to the current task and expires when the task ends or Abu restarts.',
             classification === 'approval-required'
               ? 'This app may contain web, communication, or other sensitive content, or is not yet explicitly recognized by Abu, so every permission mode requires confirmation.'
               : `The current permission mode is "${permissionMode}", so first use of this app needs confirmation.`,
@@ -970,7 +1092,34 @@ function registerTauriHost(app, options = {}) {
         title,
         message,
         detail,
-        buttons: isZh ? ['允许本任务', '取消'] : ['Allow for this task', 'Cancel'],
+        buttons: rememberable
+          ? (isZh ? ['仅本次', '始终允许', '取消'] : ['This task only', 'Always allow', 'Cancel'])
+          : (isZh ? ['允许本任务', '取消'] : ['Allow for this task', 'Cancel']),
+        defaultId: 0,
+        cancelId: rememberable ? 2 : 1,
+        noLink: true,
+      };
+      const win = getMainWindow();
+      const result = win
+        ? await dialog.showMessageBox(win, options)
+        : await dialog.showMessageBox(options);
+      if (result.response === 0) return true;
+      return rememberable && result.response === 1 ? 'always' : false;
+    },
+    requestBrowserSiteApproval: async ({ target, origin }) => {
+      const isZh = app.getLocale().toLowerCase().startsWith('zh');
+      const options = {
+        type: 'warning',
+        title: isZh
+          ? `允许 Abu 操作「${origin}」？`
+          : `Allow Abu to control "${origin}"?`,
+        message: isZh
+          ? `已从「${target.app_name}」的原生地址栏验证当前站点`
+          : `The current site was verified from ${target.app_name}'s native address bar`,
+        detail: isZh
+          ? '仅允许当前任务在这个精确 origin 内操作。若页面跳转到其他 origin，必须重新观察并再次确认。无法验证地址栏时一律拒绝。'
+          : 'This allows the current task to act only within this exact origin. Navigating to another origin requires a fresh observation and approval. Unverifiable address bars are always blocked.',
+        buttons: isZh ? ['允许此站点（仅本任务）', '取消'] : ['Allow site for this task', 'Cancel'],
         defaultId: 0,
         cancelId: 1,
         noLink: true,
@@ -990,11 +1139,30 @@ function registerTauriHost(app, options = {}) {
         consequence,
       });
       const win = getMainWindow();
-      const result = win
-        ? await dialog.showMessageBox(win, options)
-        : await dialog.showMessageBox(options);
+      if (!win) return (await dialog.showMessageBox(options)).response === 0;
+      // Held in front for this one dialog, unlike the task and app prompts.
+      // Those are asked before Abu hands the foreground to the app it is about
+      // to drive; this one is asked in the middle of driving it, from a window
+      // that is by then behind it. The Gate puts focus back on the target
+      // afterwards (restoreWindowsFocusForAction), so raising Abu here costs
+      // the action nothing.
+      const result = await withWindowInFront(win, () => dialog.showMessageBox(win, options));
       return result.response === 0;
     },
+  });
+  unsubscribeNativeHelperEvents?.();
+  unsubscribeNativeHelperEvents = subscribeNativeHelperEvents((event) => {
+    const interruption = computerUseGate?.handleNativeHelperEvent(event);
+    if (!interruption) return;
+    // Ordinary mouse/keyboard input while Abu is sending input is a pause,
+    // not a stop: the Gate has already revoked the task, so the in-flight
+    // computer tool call fails and the renderer turns the Gate's stop reason
+    // into a hand-off the user can resume from (computerTools.ts). Only ESC
+    // and a vanished target abort the whole run.
+    if (interruption.type !== 'user-input-detected') {
+      emitEvent('computer-use-abort', interruption);
+    }
+    emitEvent('computer-use-interrupted', interruption);
   });
 
   // One-time Tauri→Electron migration. It is armed only by packaged release
@@ -1268,7 +1436,73 @@ function registerTauriHost(app, options = {}) {
   // with closeAction='minimize' would just hide the window and never quit.
   let pluginRegistryQuitReady = false;
   let pluginRegistryQuitPending = false;
+  const quitPreparation = createQuitPreparation({ ipcMain, assertSender: assertTrustedMainIpcSender });
+  async function askAboutExitSave(kind, signal) {
+    const text = quitPreparation.dialogText();
+    const choices = kind === 'waiting' ? ['wait', 'force'] : ['retry', 'cancel', 'force'];
+    const options = {
+      type: 'warning', title: 'Abu', message: text[kind],
+      buttons: choices.map(choice => text[choice]), defaultId: 0,
+      cancelId: kind === 'waiting' ? 0 : 1, noLink: true, signal,
+    };
+    const window = getMainWindow();
+    if (window && !window.isDestroyed()) window.show();
+    const result = await (window && !window.isDestroyed()
+      ? dialog.showMessageBox(window, options)
+      : dialog.showMessageBox(options));
+    return choices[result.response];
+  }
+  exitPreparation = createExitSaveController({
+    preparation: quitPreparation,
+    ask: askAboutExitSave,
+    finish: () => ownedChildProcesses.shutdown(),
+  });
+  let quitConfirmationPending = false;
+  quitGate = createQuitGate({
+    send: payload => emitWindowEvent(getMainWindow(), 'quit-requested', payload),
+    backgroundCommandCount: () => backgroundCommandTable.runningCount(),
+    onProceed: () => app.quit(),
+    onCancelled: () => { quitting = false; },
+    onUnavailable: () => {
+      if (quitConfirmationPending) return;
+      quitConfirmationPending = true;
+      void askAboutExitSave('waiting', new AbortController().signal).then(answer => {
+        quitConfirmationPending = false;
+        if (answer === 'force') {
+          exitPreparation.force();
+          quitGate.allow();
+        }
+        app.quit();
+      });
+    },
+  });
+  powerMonitor.on('shutdown', () => { sessionEnding = true; });
+  let quitPreparationPending = false;
   app.on('before-quit', (event) => {
+    // Restart owns the final installer/relaunch action while its save is pending.
+    if (externalExitPending && !quitting) {
+      event.preventDefault();
+      return;
+    }
+    if (quitConfirmationPending || !quitGate.request({ sessionEnding })) {
+      event.preventDefault();
+      quitting = false;
+      return;
+    }
+    if (!exitPreparation.isPrepared()) {
+      event.preventDefault();
+      if (!quitPreparationPending) {
+        quitPreparationPending = true;
+        void prepareAppExit().then(() => {
+          quitPreparationPending = false;
+          if (!externalExitPending) app.quit();
+        }, () => {
+          quitPreparationPending = false;
+          cancelAppExitPreparation();
+        });
+      }
+      return;
+    }
     if (!pluginRegistryQuitReady) {
       event.preventDefault();
       if (!pluginRegistryQuitPending) {
@@ -1278,6 +1512,7 @@ function registerTauriHost(app, options = {}) {
           app.quit();
         });
       }
+      return;
     }
     quitting = true;
     // No orphans: tear down every live browser WebContentsView (same
@@ -1297,6 +1532,8 @@ function registerTauriHost(app, options = {}) {
     // Same no-orphan intent for command trees. Background commands keep their
     // 3s-return behavior, but the registry still owns them for app shutdown.
     teardownCommandHost();
+    unsubscribeNativeHelperEvents?.();
+    unsubscribeNativeHelperEvents = null;
     computerUseGate?.teardown();
   });
 
@@ -1353,6 +1590,11 @@ function registerTauriHost(app, options = {}) {
       // both re-validated here. Returns a Promise; this handler awaits it.
       const pluginGitResult = pluginGitDispatch(cmd, { args: a }, { packagesRoot: path.join(app.getPath('home'), '.abu', 'plugin-packages') });
       if (pluginGitResult !== PLUGIN_GIT_MISS) return pluginGitResult;
+      // Markets added by address — fetched into ~/.abu/markets/<name>/ in
+      // this process; the renderer only names the address (marketSourceHost.cjs).
+      if (!marketSourceHost) marketSourceHost = createMarketSourceHost({ marketsRoot: path.join(app.getPath('home'), '.abu', 'markets') });
+      const marketSourceResult = marketSourceDispatch(cmd, { args: a }, marketSourceHost);
+      if (marketSourceResult !== MARKET_SOURCE_MISS) return marketSourceResult;
       // Preview server (slice F13) — get_preview_server_info/register_preview_root/
       // unregister_preview_root, backed by a real loopback Node http server
       // (electron/previewServer.cjs) since the frontend hardcodes the `http://`
@@ -1371,6 +1613,12 @@ function registerTauriHost(app, options = {}) {
       // node:sqlite (electron/noticeDb.cjs).
       const noticeResult = noticeDispatch(app, cmd, a);
       if (noticeResult !== NOTICE_MISS) return noticeResult;
+      // 用量账本（用量记账修复，期 1 第 2 步）—— usage_record / usage_query_range /
+      // usage_query_conversation / usage_health，backed by node:sqlite
+      // (electron/usageDb.cjs)。renderer 自己发起的请求和用量页的读取走这里；
+      // sidecar 在跑时用量走 stdout 帧直接进 main（mcpBridge.cjs），不经过 renderer。
+      const usageResult = usageDispatch(app, cmd, a);
+      if (usageResult !== USAGE_MISS) return usageResult;
       // Command execution (slice F3) — run_shell_command/run_argv_command
       // (macOS-seatbelt-sandboxed child_process spawn, port of
       // src-tauri/src/lib.rs + sandbox.rs) + get_env_vars (whitelist-filtered
@@ -1404,6 +1652,12 @@ function registerTauriHost(app, options = {}) {
       // NATIVE_HELPER_MISS for anything it doesn't own.
       const computerUseResult = await computerUseGate.dispatch(senderRecord, e.sender, cmd, a);
       if (computerUseResult !== COMPUTER_USE_GATE_MISS) return computerUseResult;
+      // "Is this file open in Office/WPS right now" — deliberately outside the
+      // Computer Use Gate. It touches no screen and no input, and the document
+      // skills that need it are exactly the ones that block the `computer`
+      // tool. See officeDocumentsHost.cjs for the full reasoning.
+      const officeDocumentsResult = await officeDocumentsDispatch(cmd, a);
+      if (officeDocumentsResult !== OFFICE_DOCUMENTS_MISS) return officeDocumentsResult;
       // Computer Use permission onboarding is a separate Electron-owned
       // utility window. The show command intentionally remains pending until
       // the user completes or cancels setup, while close can arrive through a
@@ -1563,6 +1817,20 @@ function registerTauriHost(app, options = {}) {
     );
   });
 
+  ipcMain.handle(FS_NAME_COMPARISON_CHANNEL, async (e, request = {}) => {
+    assertTrustedMainIpcSender(e);
+    if (request?.followFinalSymlink !== undefined && typeof request.followFinalSymlink !== 'boolean') {
+      throw new Error('fs: followFinalSymlink must be a boolean');
+    }
+    return inspectPathNameComparison(request?.path, request?.followFinalSymlink !== false);
+  });
+
+  const fileOperations = createFileOperationHost({ app, trashItem: filePath => require('electron').shell.trashItem(filePath) });
+  ipcMain.handle(FILE_OPERATION_CHANNEL, async (e, payload = {}) => {
+    assertTrustedMainIpcSender(e);
+    return fileOperations(e.sender, payload.action, payload.request);
+  });
+
   ipcMain.handle(SAVE_IMAGE_ATTACHMENT_CHANNEL, async (e, request = {}) => {
     assertTrustedMainIpcSender(e);
     return saveImageAttachment(app, e, request, { dialog, BrowserWindow });
@@ -1584,6 +1852,59 @@ function registerTauriHost(app, options = {}) {
     return payload.action === 'delete'
       ? pluginOperations.external('delete', () => pluginAuthors.dispatch(e.sender, payload.action, payload.request))
       : pluginAuthors.dispatch(e.sender, payload.action, payload.request);
+  });
+
+  const dispatchMicrophone = createMicrophoneHost({
+    platform: process.platform,
+    systemPreferences: require('electron').systemPreferences,
+    openExternal: (url) => require('electron').shell.openExternal(url),
+  });
+  ipcMain.handle(MICROPHONE_CHANNEL, async (e, payload) => {
+    assertTrustedMainIpcSender(e);
+    if (!payload || typeof payload.action !== 'string') throw new Error('Invalid microphone request');
+    return dispatchMicrophone(payload.action);
+  });
+
+  // Voice input: local model download + recognizer process (speechHost.cjs).
+  // The native runtime is an extraResource when packaged, electron/speech-runtime in dev.
+  const speechHost = createSpeechHost({
+    dataDir: path.join(abuAppDataDir(app), 'speech', 'sensevoice'),
+    runtimeDir: app.isPackaged
+      ? path.join(resourceRoot(app), 'speech-runtime')
+      : path.join(REPO_ROOT, 'electron', 'speech-runtime'),
+    workerPath: path.join(__dirname, 'speechWorker.cjs'),
+    fetch: (url, init) => require('electron').net.fetch(url, init),
+    fork: (modulePath) => require('electron').utilityProcess.fork(modulePath, [], {
+      serviceName: 'Abu Speech Recognizer',
+      stdio: 'ignore',
+    }),
+    emit: (event) => {
+      const win = getMainWindow();
+      if (win && !win.webContents.isDestroyed()) win.webContents.send(SPEECH_EVENT_CHANNEL, event);
+    },
+  });
+  app.on('will-quit', () => speechHost.dispose());
+  ipcMain.handle(SPEECH_CHANNEL, async (e, payload) => {
+    assertTrustedMainIpcSender(e);
+    if (!payload || typeof payload.action !== 'string') throw new Error('Invalid speech request');
+    // Errors cross IPC as data: Electron drops custom fields (the code) from rejections.
+    try {
+      return { ok: true, value: await speechHost.dispatch(payload.action, payload.request || {}) };
+    } catch (error) {
+      return {
+        ok: false,
+        error: {
+          code: error && typeof error.code === 'string' ? error.code : 'unknown',
+          message: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+  });
+
+  ipcMain.handle(APP_PAGE_CHANNEL, async (e, payload) => {
+    assertTrustedMainIpcSender(e);
+    if (!payload || typeof payload.action !== 'string') throw new Error('Invalid app page request');
+    return appPages.dispatch(payload.action, payload.request);
   });
 
   ipcMain.handle(PLUGIN_SNAPSHOT_CHANNEL, async (e, payload = {}) => {
@@ -1653,6 +1974,8 @@ module.exports = {
   getMainWindow,
   isQuitting,
   markQuitting,
+  prepareAppExit,
+  cancelAppExitPreparation,
   getMigrationStartupBlock,
   isMigrationStartupPending,
   getMigrationBackupPath: () => migrationBackupPath,

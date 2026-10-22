@@ -1,6 +1,9 @@
 ---
 name: pdf
 description: Use this skill whenever the user wants to do anything with PDF files. This includes reading or extracting text/tables from PDFs, combining or merging multiple PDFs into one, splitting PDFs apart, rotating pages, adding watermarks, creating new PDFs, filling PDF forms, encrypting/decrypting PDFs, extracting images, and OCR on scanned PDFs to make them searchable. If the user mentions a .pdf file or asks to produce one, use this skill.
+display-description:
+  zh-CN: 读取、合并、分割 PDF，提取内容、填写表单和识别文字
+  en-US: Read, merge, split, fill in and OCR PDF files
 license: Proprietary. LICENSE.txt has complete terms
 trigger: 用户要求处理 PDF 文件，包括读取、提取文本/表格、合并、拆分、旋转、加水印、创建、填表、加密解密、提取图片、OCR。用户提到 .pdf 文件或要求生成 PDF 时触发
 do-not-trigger: 用户只是在对话中提到 PDF 一词但不涉及实际 PDF 文件操作

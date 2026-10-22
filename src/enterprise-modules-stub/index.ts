@@ -49,7 +49,7 @@ export function resolveEffectiveLlmCreds(
   }
 }
 
-export type ClientEnterpriseModule = 'skills' | 'mcp' | 'kb'
+export type ClientEnterpriseModule = 'skills' | 'agents' | 'mcp' | 'kb'
 export interface EnterpriseEntitlementSnapshot {
   mode: 'personal' | 'enterprise' | 'offline'
   licenseStatus: string | null
@@ -93,17 +93,49 @@ export interface PendingEnroll {
   serverUrl: string
   enrollmentToken?: string
 }
+export interface PendingOpen {
+  serverUrl: string
+}
 
 export function useDeepLinkEnroll(): {
   pendingEnroll: PendingEnroll | null
   dismissEnroll: () => void
+  pendingOpen: PendingOpen | null
+  dismissOpen: () => void
 } {
-  return { pendingEnroll: null, dismissEnroll() {} }
+  return { pendingEnroll: null, dismissEnroll() {}, pendingOpen: null, dismissOpen() {} }
 }
 
-export function BindToEnterpriseFlow(_props: {
-  onDone: () => void
-  onCancel: () => void
-  initialServerUrl?: string
-}): null { return null }
+/** Which app the organization opens Abu in, and whether the employee may leave it. */
+export interface EnterpriseAppPolicy {
+  defaultAppId: string | null
+  allowExit: boolean
+}
+
+/** Personal mode: no default app, and every app is free to leave. */
+export function useEnterpriseAppPolicy(): EnterpriseAppPolicy {
+  return { defaultAppId: null, allowExit: true }
+}
+
+export const getEnterpriseAppPolicy = useEnterpriseAppPolicy
+export interface EnterpriseAppSkillState {
+  status: 'ready' | 'needs-preparation' | 'unavailable'
+  name: string
+}
+export function getEnterpriseAppSkillState(name: string): EnterpriseAppSkillState {
+  return { status: 'unavailable', name }
+}
+export function prepareEnterpriseAppSkill(_name: string): Promise<void> {
+  return Promise.reject(new Error('Organization skills require the enterprise build'))
+}
+export function useEnterpriseAppSkillRevision(): unknown { return undefined }
+export type EnterpriseAppAvailability = 'loading' | 'offline' | 'signed-out' | 'unavailable' | 'available'
+export function useEnterpriseAppAvailability(_appId: string): EnterpriseAppAvailability { return 'signed-out' }
+
+export type EnterpriseAccountLoginResult = 'started' | 'configuration_required' | 'failed'
+export function startEnterpriseAccountLogin(): Promise<EnterpriseAccountLoginResult> {
+  return Promise.resolve('configuration_required')
+}
+export function EnterpriseConnectionSlot(_props: { currentServerUrl?: string }): null { return null }
+
 export function PolicyConfirmModal(): null { return null }

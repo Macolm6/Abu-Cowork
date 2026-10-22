@@ -13,6 +13,10 @@ import {
 import type { Conversation } from '../types';
 import { createDocReference } from '@/types/chatReference';
 import { foldMessageLog } from '@/core/session/messageLedger';
+import {
+  expectedForText,
+  loadLoadedMessageSanitizerFixtures,
+} from '@/test/loadedMessageSanitizerFixtures';
 import { getI18n } from '../i18n';
 import {
   clearAllComposerDrafts,
@@ -280,6 +284,16 @@ describe('chatStore', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().deleteConversation(id);
       expect(useChatStore.getState().conversations[id]).toBeUndefined();
+    });
+
+    it("stops the conversation's background commands on delete", () => {
+      const id = useChatStore.getState().createConversation();
+      vi.mocked(invoke).mockClear();
+
+      useChatStore.getState().deleteConversation(id);
+
+      expect(vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === 'background_command_stop_conversation'))
+        .toEqual([['background_command_stop_conversation', { conversationId: id }]]);
     });
 
     it('clears the conversation\'s browser-automation observability trackers (fix-wave: prevents an unbounded leak in a long-lived session)', () => {
@@ -781,6 +795,28 @@ describe('chatStore', () => {
       const conv = useChatStore.getState().conversations[id];
       expect(conv.messages).toHaveLength(1);
       expect(conv.messages[0].content).toBe('Hello');
+    });
+
+    it('marks a new assistant message so its file cards read declarations', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'msg1', role: 'user', content: 'Write the report', timestamp: FIXED_TIMESTAMP,
+      });
+      useChatStore.getState().addMessage(id, {
+        id: 'msg2', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP,
+      });
+      const [userMessage, assistantMessage] = useChatStore.getState().conversations[id].messages;
+      expect(assistantMessage.fileCards).toBe('declared');
+      expect(userMessage).not.toHaveProperty('fileCards');
+    });
+
+    it('keeps the file card mark an assistant message already carries', () => {
+      const id = useChatStore.getState().createConversation();
+      const message = {
+        id: 'msg1', role: 'assistant', content: 'Done', timestamp: FIXED_TIMESTAMP, fileCards: 'declared',
+      } as const;
+      useChatStore.getState().addMessage(id, message);
+      expect(useChatStore.getState().conversations[id].messages[0]).toEqual(message);
     });
 
     it('persists Reliable Run Protocol lifecycle and route metadata on the existing user message', async () => {
@@ -1331,10 +1367,10 @@ describe('chatStore', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
         id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
-      });
-      useChatStore.getState().updateMessageThinking(id, 'mid-thought when aborted', 'a1');
-      useChatStore.getState().cancelStreaming(id);
-      const msg = useChatStore.getState().conversations[id].messages[0];
+        });
+        useChatStore.getState().updateMessageThinking(id, 'mid-thought when aborted', 'a1');
+        useChatStore.getState().cancelStreaming(id);
+        const msg = useChatStore.getState().conversations[id].messages[0];
       expect(msg.thinking).toBe('mid-thought when aborted');
     });
   });
@@ -1588,6 +1624,46 @@ describe('chatStore', () => {
         expect(written.some((c) => c.includes('"stopReason":"user"'))).toBe(true);
       });
     });
+
+    it('cancels and persists an executing tool on an earlier message when a later placeholder is last', async () => {
+      const id = useChatStore.getState().createConversation();
+      const activeToolMessage = {
+        id: 'a-tool',
+        role: 'assistant' as const,
+        content: '',
+        timestamp: FIXED_TIMESTAMP,
+        toolCalls: [{ id: 'tc1', name: 'computer', input: { action: 'screenshot' }, isExecuting: true }],
+      };
+      const trailingPlaceholder = {
+        id: 'a-placeholder',
+        role: 'assistant' as const,
+        content: '',
+        timestamp: FIXED_TIMESTAMP + 1,
+        isStreaming: true,
+      };
+      useChatStore.getState().addMessage(id, activeToolMessage);
+      useChatStore.getState().addMessage(id, trailingPlaceholder);
+      vi.mocked(readTextFile).mockResolvedValue(
+        `${JSON.stringify(activeToolMessage)}\n${JSON.stringify(trailingPlaceholder)}\n`,
+      );
+
+      useChatStore.getState().cancelStreaming(id, { fromSidecarFrame: true });
+
+      const messages = useChatStore.getState().conversations[id].messages;
+      expect(messages[0].toolCalls?.[0]).toMatchObject({
+        id: 'tc1',
+        isExecuting: false,
+        result: getI18n().task.cancelled,
+      });
+      expect(messages[1]).toMatchObject({ id: 'a-placeholder', isStreaming: false });
+      await vi.waitFor(() => {
+        expect(written.some((c) => (
+          c.includes('"id":"a-tool"')
+          && c.includes('"isExecuting":false')
+          && c.includes(getI18n().task.cancelled)
+        ))).toBe(true);
+      });
+    });
   });
 
   // ── setMessageToolCalls — intent durability ──
@@ -1673,11 +1749,12 @@ describe('chatStore', () => {
       useChatStore.getState().setAgentStatus(id, 'thinking');
       const controller = useChatStore.getState().getAbortController(id);
 
-      useChatStore.getState().cancelStreaming(id);
+      useChatStore.getState().cancelStreaming(id, { source: 'chat-input-stop-button' });
 
       expect(mockIsConversationRunningInSidecar).toHaveBeenCalledWith(id);
       // Abort still fires — the shell's "喊停" signal reaches the sidecar.
       expect(controller.signal.aborted).toBe(true);
+      expect(controller.signal.reason).toBe('chat-input-stop-button');
       expect(useChatStore.getState().hasAbortController(id)).toBe(true);
       // But the message/agentStatus decoration is untouched — deferred to
       // the sidecar's own cancelStreaming frame.
@@ -2324,6 +2401,45 @@ describe('chatStore', () => {
       expect(reindex).toBeUndefined();
     });
 
+    // The reindex reads messages.jsonl in the main process, so the reply that
+    // finishStreaming checkpoints at the end of the same turn has to be in the
+    // file by then, or search finds the turn only after a later reindex.
+    it('reindexes after the final reply of the turn has reached messages.jsonl', async () => {
+      const id = useChatStore.getState().createConversation();
+      const ledgerWritesAtReindex: string[][] = [];
+      const ledgerWrites: string[] = [];
+      // A replacement is written only to a ledger file that exists.
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(invoke).mockImplementation(async (command, args) => {
+        const payload = args as { path?: string; content?: string; data?: string } | undefined;
+        if (payload?.path?.endsWith(`${id}/messages.jsonl`)) {
+          if (command === 'append_file_text') ledgerWrites.push(payload.data ?? '');
+          if (command === 'atomic_write_text') ledgerWrites.push(payload.content ?? '');
+        }
+        if (command === 'catalog_reindex_conversation') ledgerWritesAtReindex.push([...ledgerWrites]);
+        return undefined;
+      });
+
+      try {
+        useChatStore.getState().addMessage(id, { id: 'turn-user', role: 'user', content: 'question', timestamp: 1 });
+        useChatStore.getState().setConversationStatus(id, 'running');
+        useChatStore.getState().addMessage(id, {
+          id: 'turn-reply', role: 'assistant', content: '', timestamp: 2, isStreaming: true,
+        });
+        useChatStore.getState().setLastMessageContent(id, 'the settled answer', 'turn-reply');
+        useChatStore.getState().finishStreaming(id, 'turn-reply');
+        useChatStore.getState().setConversationStatus(id, 'completed');
+
+        await vi.waitFor(() => expect(ledgerWritesAtReindex).toHaveLength(1));
+        expect(ledgerWritesAtReindex[0].join('')).toContain('the settled answer');
+        await waitForConversationPersistence(id);
+      } finally {
+        vi.mocked(exists).mockReset();
+        vi.mocked(exists).mockResolvedValue(false);
+        vi.mocked(invoke).mockReset();
+      }
+    });
+
     // Fix #5: a convId absent from state (e.g. already deleted) must never
     // trigger a reindex call.
     it('does not fire a catalog reindex for a convId absent from state', async () => {
@@ -2727,7 +2843,7 @@ describe('chatStore', () => {
 
   describe('sandbox recovery restart sanitization', () => {
     it.each(['pending', 'accepted', 'running'] as const)(
-      'turns a persisted %s user run into an explicit retryable failure',
+      'turns a persisted %s user run into a run the application closed on',
       (runState) => {
         const [message] = sanitizeLoadedMessages([{
           id: 'msg-running-before-restart',
@@ -2738,8 +2854,9 @@ describe('chatStore', () => {
           runState,
         }]);
 
-        expect(message.runState).toBe('failed');
-        expect(message.runError).toBeTruthy();
+        expect(message.runState).toBe('interrupted');
+        expect(message.runInterruptCause).toBe('app_exit');
+        expect(message.runError).toBeUndefined();
         expect(message.runId).toBe('run-before-restart');
       },
     );
@@ -3097,6 +3214,58 @@ describe('chatStore', () => {
       const tc = getToolCall(convId);
       expect(tc?.result).toBe('not json at all');
       expect(tc?.noticeCard).toBeUndefined();
+    });
+
+    it('copies the file change from the result metadata onto the tool call', () => {
+      const convId = seedToolCall('edit_file');
+      const fileChange = {
+        path: '/w/plan.md',
+        kind: 'modify' as const,
+        added: 1,
+        deleted: 1,
+        hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b'] }],
+      };
+
+      useChatStore.getState().updateToolCall(
+        convId,
+        'msg-1',
+        'tc-1',
+        'Successfully edited /w/plan.md: replaced 1 line(s) with 1 line(s)',
+        undefined,
+        false,
+        undefined,
+        { fileChange },
+      );
+
+      const tc = getToolCall(convId);
+      expect(tc?.fileChange).toEqual(fileChange);
+      expect(tc?.isError).toBeUndefined();
+    });
+
+    it('copies the file change from a metadata checkpoint and keeps it through the result', () => {
+      const convId = seedToolCall('write_file');
+      const fileChange = { path: '/w/outline.md', kind: 'create' as const, added: 2, deleted: 0 };
+
+      useChatStore.getState().checkpointToolCallMetadata(convId, 'msg-1', 'tc-1', { fileChange });
+      expect(getToolCall(convId)?.fileChange).toEqual(fileChange);
+      expect(getToolCall(convId)?.isExecuting).toBe(true);
+
+      useChatStore.getState().updateToolCall(convId, 'msg-1', 'tc-1', 'Successfully wrote 9 characters to /w/outline.md');
+      expect(getToolCall(convId)?.fileChange).toEqual(fileChange);
+    });
+
+    it('copies the background command a tool acted on from its metadata', () => {
+      const checkpointed = seedToolCall('stop_background_command');
+      useChatStore.getState().checkpointToolCallMetadata(checkpointed, 'msg-1', 'tc-1', { backgroundCommand: { command: 'npm run dev' } });
+      useChatStore.getState().updateToolCall(checkpointed, 'msg-1', 'tc-1', 'Stop requested for background command bg-0a1b2c3d (npm run dev).');
+      expect(getToolCall(checkpointed)?.backgroundCommand).toEqual({ command: 'npm run dev' });
+
+      const reported = seedToolCall('background_command_output');
+      useChatStore.getState().updateToolCall(
+        reported, 'msg-1', 'tc-1', 'status: running', undefined, false, undefined,
+        { backgroundCommand: { command: 'node worker.js' } },
+      );
+      expect(getToolCall(reported)?.backgroundCommand).toEqual({ command: 'node worker.js' });
     });
 
     it('accepts trusted AppleScript recovery metadata only for run_command', () => {
@@ -3697,7 +3866,7 @@ describe('sanitizeLoadedMessages — stale pending rows whose loop actually repl
     expect(sanitized[0].runError).toBeUndefined();
   });
 
-  it('still fails a pending row whose loop never produced a reply', () => {
+  it('marks a pending row whose loop never produced a reply as closed on', () => {
     const sanitized = sanitizeLoadedMessages([
       {
         id: 'u1', role: 'user', content: 'hello',
@@ -3706,7 +3875,7 @@ describe('sanitizeLoadedMessages — stale pending rows whose loop actually repl
       // Ghost placeholder — empty assistant row, filtered out and NOT a reply.
       { id: 'a1', role: 'assistant', content: '', timestamp: 2, loopId: 'loop-b' },
     ] as never);
-    expect(sanitized[0].runState).toBe('failed');
+    expect(sanitized[0]).toMatchObject({ runState: 'interrupted', runInterruptCause: 'app_exit' });
     expect(sanitized).toHaveLength(1);
   });
 
@@ -3723,7 +3892,7 @@ describe('sanitizeLoadedMessages — truncated replies are not completion', () =
   // Review finding on the inference: non-empty text alone also describes a
   // stream that died mid-sentence. Such a turn must keep the failed/retry
   // affordance — only a usage-bearing (cleanly ended) reply proves completion.
-  it('keeps a pending row failed when the reply has text but no usage', () => {
+  it('does not complete a pending row when the reply has text but neither usage nor a finished mark', () => {
     const sanitized = sanitizeLoadedMessages([
       {
         id: 'u1', role: 'user', content: 'explain this',
@@ -3734,7 +3903,7 @@ describe('sanitizeLoadedMessages — truncated replies are not completion', () =
         timestamp: 2, loopId: 'loop-t',
       },
     ] as never);
-    expect(sanitized[0].runState).toBe('failed');
+    expect(sanitized[0]).toMatchObject({ runState: 'interrupted', runInterruptCause: 'app_exit' });
   });
 });
 
@@ -3758,11 +3927,11 @@ describe('sanitizeImportedMessage — same completion inference as disk load', (
     expect((sanitized[0] as { runState?: string }).runState).toBe('completed');
   });
 
-  it('still fails a stale row without the set (legacy call shape)', () => {
+  it('marks a stale row as closed on without the set (legacy call shape)', () => {
     const sanitized = sanitizeImportedMessage({
       id: 'u1', role: 'user', content: 'x', timestamp: 1, runState: 'pending', loopId: 'loop-z',
     } as never);
-    expect((sanitized as { runState?: string }).runState).toBe('failed');
+    expect(sanitized).toMatchObject({ runState: 'interrupted', runInterruptCause: 'app_exit' });
   });
 
   it.each([
@@ -3779,6 +3948,44 @@ describe('sanitizeImportedMessage — same completion inference as disk load', (
     } as never);
 
     expect(sanitized.runErrorDetails).toBeUndefined();
+  });
+
+  it('keeps a well-formed file change of an imported tool call and drops a malformed one', () => {
+    const hunk = { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b'] };
+    const sanitized = sanitizeImportedMessage({
+      id: 'a-file-change',
+      role: 'assistant',
+      content: '',
+      timestamp: 1,
+      toolCalls: [
+        { id: 't1', name: 'edit_file', input: {}, fileChange: { path: '/w/a.md', kind: 'modify', added: 1, deleted: 1, hunks: [hunk] } },
+        { id: 't2', name: 'edit_file', input: {}, fileChange: { path: 7, kind: 'modify' } },
+        { id: 't3', name: 'edit_file', input: {}, fileChange: { path: '/w/c.md', kind: 'modify', hunks: [{ ...hunk, lines: 'x' }] } },
+      ],
+    } as never);
+
+    expect(sanitized.toolCalls?.map((tc) => tc.fileChange)).toEqual([
+      { path: '/w/a.md', kind: 'modify', added: 1, deleted: 1, hunks: [hunk] },
+      undefined,
+      undefined,
+    ]);
+    expect(sanitized.toolCalls?.[1]).not.toHaveProperty('fileChange');
+  });
+
+  it('keeps a well-formed background command of an imported tool call and drops a malformed one', () => {
+    const sanitized = sanitizeImportedMessage({
+      id: 'a-background-command',
+      role: 'assistant',
+      content: '',
+      timestamp: 1,
+      toolCalls: [
+        { id: 't1', name: 'stop_background_command', input: { id: 'bg-0a1b2c3d' }, backgroundCommand: { command: 'npm run dev', extra: 1 } },
+        { id: 't2', name: 'stop_background_command', input: { id: 'bg-0a1b2c3e' }, backgroundCommand: { command: 7 } },
+      ],
+    } as never);
+
+    expect(sanitized.toolCalls?.[0].backgroundCommand).toEqual({ command: 'npm run dev' });
+    expect(sanitized.toolCalls?.[1]).not.toHaveProperty('backgroundCommand');
   });
 
   it('sanitizes a legacy imported JSON runError', () => {
@@ -3868,6 +4075,26 @@ describe('pending team pin (welcome-page chip)', () => {
     const foreground = useChatStore.getState().createConversation(null);
     expect(useChatStore.getState().conversations[foreground].teamId).toBe('team-x');
     expect(useChatStore.getState().pendingTeamId).toBeUndefined();
+  });
+});
+
+describe('pending app binding (app home)', () => {
+  const binding = { version: 1 as const, appId: 'shop@market', pluginKey: 'shop@market', pluginVersion: '1.0.0', appName: '店铺运营', modeId: 'sourcing' };
+
+  it('travels with the team pin onto the foreground conversation only, and is cleared with it', () => {
+    useChatStore.getState().setPendingAppBinding(binding);
+    const background = useChatStore.getState().createConversation(null, { scheduledTaskId: 's1', skipActivate: true });
+    expect(useChatStore.getState().conversations[background].appBinding).toBeUndefined();
+    expect(useChatStore.getState().pendingAppBinding).toEqual(binding);
+
+    const foreground = useChatStore.getState().createConversation(null);
+    expect(useChatStore.getState().conversations[foreground].appBinding).toEqual(binding);
+    expect(useChatStore.getState().conversationIndex[foreground].appBinding).toEqual(binding);
+    expect(useChatStore.getState().pendingAppBinding).toBeUndefined();
+
+    useChatStore.getState().setPendingAppBinding(binding);
+    useChatStore.getState().startNewConversation();
+    expect(useChatStore.getState().pendingAppBinding).toBeUndefined();
   });
 });
 
@@ -3975,4 +4202,19 @@ describe('#549 runErrorKind', () => {
     expect(row.runErrorKind).toBeUndefined();
     expect(row.runError).toBeUndefined();
   });
+});
+
+describe('sanitizeLoadedMessages replays the shared sanitiser fixtures (#549 P2a)', () => {
+  const { cases } = loadLoadedMessageSanitizerFixtures();
+  // The renderer's loader never names a current run, so a case that does has
+  // no renderer-tier form; `loadedMessageSanitizer.test.ts` replays those.
+  for (const testCase of cases.filter((c) => c.currentRunMessageId === undefined)) {
+    it(`fixture: ${testCase.name}`, () => {
+      const { chat } = getI18n();
+      const out = sanitizeLoadedMessages(testCase.input as never);
+      expect(JSON.parse(JSON.stringify(out))).toEqual(expectedForText(testCase.expected, {
+        errorEmptyBody: chat.errorEmptyBody,
+      }));
+    });
+  }
 });

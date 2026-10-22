@@ -1,6 +1,9 @@
 ---
 name: schedule
 description: 创建和管理定时任务 - 设置定期自动执行的任务
+display-description:
+  zh-CN: 创建和管理按时间定期自动执行的定时任务
+  en-US: Create and manage tasks that run on a schedule
 trigger: 用户要求定时、定期、每天/每周/每小时执行某个操作，或想设置自动化重复任务
 do-not-trigger: 用户只是询问时间或日期，不涉及定期执行
 user-invocable: true

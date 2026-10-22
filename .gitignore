@@ -83,6 +83,9 @@ eval-results/*.json
 仅供了解*
 docs/
 !website/docs/
+# The deployment copies the two changelogs here from the repository root.
+website/docs/release-notes.md
+website/docs/release-notes.zh-CN.md
 
 # Root-level design docs / drafts / prototypes (not for release)
 # Memory: feedback_no_design_docs — design docs should not be committed.
@@ -115,6 +118,8 @@ electron/chrome-bridge-runtime/dist/
 # electron-builder packaged output
 release-electron/
 release-electron-e2e/
+release-electron-computer-use-test/
+release-electron-computer-use-test-e2e/
 
 # Internal release-readiness audits — working notes that describe unfixed
 # issues in detail. This is a public repo; keep them out of it.
@@ -122,3 +127,5 @@ release-electron-e2e/
 
 # Build bookkeeping for scripts/check-browser-artifacts.mjs
 .artifact-digests/
+# Local macOS protocol shell (not a distributable).
+.dev-shell/

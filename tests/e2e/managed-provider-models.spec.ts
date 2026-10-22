@@ -149,11 +149,11 @@ function composerInput(page: Page): Locator {
 }
 
 function composerModelButton(page: Page, label: string): Locator {
-  return page.getByTestId('composer-toolbar').locator(`button[title="${label}"]`);
+  return page.getByTestId('composer-toolbar').getByRole('button', { name: label, exact: true });
 }
 
 function pickerRow(page: Page, label: string): Locator {
-  return page.locator('div[role="button"]').filter({ hasText: new RegExp(`^${label}$`) }).last();
+  return page.locator('div[role="button"]').filter({ has: page.getByText(label, { exact: true }) }).last();
 }
 
 async function launch(dataRoot: ElectronDataRoot): Promise<{ app: ElectronApplication; page: Page }> {
@@ -180,7 +180,7 @@ async function showSidebar(page: Page): Promise<void> {
 
 // The sidebar account trigger shows the managed account's name when the build
 // displays one, and the default nickname otherwise.
-const DEFAULT_ACCOUNT_LABEL = /^(我|Me)$/;
+const DEFAULT_ACCOUNT_LABEL = /^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/;
 
 async function openModelSettings(page: Page, accountLabel: string): Promise<Locator> {
   await showSidebar(page);
@@ -202,7 +202,10 @@ async function send(page: Page, marker: string, reply: string): Promise<void> {
   const input = composerInput(page);
   await input.fill(marker);
   await input.press('Enter');
-  await expect(page.getByText(reply, { exact: true }).last()).toBeVisible({ timeout: READY_TIMEOUT });
+  // Every turn on one side gets the same reply text, so the reply that counts
+  // is the one rendered after this turn's own message.
+  const sent = page.getByText(marker, { exact: true }).last();
+  await expect(sent.locator('xpath=following::*').getByText(reply, { exact: true }).first()).toBeVisible({ timeout: READY_TIMEOUT });
   await expect(page.getByRole('button', { name: '停止' })).toHaveCount(0, { timeout: READY_TIMEOUT });
 }
 
@@ -274,15 +277,15 @@ test.describe('managed provider models', () => {
 
     await test.step('settings lists the managed provider as a read-only card next to the user\'s own', async () => {
       const dialog = await openModelSettings(page, org.accountLabel);
-      const orgCard = dialog.locator('div.group', { hasText: `由 ${org.name} 提供` }).first();
+      const orgCard = dialog.getByTestId('provider-card').filter({ hasText: `由 ${org.name} 提供` }).first();
       await expect(orgCard).toBeVisible({ timeout: READY_TIMEOUT });
       await expect(orgCard.getByText(`已连接 · ${org.models.length} 个模型`)).toBeVisible({ timeout: READY_TIMEOUT });
       await expect(orgCard.getByRole('switch')).toHaveCount(0);
-      await expect(orgCard.getByTitle('编辑', { exact: true })).toHaveCount(0);
-      await expect(orgCard.getByTitle('删除', { exact: true })).toHaveCount(0);
-      await expect(orgCard.getByTitle('重新同步', { exact: true })).toHaveCount(1);
+      await expect(orgCard.getByRole('button', { name: '编辑', exact: true })).toHaveCount(0);
+      await expect(orgCard.getByRole('button', { name: '删除', exact: true })).toHaveCount(0);
+      await expect(orgCard.getByRole('button', { name: '重新同步', exact: true })).toHaveCount(1);
 
-      const ownCard = dialog.locator('div.group', { hasText: PERSONAL.name }).first();
+      const ownCard = dialog.getByTestId('provider-card').filter({ hasText: PERSONAL.name }).first();
       await expect(ownCard).toBeVisible();
       await expect(ownCard.getByRole('switch')).toHaveAttribute('aria-checked', 'true');
       await expect(dialog.getByText(org.credential)).toHaveCount(0);

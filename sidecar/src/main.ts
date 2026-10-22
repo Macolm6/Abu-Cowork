@@ -26,6 +26,8 @@
  * and subagentRunner.ts (shell side) for the full wire-protocol doc.
  *
  * Methods:
+ *   - `handshake` → { protocolVersion, sidecarVersion, capabilities } — the
+ *     shell's first request after spawn; see handshake.ts.
  *   - `ping` → { pong: true, pid, uptimeMs }
  *   - `echo` → returns `params` verbatim as `result`
  *   - `llm.chat` → runs one streaming LLM call to completion; see llmHost.ts.
@@ -34,6 +36,8 @@
  *   - `fs.readTextFile` / `fs.readFile` / `fs.writeTextFile` / `fs.readDir` /
  *     `fs.exists` / `fs.stat` → P1-2a fs bridge for the agent's file tools;
  *     see fsHost.ts for implementation and the plugin-fs semantic mapping.
+ *   - `fs.listWorkspaceFiles` → the regular files under a workspace folder
+ *     with size and modification time (read-only); see fsHost.ts.
  *   - `subagent.run` → runs one subagent mini-loop to completion; see
  *     subagentHost.ts. The response settles only once the whole run
  *     finishes (or errors) — no progress notifications this phase (mirrors
@@ -123,7 +127,7 @@
 
 import { createStdinLineSplitter } from './stdinLineSplitter';
 import { createLlmHost } from './llmHost';
-import { fsReadTextFile, fsReadFile, fsWriteTextFile, fsReadDir, fsExists, fsStat } from './fsHost';
+import { fsReadTextFile, fsReadFile, fsWriteTextFile, fsReadDir, fsExists, fsStat, fsListWorkspaceFiles } from './fsHost';
 import { handleSubagentRun, handleSubagentAbort, shutdownAllSubagentRuns, isSubagentDispatchActive } from './subagentHost';
 import {
   handleAgentRun,
@@ -137,6 +141,7 @@ import {
   handleStatePlanMode,
   shutdownAllAgentRuns,
 } from './agentLoopHost';
+import { handleHandshake } from './handshake';
 import { resolvePendingResponse, rejectAllPendingRequests } from './rpcClient';
 import { isAuthorizedE2ECrash } from './e2eCrashGate';
 import { applyEnterpriseEntitlementSnapshot } from './enterpriseEntitlementMirror';
@@ -206,6 +211,7 @@ const fsHandlers: Record<string, (params: unknown) => Promise<unknown>> = {
   'fs.readFile': fsReadFile,
   'fs.writeTextFile': fsWriteTextFile,
   'fs.readDir': fsReadDir,
+  'fs.listWorkspaceFiles': fsListWorkspaceFiles,
   'fs.exists': fsExists,
   'fs.stat': fsStat,
 };
@@ -270,6 +276,12 @@ function handleMessage(raw: string): void {
     }
     log('authenticated E2E crash requested');
     process.exit(86);
+  }
+
+  if (method === 'handshake') {
+    if (isNotification) return; // must be a request — the shell waits for the answer
+    runAsyncRequest(id, async () => handleHandshake(params));
+    return;
   }
 
   if (method === 'ping') {

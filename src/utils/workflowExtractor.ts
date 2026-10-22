@@ -2,6 +2,7 @@ import type { Message, ToolCall, AgentStatus } from '@/types';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { normalizeSeparators, joinPath, getBaseName } from '@/utils/pathUtils';
 import { parseArgs } from '@/utils/argsParser';
+import { presentedFileNames, getToolLabel as getLocalizedToolLabel, type ToolLabelRecord } from '@/utils/toolLabels';
 
 /**
  * Check if a tool result indicates a real tool execution error.
@@ -48,8 +49,8 @@ export interface SkillInfo {
 
 // Tool name to step type mapping
 const FILE_READ_TOOLS: string[] = [TOOL_NAMES.READ_FILE, 'read', 'get_file_contents'];
-const FILE_WRITE_TOOLS: string[] = [TOOL_NAMES.WRITE_FILE, TOOL_NAMES.EDIT_FILE, 'write', 'edit'];
-const FILE_CREATE_TOOLS: string[] = ['create_file', 'create'];
+export const FILE_WRITE_TOOLS: string[] = [TOOL_NAMES.WRITE_FILE, TOOL_NAMES.EDIT_FILE, 'write', 'edit'];
+export const FILE_CREATE_TOOLS: string[] = ['create_file', 'create'];
 const COMMAND_TOOLS: string[] = [TOOL_NAMES.RUN_COMMAND, 'bash', 'execute', 'shell'];
 const SKILL_TOOLS: string[] = [TOOL_NAMES.USE_SKILL];
 
@@ -69,7 +70,14 @@ function getFileName(path: string): string {
 }
 
 // Get display label for tool call
-function getToolLabel(toolName: string, input: Record<string, unknown>): { label: string; detail?: string } {
+function getToolLabel(toolName: string, input: Record<string, unknown>, record?: ToolLabelRecord): { label: string; detail?: string } {
+  if (
+    (toolName === TOOL_NAMES.RUN_COMMAND && input.background === true)
+    || toolName === TOOL_NAMES.BACKGROUND_COMMAND_OUTPUT
+    || toolName === TOOL_NAMES.STOP_BACKGROUND_COMMAND
+  ) {
+    return getLocalizedToolLabel(toolName, input, 'zh-CN', record);
+  }
   const path = (input.path || input.file_path || input.filePath) as string | undefined;
   const fileName = path ? getFileName(path) : undefined;
 
@@ -124,6 +132,13 @@ function getToolLabel(toolName: string, input: Record<string, unknown>): { label
       return {
         label: skillName ? `使用技能 ${skillName}` : '使用技能',
         detail: input.context as string | undefined,
+      };
+    }
+    case TOOL_NAMES.PRESENT_FILES: {
+      const names = presentedFileNames(input);
+      return {
+        label: `交付了 ${names.length} 个文件`,
+        detail: names.length > 0 ? names.join('、') : undefined,
       };
     }
     default:
@@ -219,7 +234,7 @@ export function extractWorkflowSteps(
     }
 
     const stepType = getStepTypeFromTool(tc.name);
-    const { label, detail } = getToolLabel(tc.name, tc.input);
+    const { label, detail } = getToolLabel(tc.name, tc.input, tc);
 
     let status: WorkflowStep['status'];
     if (tc.isExecuting) {
@@ -668,6 +683,33 @@ export function extractFilePathsFromText(text: string): string[] {
 }
 
 /**
+ * Output path of a finished generate_image / process_image call, read from
+ * its result text; process_image falls back to `input.output_path`.
+ */
+export function mediaToolAnnouncedPath(tc: ToolCall): string | null {
+  if (!tc.result) return null;
+  if (tc.name === TOOL_NAMES.GENERATE_IMAGE) {
+    const match = tc.result.match(/(?:图片已保存到|Image saved to): (.+?)(?:\n|$)/);
+    return match ? match[1].trim() : null;
+  }
+  if (tc.name === TOOL_NAMES.PROCESS_IMAGE) {
+    const match = tc.result.match(/(?:Image processed successfully|图片处理成功): (.+?)(?:\n|$)/);
+    return match ? match[1].trim() : null;
+  }
+  return null;
+}
+
+export function mediaToolOutputPath(tc: ToolCall): string | null {
+  if (!tc.result) return null;
+  const announced = mediaToolAnnouncedPath(tc);
+  if (announced) return announced;
+  if (tc.name === TOOL_NAMES.PROCESS_IMAGE) {
+    return tc.input.output_path ? String(tc.input.output_path) : null;
+  }
+  return null;
+}
+
+/**
  * Extract file outputs from tool calls.
  *
  * Two semantic modes (see ExtractMode docs):
@@ -769,21 +811,10 @@ export function extractFileOutputs(
       continue;
     }
 
-    // 4. generate_image — extract path from result
-    if (tc.name === TOOL_NAMES.GENERATE_IMAGE && tc.result) {
-      const match = tc.result.match(/(?:图片已保存到|Image saved to): (.+?)(?:\n|$)/);
-      if (match) addFile(match[1].trim(), 'create');
-      continue;
-    }
-
-    // 5. process_image — result regex + fallback to input.output_path
-    if (tc.name === TOOL_NAMES.PROCESS_IMAGE && tc.result) {
-      const match = tc.result.match(/(?:Image processed successfully|图片处理成功): (.+?)(?:\n|$)/);
-      if (match) {
-        addFile(match[1].trim(), 'create');
-      } else if (input.output_path) {
-        addFile(String(input.output_path), 'create');
-      }
+    // 4-5. generate_image / process_image — output path announced in the result
+    if ((tc.name === TOOL_NAMES.GENERATE_IMAGE || tc.name === TOOL_NAMES.PROCESS_IMAGE) && tc.result) {
+      const outputPath = mediaToolOutputPath(tc);
+      if (outputPath) addFile(outputPath, 'create');
       continue;
     }
 

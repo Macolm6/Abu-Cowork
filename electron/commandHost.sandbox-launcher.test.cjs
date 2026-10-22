@@ -2,10 +2,11 @@
 
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { test, afterEach } = require('node:test');
+const { test, beforeEach, afterEach } = require('node:test');
 
 const {
   commandDispatch,
@@ -15,11 +16,15 @@ const {
   makeLauncherConfig,
   generateSeatbeltProfile,
   rewriteWindowsBundledPythonCommand,
+  installBackgroundCommands,
   __resetCommandHostForTests,
 } = require('./commandHost.cjs');
+const { createBackgroundCommands, BACKGROUND_COMMANDS_CHANGED_EVENT } = require('./backgroundCommands.cjs');
 const { getRuntimeDiagnostics } = require('./runtimeObservability.cjs');
 
 const app = { isPackaged: false, once() {} };
+const TICK_COMMAND = `node -e "setInterval(()=>console.log('tick'),100)"`;
+let backgroundEvents = [];
 
 function lastCommandFinishedEvent() {
   return getRuntimeDiagnostics()
@@ -145,13 +150,56 @@ async function waitForDead(pid, attempts = 30) {
   assert.equal(pidAlive(pid), false, `pid ${pid} should be dead`);
 }
 
+function countTicks(text) {
+  return (text.match(/tick/g) || []).length;
+}
+
+function backgroundRow(conversationId, id) {
+  return commandDispatch(app, 'background_command_list', { conversationId }).then((rows) =>
+    rows.find((row) => row.id === id),
+  );
+}
+
+async function waitForBackgroundRow(conversationId, id, predicate, attempts = 200) {
+  for (let i = 0; i < attempts; i += 1) {
+    const row = await backgroundRow(conversationId, id);
+    if (row && predicate(row)) return row;
+    await wait(50);
+  }
+  throw new Error(`background command ${id} did not reach the expected state`);
+}
+
+function startBackground(conversationId, command, extra = {}) {
+  return commandDispatch(app, 'run_shell_command', {
+    command,
+    conversationId,
+    background: true,
+    timeout: 60,
+    sandboxEnabled: false,
+    ...extra,
+  });
+}
+
+beforeEach(() => {
+  backgroundEvents = [];
+  let clock = 0;
+  installBackgroundCommands(
+    createBackgroundCommands({
+      emit: (event, payload) => backgroundEvents.push({ event, payload }),
+      now: () => (clock += 1),
+      randomId: crypto.randomBytes,
+      legacyEncoding: () => null,
+    }),
+  );
+});
+
 afterEach(() => {
   __resetCommandHostForTests();
 });
 
 test('run_shell_command executes ordinary shell commands through launcher', async () => {
   const result = await commandDispatch(app, 'run_shell_command', {
-    command: 'printf hello',
+    command: process.platform === 'win32' ? 'Write-Host -NoNewline hello' : 'printf hello',
     background: false,
     timeout: 5,
     sandboxEnabled: false,
@@ -221,7 +269,7 @@ test('macOS cannot execute an osascript alias copied before sandbox launch', {
 
 test('foreground shell execution records a diagnostics event with command, exit code, and duration', async () => {
   const result = await commandDispatch(app, 'run_shell_command', {
-    command: 'printf observed-foreground',
+    command: process.platform === 'win32' ? 'Write-Host -NoNewline observed-foreground' : 'printf observed-foreground',
     background: false,
     timeout: 5,
     sandboxEnabled: false,
@@ -252,9 +300,10 @@ test('foreground shell execution records a non-zero exit code as an error outcom
   assert.equal(event.outcome, 'error');
 });
 
-test('background shell execution records a diagnostics event once the wait window settles', async () => {
+test('background shell execution records a diagnostics event when the process exits', async () => {
   const result = await commandDispatch(app, 'run_shell_command', {
-    command: 'printf observed-background',
+    command: process.platform === 'win32' ? 'Write-Host -NoNewline observed-background' : 'printf observed-background',
+    conversationId: 'c-diagnostics',
     background: true,
     timeout: 5,
     sandboxEnabled: false,
@@ -458,6 +507,7 @@ test('background command remains tracked and teardown kills its descendant tree'
   const result = await commandDispatch(app, 'run_shell_command', {
     commandId: 'background-tree-test',
     command: grandchildCommand(pidFile, readyFile),
+    conversationId: 'c-teardown',
     cwd: dir,
     background: true,
     timeout: 60,
@@ -542,6 +592,7 @@ test('registry removes one entry without losing a concurrent command with the sa
   const background = await commandDispatch(app, 'run_shell_command', {
     commandId,
     command: grandchildCommand(pidFile, readyFile),
+    conversationId: 'c-reused-id',
     cwd: dir,
     background: true,
     timeout: 60,
@@ -561,6 +612,190 @@ test('registry removes one entry without losing a concurrent command with the sa
 
   assert.equal(await commandDispatch(app, 'abort_command', { commandId }), true);
   await waitForDead(pid);
+});
+
+test('registers a background command and returns its id', async () => {
+  const result = await startBackground('c1', TICK_COMMAND);
+
+  assert.equal(result.code, 0);
+  assert.match(result.backgroundCommandId, /^bg-[0-9a-f]{8}$/);
+  assert.equal(result.running, true);
+  assert.ok(countTicks(result.stdout) > 0, 'the first three seconds of output are still returned');
+  const rows = await commandDispatch(app, 'background_command_list', { conversationId: 'c1' });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, result.backgroundCommandId);
+  assert.equal(rows[0].command, TICK_COMMAND);
+  assert.equal(rows[0].status, 'running');
+  assert.equal(await commandDispatch(app, 'background_command_running_count', { conversationId: 'c1' }), 1);
+  assert.equal(await commandDispatch(app, 'background_command_running_count', {}), 1);
+  assert.ok(
+    backgroundEvents.some(
+      ({ event, payload }) => event === BACKGROUND_COMMANDS_CHANGED_EVENT && payload.conversationId === 'c1',
+    ),
+  );
+});
+
+test('reports a background command that exits within three seconds as not running', async () => {
+  const result = await startBackground('c1', 'printf done');
+
+  assert.equal(result.code, 0);
+  assert.equal(result.stdout, 'done');
+  assert.match(result.backgroundCommandId, /^bg-[0-9a-f]{8}$/);
+  assert.equal(result.running, false);
+});
+
+test('reads output written after the first three seconds', async () => {
+  const result = await startBackground('c1', TICK_COMMAND);
+  const initialTicks = countTicks(result.stdout);
+  const id = result.backgroundCommandId;
+
+  let output = null;
+  for (let i = 0; i < 100; i += 1) {
+    output = await commandDispatch(app, 'background_command_output', { conversationId: 'c1', id, since: 0 });
+    if (countTicks(output.text) > initialTicks) break;
+    await wait(50);
+  }
+  assert.ok(countTicks(output.text) > initialTicks, 'output keeps growing after the tool result returned');
+  assert.equal(output.gap, false);
+  assert.equal(output.status, 'running');
+
+  const later = await commandDispatch(app, 'background_command_output', {
+    conversationId: 'c1',
+    id,
+    since: output.next,
+  });
+  assert.ok(later.next >= output.next);
+});
+
+test('records the real exit code', async () => {
+  const command = `node -e "setTimeout(()=>process.exit(3),3500)"`;
+  const result = await startBackground('c1', command);
+  assert.equal(result.code, 0, 'the command is still running when the tool result returns');
+
+  const row = await waitForBackgroundRow('c1', result.backgroundCommandId, (r) => r.status !== 'running');
+  assert.equal(row.status, 'failed');
+  assert.equal(row.exitCode, 3);
+  const event = lastCommandFinishedEvent();
+  assert.equal(event.command, command);
+  assert.equal(event.exitCode, 3);
+  assert.equal(event.executionPath, 'background');
+});
+
+test('marks an aborted background command as stopped', async () => {
+  const commandId = 'abort-background-test';
+  const result = await startBackground('c1', TICK_COMMAND, { commandId });
+  const id = result.backgroundCommandId;
+
+  assert.equal(await commandDispatch(app, 'abort_command', { commandId }), true);
+  assert.equal((await backgroundRow('c1', id)).status, 'stopping');
+
+  const row = await waitForBackgroundRow('c1', id, (r) => r.status !== 'stopping');
+  assert.equal(row.status, 'stopped');
+});
+
+test('stops through background_command_stop', async () => {
+  const result = await startBackground('c1', TICK_COMMAND);
+  const id = result.backgroundCommandId;
+
+  assert.equal(await commandDispatch(app, 'background_command_stop', { conversationId: 'c1', id }), 'requested');
+  assert.equal((await backgroundRow('c1', id)).status, 'stopping');
+
+  const row = await waitForBackgroundRow('c1', id, (r) => r.status !== 'stopping');
+  assert.equal(row.status, 'stopped');
+  assert.equal(
+    await commandDispatch(app, 'background_command_stop', { conversationId: 'c1', id }),
+    'already-finished',
+  );
+  assert.equal(await commandDispatch(app, 'background_command_running_count', { conversationId: 'c1' }), 0);
+
+  await commandDispatch(app, 'background_command_clear', { conversationId: 'c1' });
+  assert.deepEqual(await commandDispatch(app, 'background_command_list', { conversationId: 'c1' }), []);
+});
+
+test('stops a conversation and removes its rows', async () => {
+  const result = await startBackground('c1', TICK_COMMAND);
+
+  await commandDispatch(app, 'background_command_stop_conversation', { conversationId: 'c1' });
+  assert.deepEqual(await commandDispatch(app, 'background_command_list', { conversationId: 'c1' }), []);
+  assert.equal(await commandDispatch(app, 'background_command_running_count', {}), 0);
+  await assert.rejects(
+    commandDispatch(app, 'background_command_output', {
+      conversationId: 'c1',
+      id: result.backgroundCommandId,
+      since: 0,
+    }),
+    /does not exist/,
+  );
+});
+
+test("refuses to read or stop another conversation's command", async () => {
+  const result = await startBackground('c1', TICK_COMMAND);
+  const id = result.backgroundCommandId;
+
+  await assert.rejects(
+    commandDispatch(app, 'background_command_output', { conversationId: 'c2', id, since: 0 }),
+    /does not belong to conversation c2/,
+  );
+  await assert.rejects(
+    commandDispatch(app, 'background_command_stop', { conversationId: 'c2', id }),
+    /does not belong to conversation c2/,
+  );
+  await assert.rejects(
+    commandDispatch(app, 'background_command_stop', { conversationId: 'c1', id: 'bg-00000000' }),
+    /does not exist/,
+  );
+  await commandDispatch(app, 'background_command_stop_conversation', { conversationId: 'c2' });
+  assert.deepEqual(await commandDispatch(app, 'background_command_list', { conversationId: 'c2' }), []);
+  assert.equal((await backgroundRow('c1', id)).status, 'running');
+});
+
+test('rejects a background run without conversationId', async () => {
+  await assert.rejects(
+    commandDispatch(app, 'run_shell_command', {
+      command: TICK_COMMAND,
+      background: true,
+      timeout: 60,
+      sandboxEnabled: false,
+    }),
+    /conversationId/,
+  );
+  assert.equal(await commandDispatch(app, 'background_command_running_count', {}), 0);
+});
+
+test('does not list a command that failed to start', async () => {
+  const absentCwd = path.join(__dirname, 'no-such-directory-for-background-commands');
+  const missing = await startBackground('c1', TICK_COMMAND, { cwd: absentCwd });
+
+  assert.equal(missing.code, -1);
+  assert.ok(missing.stderr.includes(absentCwd));
+  assert.equal(missing.backgroundCommandId, undefined);
+  assert.deepEqual(await commandDispatch(app, 'background_command_list', { conversationId: 'c1' }), []);
+  assert.deepEqual(backgroundEvents, []);
+});
+
+test('removes the row when the process reports an error after spawn', {
+  skip: process.platform === 'win32',
+}, async () => {
+  // The directory passes the preflight check, but the launcher cannot enter
+  // it, so spawn() returns and the child reports EACCES afterwards.
+  const lockedCwd = tmpDir();
+  fs.chmodSync(lockedCwd, 0o000);
+  try {
+    const result = await startBackground('c1', TICK_COMMAND, { cwd: lockedCwd });
+
+    assert.equal(result.code, -1);
+    assert.match(result.stderr, /EACCES/);
+    assert.equal(result.backgroundCommandId, undefined);
+    assert.deepEqual(await commandDispatch(app, 'background_command_list', { conversationId: 'c1' }), []);
+    assert.deepEqual(
+      backgroundEvents.map(({ payload }) => payload.conversationId),
+      ['c1', 'c1'],
+      'one event when the row was registered and one when it was removed',
+    );
+  } finally {
+    fs.chmodSync(lockedCwd, 0o700);
+    fs.rmSync(lockedCwd, { recursive: true, force: true });
+  }
 });
 
 test('Windows sandbox spec uses ConstrainedLanguage and Restricted execution policy', () => {
@@ -641,7 +876,23 @@ test('command host leaves SIGINT and SIGTERM exit ownership to the main process'
   assert.doesNotMatch(source, /process\.once\(['"]SIGINT['"]/);
   assert.doesNotMatch(source, /process\.once\(['"]SIGTERM['"]/);
   assert.match(source, /process\.once\(['"]exit['"], cleanup\)/);
-  assert.match(source, /app\?\.once\?\.\(['"]before-quit['"], cleanup\)/);
+  assert.match(source, /app\?\.once\?\.\(['"]will-quit['"], cleanup\)/);
+  assert.doesNotMatch(source, /['"]before-quit['"], cleanup/);
+});
+
+test('run_shell_command with a missing working directory names the directory, not the launcher', async () => {
+  const absentCwd = path.join(tmpDir(), 'no-such-directory');
+
+  const result = await commandDispatch(app, 'run_shell_command', {
+    command: 'echo hello',
+    cwd: absentCwd,
+    sandboxEnabled: false,
+  });
+
+  assert.equal(result.code, -1);
+  assert.equal(result.stdout, '');
+  assert.ok(result.stderr.includes(absentCwd), '错误文本要指名工作目录');
+  assert.doesNotMatch(result.stderr, /sandbox-launcher/, '错误文本不能再指向启动器');
 });
 
 test('macOS Seatbelt profile still denies sensitive home paths', () => {

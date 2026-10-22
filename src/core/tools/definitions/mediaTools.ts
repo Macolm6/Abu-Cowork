@@ -10,6 +10,7 @@ import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
+import { runFileOperationStage } from '@/core/tools/fileOperation';
 
 // `process_image` lives in its own file (P1-3d-5 slice 1) so the sidecar can
 // register it locally without dragging in generateImageTool's store imports
@@ -41,8 +42,16 @@ export const generateImageTool: ToolDefinition = {
     const size = input.size as string | undefined;
     const style = (input.style as string) || 'vivid';
     const savePath = input.save_path as string | undefined;
+    const files = context?.files;
 
     try {
+      // Freeze the output before any generation request can start.
+      let finalPath = savePath;
+      if (!finalPath) {
+        const workspacePath = context?.workspacePath ?? useWorkspaceStore.getState().currentPath;
+        const baseDir = workspacePath || await downloadDir();
+        finalPath = joinPath(baseDir, `abu-image-${Date.now()}.png`);
+      }
       const state = getSettingsReader().getSnapshot();
 
       // Resolve the image-generation backend from the independent
@@ -83,17 +92,17 @@ export const generateImageTool: ToolDefinition = {
       // vendor — see src/core/llm/imageGen/).
       const reqBody = buildImageRequest(vendor, { model: modelId, prompt, size, style });
 
-      const response = await fetchFn(endpoint, {
+      const response = await runFileOperationStage(files, () => fetchFn(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${apiKey}`,
         },
         body: JSON.stringify(reqBody),
-      });
+      }));
 
       if (!response.ok) {
-        const errorText = await response.text();
+        const errorText = await runFileOperationStage(files, () => response.text());
         let msg = `Error generating image: ${response.status} ${errorText}`;
         const tm = getI18n().toolResult.media;
         // Misconfiguration hints: a chat endpoint (or wrong model) yields a
@@ -109,7 +118,7 @@ export const generateImageTool: ToolDefinition = {
         return msg;
       }
 
-      const result = await response.json();
+      const result = await runFileOperationStage(files, () => response.json());
       // Normalize the response envelope via the per-vendor parser —
       // SiliconFlow returns `images[]` instead of OpenAI/Volcengine/Zhipu's
       // `data[]`, so this can't be a single fixed shape.
@@ -130,26 +139,18 @@ export const generateImageTool: ToolDefinition = {
         bytes = new Uint8Array(bin.length);
         for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
       } else if (parsed.url) {
-        const imageResponse = await fetchFn(parsed.url);
+        const imageResponse = await runFileOperationStage(files, () => fetchFn(parsed.url!));
         if (!imageResponse.ok) {
           return `Error downloading image: ${imageResponse.status}`;
         }
-        bytes = new Uint8Array(await imageResponse.arrayBuffer());
+        bytes = new Uint8Array(await runFileOperationStage(files, () => imageResponse.arrayBuffer()));
       } else {
         return getI18n().toolResult.media.errNoImageData;
       }
 
-      // Determine save path: explicit > workspace > downloads
-      let finalPath = savePath;
-      if (!finalPath) {
-        const workspacePath = context?.workspacePath ?? useWorkspaceStore.getState().currentPath;
-        const baseDir = workspacePath || await downloadDir();
-        const timestamp = Date.now();
-        finalPath = joinPath(baseDir, `abu-image-${timestamp}.png`);
-      }
-
-      await ensureParentDir(finalPath);
-      await writeBinFile(finalPath, bytes);
+      const io = files ?? { ensureParentDir, writeFile: writeBinFile };
+      await io.ensureParentDir(finalPath);
+      await io.writeFile(finalPath, bytes);
 
       const revisedPrompt = parsed.revisedPrompt;
       const tm = getI18n().toolResult.media;

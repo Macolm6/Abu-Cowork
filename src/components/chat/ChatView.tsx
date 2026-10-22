@@ -8,8 +8,9 @@ import {
 } from '@/core/agent/agentLoopRunner';
 import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
 import { failureIsOwnedByTranscript, shouldRestoreComposerAfterDispatch } from './composerSendResult';
-import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest, getPendingUserQuestions, subscribeUserQuestion, findQuestionOwningMessage } from '@/core/agent/permissionBridge';
+import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, resolveWorkspaceRequestById, subscribeToWorkspaceRequest, getPendingUserQuestions, subscribeUserQuestion, findQuestionOwningMessage } from '@/core/agent/permissionBridge';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { providerHasCredentials } from '@/utils/settingsSelectors';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import type { PermissionDuration } from '@/stores/permissionStore';
@@ -22,18 +23,26 @@ import type { ExpertContact } from '@/types/expertContact';
 import CompactDivider from './CompactDivider';
 import BrowserRunReportCard from './BrowserRunReportCard';
 import MaxTurnsNoticeCard from './MaxTurnsNoticeCard';
+import GoalRoundMarker from './GoalRoundMarker';
+import GoalBar from './GoalBar';
 import ChapterRail from './ChapterRail';
 import ChapterMenu from './ChapterMenu';
+import BackgroundCommandsButton from './BackgroundCommandsButton';
 import { activeChapterIndex, deriveChapters, shouldShowRail, topVisibleGroup, type Chapter, type RowPosition } from './chapters';
 import { isCompactBoundary } from '@/core/context/compactBoundary';
 import { isBrowserRunReportMessage } from '@/core/observability/browserRunReport';
 import { isMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
 import { getMessageText } from '@/core/context/contextUtils';
 import { compactConversationManually } from '@/core/context/compactionService';
+import { applyGoalCommand, checkGoalCreatable, clearGoalForReplacement, createGoalFromCommand, parseGoalCommand } from '@/core/goal/goalCommand';
+import { useConfirm } from '@/components/ds/confirm-context';
 import { useToastStore } from '@/stores/toastStore';
+import { useBackgroundCommandStore } from '@/stores/backgroundCommandStore';
+import { isTauriEnv } from '@/utils/tauriEnv';
 import { ensureConversationModelUsable } from './sendModelGuard';
 import ChatInput from './ChatInput';
-import UserQuestionDock from './UserQuestionDock';
+import { focusComposerAfterPageChange, focusComposerFromWindow } from './composerFocus';
+import UserQuestionDock, { type ArrivedQuestion } from './UserQuestionDock';
 import AgentStatusStrip from './AgentStatusStrip';
 import TeamMemberBar from './TeamMemberBar';
 import TeamConfirmationsStrip from './TeamConfirmationsStrip';
@@ -42,12 +51,14 @@ import ScenarioGuide from './ScenarioGuide';
 import { PROMPT_GRID_CLASS, PROMPT_ITEM_CLASS } from './promptGrid';
 import { agentRegistry } from '@/core/agent/registry';
 import { matchTeamMention } from '@/core/team/chatEntry';
-import { useTeamStore } from '@/stores/teamStore';
+import { getVisibleTeamById } from '@/stores/teamStore';
+import { useVisibleTeams } from '@/core/team/useVisibleTeams';
+import { localizedTeam } from '@/core/team/localizedTeam';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { effectiveRoleId } from '@/core/team/roleIdentity';
 import PermissionDialog from '@/components/common/PermissionDialog';
 import CommandConfirmDialog from '@/components/common/CommandConfirmDialog';
-import { ChevronDown, Settings, Check } from 'lucide-react';
+import { pickVisibleApproval } from '@/components/common/approvalQueueView';
 import abuAvatar from '@/assets/abu-avatar.png';
 import WelcomeAvatar from '@/components/chat/WelcomeAvatar';
 import IMInfoBar from './IMInfoBar';
@@ -57,14 +68,26 @@ import ConvIdBadge from './ConvIdBadge';
 import { cn } from '@/lib/utils';
 import { isMacOS } from '@/utils/platform';
 import { windowDragRowProps } from '@/utils/windowDrag';
-import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ds/button';
+import { AppIcons } from '@/components/ds/icons';
+import { LoadError } from '@/components/ds/load-error';
+import { Pressable } from '@/components/ds/pressable';
+import { Spinner } from '@/components/ds/spinner';
+import { StatusIcon } from '@/components/ds/status-icon';
+import { Tag } from '@/components/ds/tag';
+import { TextField } from '@/components/ds/text-field';
 import UsageChip from './UsageChip';
 import { shouldShowTypingIndicator } from './typingIndicator';
-import { groupMessagesByLoop } from './messageGrouping';
+import { groupMessagesByLoop, lastGroupIndexByLoop } from './messageGrouping';
 import { ThinkingStatusLine, AssistantRowAvatar } from './ThinkingStatusLine';
 import { useConversationTeamLeader } from '@/components/team/useConversationTeamLeader';
 import AgentAvatar from '@/components/common/AgentAvatar';
 import TeamAvatar from '@/components/team/TeamAvatar';
+import AppHome, { AppHomeScenes } from './AppHome';
+import ConversationAppBadge from './ConversationAppBadge';
+import ConversationAppNotice from './ConversationAppNotice';
+import { useSelectedApp } from '@/stores/appStore';
+import { GENERAL_APP_ID } from '@/types/app';
 import {
   VIRTUOSO_ITEM_TRAILING_PAD,
   TYPING_FOOTER_GAP_COMPENSATION,
@@ -81,12 +104,11 @@ import {
   canArmTurnScrollAnchor,
   exitTurnScrollAnchor,
   findUserMessageAnchor,
-  getAnchorScrollCorrection,
   isAtBottomFromGeometry,
   isChapterRailAtBottom,
-  reclaimTurnSpacerSurplus,
-  reconcileTurnScrollAnchor,
+  resolveTurnAnchorLayout,
   selectLatestUserAnchor,
+  settleTurnScrollAnchor,
   shouldFollowOutput,
   type TurnScrollAnchor,
   type TurnScrollAnchorExitReason,
@@ -105,7 +127,6 @@ interface MessageListContext {
   showTypingIndicator: boolean;
   retryingLabel: string | null;
   thinkingLabel: string;
-  registerTurnSpacer: (element: HTMLDivElement | null) => void;
 }
 
 // Row wrapper for each virtualized message group. Spacing between groups
@@ -147,21 +168,12 @@ const VirtuosoTypingFooter: NonNullable<Components<Message[], MessageListContext
   // bridges the item-pad vs in-group-gap difference — see chatSpacing.ts.
   const footerConv = useActiveConversation();
   const footerLeader = useConversationTeamLeader(footerConv?.id);
+  if (!context?.showTypingIndicator) return null;
   return (
-    <>
-      {context?.showTypingIndicator && (
-        <div className={cn(TYPING_FOOTER_GAP_COMPENSATION, 'flex gap-3')}>
-          <AssistantRowAvatar avatar={footerLeader ? <AgentAvatar agent={footerLeader.leader} size="md" round /> : undefined} name={footerLeader?.leaderName} />
-          <ThinkingStatusLine label={context.retryingLabel ?? context.thinkingLabel} />
-        </div>
-      )}
-      <div
-        ref={context?.registerTurnSpacer}
-        data-turn-bottom-spacer
-        aria-hidden="true"
-        style={{ height: 0 }}
-      />
-    </>
+    <div className={cn(TYPING_FOOTER_GAP_COMPENSATION, 'flex gap-3')}>
+      <AssistantRowAvatar avatar={footerLeader ? <AgentAvatar agent={footerLeader.leader} size="md" round /> : undefined} name={footerLeader?.leaderName} />
+      <ThinkingStatusLine label={context.retryingLabel ?? context.thinkingLabel} />
+    </div>
   );
 };
 
@@ -194,6 +206,44 @@ const virtuosoComponents: Components<Message[], MessageListContext> = {
   Footer: VirtuosoTypingFooter,
 };
 
+// F13: the record of the conversation in view is on disk and could not be read. The page says so
+// and offers a retry. The host's own error text is never shown, in no attribute either: it can
+// carry a path with the account name. The explanation stays while a retry reads, so the button
+// that was pressed stays under the focus; when the read succeeds this page leaves with that
+// button and the message field takes the focus. The same holds when another caller's read
+// succeeds while a control of this page has the focus: the page leaves under it, so the message
+// field takes it, and only when it would otherwise be on the window.
+function ConversationLoadError({ convId }: { convId: string }) {
+  const { t } = useI18n();
+  const [retrying, setRetrying] = useState(false);
+  const pageRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const page = pageRef.current;
+    // Runs before the page's nodes are taken out, so the focus can still be read.
+    return () => {
+      if (!page?.contains(document.activeElement)) return;
+      const state = useChatStore.getState();
+      if (state.activeConversationId === convId && state.conversations[convId]) focusComposerAfterPageChange();
+    };
+  }, [convId]);
+  const retry = useCallback(() => {
+    setRetrying(true);
+    void useChatStore.getState().retryLoadConversation(convId).finally(() => {
+      setRetrying(false);
+      if (useChatStore.getState().conversations[convId]) focusComposerAfterPageChange();
+    });
+  }, [convId]);
+  return (
+    <div ref={pageRef} className="flex h-full flex-col">
+      {/* No header row here either: the same 44px drag band as the welcome page. */}
+      <div {...windowDragRowProps()} className="h-11 shrink-0" />
+      <div className="flex flex-1 items-center justify-center">
+        <LoadError reason={t.chat.recordUnreadable} onRetry={retry} busy={retrying} />
+      </div>
+    </div>
+  );
+}
+
 interface ChatViewProps {
   windowsWorkspaceHeader?: boolean;
   rightPanelToggleVisible?: boolean;
@@ -205,9 +255,12 @@ export default function ChatView({
 }: ChatViewProps) {
   const activeConvId = useChatStore((s) => s.activeConversationId);
   const activeConv = useActiveConversation();
+  const loadFailed = useChatStore((s) => (s.activeConversationId ? s.loadFailures[s.activeConversationId] === true : false));
   const pendingSearchJump = useChatStore((s) => s.pendingSearchJump);
   const sidebarCollapsed = useSettingsStore((s) => s.sidebarCollapsed);
   const renameConversation = useChatStore((s) => s.renameConversation);
+  // Goal mode: `/goal <new>` while another goal is unfinished asks the user first.
+  const confirm = useConfirm();
   const [isRenamingTitle, setIsRenamingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
   const titleTeamLeader = useConversationTeamLeader(activeConv?.id);
@@ -219,6 +272,10 @@ export default function ChatView({
   // and the next Enter/blur would commit it against the WRONG conversation's id.
   useEffect(() => {
     setIsRenamingTitle(false);
+  }, [activeConvId]);
+  useEffect(() => {
+    if (!activeConvId || !isTauriEnv()) return;
+    void useBackgroundCommandStore.getState().refresh(activeConvId);
   }, [activeConvId]);
   const createConversation = useChatStore((s) => s.createConversation);
   const setConversationTeamId = useChatStore((s) => s.setConversationTeamId);
@@ -256,7 +313,9 @@ export default function ChatView({
   // conversation owns it instead, so welcome identity follows the same source.
   const pendingTeamId = useChatStore((s) => s.pendingTeamId);
   const welcomeTeamId = activeConv ? activeConv.teamId : pendingTeamId;
-  const welcomeTeam = useTeamStore((s) => s.teams.find((team) => team.id === welcomeTeamId));
+  const visibleTeams = useVisibleTeams();
+  const storedWelcomeTeam = visibleTeams.find((team) => team.id === welcomeTeamId);
+  const welcomeTeam = storedWelcomeTeam ? localizedTeam(storedWelcomeTeam, locale) : undefined;
   const expertPrompts = pendingAgent
     ? pendingAgent.samplePromptsI18n?.[locale] ?? pendingAgent.samplePrompts
     : welcomeTeam?.samplePrompts;
@@ -293,6 +352,12 @@ export default function ChatView({
     getPendingUserQuestions
   );
 
+  // The workspace request first: it answers itself 60 seconds after it was asked.
+  const visibleApproval = pickVisibleApproval(
+    { command: commandConfirmRequest, file: filePermissionRequest, workspace: workspaceRequest },
+    activeConvId,
+  );
+
   const handleCommandConfirm = () => {
     resolveCommandConfirmation(true);
   };
@@ -316,23 +381,30 @@ export default function ChatView({
   };
 
   const handleWorkspaceSelect = async () => {
+    const request = workspaceRequest;
+    if (!request) return;
     try {
       const selected = await openDialog({
         directory: true,
         multiple: false,
-        defaultPath: workspaceRequest?.suggestedPath || undefined,
+        defaultPath: request.suggestedPath || undefined,
       });
       if (selected && typeof selected === 'string') {
-        useWorkspaceStore.getState().setWorkspace(selected);
-        if (activeConv?.id) {
-          useChatStore.getState().setConversationWorkspace(activeConv.id, selected);
+        // The system picker can stay open past the request it was opened for
+        // (60s timeout, abort, or a newer request taking its place). A folder
+        // picked for a request that is gone answers nothing and grants nothing.
+        if (getPendingWorkspaceRequest()?.id !== request.id) {
+          useToastStore.getState().addToast({ type: 'info', title: t.permission.folderRequestEnded });
+          return;
         }
-        resolveWorkspaceRequest(selected);
+        useWorkspaceStore.getState().setWorkspace(selected);
+        useChatStore.getState().setConversationWorkspace(request.conversationId, selected);
+        resolveWorkspaceRequestById(request.id, selected);
       } else {
-        resolveWorkspaceRequest(null);
+        resolveWorkspaceRequestById(request.id, null);
       }
     } catch {
-      resolveWorkspaceRequest(null);
+      resolveWorkspaceRequestById(request.id, null);
     }
   };
 
@@ -379,37 +451,49 @@ export default function ChatView({
   // those measurements through React state would add another render/measure
   // loop on top of Virtuoso's own one.
   const turnAnchorRef = useRef<TurnScrollAnchor | null>(null);
+  // Render mirror of "the anchor holds", for Virtuoso's `followOutput` prop.
+  // Any value but a literal `false` keeps Virtuoso's own bottom-stick active
+  // (it scrolls the list end into view when it sees the list grow while not at
+  // its bottom), and a held turn keeps the list end above the viewport bottom.
+  const [turnAnchorHolds, setTurnAnchorHolds] = useState(false);
+  const commitTurnAnchor = useCallback((anchor: TurnScrollAnchor | null) => {
+    turnAnchorRef.current = anchor;
+    setTurnAnchorHolds(anchor?.phase === 'armed');
+  }, []);
   const pendingTurnAnchorRef = useRef<PendingTurnAnchor | null>(null);
+  // The conversation whose first message was sent from the new-task page and has not replaced
+  // that page with the chat page yet.
+  const firstMessageOfRef = useRef<string | null>(null);
+  // The scrolled content holds the active turn's minimum height; the filler
+  // after the list shows the part of that hold the list does not cover yet.
+  // Both sit outside Virtuoso: its root carries an explicit height from its
+  // own model, so anything inside it reaches scrollHeight a frame late.
+  const turnContentElementRef = useRef<HTMLDivElement | null>(null);
   const turnSpacerElementRef = useRef<HTMLDivElement | null>(null);
-  const turnSpacerHeightRef = useRef(0);
-  /** scrollHeight the last spacer-surplus reclaim expects once Virtuoso
-   *  applies the shrink — further reclaims wait for this catch-up because the
-   *  measured gap is stale until then (see reclaimTurnSpacerSurplus). */
-  const reclaimSettleScrollHeightRef = useRef<number | null>(null);
+  const turnMinContentHeightRef = useRef(0);
   const armAnchorRafRef = useRef(0);
   const runningConversationRef = useRef<string | null>(null);
   const dismissedTurnAnchorRef = useRef<{ conversationId: string; messageId: string } | null>(null);
-  const writeTurnSpacerHeight = useCallback((height: number) => {
+  const writeTurnMinContentHeight = useCallback((height: number) => {
     const nextHeight = Number.isFinite(height) ? Math.max(0, height) : 0;
-    turnSpacerHeightRef.current = nextHeight;
-    const element = turnSpacerElementRef.current;
+    turnMinContentHeightRef.current = nextHeight;
+    const element = turnContentElementRef.current;
     if (!element) return;
-    element.style.height = `${nextHeight}px`;
-    element.dataset.spacerHeight = String(nextHeight);
+    element.style.minHeight = nextHeight > 0 ? `${nextHeight}px` : '';
   }, []);
-  const writeTurnSpacerWithCompensation = useCallback((
+  const writeTurnMinContentHeightWithCompensation = useCallback((
     element: HTMLElement | null,
     height: number,
     mode: 'preserve-position' | 'sync-bottom',
   ) => {
-    const previousHeight = turnSpacerHeightRef.current;
+    const previousHeight = turnMinContentHeightRef.current;
     const previousScrollTop = element?.scrollTop ?? 0;
-    writeTurnSpacerHeight(height);
+    writeTurnMinContentHeight(height);
     if (!element || height !== 0 || previousHeight === 0) return;
 
-    // Clearing physical spacer can clamp scrollTop immediately. Pair the DOM
-    // write with an explicit scroll decision in this layout pass so no later
-    // Virtuoso height callback can deliver the old one-frame hard jump.
+    // Releasing the hold can clamp scrollTop immediately. Pair the DOM write
+    // with an explicit scroll decision in this layout pass so no later
+    // Virtuoso height callback can deliver a one-frame hard jump.
     void element.scrollHeight;
     if (mode === 'sync-bottom') {
       element.scrollTop = element.scrollHeight;
@@ -417,127 +501,85 @@ export default function ChatView({
     }
     const maximumScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
     element.scrollTop = Math.min(previousScrollTop, maximumScrollTop);
-  }, [writeTurnSpacerHeight]);
-  const registerTurnSpacer = useCallback((element: HTMLDivElement | null) => {
-    turnSpacerElementRef.current = element;
+  }, [writeTurnMinContentHeight]);
+  const registerTurnContent = useCallback((element: HTMLDivElement | null) => {
+    turnContentElementRef.current = element;
     if (!element) return;
-    element.style.height = `${turnSpacerHeightRef.current}px`;
-    element.dataset.spacerHeight = String(turnSpacerHeightRef.current);
+    const height = turnMinContentHeightRef.current;
+    element.style.minHeight = height > 0 ? `${height}px` : '';
   }, []);
   const readTurnSpacerHeight = useCallback(() => {
     const element = turnSpacerElementRef.current;
-    return element ? element.getBoundingClientRect().height : turnSpacerHeightRef.current;
+    return element ? element.getBoundingClientRect().height : 0;
   }, []);
-  const measureActiveTailHeight = useCallback((anchorElement: HTMLElement) => {
-    const messageRow = anchorElement.closest<HTMLElement>('[data-index]');
-    const spacerElement = turnSpacerElementRef.current;
-    if (!messageRow || !spacerElement) return null;
-    // Both values come from the same painted coordinate space. Unlike
-    // Virtuoso's total-height callback versus the scroll parent's scrollHeight,
-    // their difference cannot feed the spacer's own height back into the next
-    // measurement. The spacer's top also captures footer/typing hand-offs while
-    // excluding the spacer height itself.
-    return Math.max(
-      0,
-      spacerElement.getBoundingClientRect().top - messageRow.getBoundingClientRect().top,
-    );
-  }, []);
+  const handOffTurnAnchorToBottom = useCallback((
+    el: HTMLElement,
+    anchor: TurnScrollAnchor,
+    totalListHeight?: number,
+  ) => {
+    commitTurnAnchor({ ...anchor, phase: 'exhausted', minContentHeight: 0 });
+    const previousScrollTop = el.scrollTop;
+    writeTurnMinContentHeight(0);
+    void el.scrollHeight;
+    el.scrollTop = el.scrollHeight;
+    emitChatScrollTrace('turn-anchor', 'applied', el, {
+      totalListHeight,
+      scrollDelta: el.scrollTop - previousScrollTop,
+      spacerHeight: readTurnSpacerHeight(),
+      minContentHeight: 0,
+    });
+    updatePinned(true);
+    setIsAtBottom(true);
+  }, [commitTurnAnchor, readTurnSpacerHeight, updatePinned, writeTurnMinContentHeight]);
   const reconcileActiveTurnGeometry = useCallback((el: HTMLElement, totalListHeight?: number) => {
     const anchor = turnAnchorRef.current;
     if (anchor?.phase !== 'armed') return;
     const anchorElement = findUserMessageAnchor(el, anchor.messageId);
-    const contentHeight = anchorElement ? measureActiveTailHeight(anchorElement) : null;
-    const reconciled = reconcileTurnScrollAnchor(anchor, {
-      contentHeight: contentHeight ?? anchor.baselineContentHeight,
-      anchorPresent: anchorElement != null,
+    const content = turnContentElementRef.current;
+    if (!anchorElement || !content) {
+      handOffTurnAnchorToBottom(el, anchor, totalListHeight);
+      return;
+    }
+    const viewportTop = el.getBoundingClientRect().top;
+    const anchorTop = anchorElement.getBoundingClientRect().top - viewportTop;
+    const layout = resolveTurnAnchorLayout({
+      targetTop: anchor.targetTop,
+      anchorTop,
+      contentTop: content.getBoundingClientRect().top - viewportTop,
+      scrollTop: el.scrollTop,
+      clientHeight: el.clientHeight,
     });
-    turnAnchorRef.current = reconciled.anchor;
-    if (reconciled.handoff === 'sync-bottom') {
-      const previousScrollTop = el.scrollTop;
-      writeTurnSpacerWithCompensation(el, 0, 'sync-bottom');
-      emitChatScrollTrace('turn-anchor', 'applied', el, {
-        totalListHeight,
-        scrollDelta: el.scrollTop - previousScrollTop,
-        spacerHeight: 0,
-        contentHeight: reconciled.contentHeight,
-        baselineContentHeight: anchor.baselineContentHeight,
-      });
-      updatePinned(true);
-      setIsAtBottom(true);
+    writeTurnMinContentHeight(layout.minContentHeight);
+    const settled = settleTurnScrollAnchor(anchor, {
+      minContentHeight: layout.minContentHeight,
+      fillerHeight: readTurnSpacerHeight(),
+    });
+    if (settled.phase === 'exhausted') {
+      handOffTurnAnchorToBottom(el, anchor, totalListHeight);
       return;
     }
-    writeTurnSpacerHeight(reconciled.spacerHeight);
-    if (!anchorElement) return;
-
-    const currentTop = anchorElement.getBoundingClientRect().top - el.getBoundingClientRect().top;
-    const correction = getAnchorScrollCorrection(anchor.targetTop, currentTop);
-    if (correction !== 0) {
-      const previousScrollTop = el.scrollTop;
-      emitChatScrollTrace('turn-anchor', 'scheduled', el, {
-        totalListHeight,
-        anchorTop: currentTop,
-        spacerHeight: reconciled.spacerHeight,
-        contentHeight: reconciled.contentHeight,
-        baselineContentHeight: anchor.baselineContentHeight,
-      });
-      el.scrollTop += correction;
-      emitChatScrollTrace('turn-anchor', 'applied', el, {
-        totalListHeight,
-        scrollDelta: el.scrollTop - previousScrollTop,
-        anchorTop: anchorElement.getBoundingClientRect().top - el.getBoundingClientRect().top,
-        spacerHeight: readTurnSpacerHeight(),
-        contentHeight: measureActiveTailHeight(anchorElement) ?? undefined,
-        baselineContentHeight: anchor.baselineContentHeight,
-      });
-    }
-
-    // With the anchor pinned at targetTop, any scroll range still left below
-    // is spacer ledger that never corresponded to missing range (the arm's
-    // settlement spreads over frames — see reclaimTurnSpacerSurplus). Return
-    // it by shrinking the spacer; the viewport does not move.
-    const settled = turnAnchorRef.current;
-    if (settled?.phase !== 'armed') return;
-    if (reclaimSettleScrollHeightRef.current != null) {
-      // The previous reclaim's shrink reaches scrollHeight only on Virtuoso's
-      // next height pass; until then the measured gap still carries the
-      // reclaimed pixels and re-reclaiming would drain the spacer.
-      if (el.scrollHeight > reclaimSettleScrollHeightRef.current) return;
-      reclaimSettleScrollHeightRef.current = null;
-    }
-    const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    const reclaim = reclaimTurnSpacerSurplus(settled, distanceToBottom);
-    if (reclaim.reclaimed === 0) return;
-    reclaimSettleScrollHeightRef.current = el.scrollHeight - reclaim.reclaimed;
-    turnAnchorRef.current = reclaim.anchor;
-    if (reclaim.anchor.phase === 'exhausted') {
-      const previousScrollTop = el.scrollTop;
-      writeTurnSpacerWithCompensation(el, 0, 'sync-bottom');
-      emitChatScrollTrace('turn-anchor', 'applied', el, {
-        totalListHeight,
-        scrollDelta: el.scrollTop - previousScrollTop,
-        spacerHeight: 0,
-        contentHeight: reconciled.contentHeight,
-        baselineContentHeight: anchor.baselineContentHeight,
-      });
-      updatePinned(true);
-      setIsAtBottom(true);
-      return;
-    }
-    writeTurnSpacerHeight(reclaim.spacerHeight);
+    commitTurnAnchor(settled);
+    if (layout.scrollCorrection === 0) return;
+    const previousScrollTop = el.scrollTop;
+    emitChatScrollTrace('turn-anchor', 'scheduled', el, {
+      totalListHeight,
+      anchorTop,
+      spacerHeight: readTurnSpacerHeight(),
+      minContentHeight: layout.minContentHeight,
+    });
+    el.scrollTop += layout.scrollCorrection;
     emitChatScrollTrace('turn-anchor', 'applied', el, {
       totalListHeight,
-      scrollDelta: 0,
+      scrollDelta: el.scrollTop - previousScrollTop,
       anchorTop: anchorElement.getBoundingClientRect().top - el.getBoundingClientRect().top,
       spacerHeight: readTurnSpacerHeight(),
-      contentHeight: measureActiveTailHeight(anchorElement) ?? undefined,
-      baselineContentHeight: reclaim.anchor.baselineContentHeight,
+      minContentHeight: layout.minContentHeight,
     });
   }, [
-    measureActiveTailHeight,
+    commitTurnAnchor,
+    handOffTurnAnchorToBottom,
     readTurnSpacerHeight,
-    updatePinned,
-    writeTurnSpacerHeight,
-    writeTurnSpacerWithCompensation,
+    writeTurnMinContentHeight,
   ]);
   // Fade timer for the search-hit highlight. Kept in a ref (NOT an effect
   // cleanup) — consuming the pending jump re-runs the effect, and a cleanup
@@ -555,17 +597,16 @@ export default function ChatView({
       : null;
     dismissedTurnAnchorRef.current = activeAnchor ?? latestCandidate;
     const exit = exitTurnScrollAnchor(turnAnchorRef.current, reason);
-    turnAnchorRef.current = exit.anchor;
+    commitTurnAnchor(exit.anchor);
     pendingTurnAnchorRef.current = null;
-    reclaimSettleScrollHeightRef.current = null;
-    if (exit.spacerHeight === 0) {
-      writeTurnSpacerWithCompensation(
+    if (exit.minContentHeight === 0) {
+      writeTurnMinContentHeightWithCompensation(
         scrollParentEl,
         0,
         exit.pinned ? 'sync-bottom' : 'preserve-position',
       );
     } else {
-      writeTurnSpacerHeight(exit.spacerHeight);
+      writeTurnMinContentHeight(exit.minContentHeight);
     }
     updatePinned(exit.pinned);
     if (reason === 'user-scroll-intent') {
@@ -579,9 +620,39 @@ export default function ChatView({
     } else {
       setIsAtBottom(true);
     }
-  }, [scrollParentEl, updatePinned, writeTurnSpacerHeight, writeTurnSpacerWithCompensation]);
+  }, [
+    commitTurnAnchor,
+    scrollParentEl,
+    updatePinned,
+    writeTurnMinContentHeight,
+    writeTurnMinContentHeightWithCompensation,
+  ]);
   // Message id to briefly highlight after a search-hit jump (see effect below).
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+  // Ids of the compaction rows whose summary is shown. Kept here because the
+  // list unmounts rows that scroll far out of view.
+  const [expandedCompactIds, setExpandedCompactIds] = useState<ReadonlySet<string>>(() => new Set());
+  const expandedCompactIdsRef = useRef<ReadonlySet<string>>(expandedCompactIds);
+  useLayoutEffect(() => {
+    if (expandedCompactIdsRef.current.size === 0) return;
+    const empty = new Set<string>();
+    expandedCompactIdsRef.current = empty;
+    setExpandedCompactIds(empty);
+  }, [activeConvId]);
+  const toggleCompactSummary = useCallback((messageId: string) => {
+    const next = new Set(expandedCompactIdsRef.current);
+    if (next.has(messageId)) {
+      next.delete(messageId);
+    } else {
+      // Expanding counts as reading upward, exactly like an upward scroll: the
+      // bottom lock and any active-turn anchor are released, so the row stays
+      // where it is and the summary opens below it.
+      leaveTurnAnchor('user-scroll-intent');
+      next.add(messageId);
+    }
+    expandedCompactIdsRef.current = next;
+    setExpandedCompactIds(next);
+  }, [leaveTurnAnchor]);
   // Index of the message group at the top of the viewport — what the chapter
   // rail highlights. Measured from the DOM (see the scroll-spy effect below).
   const [firstVisibleGroup, setFirstVisibleGroup] = useState(0);
@@ -832,6 +903,17 @@ export default function ChatView({
     workspacePath?: string | null,
     onAccepted?: () => void,
   ) => {
+    // Goal mode: /goal is handled here, before any dispatch — never sent to the
+    // model. Every form but `/goal <objective>` ends here and needs no model;
+    // that one creates the goal below and sends the objective as the first
+    // message.
+    const goalCommand = parseGoalCommand(text);
+    if (goalCommand && goalCommand.kind !== 'create') {
+      const outcome = applyGoalCommand(activeConv?.id, goalCommand);
+      useToastStore.getState().addToast({ type: outcome.ok ? 'success' : 'error', title: outcome.message });
+      return outcome.ok ? undefined : false;
+    }
+
     // Check the model THIS conversation will run on (its pin, else the global
     // default). Returning false hands the text back to the composer — opening
     // settings used to swallow whatever the user had typed.
@@ -850,22 +932,49 @@ export default function ChatView({
       return;
     }
 
+    if (goalCommand) {
+      const precheck = checkGoalCreatable(activeConv?.id, goalCommand.objective);
+      if (!precheck.ok && precheck.replaces && activeConv) {
+        // An unfinished goal is in the way: the user decides whether the new
+        // one takes its place. Declining hands the text back to the composer.
+        const unfinished = precheck.replaces;
+        const replace = await confirm({
+          title: t.chat.goal.replaceConfirmTitle,
+          message: format(t.chat.goal.replaceConfirmBody, { objective: unfinished.objective }),
+          confirmLabel: t.chat.goal.actionReplace,
+        });
+        if (!replace) return false;
+        if (!clearGoalForReplacement(activeConv.id, unfinished)) {
+          useToastStore.getState().addToast({ type: 'error', title: t.chat.goal.staleRevision });
+          return false;
+        }
+      } else if (!precheck.ok) {
+        useToastStore.getState().addToast({ type: 'error', title: precheck.message });
+        return false;
+      }
+    }
+
     // A typed `@<team> …` that the composer did not turn into the team chip
     // (sent before the exact-name detection, pasted, …) still pins the
     // conversation to that team; the mention itself is not sent to the model.
     const teamMention = matchTeamMention(text);
     // A conversation already pinned to another team is not silently re-pinned:
     // say so and send the text as typed (the chip is the way to switch).
+    const shownTeamName = (teamId: string) => {
+      const team = getVisibleTeamById(teamId);
+      return team ? localizedTeam(team, locale).name : '';
+    };
     if (teamMention && activeConv?.teamId && activeConv.teamId !== teamMention.teamId) {
-      const current = useTeamStore.getState().teams.find((team) => team.id === activeConv.teamId)?.name ?? '';
-      useToastStore.getState().addToast({ type: 'info', title: format(t.team.chatReceiptOtherTeam, { current, other: teamMention.teamName }) });
+      useToastStore.getState().addToast({ type: 'info', title: format(t.team.chatReceiptOtherTeam, { current: shownTeamName(activeConv.teamId), other: shownTeamName(teamMention.teamId) }) });
       return false;
     }
     if (teamMention && !teamMention.rest) {
-      useToastStore.getState().addToast({ type: 'info', title: format(t.team.chatReceiptEmptyGoal, { team: teamMention.teamName }) });
+      useToastStore.getState().addToast({ type: 'info', title: format(t.team.chatReceiptEmptyGoal, { team: shownTeamName(teamMention.teamId) }) });
       return false; // hand the text back to the composer
     }
-    const sendText = teamMention ? teamMention.rest : text;
+    const sendText = goalCommand?.kind === 'create'
+      ? goalCommand.objective.trim()
+      : teamMention ? teamMention.rest : text;
 
     // Capture the selected identity before any asynchronous identity setup.
     const pendingBeforeSend = useChatStore.getState();
@@ -873,7 +982,8 @@ export default function ChatView({
     if (!activeConv?.messages.some((m) => m.role === 'user' && !m.isSystem)) {
       const addressedName = !teamMention ? /^@([^\s]+)/.exec(text)?.[1] : undefined;
       const addressedAgent = addressedName ? agentRegistry.getAgent(addressedName) : undefined;
-      const team = useTeamStore.getState().teams.find((candidate) => candidate.id === (teamMention?.teamId ?? welcomeTeamId));
+      const teamId = teamMention?.teamId ?? welcomeTeamId;
+      const team = teamId ? getVisibleTeamById(teamId) : undefined;
       if (addressedAgent) {
         let identity = expertIdentity(addressedAgent, locale);
         const shown = pendingExpertContact?.identity.key === identity.key ? pendingExpertContact : undefined;
@@ -887,7 +997,7 @@ export default function ChatView({
         }
         contact = { identity: shown ? { ...shown.identity, key: identity.key } : identity, introduction: shown?.introduction };
       } else if (team) {
-        const identity = teamIdentity(team);
+        const identity = teamIdentity(localizedTeam(team, locale));
         contact = pendingExpertContact?.identity.key === identity.key ? pendingExpertContact : { identity };
       }
       const latest = useChatStore.getState();
@@ -905,6 +1015,11 @@ export default function ChatView({
       setConversationTeamId(convId, teamMention.teamId);
     }
     if (contact) useChatStore.getState().stageExpertContact(convId, contact);
+    if (goalCommand?.kind === 'create') {
+      const created = createGoalFromCommand(convId, goalCommand.objective);
+      useToastStore.getState().addToast({ type: created.ok ? 'success' : 'error', title: created.message });
+      if (!created.ok) return false;
+    }
     if (isNewConversation && !useSettingsStore.getState().sidebarCollapsed) {
       useSettingsStore.getState().toggleSidebar();
     }
@@ -917,6 +1032,9 @@ export default function ChatView({
     // can report the new total height before ChatView's parent layout effect
     // has had a chance to arm the DOM anchor.
     announceChatTurnScrollIntent({ conversationId: convId, source: 'composer' });
+    // Sent from the new-task page: the page changes once the runner has added the message.
+    const sentFromNewTaskPage = !activeConv || activeConv.messages.length === 0;
+    if (sentFromNewTaskPage) firstMessageOfRef.current = convId;
     let dispatch: AgentLoopDispatchResult;
     try {
       dispatch = await runAgentLoopDispatched(convId, sendText, {
@@ -927,6 +1045,7 @@ export default function ChatView({
         initiatedBy: 'user',
       });
     } catch (error) {
+      if (firstMessageOfRef.current === convId) firstMessageOfRef.current = null;
       // The runner deliberately keeps persistence/transport failures as
       // rejections for non-UI callers. Once it has appended the user message,
       // however, the failed transcript row (and its Retry action) owns
@@ -946,6 +1065,8 @@ export default function ChatView({
       }
       return;
     }
+    // The dispatch returned with the new-task page still in view: no page change is due any more.
+    if (firstMessageOfRef.current === convId) firstMessageOfRef.current = null;
     if (!useChatStore.getState().conversations[convId]?.messages.some((m) => m.role === 'user' && !m.isSystem)) {
       useChatStore.getState().clearStagedExpertContact(convId);
     }
@@ -972,11 +1093,9 @@ export default function ChatView({
 
 
   // First-run banner: show when no provider has been configured yet.
-  // "Configured" = has an API key OR is a keyless provider (ollama/lmstudio).
+  // "Configured" = has an API key OR needs none (providerNeedsApiKey).
   const needsPersonalModelSetup = useSettingsStore((s) => {
-    return !s.providers.some(
-      p => p.apiKey.trim().length > 0 || p.id === 'ollama' || p.id === 'lmstudio'
-    );
+    return !s.providers.some(providerHasCredentials);
   });
   const needsSetup = !isEnterprise && needsPersonalModelSetup;
 
@@ -986,8 +1105,14 @@ export default function ChatView({
   // Optimistic feedback for the beat between submitting a question/plan answer
   // and the resumed loop producing anything (Bug 1: 点同意后无反应).
   const [resuming, setResuming] = useState(false);
+  const handleQuestionSubmitted = useCallback(() => {
+    setResuming(true);
+    // Fallback clear — normally hidden once the loop sets a status.
+    setTimeout(() => setResuming(false), 4000);
+  }, []);
   const agentStatus = useChatStore((s) => getConversationAgentState(s.agentStates, activeConvId).status);
-  const retryInfo = useChatStore((s) => getConversationAgentState(s.agentStates, activeConvId).retryInfo);
+  // The words of a question whose dock left the focus in the message field, for the live element.
+  const [arrivedQuestion, setArrivedQuestion] = useState<ArrivedQuestion | null>(null);
 
   const handleSelectPrompt = useCallback((prompt: string) => {
     // Fill the prompt into the input via pendingInput
@@ -998,17 +1123,37 @@ export default function ChatView({
     setScenarioPlaceholder(placeholder);
   }, []);
 
+  // Inside an app the welcome page is the app's home (product spec §5.4); the
+  // team or expert the app pins shows in the composer chip, the header stays
+  // the app's.
+  const selectedApp = useSelectedApp();
+  const appHome = selectedApp.appId === GENERAL_APP_ID ? null : selectedApp;
+
   // Hide guide when user starts typing (called from ChatInput)
   const handleWelcomeInputChange = useCallback((hasText: boolean) => {
     setGuideVisible(!hasText);
   }, []);
 
+  // The first message of a task replaces the new-task page with the chat page, and the message
+  // field that was typed in leaves with it. The chat page's field takes the focus on the next
+  // frame, from no control and from no layer. Only for a message sent from this page: one that
+  // arrives by another way moves no focus.
+  const onNewTaskPage = !activeConv || activeConv.messages.length === 0;
+  useLayoutEffect(() => {
+    if (onNewTaskPage || firstMessageOfRef.current === null) return;
+    const sentIn = firstMessageOfRef.current;
+    firstMessageOfRef.current = null;
+    if (sentIn === activeConvId) focusComposerAfterPageChange();
+  }, [onNewTaskPage, activeConvId]);
+
   // Message projection for the list. Computed above the early returns below
   // so the hooks that depend on it stay unconditional (rules-of-hooks).
   // Filter out internal system prompts while retaining explicit crash
   // recovery notices that explain an interrupted task to the user.
-  const visibleMessages = messages.filter(m => !m.isSystem || m.isRecoveryNotice);
+  // Goal-round openers are internal rows too, but render as a round marker.
+  const visibleMessages = messages.filter(m => !m.isSystem || m.isRecoveryNotice || m.goalRound);
   const messageGroups = groupMessagesByLoop(visibleMessages);
+  const lastGroupOfLoop = lastGroupIndexByLoop(messageGroups);
   useLayoutEffect(() => {
     if (!scrollParentEl || !activeConvId) return;
     const conversation = useChatStore.getState().conversations[activeConvId];
@@ -1042,8 +1187,7 @@ export default function ChatView({
     const tryArm = () => {
       armAnchorRafRef.current = 0;
       const anchorElement = findUserMessageAnchor(scrollParentEl, candidate.messageId);
-      const contentHeight = anchorElement ? measureActiveTailHeight(anchorElement) : null;
-      if (!anchorElement || contentHeight == null) {
+      if (!anchorElement || !turnContentElementRef.current) {
         attempts += 1;
         if (attempts < 8) {
           armAnchorRafRef.current = requestAnimationFrame(tryArm);
@@ -1067,60 +1211,19 @@ export default function ChatView({
 
       pendingTurnAnchorRef.current = null;
       dismissedTurnAnchorRef.current = null;
-      const viewportTop = scrollParentEl.getBoundingClientRect().top;
-      const anchorTop = anchorElement.getBoundingClientRect().top - viewportTop;
-      const distanceToBottom =
-        scrollParentEl.scrollHeight - scrollParentEl.scrollTop - scrollParentEl.clientHeight;
-      const anchor = armTurnScrollAnchor({
+      turnAnchorRef.current = armTurnScrollAnchor({
         ...candidate,
-        anchorTop,
         targetTop: TURN_ANCHOR_TARGET_TOP_PX,
-        distanceToBottom,
-        contentHeight,
       });
-      turnAnchorRef.current = anchor;
-      reclaimSettleScrollHeightRef.current = null;
-      const previousScrollTop = scrollParentEl.scrollTop;
       emitChatScrollTrace('turn-anchor', 'scheduled', scrollParentEl, {
-        anchorTop,
-        spacerHeight: anchor.spacerHeight,
-        contentHeight: anchor.baselineContentHeight,
-        baselineContentHeight: anchor.baselineContentHeight,
-      });
-      // Route through the compensated writer: on a queue rebind the previous
-      // anchor's spacer may still be non-zero, and writing 0 bare would clamp
-      // scrollTop before the arm's own scroll math runs.
-      writeTurnSpacerWithCompensation(scrollParentEl, anchor.spacerHeight, 'preserve-position');
-      // Force the spacer write into this layout pass so the initial anchor move
-      // and its newly available scroll range land before paint.
-      void scrollParentEl.scrollHeight;
-      const maximumScrollTop = Math.max(0, scrollParentEl.scrollHeight - scrollParentEl.clientHeight);
-      scrollParentEl.scrollTop = Math.min(
-        maximumScrollTop,
-        scrollParentEl.scrollTop + anchor.initialScrollDelta,
-      );
-      const mountedAnchor = findUserMessageAnchor(scrollParentEl, candidate.messageId);
-      if (mountedAnchor) {
-        const currentTop = mountedAnchor.getBoundingClientRect().top - viewportTop;
-        scrollParentEl.scrollTop += getAnchorScrollCorrection(anchor.targetTop, currentTop);
-      }
-      emitChatScrollTrace('turn-anchor', 'applied', scrollParentEl, {
-        scrollDelta: scrollParentEl.scrollTop - previousScrollTop,
-        anchorTop: mountedAnchor
-          ? mountedAnchor.getBoundingClientRect().top - viewportTop
-          : undefined,
+        anchorTop: anchorElement.getBoundingClientRect().top - scrollParentEl.getBoundingClientRect().top,
         spacerHeight: readTurnSpacerHeight(),
-        contentHeight: mountedAnchor ? measureActiveTailHeight(mountedAnchor) ?? undefined : undefined,
-        baselineContentHeight: anchor.baselineContentHeight,
       });
-      if (anchor.phase === 'exhausted') {
-        // Born-exhausted arm (no absorption capacity): hand off to bottom in
-        // this same layout pass. The compensated writer above has already put
-        // the ref at 0, so its previousHeight guard can never fire here —
-        // sync the scroll explicitly instead of relying on it.
-        void scrollParentEl.scrollHeight;
-        scrollParentEl.scrollTop = scrollParentEl.scrollHeight;
-      }
+      // The hold and the scroll move land in this layout pass, before paint. A
+      // queue rebind replaces the previous turn's hold in the same write, so
+      // scrollTop is never clamped in between. An answer that already fills
+      // the viewport hands over to bottom-follow here.
+      reconcileActiveTurnGeometry(scrollParentEl);
     };
 
     tryArm();
@@ -1128,35 +1231,19 @@ export default function ChatView({
   }, [
     activeConvId,
     leaveTurnAnchor,
-    measureActiveTailHeight,
     messageCount,
     readTurnSpacerHeight,
-    scrollParentEl,
-    writeTurnSpacerHeight,
-    writeTurnSpacerWithCompensation,
-  ]);
-  useLayoutEffect(() => {
-    const activeAnchor = turnAnchorRef.current;
-    if (!scrollParentEl || activeAnchor?.phase !== 'armed') return;
-    const anchorElement = findUserMessageAnchor(scrollParentEl, activeAnchor.messageId);
-    const messageRow = anchorElement?.closest<HTMLElement>('[data-index]');
-    if (!messageRow) return;
-
-    const observer = new ResizeObserver(() => {
-      // ResizeObserver runs after layout and before paint. Reading geometry
-      // again here closes the same-frame loop: the growing message row and the
-      // shrinking spacer are presented as one constant-height transaction to
-      // Virtuoso instead of two visible total-height changes.
-      reconcileActiveTurnGeometry(scrollParentEl);
-    });
-    observer.observe(messageRow);
-    return () => observer.disconnect();
-  }, [
-    activeConvId,
-    messageCount,
     reconcileActiveTurnGeometry,
     scrollParentEl,
   ]);
+  // The viewport's own height decides how tall the hold must be (the composer
+  // grows, the window resizes), and no list or content resize reports it.
+  useLayoutEffect(() => {
+    if (!scrollParentEl || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => reconcileActiveTurnGeometry(scrollParentEl));
+    observer.observe(scrollParentEl);
+    return () => observer.disconnect();
+  }, [reconcileActiveTurnGeometry, scrollParentEl]);
   // The bottom lock's last mile. `totalListHeightChanged` reports Virtuoso's
   // own height model and its correction is deferred a frame, so content that
   // reaches the scroller after that write — Virtuoso's final measurement
@@ -1172,6 +1259,12 @@ export default function ChatView({
     if (!content) return;
 
     const observer = new ResizeObserver(() => {
+      // An armed anchor owns its own geometry. The content grows past its
+      // hold only once the list alone fills it, which is the hand-off moment.
+      if (turnAnchorRef.current?.phase === 'armed') {
+        reconcileActiveTurnGeometry(scrollParentEl);
+        return;
+      }
       if (!pinnedRef.current) return;
       // A turn whose anchor has been announced but not yet armed is holding the
       // bottom-pin off on purpose (see shouldSuppressLegacyFollow, whose
@@ -1179,10 +1272,6 @@ export default function ChatView({
       // off). Reading the ref rather than calling that helper keeps this
       // observer out of its suppression budget, which belongs to the callbacks.
       if (pendingTurnAnchorRef.current) return;
-      // An armed anchor owns its own geometry: its spacer ledger deliberately
-      // holds the viewport away from the bottom, so a bottom sync here would
-      // fight the anchor instead of completing it.
-      if (turnAnchorRef.current?.phase === 'armed') return;
       const distanceToBottom =
         scrollParentEl.scrollHeight - scrollParentEl.scrollTop - scrollParentEl.clientHeight;
       // Same dead zone the other writers use, so a settled scroller stays put
@@ -1194,7 +1283,7 @@ export default function ChatView({
     });
     observer.observe(content);
     return () => observer.disconnect();
-  }, [scrollParentEl]);
+  }, [reconcileActiveTurnGeometry, scrollParentEl]);
   useLayoutEffect(() => {
     if (scrollParentEl) reconcileActiveTurnGeometry(scrollParentEl);
   });
@@ -1264,10 +1353,10 @@ export default function ChatView({
       updatePinned(true);
       return;
     }
-    // A user who naturally scrolls through a frozen, post-unpin spacer has
-    // explicitly reached "latest" again. Remove that transient tail and restore
-    // the ordinary pinned/follow contract in one state transition.
-    if (turnSpacerHeightRef.current > 0) {
+    // A user who naturally scrolls down to the end of the list under a frozen,
+    // post-unpin hold has explicitly reached "latest" again. Release the hold
+    // and restore the ordinary pinned/follow contract in one state transition.
+    if (turnMinContentHeightRef.current > 0) {
       leaveTurnAnchor('explicit-latest');
       return;
     }
@@ -1312,29 +1401,17 @@ export default function ChatView({
     stickToBottom,
   ]);
 
-  // Conversation loading from disk (LRU cache miss) — show skeleton instead of welcome page
+  // The record could not be read: say so, with a retry. Keyed, so a retry in flight for one
+  // conversation shows no busy button on another.
+  if (activeConvId && !activeConv && loadFailed) {
+    return <ConversationLoadError key={activeConvId} convId={activeConvId} />;
+  }
+
+  // Conversation loading from disk (LRU cache miss) — show a loading line instead of the welcome page
   if (activeConvId && !activeConv) {
     return (
-      <div className="flex flex-col h-full bg-[var(--abu-bg-base)]">
-        <div className="flex-1 overflow-hidden">
-          <div className="w-full max-w-4xl mx-auto px-6 md:px-10 pt-5 pb-16 space-y-5">
-            {/* User message skeleton */}
-            <div className="flex justify-end">
-              <div className="max-w-[70%] space-y-2">
-                <div className="h-4 w-48 bg-[var(--abu-bg-muted)] rounded animate-pulse" />
-              </div>
-            </div>
-            {/* Assistant message skeleton */}
-            <div className="flex gap-3">
-              <div className="w-7 h-7 rounded-full bg-[var(--abu-bg-muted)] animate-pulse shrink-0" />
-              <div className="flex-1 space-y-2.5">
-                <div className="h-4 w-full bg-[var(--abu-bg-muted)] rounded animate-pulse" />
-                <div className="h-4 w-3/4 bg-[var(--abu-bg-muted)] rounded animate-pulse" />
-                <div className="h-4 w-1/2 bg-[var(--abu-bg-muted)] rounded animate-pulse" />
-              </div>
-            </div>
-          </div>
-        </div>
+      <div className="flex h-full items-center justify-center">
+        <Spinner label={t.common.loading} />
       </div>
     );
   }
@@ -1347,33 +1424,36 @@ export default function ChatView({
   // activeConv.id when present, so no createConversation churn happens.
   if (!activeConv || activeConv.messages.length === 0) {
     return (
-      <div className="flex flex-col h-full bg-[var(--abu-bg-base)]">
+      <div className="flex flex-col h-full">
         {/* The welcome screen has no header row, so it gets the same 44px drag
             band the conversation view's title row provides. In flow, never
             overlaying, so it cannot cover the scroller underneath. */}
         <div {...windowDragRowProps()} className="shrink-0 h-11" />
-        <div className="flex-1 flex flex-col items-center justify-start overflow-y-auto px-8 pt-[12vh] pb-12">
+        <div className="flex-1 flex flex-col items-center justify-start overflow-y-auto px-8 pt-[12vh] pb-8">
           <div className="w-full max-w-2xl">
             {/* Title */}
+            {appHome ? (
+              <AppHome app={appHome} onPlaceholderChange={handleScenarioChange} />
+            ) : (
             <div className="text-center mb-8">
               {pendingAgentDisplay ? (
                 <>
                   {/* Agent avatar: a built-in icon reference, an emoji, or the default mark */}
                   <WelcomeAvatar avatar={pendingAgentDisplay.avatar} />
 
-                  <h1 className="text-h-xl font-semibold text-[var(--abu-text-primary)] leading-tight mb-2">
+                  <h1 className="mb-2 text-title-lg text-label">
                     {pendingAgentDisplay.name}
                   </h1>
-                  <p className="text-body text-[var(--abu-text-tertiary)] mb-3">
+                  <p className="mb-3 text-ui text-label-secondary">
                     {pendingAgentDisplay.description}
                   </p>
                 </>
               ) : welcomeTeam ? (
                 <div data-testid="team-welcome">
-                  <TeamAvatar avatar={welcomeTeam.avatar} size="lg" round className="h-20 w-20 mx-auto mb-4 [&>svg]:h-10 [&>svg]:w-10 [&>span]:text-h-xl" />
-                  <h1 className="text-h-xl font-semibold text-[var(--abu-text-primary)] leading-tight mb-2">{welcomeTeam.name}</h1>
-                  {welcomeTeam.description && <p className="text-body text-[var(--abu-text-tertiary)] mb-3">{welcomeTeam.description}</p>}
-                  <div data-testid="team-welcome-members" className="flex flex-wrap items-center justify-center gap-2 mt-3 text-minor text-[var(--abu-text-secondary)]">
+                  <TeamAvatar avatar={welcomeTeam.avatar} size="lg" round className="size-20 mx-auto mb-4 [&>svg]:h-10 [&>svg]:w-10 [&>span]:text-title-lg" />
+                  <h1 className="mb-2 text-title-lg text-label">{welcomeTeam.name}</h1>
+                  {welcomeTeam.description && <p className="mb-3 text-ui text-label-secondary">{welcomeTeam.description}</p>}
+                  <div data-testid="team-welcome-members" className="mt-3 flex flex-wrap items-center justify-center gap-2 text-ui-sm text-label-secondary">
                     <span>{t.team.detailLeader}</span>
                     <span className="inline-flex items-center gap-1">
                       <AgentAvatar agent={welcomeRole(welcomeTeam.leaderRoleId) ?? { name: t.team.unknownMember }} size="sm" />
@@ -1401,36 +1481,39 @@ export default function ChatView({
                   </div>
 
                   {/* Slogan */}
-                  <h1 className="text-h-xl font-semibold text-[var(--abu-text-primary)] leading-tight mb-2">
+                  <h1 className="mb-2 text-title-lg text-label">
                     {t.chat.welcomeTitle}
                   </h1>
-                  <p className="text-body text-[var(--abu-text-tertiary)]">
+                  <p className="text-ui text-label-secondary">
                     {t.chat.welcomeSubtitle}
                   </p>
                 </>
               )}
             </div>
+            )}
 
             {/* First-run setup prompt */}
             {needsSetup && (
               <div className="mb-6 mx-auto max-w-md">
-                <div className="rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)]/80 px-5 py-4 text-center">
-                  <p className="text-h-sm font-medium text-[var(--abu-text-primary)] mb-1">
+                <div className="rounded-panel border border-separator bg-surface px-5 py-4 text-center">
+                  <p className="mb-1 text-title text-label">
                     {t.chat.setupRequired}
                   </p>
-                  <p className="text-body text-[var(--abu-text-tertiary)] mb-3">
+                  <p className="mb-3 text-ui text-label-secondary">
                     {t.chat.setupRequiredDesc}
                   </p>
-                  <button
+                  <Button
+                    variant="primary"
+                    icon={AppIcons.settings}
                     onClick={() => useSettingsStore.getState().openSystemSettings('ai-services')}
-                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#D97706] text-white text-body font-medium hover:bg-[#B45309] transition-colors"
                   >
-                    <Settings className="h-3.5 w-3.5" />
                     {t.chat.setupButton}
-                  </button>
+                  </Button>
                 </div>
               </div>
             )}
+
+            {appHome && <AppHomeScenes app={appHome} visible={guideVisible} />}
 
             {/* Main input */}
             <div>
@@ -1442,16 +1525,16 @@ export default function ChatView({
               />
             </div>
 
-            {/* Scenario Guide */}
-            {pendingAgent || welcomeTeam ? (
+            {/* General-shell prompt suggestions */}
+            {!appHome && (pendingAgent || welcomeTeam ? (
               !!expertPrompts?.length && guideVisible && <div className={cn(PROMPT_GRID_CLASS, 'mt-4')} data-testid="expert-prompts">
-                {expertPrompts.map((prompt, index) => <button key={index} type="button" className={PROMPT_ITEM_CLASS} onClick={() => handleSelectPrompt(prompt)}>{prompt}</button>)}
+                {expertPrompts.map((prompt, index) => <Pressable key={index} className={PROMPT_ITEM_CLASS} onClick={() => handleSelectPrompt(prompt)}>{prompt}</Pressable>)}
               </div>
             ) : <ScenarioGuide
               onSelectPrompt={handleSelectPrompt}
               onScenarioChange={handleScenarioChange}
               visible={guideVisible}
-            />}
+            />)}
           </div>
         </div>
       </div>
@@ -1459,21 +1542,23 @@ export default function ChatView({
   }
 
   return (
-    <div className="flex flex-col h-full min-h-0 min-w-0 bg-[var(--abu-bg-base)]">
+    <div className="flex flex-col h-full min-h-0 min-w-0">
       {/* Conversation title header — flush at card top (TRAE-style header row).
           The divider separates navigation context from the conversation body;
           platform overlays receive only the padding needed by existing controls. */}
       <div {...windowDragRowProps()} className={cn(
         'shrink-0 flex items-center h-11 px-4',
-        windowsWorkspaceHeader && 'border-b border-[var(--abu-border)]',
+        windowsWorkspaceHeader && 'border-b border-separator',
         // Collapsed platform controls float over the card's top-left; indent
         // the title to clear the controls present on that platform.
         sidebarCollapsed && isMacOS() && 'pl-48',
         sidebarCollapsed && windowsWorkspaceHeader && 'pl-20',
-        rightPanelToggleVisible && windowsWorkspaceHeader && 'pr-12',
+        // The panel toggle floats over the header's right end on macOS too;
+        // keep the chapter menu button out from under it.
+        rightPanelToggleVisible && (windowsWorkspaceHeader || isMacOS()) && 'pr-12',
       )}>
         {isRenamingTitle ? (
-          <Input
+          <TextField
             autoFocus
             value={titleDraft}
             onChange={(e) => setTitleDraft(e.target.value)}
@@ -1486,59 +1571,74 @@ export default function ChatView({
               if (e.key === 'Enter') e.currentTarget.blur();
               else if (e.key === 'Escape') { setTitleDraft(activeConv.title); setIsRenamingTitle(false); }
             }}
-            className="h-7 max-w-md text-body font-medium"
+            className="max-w-md"
           />
         ) : (
           <span
-            className="text-body font-medium text-[var(--abu-text-primary)] truncate cursor-default"
+            className="cursor-default truncate text-ui font-medium text-label"
             onDoubleClick={() => { setTitleDraft(activeConv.title); setIsRenamingTitle(true); }}
             title={activeConv.title}
           >
             {activeConv.title}
           </span>
         )}
+        {activeConv.appBinding && !isRenamingTitle && <ConversationAppBadge binding={activeConv.appBinding} />}
         {titleTeamLeader && !isRenamingTitle && (
           <span
             data-testid="chat-title-team-badge"
-            className="ml-2 inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--abu-bg-muted)] px-2 py-0.5 text-caption text-[var(--abu-text-tertiary)]"
+            className="ml-2 inline-flex shrink-0"
             title={`${titleTeamLeader.leaderName} · ${titleTeamLeader.teamName}`}
           >
-            <TeamAvatar avatar={titleTeamLeader.teamAvatar} size="xs" round />
-            <span className="truncate max-w-[160px]">{titleTeamLeader.teamName}</span>
+            <Tag>
+              <TeamAvatar avatar={titleTeamLeader.teamAvatar} size="xs" round />
+              <span className="max-w-40 truncate">{titleTeamLeader.teamName}</span>
+            </Tag>
           </span>
         )}
-        {/* Chapter navigation moves into the header exactly when the gutter can
-            no longer hold the rail, so the two never appear at once. */}
-        {chapterNavVisible && !railFits && (
-          <ChapterMenu chapters={chapters} currentIndex={currentChapter} onJump={jumpToChapter} />
-        )}
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          <BackgroundCommandsButton key={activeConv.id} conversationId={activeConv.id} />
+          {/* Chapter navigation moves into the header exactly when the gutter can
+              no longer hold the rail, so the two never appear at once. */}
+          {chapterNavVisible && !railFits && (
+            <ChapterMenu chapters={chapters} currentIndex={currentChapter} onJump={jumpToChapter} />
+          )}
+        </div>
       </div>
 
-      {/* Command Confirmation Dialog — only show if it belongs to this conversation */}
-      {commandConfirmRequest && commandConfirmRequest.conversationId === activeConvId && (
+      {/* One approval at a time, and only one that belongs to this conversation. The others
+          wait in their queues, unanswered. */}
+      {visibleApproval?.kind === 'command' && commandConfirmRequest && (
+        // Keyed by request: the next one in the queue is a new window, which opens with the
+        // focus on its Cancel button like the first.
         <CommandConfirmDialog
+          key={commandConfirmRequest.id}
           request={commandConfirmRequest.info}
           isRequestActive={() => getPendingCommandConfirmation() === commandConfirmRequest}
           onConfirm={handleCommandConfirm}
           onCancel={handleCommandCancel}
+          onFocusUnplaced={focusComposerFromWindow}
         />
       )}
 
-      {/* File Permission Dialog — only show if it belongs to this conversation */}
-      {filePermissionRequest && filePermissionRequest.conversationId === activeConvId && (
+      {visibleApproval?.kind === 'file' && filePermissionRequest && (
+        // Keyed by request, like the command approval: the next grant in the queue opens from
+        // the default duration with the focus on Deny, also when it asks about the same path.
         <PermissionDialog
+          key={filePermissionRequest.id}
           request={{
             type: filePermissionRequest.capability === 'write' ? 'file-write' : 'file-read',
             path: filePermissionRequest.path,
           }}
           onAllow={handleFilePermissionAllow}
           onDeny={handleFilePermissionDeny}
+          onFocusUnplaced={focusComposerFromWindow}
         />
       )}
 
-      {/* Workspace Selection Dialog — only show if it belongs to this conversation */}
-      {workspaceRequest && workspaceRequest.conversationId === activeConvId && (
+      {visibleApproval?.kind === 'workspace' && workspaceRequest && (
+        // Keyed by request: a newer request that takes the place of this one is a new window.
         <PermissionDialog
+          key={workspaceRequest.id}
           request={{
             type: 'folder-select',
             reason: workspaceRequest.reason,
@@ -1548,6 +1648,7 @@ export default function ChatView({
           onChooseFolder={handleWorkspaceSelect}
           onAuthorize={handleWorkspaceAuthorize}
           onDeny={handleWorkspaceDeny}
+          onFocusUnplaced={focusComposerFromWindow}
         />
       )}
 
@@ -1561,7 +1662,10 @@ export default function ChatView({
       {/* The stopped conversation is the one that OWNS the CU session (passed
           up by the bar), NOT `activeConv.id` — a background conversation can be
           driving the screen while an unrelated tab is open. See the component. */}
-      <ComputerUseStatusBar onStop={(conversationId) => useChatStore.getState().cancelStreaming(conversationId)} />
+      <ComputerUseStatusBar onStop={(conversationId) => useChatStore.getState().cancelStreaming(
+        conversationId,
+        { source: 'computer-use-status-bar' },
+      )} />
 
       {/* Messages Area — overlay-scroll hides the native scrollbar (thumb shows
           only while scrolling, via the global is-scrolling toggle in main.tsx);
@@ -1574,8 +1678,9 @@ export default function ChatView({
           <ChapterRail chapters={chapters} currentIndex={currentChapter} onJump={jumpToChapter} />
         )}
         <div
+          ref={registerTurnContent}
           data-chat-scroll-content
-          className="w-full max-w-4xl mx-auto px-6 md:px-10 pt-5 pb-16 overflow-hidden"
+          className="flex flex-col w-full max-w-4xl mx-auto px-6 md:px-10 pt-5 pb-16 overflow-hidden"
         >
           <Virtuoso
             // Remount per conversation so `initialTopMostItemIndex` re-applies
@@ -1595,7 +1700,7 @@ export default function ChatView({
             // text arrives in small, frequent chunks, so instant jumps read
             // as continuous motion without fighting a CSS scroll animation
             // that's still in flight when the next chunk lands.
-            followOutput={handleFollowOutput}
+            followOutput={turnAnchorHolds ? false : handleFollowOutput}
             atBottomStateChange={handleAtBottomStateChange}
             atBottomThreshold={VIRTUOSO_AT_BOTTOM_THRESHOLD_PX}
             // The bottom lock: whenever late-measured content (widget iframes,
@@ -1625,20 +1730,24 @@ export default function ChatView({
               // This occurs both on a normal send and when a staged queue item
               // is consumed after earlier assistant turns already exist.
               showTypingIndicator: shouldShowTypingIndicator(activeConv?.status, visibleMessages),
-              retryingLabel: retryInfo
-                ? format(t.chat.retrying, { attempt: retryInfo.attempt, max: retryInfo.maxAttempts })
-                : null,
+              // AgentStatusStrip above the composer (always mounted for the
+              // active conversation) says 「正在重试」; the list keeps 「思考中」 so
+              // the sentence shows once.
+              retryingLabel: null,
               // status.thinking ("思考中", no trailing ellipsis) — the same
               // string the in-group placeholder shows and the TaskBlock active
               // header reduces to (it strips the ellipsis). chat.thinking
               // ("思考中…") here made the "…" blink out at the footer →
               // placeholder hand-off, and reads odd before the animated dots.
               thinkingLabel: t.status.thinking,
-              registerTurnSpacer,
             }}
             itemContent={(index, group) =>
               group.length === 1 && isCompactBoundary(group[0]) ? (
-                <CompactDivider message={group[0]} />
+                <CompactDivider
+                  message={group[0]}
+                  expanded={expandedCompactIds.has(group[0].id)}
+                  onToggle={() => toggleCompactSummary(group[0].id)}
+                />
               ) : group.length === 1 && isMaxTurnsNoticeMessage(group[0]) ? (
                 // The turn-cap notice. Its own group by construction: the
                 // marker carries no loopId, and `groupMessagesByLoop` starts a
@@ -1648,6 +1757,21 @@ export default function ChatView({
                 // The configured first-contact greeting: a plain bubble with
                 // the expert's identity, never a model turn with run actions.
                 <MessageBubble message={group[0]} />
+              ) : group[0].goalRound ? (
+                // Goal mode: the round's opening row is the driver's prompt,
+                // not user input — a marker, then the run as usual.
+                <>
+                  <GoalRoundMarker message={group[0]} />
+                  {group.length > 1 && (
+                    <MessageGroup
+                      conversationId={activeConv.id}
+                      messages={group.slice(1)}
+                      isLastGroup={index === messageGroups.length - 1}
+                      isLastGroupOfLoop={lastGroupOfLoop.get(group[0].loopId ?? '') === index}
+                      highlightMessageId={highlightedMessageId}
+                    />
+                  )}
+                </>
               ) : group.length === 1 && isBrowserRunReportMessage(group[0]) ? (
                 // U7 — the unattended run's report card. Its own group by
                 // construction: the marker carries no loopId, and
@@ -1659,11 +1783,16 @@ export default function ChatView({
                   conversationId={activeConv.id}
                   messages={group}
                   isLastGroup={index === messageGroups.length - 1}
+                  isLastGroupOfLoop={lastGroupOfLoop.get(group[0].loopId ?? '') === index}
                   highlightMessageId={highlightedMessageId}
                 />
               )
             }
           />
+
+          {/* Active-turn filler: takes the part of the turn's minimum content
+              height that the list does not cover yet. */}
+          <div ref={turnSpacerElementRef} data-turn-bottom-spacer aria-hidden="true" className="grow" />
 
           {/* Bottom sentinel — keeps a sliver of space after last message */}
           <div className="h-px w-full" />
@@ -1674,22 +1803,33 @@ export default function ChatView({
             bottom anyway, and Virtuoso's transient atBottom=false during
             mount/measure would otherwise flash the button on every switch. */}
         {!isAtBottom && !pinned && (
-          <button
-            onClick={() => scrollToLatest('smooth')}
-            className="sticky bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[var(--abu-bg-base)]/90 border border-[var(--abu-border)] text-body text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-base)] transition-all backdrop-blur-sm"
-          >
-            <ChevronDown className="h-3.5 w-3.5" />
-            <span>{t.chat.scrollToBottom}</span>
-          </button>
+          <div className="pointer-events-none sticky bottom-3 z-sticky flex justify-center">
+            <div className="pointer-events-auto rounded-control bg-raised shadow-float">
+              <Button variant="plain" size="sm" icon={AppIcons.expand} onClick={() => scrollToLatest('smooth')}>
+                {t.chat.scrollToBottom}
+              </Button>
+            </div>
+          </div>
         )}
       </div>
 
       {/* Bottom Input */}
-      <div className="shrink-0 px-6 md:px-10 pb-4 pt-1.5 bg-[var(--abu-bg-base)]">
-        <div className="max-w-4xl mx-auto flex flex-col gap-1.5">
+      <div className="shrink-0 px-6 md:px-10 pb-4 pt-2">
+        <div className="max-w-4xl mx-auto flex flex-col gap-2">
           {/* Docked ask_user_question card — sits flush above the composer,
               same width. Render the first pending question that belongs to the
               active conversation and whose owning message can be located. */}
+          {/* A question that leaves the focus with a user who is writing is read out from here.
+              The element is on the page before the question arrives, or nothing is read. */}
+          <div aria-live="polite" aria-atomic="true" className="sr-only">
+            {arrivedQuestion && (
+              <>
+                <span>{arrivedQuestion.header}</span>
+                {' '}
+                <span>{arrivedQuestion.question}</span>
+              </>
+            )}
+          </div>
           {(() => {
             const pending = pendingUserQuestions.find((pq) => pq.conversationId === activeConvId);
             if (!pending) return null;
@@ -1702,19 +1842,16 @@ export default function ChatView({
                 messageId={owningMsg.id}
                 toolCallId={pending.id}
                 payload={pending.payload}
-                onSubmitted={() => {
-                  setResuming(true);
-                  // Fallback clear — normally hidden once the loop sets a status.
-                  setTimeout(() => setResuming(false), 4000);
-                }}
+                onSubmitted={handleQuestionSubmitted}
+                onArrivedWithoutFocus={setArrivedQuestion}
               />
             );
           })()}
           {/* Optimistic "resuming" flash — only in the gap before the loop sets
               a real status, so it never stacks with AgentStatusStrip. */}
           {resuming && agentStatus === 'idle' && (
-            <div className="flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-tertiary)]">
-              <Check className="h-3.5 w-3.5 shrink-0 text-[var(--abu-success)]" />
+            <div className="flex items-center gap-2 px-3 py-2 text-ui-sm text-label-secondary">
+              <StatusIcon tone="success" size="sm" />
               <span className="truncate">{t.chat.resuming}</span>
             </div>
           )}
@@ -1723,16 +1860,20 @@ export default function ChatView({
           {activeConv.teamId && <TeamMemberBar conversationId={activeConv.id} />}
           {activeConv.teamId && <TeamConfirmationsStrip conversationId={activeConv.id} />}
           <AgentStatusStrip conversationId={activeConv.id} />
+          {/* Goal mode: objective, round usage and controls. Keyed by conversation: an inline
+              edit or a clearing question opened in one conversation belongs to that one only. */}
+          {activeConv.goal && <GoalBar key={activeConv.id} conversationId={activeConv.id} />}
           {/* Staged mid-task messages — cancellable pills at the composer's
               top-right edge; they enter the transcript when the loop drains them */}
           <QueuedMessagesStrip conversationId={activeConv.id} />
+          {activeConv.appBinding && <ConversationAppNotice binding={activeConv.appBinding} />}
           <ChatInput variant="chat" onSend={handleSend} />
-          <div className="flex items-center justify-center gap-3 mt-1.5 whitespace-nowrap overflow-hidden">
+          <div className="mt-2 flex items-center justify-center gap-3 overflow-hidden whitespace-nowrap">
             <UsageChip conversationId={activeConv.id} />
-            <p className="text-caption text-[var(--abu-text-muted)] truncate">
+            <p className="truncate text-caption text-label-tertiary">
               {t.chat.disclaimer}
             </p>
-            <span className="text-[var(--abu-text-muted)] opacity-50">·</span>
+            <span className="text-caption text-label-tertiary">·</span>
             <ConvIdBadge conversationId={activeConv.id} />
           </div>
         </div>

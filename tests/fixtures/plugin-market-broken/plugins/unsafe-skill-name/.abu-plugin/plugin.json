@@ -1,0 +1,5 @@
+{
+  "name": "unsafe-skill-name",
+  "version": "1.0.0",
+  "interface": { "displayName": "Unsafe skill", "shortDescription": "a skill name no installer accepts" }
+}

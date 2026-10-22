@@ -23,19 +23,23 @@ export interface MockRequest {
 }
 
 export type MockReplyPlan =
-  | { kind: 'complete'; responseText: string }
+  /** `chunks`: how many streamed deltas carry the text (default 2). */
+  | { kind: 'complete'; responseText: string; chunks?: number }
   | {
       arguments: Record<string, unknown>;
       kind: 'tool-call';
       toolCallId: string;
       toolName: string;
     }
-  | { kind: 'hold-open'; partialText: string };
+  | { kind: 'hold-open'; partialText: string }
+  | { kind: 'http-error'; status: number; body: unknown };
 
 export interface OpenAiMock {
   baseUrl: string;
   close: () => Promise<void>;
   requests: MockRequest[];
+  /** Pathnames of the answered `getRoutes` requests, in order. */
+  getRequests: string[];
 }
 
 function sseChunk(content: string, finishReason: string | null): string {
@@ -52,8 +56,32 @@ function sseChunk(content: string, finishReason: string | null): string {
   })}\n\n`;
 }
 
-export async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Promise<OpenAiMock> {
+export interface OpenAiMockOptions {
+  /**
+   * Extra read-only routes a local model server offers besides chat, keyed by
+   * pathname (e.g. LM Studio's `/api/v0/models`). Each answers GET with the
+   * given JSON; any other route still answers 404.
+   */
+  getRoutes?: Readonly<Record<string, unknown>>;
+  /** The text every compression request is answered with. */
+  compressionResponseText?: string;
+}
+
+/** Which kind of model call a request body is: memory extraction, compression, or the task itself. */
+export function classifyMockRequestPurpose(body: unknown): MockRequest['purpose'] {
+  return isMemoryExtractionRequest(body)
+    ? 'memory'
+    : isCompressionRequest(body)
+      ? 'compression'
+      : 'task';
+}
+
+export async function startOpenAiMock(
+  replyPlans: readonly MockReplyPlan[],
+  options: OpenAiMockOptions = {},
+): Promise<OpenAiMock> {
   const requests: MockRequest[] = [];
+  const getRequests: string[] = [];
   let taskRequestCount = 0;
   const activeResponses = new Set<ServerResponse>();
   const server = createServer(async (req, res) => {
@@ -70,11 +98,7 @@ export async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Pro
     } catch {
       // Keep malformed input available in the assertion output if this ever regresses.
     }
-    const purpose = isMemoryExtractionRequest(body)
-      ? 'memory'
-      : isCompressionRequest(body)
-        ? 'compression'
-        : 'task';
+    const purpose = classifyMockRequestPurpose(body);
     const mockRequest: MockRequest = {
       authorization: req.headers.authorization,
       body,
@@ -82,6 +106,13 @@ export async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Pro
       purpose,
       responseAborted: false,
     };
+    const getRoute = options.getRoutes?.[requestUrl.pathname];
+    if (req.method === 'GET' && getRoute !== undefined) {
+      getRequests.push(requestUrl.pathname);
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(getRoute));
+      return;
+    }
     if (req.method !== 'POST' || requestUrl.pathname !== '/v1/chat/completions') {
       res.writeHead(404, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'unexpected local E2E mock route' }));
@@ -93,11 +124,20 @@ export async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Pro
       purpose === 'memory'
         ? { kind: 'complete' as const, responseText: '[]' }
         : purpose === 'compression'
-          ? { kind: 'complete' as const, responseText: 'Abu E2E compacted conversation summary.' }
+          ? {
+              kind: 'complete' as const,
+              responseText: options.compressionResponseText ?? 'Abu E2E compacted conversation summary.',
+            }
         : replyPlans[taskRequestCount++];
     if (!replyPlan) {
       res.writeHead(500, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'unexpected extra local E2E mock request' }));
+      return;
+    }
+
+    if (replyPlan.kind === 'http-error') {
+      res.writeHead(replyPlan.status, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(replyPlan.body));
       return;
     }
 
@@ -111,7 +151,11 @@ export async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Pro
         'content-type': 'application/json; charset=utf-8',
       });
       if (replyPlan.kind === 'hold-open') {
-        res.end(JSON.stringify({ error: 'hold-open replies require a streaming request' }));
+        // Tool-enabled requests are non-streaming, so there is no partial
+        // text to send: hold the response until the client aborts it.
+        res.once('close', () => {
+          mockRequest.responseAborted = !res.writableEnded;
+        });
         return;
       }
       const message = replyPlan.kind === 'tool-call'
@@ -163,14 +207,14 @@ export async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Pro
       return;
     }
 
-    const { responseText } = replyPlan;
-    const splitAt = Math.ceil(responseText.length / 2);
-    res.write(sseChunk(responseText.slice(0, splitAt), null));
+    const { responseText, chunks = 2 } = replyPlan;
+    const chunkLength = Math.ceil(responseText.length / chunks);
     // Normal streaming providers deliver several deltas before their terminal
     // frame; preserve that ordering across the renderer's RAF token buffer.
-    await new Promise<void>((resolve) => setTimeout(resolve, 50));
-    res.write(sseChunk(responseText.slice(splitAt), null));
-    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    for (let start = 0; start < responseText.length; start += chunkLength) {
+      res.write(sseChunk(responseText.slice(start, start + chunkLength), null));
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    }
     res.write(sseChunk('', 'stop'));
     res.end('data: [DONE]\n\n');
   });
@@ -194,6 +238,7 @@ export async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Pro
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
     close: () => closeServer(server, activeResponses),
     requests,
+    getRequests,
   };
 }
 
@@ -252,7 +297,7 @@ export function compressionRequests(mock: OpenAiMock): MockRequest[] {
   return mock.requests.filter((request) => request.purpose === 'compression');
 }
 
-function closeServer(server: Server, activeResponses: ReadonlySet<ServerResponse>): Promise<void> {
+export function closeServer(server: Server, activeResponses: ReadonlySet<ServerResponse>): Promise<void> {
   // A failed assertion can leave a hold-open SSE response active. Destroy it
   // before close() so afterEach cannot wait forever on that client connection.
   for (const response of activeResponses) response.destroy();

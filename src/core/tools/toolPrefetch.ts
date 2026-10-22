@@ -8,6 +8,7 @@
 
 import type { Skill } from '../../types';
 import { TOOL_NAMES } from './toolNames';
+import { isWindows } from '../../utils/platform';
 
 /**
  * Hand-copied mirror of the tools `abu-browser-bridge/src/tools.ts` registers.
@@ -83,6 +84,16 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   // text / fence output.
   TOOL_NAMES.SHOW_WIDGET,
   TOOL_NAMES.READ_ME,
+  // report_plan is both how a plan is declared and the only way its steps are
+  // marked in_progress / completed, and the current plan is injected into
+  // every turn. Offered only in early turns, a long task reaches a point where
+  // the model keeps being told "step N is in progress" with no tool to move it
+  // on, and works on step N again.
+  TOOL_NAMES.REPORT_PLAN,
+  // present_files is the only way a turn's files become cards under the reply,
+  // and it is called at the end of a turn, long after any keyword of the
+  // user's message could have loaded it.
+  TOOL_NAMES.PRESENT_FILES,
 ]);
 
 /** Keyword → tool mapping for demand-based loading */
@@ -93,6 +104,11 @@ const PREFETCH_RULES: ReadonlyArray<{
   {
     keywords: ['定时', '计划', '每天', '每周', '自动执行', 'schedule', 'cron'],
     tools: [TOOL_NAMES.MANAGE_SCHEDULED_TASK],
+  },
+  {
+    // Goal mode: "keep going until it is done" requests.
+    keywords: ['设个目标', '设定目标', '目标模式', '做完', '全部完成', '直到', '为止', '不要停', '/goal', 'until done', 'until it', 'keep going', 'finish all'],
+    tools: [TOOL_NAMES.MANAGE_GOAL],
   },
   {
     keywords: ['触发', '监听', '事件', '自动响应', 'trigger', 'webhook'],
@@ -120,6 +136,17 @@ const PREFETCH_RULES: ReadonlyArray<{
   {
     keywords: ['剪贴板', '粘贴板', '复制的', '粘贴', 'clipboard'],
     tools: [TOOL_NAMES.CLIPBOARD_READ, TOOL_NAMES.CLIPBOARD_WRITE],
+  },
+  {
+    // Naming a document file is the moment it matters whether the user has it
+    // open: writing behind Office's back fails, or discards their unsaved
+    // edits. Left deferred, the model had to spend a tool_search round-trip
+    // discovering check_open_document first — measured in a real run. The
+    // extensions are the precise signal; '.doc' covers '.docx' by substring,
+    // as '.xls' and '.ppt' do for theirs. '.csv' earns its place because a csv
+    // open in Excel is the case that produced the original EBUSY defect.
+    keywords: ['.doc', '.xls', '.ppt', '.csv', 'excel', 'wps', '表格', '电子表格'],
+    tools: [TOOL_NAMES.CHECK_OPEN_DOCUMENT],
   },
   {
     keywords: ['创建技能', '保存技能', '新技能', '修改技能', '创建代理', '新代理'],
@@ -175,6 +202,8 @@ export interface PrefetchContext {
   computerUseEnabled: boolean;
   activeSkills: Skill[];
   turnCount: number;
+  /** The conversation carries a goal (any phase) — keep manage_goal loaded. */
+  hasGoal?: boolean;
 }
 
 /**
@@ -195,6 +224,14 @@ export function prefetchTools(ctx: PrefetchContext): string[] {
     }
   }
 
+  // Windows is the only platform with an attach surface behind it, and
+  // promotion is session-sticky — prefetching it elsewhere would keep a tool
+  // in the roster for the rest of the conversation to answer "not supported".
+  if (!isWindows()) {
+    const index = additionalTools.indexOf(TOOL_NAMES.CHECK_OPEN_DOCUMENT);
+    if (index !== -1) additionalTools.splice(index, 1);
+  }
+
   // Computer Use stays loaded while enabled. Keyword prefetch may expose the
   // tool while disabled so it can return the hard-gate setup guidance, but the
   // tool itself must never flip the setting.
@@ -212,11 +249,19 @@ export function prefetchTools(ctx: PrefetchContext): string[] {
   if (ctx.activeSkills.some((skill) => skill.name === 'Abu-Chrome-Bridge')) {
     additionalTools.push(TOOL_NAMES.MANAGE_MCP_SERVER, ...CHROME_BRIDGE_TOOLS);
   }
-
-  // Early turns: load planning + system info tools (LLM may plan after initial research)
-  if (ctx.turnCount <= 3) {
-    additionalTools.push(TOOL_NAMES.REPORT_PLAN);
+  // The app builder's first step is asking app_prepare what the user already has.
+  if (ctx.activeSkills.some((skill) => skill.name === 'abu-app-builder')) {
+    additionalTools.push(TOOL_NAMES.APP_PREPARE);
   }
+
+  // Goal mode: once a conversation has a goal the model must always be able
+  // to complete / block it, so the tool stays loaded (a stable roster also
+  // keeps the prompt cache warm across rounds).
+  if (ctx.hasGoal) {
+    additionalTools.push(TOOL_NAMES.MANAGE_GOAL);
+  }
+
+  // First turn: load system info
   if (ctx.turnCount === 0) {
     additionalTools.push(TOOL_NAMES.GET_SYSTEM_INFO);
   }

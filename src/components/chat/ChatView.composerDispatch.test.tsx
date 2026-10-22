@@ -1,7 +1,10 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as renderBare, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { ReactElement } from 'react';
+import { Button } from '@/components/ds/button';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import ChatView from './ChatView';
 import { PROMPT_GRID_CLASS, PROMPT_ITEM_CLASS } from './promptGrid';
 import { useChatStore } from '@/stores/chatStore';
@@ -15,12 +18,16 @@ import { agentRegistry } from '@/core/agent/registry';
 import { getI18n, getLanguageSetting, setLanguage } from '@/i18n';
 import type { SubagentDefinition } from '@/types';
 import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
+import { passSettleInterval } from '@/test/dsWindows';
 import { teamIdentity, expertIdentity } from '@/core/team/expertContact';
 import {
   clearAllComposerDrafts,
   readComposerDraft,
   WELCOME_COMPOSER_DRAFT_KEY,
 } from '@/stores/composerDraftStore';
+
+// Message action rows carry ds tooltips, which need the provider the app mounts at its root.
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 const { dispatchMock } = vi.hoisted(() => ({
   dispatchMock: vi.fn(),
@@ -43,6 +50,9 @@ vi.mock('@/utils/electronHost', () => ({
   readElectronUserAttachment: vi.fn(),
   releaseElectronUserAttachment: vi.fn(),
   selectElectronUserAttachments: vi.fn(),
+  // #549: the conversation writer resolves the conversations root through this
+  // one; null is what a tier without the Electron bridge answers.
+  canonicalizeElectronPathForPolicy: vi.fn(async () => null),
 }));
 
 vi.mock('react-virtuoso', async () => {
@@ -129,6 +139,195 @@ describe('ChatView welcome composer dispatch ownership', () => {
     } finally {
       useTeamStore.setState({ teams: []});
     }
+  });
+
+  it('/goal <objective> sets an armed goal on the new conversation and sends only the objective', async () => {
+    configureApiKey();
+    dispatchMock.mockResolvedValueOnce({ reason: 'completed' });
+    render(<ChatView />);
+    await submitWelcome('/goal 把合同全部提取成表格');
+
+    await waitFor(() => expect(dispatchMock).toHaveBeenCalledTimes(1));
+    const [convId, text] = dispatchMock.mock.calls[0] as [string, string];
+    expect(text).toBe('把合同全部提取成表格');
+    const goal = useChatStore.getState().conversations[convId].goal;
+    expect(goal).toMatchObject({ objective: '把合同全部提取成表格', phase: 'active', roundsStarted: 0 });
+    const { isGoalArmed } = await import('@/core/goal/goalActivation');
+    expect(isGoalArmed(convId, goal?.id)).toBe(true);
+  });
+
+  it('/goal pause without a goal never dispatches and says so', async () => {
+    configureApiKey();
+    render(<ChatView />);
+    await submitWelcome('/goal pause');
+
+    await waitFor(() => expect(useToastStore.getState().toasts.length).toBeGreaterThan(0));
+    expect(dispatchMock).not.toHaveBeenCalled();
+    expect(useToastStore.getState().toasts[0].title).toBe(getI18n().chat.goal.noGoal);
+  });
+
+  it('/goal <new> over an unfinished goal asks first: cancel keeps the goal and the text, confirm replaces it', async () => {
+    configureApiKey();
+    dispatchMock.mockResolvedValue({ reason: 'completed' });
+    const goalText = getI18n().chat.goal;
+    const convId = useChatStore.getState().createConversation();
+    const { createGoalFromCommand } = await import('@/core/goal/goalCommand');
+    expect(createGoalFromCommand(convId, 'first objective').ok).toBe(true);
+    const firstGoalId = useChatStore.getState().conversations[convId].goal?.id;
+    useChatStore.setState({ activeConversationId: convId });
+    render(<ChatView />);
+
+    const textarea = await submitWelcome('/goal second objective');
+    expect(await screen.findByText(goalText.replaceConfirmTitle)).toBeInTheDocument();
+    expect(screen.getByText(/first objective.*is not finished/)).toBeInTheDocument();
+    // A question takes no pointer press for a moment after it appears: it has been read.
+    passSettleInterval();
+    await userEvent.click(screen.getByRole('button', { name: getI18n().common.cancel }));
+    await waitFor(() => expect(textarea).toHaveValue('/goal second objective'));
+    expect(dispatchMock).not.toHaveBeenCalled();
+    expect(useChatStore.getState().conversations[convId].goal).toMatchObject({ id: firstGoalId, objective: 'first objective' });
+
+    await userEvent.type(textarea, '{Enter}');
+    const replace = await screen.findByRole('button', { name: goalText.actionReplace });
+    passSettleInterval();
+    await userEvent.click(replace);
+    await waitFor(() => expect(dispatchMock).toHaveBeenCalledTimes(1));
+    expect((dispatchMock.mock.calls[0] as [string, string])[1]).toBe('second objective');
+    const goal = useChatStore.getState().conversations[convId].goal;
+    expect(goal).toMatchObject({ objective: 'second objective', phase: 'active', roundsStarted: 0 });
+    expect(goal?.id).not.toBe(firstGoalId);
+  });
+
+  it('/goal without a usable model still answers and leaves settings closed', async () => {
+    render(<ChatView />);
+    await submitWelcome('/goal');
+
+    await waitFor(() => expect(useToastStore.getState().toasts.length).toBeGreaterThan(0));
+    expect(useToastStore.getState().toasts[0].title).toBe(getI18n().chat.goal.noGoal);
+    expect(useSettingsStore.getState().systemSettingsOpen).toBe(false);
+    expect(dispatchMock).not.toHaveBeenCalled();
+  });
+
+  describe('a goal bar per conversation', () => {
+    // Two conversations in the chat view, each with its own unfinished goal.
+    async function twoConversationsWithGoals(): Promise<{ a: string; b: string }> {
+      const { createGoalFromCommand } = await import('@/core/goal/goalCommand');
+      const store = useChatStore.getState();
+      const a = store.createConversation();
+      const b = store.createConversation();
+      store.addMessage(a, { id: 'message-a', role: 'user', content: 'work in A', loopId: 'loop-a', timestamp: 1 });
+      store.addMessage(b, { id: 'message-b', role: 'user', content: 'work in B', loopId: 'loop-b', timestamp: 2 });
+      expect(createGoalFromCommand(a, 'Objective of A').ok).toBe(true);
+      expect(createGoalFromCommand(b, 'Objective of B').ok).toBe(true);
+      useChatStore.setState({ activeConversationId: a });
+      return { a, b };
+    }
+    const goalOf = (id: string) => useChatStore.getState().conversations[id].goal;
+
+    it('closes an inline edit with the conversation it was opened in, and writes none of its text into the next goal', async () => {
+      const goalText = getI18n().chat.goal;
+      const { a, b } = await twoConversationsWithGoals();
+      render(<ChatView />);
+      await userEvent.click(within(screen.getByTestId('goal-bar')).getByRole('button', { name: goalText.actionEdit }));
+      expect(within(screen.getByTestId('goal-bar')).getByRole('textbox', { name: goalText.actionEdit })).toHaveValue('Objective of A');
+
+      act(() => useChatStore.setState({ activeConversationId: b }));
+
+      const bar = screen.getByTestId('goal-bar');
+      expect(bar).toHaveTextContent('Objective of B');
+      expect(within(bar).queryByRole('textbox')).toBeNull();
+      expect(within(bar).queryByRole('button', { name: goalText.actionSave })).toBeNull();
+      expect(goalOf(b)).toMatchObject({ objective: 'Objective of B' });
+      expect(goalOf(a)).toMatchObject({ objective: 'Objective of A' });
+    });
+
+    it('clears no goal when the clearing question is answered after the conversation changed under it', async () => {
+      const goalText = getI18n().chat.goal;
+      const { a, b } = await twoConversationsWithGoals();
+      render(<ChatView />);
+      await userEvent.click(within(screen.getByTestId('goal-bar')).getByRole('button', { name: goalText.actionClear }));
+      const question = screen.getByRole('alertdialog', { name: goalText.clearConfirmTitle });
+      expect(question).toHaveTextContent('Objective of A');
+
+      // The question is modal, so only code can change the conversation in view while it is open.
+      act(() => useChatStore.setState({ activeConversationId: b }));
+      passSettleInterval();
+      await userEvent.click(within(question).getByRole('button', { name: goalText.actionClear }));
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+
+      expect(goalOf(a)).toMatchObject({ objective: 'Objective of A' });
+      expect(goalOf(b)).toMatchObject({ objective: 'Objective of B' });
+    });
+  });
+
+  describe('focus when the first message replaces the new-task page with the chat page', () => {
+    // The runner appends the user row while the dispatch is still running; the page changes then.
+    function takeFirstMessage(): { finish: () => void } {
+      const run: { finish: () => void } = { finish: () => undefined };
+      dispatchMock.mockImplementationOnce((conversationId: string, text: string) => {
+        useChatStore.getState().addMessage(conversationId, { id: 'first-message', role: 'user', content: text, timestamp: 1, loopId: 'first-run' });
+        return new Promise((resolve) => { run.finish = () => resolve({ reason: 'completed' }); });
+      });
+      return run;
+    }
+
+    it('keeps the focus in the message field after Enter sent the message', async () => {
+      configureApiKey();
+      const run = takeFirstMessage();
+      render(<ChatView />);
+      const welcomeField = await submitWelcome('hello');
+      await waitFor(() => expect(screen.getByTestId('mock-virtuoso')).toHaveTextContent('hello'));
+
+      expect(welcomeField.isConnected).toBe(false);
+      const field = screen.getByRole('textbox');
+      expect(field).toHaveAttribute('data-chat-composer');
+      await waitFor(() => expect(field).toHaveFocus());
+      await act(async () => { run.finish(); });
+      expect(field).toHaveFocus();
+    });
+
+    it('takes the focus from no control: one that got it while the message was on its way keeps it', async () => {
+      configureApiKey();
+      const run = takeFirstMessage();
+      render(
+        <>
+          <Button>Elsewhere</Button>
+          <ChatView />
+        </>,
+      );
+      const elsewhere = screen.getByRole('button', { name: 'Elsewhere' });
+      const focused = vi.spyOn(HTMLTextAreaElement.prototype, 'focus');
+      try {
+        const user = userEvent.setup();
+        await user.type(screen.getByRole('textbox'), 'hello');
+        // The key goes down in the field; another control has the focus before the chat page is drawn.
+        fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter', code: 'Enter' });
+        act(() => { elsewhere.focus(); });
+        focused.mockClear();
+        await waitFor(() => expect(screen.getByTestId('mock-virtuoso')).toHaveTextContent('hello'));
+        await act(async () => { await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined))); });
+
+        expect(elsewhere).toHaveFocus();
+        expect(focused).not.toHaveBeenCalled();
+      } finally {
+        focused.mockRestore();
+        await act(async () => { run.finish(); });
+      }
+    });
+
+    it('moves no focus when a message arrives in the conversation in view by another way', async () => {
+      configureApiKey();
+      const id = useChatStore.getState().createConversation();
+      render(<ChatView />);
+      expect(document.body).toHaveFocus();
+      act(() => {
+        useChatStore.getState().addMessage(id, { id: 'arrived', role: 'user', content: 'from elsewhere', timestamp: 1, loopId: 'other-run' });
+      });
+      await waitFor(() => expect(screen.getByTestId('mock-virtuoso')).toHaveTextContent('from elsewhere'));
+      await act(async () => { await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined))); });
+
+      expect(document.body).toHaveFocus();
+    });
   });
 
   it('keeps the composer empty after a post-commit dispatch failure', async () => {
@@ -342,6 +541,48 @@ describe('ChatView welcome composer dispatch ownership', () => {
     }
   });
 
+  it('keeps the model picker open, with the focus in it, when the organization withdrew the pinned model', async () => {
+    configureApiKey();
+    const previousLanguage = getLanguageSetting();
+    setLanguage('zh-CN');
+    try {
+      const template = useSettingsStore.getInitialState().providers.find((p) => p.id === 'anthropic')!;
+      useSettingsStore.setState((state) => ({
+        providers: [...state.providers, {
+          ...template,
+          id: 'org-models',
+          name: 'MAZG',
+          source: 'managed',
+          enabled: true,
+          apiKey: 'sk-virtual',
+          userAdded: false,
+          status: 'verified',
+          models: [{ ...template.models[0], id: 'kept', label: 'kept' }],
+        }],
+      }));
+      const convId = useChatStore.getState().createConversation();
+      useChatStore.getState().setConversationModel(convId, { providerId: 'org-models', modelId: 'revoked' });
+      useChatStore.setState({ activeConversationId: convId });
+
+      render(<ChatView />);
+      const user = userEvent.setup();
+      const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+      await user.type(textarea, 'hello');
+      await user.keyboard('{Enter}');
+
+      expect(dispatchMock).not.toHaveBeenCalled();
+      await waitFor(() => expect(textarea.value).toBe('hello'));
+      expect(useToastStore.getState().toasts.at(-1)?.title).toBe('模型「revoked」已不可用，请重新选择');
+      const search = screen.getByRole('textbox', { name: '搜索...' });
+      expect(search).toHaveFocus();
+      // The picker is still there once every pending focus move has run.
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      expect(screen.getByRole('textbox', { name: '搜索...' })).toHaveFocus();
+    } finally {
+      setLanguage(previousLanguage);
+    }
+  });
+
   it('still opens settings when no provider is usable at all', async () => {
     const convId = useChatStore.getState().createConversation();
     useChatStore.getState().setConversationModel(convId, { providerId: 'gone-provider', modelId: 'model-a' });
@@ -436,7 +677,7 @@ describe('ChatView welcome composer dispatch ownership', () => {
       const grid = await screen.findByTestId('expert-prompts');
       expect(grid.className.split(' ')).toEqual(expect.arrayContaining(PROMPT_GRID_CLASS.split(' ')));
       for (const chip of within(grid).getAllByRole('button')) {
-        expect(chip.className).toBe(PROMPT_ITEM_CLASS);
+        for (const name of PROMPT_ITEM_CLASS.split(' ')) expect(chip).toHaveClass(name);
       }
     });
 

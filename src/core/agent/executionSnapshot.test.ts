@@ -126,6 +126,72 @@ describe('executionSnapshot', () => {
       const restored = snapshotToExecutionSteps(snapshotExecutionSteps([step()]));
       expect(restored[0].toolCallId).toBeUndefined();
     });
+
+    it('carries the label key of a detail block through snapshot and restore', () => {
+      const block: DetailBlock = {
+        id: 'step-1-result', stepId: 'step-1', type: 'result', label: '结果', labelKey: 'result',
+        content: 'ok', isTruncated: false, isExpanded: false,
+      };
+
+      const restored = snapshotToExecutionSteps(snapshotExecutionSteps([step({ detailBlocks: [block] })]));
+
+      expect(restored[0].detailBlocks[0].labelKey).toBe('result');
+    });
+
+    it('keeps the full length the block reported for content cut at creation', () => {
+      const block: DetailBlock = {
+        id: 'step-1-script', stepId: 'step-1', type: 'script', label: 'Content', labelKey: 'content',
+        content: `${'x'.repeat(1000)}...`, isTruncated: true, fullContentLength: 4200, isExpanded: false,
+      };
+
+      const restored = snapshotToExecutionSteps(snapshotExecutionSteps([step({ detailBlocks: [block] })]));
+
+      expect(restored[0].detailBlocks[0].isTruncated).toBe(true);
+      expect(restored[0].detailBlocks[0].fullContentLength).toBe(4200);
+    });
+
+    it('records the full length of content that the snapshot itself cuts', () => {
+      const block: DetailBlock = {
+        id: 'step-1-script', stepId: 'step-1', type: 'script', label: 'Content', labelKey: 'content',
+        content: 'x'.repeat(780), isTruncated: false, isExpanded: false,
+      };
+
+      const restored = snapshotToExecutionSteps(snapshotExecutionSteps([step({ detailBlocks: [block] })]));
+
+      expect(restored[0].detailBlocks[0].isTruncated).toBe(true);
+      expect(restored[0].detailBlocks[0].fullContentLength).toBe(780);
+    });
+
+    it('records no full length for content that fits the snapshot', () => {
+      const block: DetailBlock = {
+        id: 'step-1-result', stepId: 'step-1', type: 'result', label: 'Result', labelKey: 'result',
+        content: 'ok', isTruncated: false, isExpanded: false,
+      };
+
+      const snapshots = snapshotExecutionSteps([step({ detailBlocks: [block] })]);
+
+      expect(snapshots[0].detailBlocks?.[0]).not.toHaveProperty('fullContentLength');
+    });
+
+    it('restores a block whose own text ends with "..." as whole when no full length was kept', () => {
+      const block: DetailBlock = {
+        id: 'step-1-result', stepId: 'step-1', type: 'result', label: 'Result', labelKey: 'result',
+        content: 'Loading...', isTruncated: false, isExpanded: false,
+      };
+
+      const restored = snapshotToExecutionSteps(snapshotExecutionSteps([step({ detailBlocks: [block] })]));
+
+      expect(restored[0].detailBlocks[0].isTruncated).toBe(false);
+    });
+
+    it('restores a block cut by a snapshot written before full lengths were kept as partial', () => {
+      const [restored] = snapshotToExecutionSteps([{
+        id: 'step-1', type: 'command', label: 'Run', status: 'completed', toolName: 'run_command',
+        detailBlocks: [{ id: 'step-1-result', title: 'Result', type: 'result', content: `${'y'.repeat(500)}...` }],
+      }]);
+
+      expect(restored.detailBlocks[0].isTruncated).toBe(true);
+    });
   });
 
   describe('backfillDetailBlockImages', () => {

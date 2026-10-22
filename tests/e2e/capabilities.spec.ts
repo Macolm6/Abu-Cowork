@@ -6,6 +6,7 @@ import {
   closeAbuElectron,
   dismissFirstRunOverlays,
   launchAbuElectron,
+  pressWhenSettled,
   removeElectronDataRoot,
   REPO_ROOT,
   type ElectronDataRoot,
@@ -28,7 +29,7 @@ function iaScreenshot(name: string): string {
 
 const WELCOME = /交给阿布就行啦|Leave it to Abu/;
 const CHAT_PLACEHOLDER = /^(想让阿布帮你做点什么？|What can Abu help you with\?)$/;
-const ACCOUNT = /^(我|Me)$/;
+const ACCOUNT = /^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/;
 const SETTINGS = /^(设置|Settings)$/;
 const CAPABILITIES = /^(能力|Capabilities)$/;
 const BUILTIN_BROWSER = /^(阿布内置浏览器|Abu built-in browser)$/;
@@ -138,13 +139,13 @@ test.describe('Electron capability overview', () => {
     }
   });
 
-  test('routes either permission button through Electron to its matching system pane', async () => {
+  test('reports native permissions and routes available authorization buttons to system settings', async () => {
     const launched = await launchAbuElectron();
     app = launched.app;
     dataRoot = launched;
     // Replace only native consent/status and external navigation. Renderer,
     // preload IPC, request helper and Electron permission host remain real.
-    await app.evaluate(({ systemPreferences, shell, desktopCapturer }) => {
+    if (process.platform === 'darwin') await app.evaluate(({ systemPreferences, shell, desktopCapturer }) => {
       const fixture = { screen: false, control: false, opened: [] as string[], prompts: [] as boolean[] };
       (globalThis as typeof globalThis & { permissionFixture?: typeof fixture }).permissionFixture = fixture;
       systemPreferences.getMediaAccessStatus = () => fixture.screen ? 'granted' : 'denied';
@@ -163,6 +164,15 @@ test.describe('Electron capability overview', () => {
     await capabilityCard(page, COMPUTER_USE).click();
     const controlRow = page.getByRole('heading', { name: '操作界面', exact: true }).locator('..');
     const screenRow = page.getByRole('heading', { name: '查看屏幕', exact: true }).locator('..');
+    if (process.platform === 'win32') {
+      await expect(controlRow.getByText('已授权', { exact: true })).toBeVisible();
+      await expect(screenRow.getByText('已授权', { exact: true })).toBeVisible();
+      await expect(page.getByRole('button', { name: '去授权', exact: true })).toHaveCount(0);
+      await page.getByRole('switch', { name: '关闭电脑操控' }).click();
+      await expect(page.getByRole('heading', { name: COMPUTER_USE })).toBeVisible();
+      await expect(page.getByRole('switch', { name: '开启电脑操控' })).toHaveAttribute('aria-checked', 'false');
+      return;
+    }
     await expect(page.getByRole('button', { name: '去授权', exact: true })).toHaveCount(2);
     await controlRow.getByRole('button', { name: '去授权' }).click();
     await expect.poll(() => app!.evaluate(() => {
@@ -251,9 +261,11 @@ test.describe('Electron capability overview', () => {
     });
     if (await computerCheckButton.isVisible()) {
       await expect(computerCheckButton).toBeEnabled({ timeout: READY_TIMEOUT });
-      await expect(computerCheckButton.locator('.animate-spin')).toHaveCount(0);
+      // The page polls in the background; nothing spins while it does.
+      const spinners = page.locator('[data-abu-settings-dialog] [data-ds-spinner]');
+      await expect(spinners).toHaveCount(0);
       await page.waitForTimeout(2_500);
-      await expect(computerCheckButton.locator('.animate-spin')).toHaveCount(0);
+      await expect(spinners).toHaveCount(0);
     }
     await page.screenshot({ path: COMPUTER_SETUP_SCREENSHOT_PATH });
   });
@@ -293,22 +305,26 @@ test.describe('Electron capability overview', () => {
 
     await expect(page.getByText(ACTION_PERMISSIONS)).toBeVisible();
     await expect(page.getByText(AUTOMATIC_TASKS)).toHaveCount(0);
-    await expect(page.getByRole('button', { name: /^浏览网页:/ })).toContainText('允许');
-    const scriptCell = page.getByRole('button', { name: /^运行脚本:/ });
+    await expect(page.getByRole('combobox', { name: '浏览网页', exact: true })).toContainText('允许');
+    const scriptCell = page.getByRole('combobox', { name: '运行脚本', exact: true });
     await expect(scriptCell).toContainText('每次询问');
+    // Measured first: an open list hides the rest of the page from the accessibility tree.
+    const triggerBox = await scriptCell.boundingBox();
     await scriptCell.click();
-    const allowOption = page.getByRole('button', { name: /^允许 允许此类操作/ });
+    const allowOption = page.getByRole('option', { name: '允许', exact: true });
     await expect(allowOption).toBeVisible();
-    const menu = page.locator(`#${await scriptCell.getAttribute('aria-controls')}`);
-    const [menuBox, triggerBox] = await Promise.all([menu.boundingBox(), scriptCell.boundingBox()]);
-    expect(Math.abs(menuBox!.width - triggerBox!.width)).toBeLessThanOrEqual(1);
+    // The list is at least as wide as its select, and its explanations wrap inside a fixed
+    // column: the longest explanation never stretches it across the settings window.
+    const menuBox = await page.getByRole('listbox').boundingBox();
+    expect(menuBox!.width).toBeGreaterThanOrEqual(triggerBox!.width - 1);
+    expect(menuBox!.width).toBeLessThanOrEqual(320);
     const box = await allowOption.boundingBox();
-    expect(await page.evaluate(({x,y}) => document.elementFromPoint(x,y)?.closest('button')?.textContent, { x: box!.x + box!.width/2, y: box!.y + box!.height/2 })).toContain('允许');
+    expect(await page.evaluate(({x,y}) => document.elementFromPoint(x,y)?.closest('[role="option"]')?.textContent, { x: box!.x + box!.width/2, y: box!.y + box!.height/2 })).toContain('允许');
     await allowOption.click();
     await expect(scriptCell).toContainText('允许');
     await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('abu-settings')!).state.browserPermissionConfigV2.defaults.script)).toBe('allow');
     await scriptCell.click();
-    await page.getByRole('button', { name: /^每次询问 / }).click();
+    await page.getByRole('option', { name: '每次询问', exact: true }).click();
     await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('abu-settings')!).state.browserPermissionConfigV2.defaults.script)).toBe('ask');
     await page.mouse.move(10, 10);
     await page.screenshot({ path: iaScreenshot('02-builtin-browser-detail-zh') });
@@ -323,16 +339,16 @@ test.describe('Electron capability overview', () => {
     await dialog.getByRole('button', { name: ADD_SITE_BUTTON }).click();
     await expect(page.getByTitle('https://added.example.com')).toBeVisible();
     const site = page.getByRole('region', { name: 'https://added.example.com', exact: true });
-    await site.getByRole('button', { name: /^https:\/\/added.example.com 网站访问:/ }).click();
-    await page.getByRole('button', { name: '自定义', exact: true }).click();
+    await site.getByRole('combobox', { name: 'https://added.example.com 网站访问' }).click();
+    await page.getByRole('option', { name: '自定义', exact: true }).click();
     const custom = page.getByRole('dialog').last();
-    await custom.getByRole('button', { name: /^上传文件:/ }).click();
-    await page.getByRole('button', { name: /^禁止 / }).click();
+    await custom.getByRole('combobox', { name: '上传文件', exact: true }).click();
+    await page.getByRole('option', { name: '禁止', exact: true }).click();
     await custom.getByRole('button', { name: '保存更改' }).click();
     await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('abu-settings')!).state.browserPermissionConfigV2.sites['https://added.example.com']?.upload)).toBe('deny');
     await page.screenshot({ path: iaScreenshot('03-site-permissions-list-zh') });
     await site.getByRole('button', { name: '删除 https://added.example.com 的设置' }).click();
-    await page.getByRole('dialog').last().getByRole('button', { name: '删除例外' }).click();
+    await pressWhenSettled(page.getByRole('alertdialog').getByRole('button', { name: '删除例外' }));
     await expect(page.getByTitle('https://added.example.com')).toHaveCount(0);
     await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('abu-settings')!).state.browserPermissionConfigV2.sites['https://added.example.com'])).toBeUndefined();
 

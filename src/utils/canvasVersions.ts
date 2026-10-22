@@ -22,6 +22,18 @@ import { exists, mkdir, readTextFile, remove } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 import { joinPath, normalizeSeparators } from '@/utils/pathUtils';
 import { atomicWrite } from '@/utils/atomicFs';
+import { FileOperationDenied, type ToolFileAccess } from '@/core/tools/fileOperation';
+
+type SnapshotGuard = Pick<ToolFileAccess, 'assertCurrent' | 'assertActive'>;
+
+async function snapshotIO<T>(guard: SnapshotGuard | undefined, operation: () => Promise<T>): Promise<T> {
+  await guard?.assertCurrent();
+  guard?.assertActive();
+  const result = await operation();
+  await guard?.assertCurrent();
+  guard?.assertActive();
+  return result;
+}
 
 /** Max snapshots retained per file — oldest are evicted beyond this. */
 const MAX_VERSIONS_PER_FILE = 30;
@@ -43,6 +55,18 @@ export interface VersionMeta {
   /** Optional human label — the user message that triggered an AI edit, or
    *  the REVERT_LABEL sentinel for automatic pre-revert snapshots. */
   label?: string;
+  /** The conversations (and, for an AI edit, the turn) this version was left in. */
+  origins?: VersionOrigin[];
+}
+
+export type VersionOrigin = { conversationId: string; loopId?: string };
+
+/** Adds `origin` to `version` unless it is there already. True when it was added. */
+function addOrigin(version: VersionMeta, origin: VersionOrigin): boolean {
+  const origins = version.origins ?? [];
+  if (origins.some((item) => item.conversationId === origin.conversationId && item.loopId === origin.loopId)) return false;
+  version.origins = [...origins, origin];
+  return true;
 }
 
 /** Sentinel label for the automatic pre-revert safety snapshot — the UI
@@ -98,11 +122,11 @@ function snapFileName(id: string): string {
 }
 
 /** Load index.json for a file's history dir. Corrupt/missing → empty history, never throws. */
-async function loadIndex(dir: string, filePath: string): Promise<VersionIndex> {
+async function loadIndex(dir: string, filePath: string, guard?: SnapshotGuard): Promise<VersionIndex> {
   const indexPath = getIndexPath(dir);
   try {
-    if (await exists(indexPath)) {
-      const text = await readTextFile(indexPath);
+    if (await snapshotIO(guard, () => exists(indexPath))) {
+      const text = await snapshotIO(guard, () => readTextFile(indexPath));
       const parsed = JSON.parse(text) as Partial<VersionIndex>;
       if (Array.isArray(parsed.versions)) {
         return {
@@ -113,39 +137,45 @@ async function loadIndex(dir: string, filePath: string): Promise<VersionIndex> {
       }
     }
   } catch (err) {
+    if (err instanceof FileOperationDenied) throw err;
+    await guard?.assertCurrent();
+    guard?.assertActive();
     console.warn('[canvasVersions] index.json load failed, treating as empty history', filePath, err);
   }
   return { path: filePath, seq: 0, versions: [] };
 }
 
-async function saveIndex(dir: string, index: VersionIndex): Promise<void> {
+async function saveIndex(dir: string, index: VersionIndex, guard?: SnapshotGuard): Promise<void> {
   // Atomic (temp + rename) so a crash mid-write can't corrupt index.json and
   // lose the whole file's history; also makes the lock-free read in
   // listVersions torn-read-safe (a reader sees the complete old or new file,
   // never a partial one).
-  await atomicWrite(getIndexPath(dir), JSON.stringify(index, null, 2));
+  await snapshotIO(guard, () => atomicWrite(getIndexPath(dir), JSON.stringify(index, null, 2)));
 }
 
-async function readSnapshotContent(dir: string, id: string): Promise<string | null> {
+async function readSnapshotContent(dir: string, id: string, guard?: SnapshotGuard): Promise<string | null> {
   const path = joinPath(dir, snapFileName(id));
   try {
-    if (!(await exists(path))) return null;
-    return await readTextFile(path);
-  } catch {
+    if (!(await snapshotIO(guard, () => exists(path)))) return null;
+    return await snapshotIO(guard, () => readTextFile(path));
+  } catch (error) {
+    if (error instanceof FileOperationDenied) throw error;
+    await guard?.assertCurrent();
+    guard?.assertActive();
     return null;
   }
 }
 
-/** True when `content` byte-for-byte matches any existing snapshot of the file.
+/** The snapshot whose content byte-for-byte matches `content`, or null.
  *  Cheap size prefilter first; only size-matching snapshots are read back. */
-async function contentExistsInHistory(dir: string, index: VersionIndex, content: string): Promise<boolean> {
+async function versionWithContent(dir: string, index: VersionIndex, content: string): Promise<VersionMeta | null> {
   const byteSize = new TextEncoder().encode(content).length;
   for (const v of index.versions) {
     if (v.byteSize !== byteSize) continue;
     const snap = await readSnapshotContent(dir, v.id);
-    if (snap !== null && snap === content) return true;
+    if (snap !== null && snap === content) return v;
   }
-  return false;
+  return null;
 }
 
 // Per-history-dir lock so a baseline snapshot (on file load) and an autosave
@@ -178,14 +208,19 @@ async function withDirLock<T>(dir: string, fn: () => Promise<T>): Promise<T> {
 export async function snapshotVersion(
   filePath: string,
   content: string,
-  meta?: Pick<VersionMeta, 'source' | 'label'>
+  meta?: Pick<VersionMeta, 'source' | 'label'> & { origin?: VersionOrigin },
+  guard?: SnapshotGuard,
 ): Promise<void> {
+  await guard?.assertCurrent();
+  guard?.assertActive();
   const dir = await getHistoryDir(filePath);
 
   await withDirLock(dir, async () => {
-    if (!(await exists(dir))) await mkdir(dir, { recursive: true });
+    if (!(await snapshotIO(guard, () => exists(dir)))) {
+      await snapshotIO(guard, () => mkdir(dir, { recursive: true }));
+    }
 
-    const index = await loadIndex(dir, filePath);
+    const index = await loadIndex(dir, filePath, guard);
     const latest = index.versions[index.versions.length - 1];
     const byteSize = new TextEncoder().encode(content).length;
 
@@ -199,19 +234,24 @@ export async function snapshotVersion(
     // .snap back from disk when the sizes actually match — avoids a full-file
     // read on every autosave of changed content.
     if (latest && latest.byteSize === byteSize) {
-      const latestContent = await readSnapshotContent(dir, latest.id);
+      const latestContent = await readSnapshotContent(dir, latest.id, guard);
       if (latestContent !== null && latestContent === content) {
         // Dedupe hit: the state is already captured by `latest`. If the caller
         // brought meta (e.g. the pre-revert REVERT_LABEL) and the existing
         // entry is unlabeled, backfill it so the label isn't silently lost —
         // this is the common autosave-then-revert path where disk content
         // always equals the latest snapshot. An entry that already carries a
-        // label keeps it (never overwrite existing semantics).
+        // label keeps it (never overwrite existing semantics). The caller's
+        // conversation joins the entry's origins, so that conversation finds
+        // the version too.
+        let changed = false;
         if (meta && !latest.label && (meta.source || meta.label)) {
           if (meta.source) latest.source = meta.source;
           if (meta.label) latest.label = meta.label;
-          await saveIndex(dir, index);
+          changed = true;
         }
+        if (meta?.origin && addOrigin(latest, meta.origin)) changed = true;
+        if (changed) await saveIndex(dir, index, guard);
         return;
       }
     }
@@ -222,7 +262,7 @@ export async function snapshotVersion(
 
     // Atomic so a crash mid-write can't leave a truncated .snap that a later
     // revert would atomicWrite verbatim over the user's live document.
-    await atomicWrite(joinPath(dir, snapFileName(id)), content);
+    await snapshotIO(guard, () => atomicWrite(joinPath(dir, snapFileName(id)), content));
 
     index.seq = seq + 1;
     index.path = filePath;
@@ -232,6 +272,7 @@ export async function snapshotVersion(
       byteSize,
       ...(meta?.source ? { source: meta.source } : {}),
       ...(meta?.label ? { label: meta.label } : {}),
+      ...(meta?.origin ? { origins: [meta.origin] } : {}),
     });
 
     // Eviction: keep at most MAX_VERSIONS_PER_FILE rolling versions, but the
@@ -245,25 +286,45 @@ export async function snapshotVersion(
       const oldest = index.versions.splice(hasBaseline ? 1 : 0, 1)[0];
       if (oldest) {
         try {
-          await remove(joinPath(dir, snapFileName(oldest.id)));
+          await snapshotIO(guard, () => remove(joinPath(dir, snapFileName(oldest.id))));
         } catch (err) {
+          if (err instanceof FileOperationDenied) throw err;
+          await guard?.assertCurrent();
+          guard?.assertActive();
           console.warn('[canvasVersions] failed to remove evicted snapshot', filePath, oldest.id, err);
         }
       }
     }
 
-    await saveIndex(dir, index);
+    await saveIndex(dir, index, guard);
   });
 }
 
-/** List all versions for `filePath`, most recent first. Empty array if no history (or on any read failure). */
-export async function listVersions(filePath: string): Promise<VersionMeta[]> {
+/** Adds `origin` to the version `id` of `filePath`. */
+async function recordOrigin(filePath: string, id: string, origin: VersionOrigin): Promise<void> {
+  const dir = await getHistoryDir(filePath);
+  await withDirLock(dir, async () => {
+    const index = await loadIndex(dir, filePath);
+    const version = index.versions.find((item) => item.id === id);
+    if (version && addOrigin(version, origin)) await saveIndex(dir, index);
+  });
+}
+
+/**
+ * List the versions of `filePath`, most recent first. With `filter`, only the
+ * versions left in that conversation. Empty array if no history (or on any
+ * read failure).
+ */
+export async function listVersions(filePath: string, filter?: { conversationId: string }): Promise<VersionMeta[]> {
   const dir = await getHistoryDir(filePath);
   const index = await loadIndex(dir, filePath);
+  const versions = filter
+    ? index.versions.filter((version) => version.origins?.some((origin) => origin.conversationId === filter.conversationId))
+    : index.versions;
   // Tie-break same-millisecond snapshots (common in fast succession / tests)
   // by the monotonic `seq` suffix embedded in the id, so insertion order is
   // preserved even when Date.now() doesn't advance between two snapshots.
-  return [...index.versions].sort((a, b) => {
+  return [...versions].sort((a, b) => {
     if (b.ts !== a.ts) return b.ts - a.ts;
     return Number(b.id.split('-').pop()) - Number(a.id.split('-').pop());
   });
@@ -279,9 +340,11 @@ export async function readVersion(filePath: string, id: string): Promise<string>
  * Revert `filePath` on disk to the content of snapshot `id`.
  * Reads the snapshot, atomically writes it back to `filePath`, and returns
  * the written content (so callers can update in-memory state immediately
- * without waiting on the fs-watch round trip).
+ * without waiting on the fs-watch round trip). The version that keeps the
+ * content from before the revert records `origin`, the conversation that
+ * asked for it; null when the revert was asked outside any conversation.
  */
-export async function revertToVersion(filePath: string, id: string): Promise<string> {
+export async function revertToVersion(filePath: string, id: string, origin: VersionOrigin | null): Promise<string> {
   const content = await readVersion(filePath, id);
   // Safety snapshot of the current on-disk state before overwriting, so a
   // revert is itself revertable (undo-the-undo without a redo stack).
@@ -296,10 +359,13 @@ export async function revertToVersion(filePath: string, id: string): Promise<str
       // baseline) entry, in which case it's already recoverable and doesn't
       // need a fresh pre-revert copy. Deliberately does not backfill
       // REVERT_LABEL onto the matched entry: that entry has its own meaning
-      // (e.g. the baseline) and shouldn't be relabeled as a revert point.
-      const alreadyRecoverable = await contentExistsInHistory(dir, index, current);
-      if (!alreadyRecoverable) {
-        await snapshotVersion(filePath, current, { source: 'manual', label: REVERT_LABEL });
+      // (e.g. the baseline) and shouldn't be relabeled as a revert point; it
+      // only gains the reverting conversation as an origin.
+      const recoverable = await versionWithContent(dir, index, current);
+      if (recoverable) {
+        if (origin) await recordOrigin(filePath, recoverable.id, origin);
+      } else {
+        await snapshotVersion(filePath, current, { source: 'manual', label: REVERT_LABEL, ...(origin ? { origin } : {}) });
       }
     }
   } catch (err) {

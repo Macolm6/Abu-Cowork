@@ -33,7 +33,8 @@
 const os = require('node:os');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawn, execFileSync } = require('node:child_process');
+const { spawn, spawnSync, execFileSync } = require('node:child_process');
+const { ownedChildProcesses } = require('./ownedChildProcesses.cjs');
 const { resourceRoot, REPO_ROOT } = require('./appEnv.cjs');
 const {
   resolveBundledProgram,
@@ -580,25 +581,108 @@ function getNetworkProxyPort() {
 
 // ── Foreground / background process execution ──
 
-const MAX_OUTPUT_BUF_CHARS = 2_000_000; // ~2M chars per stream; generous cap against runaway output
+const MAX_OUTPUT_BUF_BYTES = 2_000_000; // ~2MB per stream; generous cap against runaway output
 const COMMAND_MISS = Symbol('command-dispatch-miss');
 const activeCommands = new Map();
 let commandSeq = 0;
 let lifecycleHooksRegistered = false;
+// The table of background commands (backgroundCommands.cjs), installed once
+// by tauriHost.cjs with the renderer event emitter.
+let backgroundCommands = null;
+
+function installBackgroundCommands(table) {
+  if (!table || typeof table.register !== 'function') {
+    throw new TypeError('installBackgroundCommands: a background command table is required');
+  }
+  if (backgroundCommands) throw new Error('installBackgroundCommands: a table is already installed');
+  backgroundCommands = table;
+}
+
+function requireBackgroundCommands() {
+  if (!backgroundCommands) throw new Error('background commands: no table is installed');
+  return backgroundCommands;
+}
+
+// ── Console output decoding ──
+
+/**
+ * A Windows console program writes in the console output code page, which on a
+ * Chinese system is 936 (GBK) rather than UTF-8. Decoding those bytes as UTF-8
+ * turns every Chinese error message into replacement characters, and that
+ * garbled text is what both the user and the model then have to work from.
+ *
+ * Windows itself is asked which code page is active — once, and only when
+ * output that is not valid UTF-8 actually shows up. Anything emitting UTF-8
+ * never reaches this path.
+ */
+const WHATWG_LABEL_BY_CODE_PAGE = new Map([
+  [866, 'ibm866'],
+  [932, 'shift_jis'],
+  [936, 'gbk'],
+  [949, 'euc-kr'],
+  [950, 'big5'],
+  [1250, 'windows-1250'],
+  [1251, 'windows-1251'],
+  [1252, 'windows-1252'],
+  [1253, 'windows-1253'],
+  [1254, 'windows-1254'],
+  [1255, 'windows-1255'],
+  [1256, 'windows-1256'],
+  [1257, 'windows-1257'],
+  [1258, 'windows-1258'],
+]);
+
+function codePageEncodingLabel(codePage) {
+  return WHATWG_LABEL_BY_CODE_PAGE.get(codePage) ?? null;
+}
+
+function activeWindowsCodePage() {
+  // chcp.com prints the active console code page. Every localization wraps the
+  // number in different words, so only the trailing digits are read.
+  const probe = spawnSync('chcp.com', [], { windowsHide: true, encoding: 'latin1', timeout: 5000 });
+  if (probe.error || probe.status !== 0) return 0;
+  const digits = String(probe.stdout || '').match(/(\d{3,5})\s*$/);
+  return digits ? Number(digits[1]) : 0;
+}
+
+let legacyEncodingLabel; // undefined = not asked yet, null = Windows named a code page we cannot decode
+
+function legacyConsoleEncoding() {
+  if (legacyEncodingLabel !== undefined) return legacyEncodingLabel;
+  legacyEncodingLabel =
+    process.platform === 'win32' ? codePageEncodingLabel(activeWindowsCodePage()) : null;
+  return legacyEncodingLabel;
+}
+
+/**
+ * Decode one stream's raw bytes. Buffering bytes rather than decoded text is
+ * also what keeps a multi-byte character split across two `data` events whole.
+ */
+function decodeCommandOutput(buf, encodingLabel = legacyConsoleEncoding()) {
+  if (buf.length === 0) return '';
+  const asUtf8 = buf.toString('utf8');
+  if (Buffer.compare(Buffer.from(asUtf8, 'utf8'), buf) === 0) return asUtf8;
+  return encodingLabel ? new TextDecoder(encodingLabel).decode(buf) : asUtf8;
+}
 
 function makeCappedCollector() {
-  const state = { buf: '', truncated: false };
+  const state = { chunks: [], bytes: 0, truncated: false };
   return {
-    push(chunkStr) {
+    push(chunk) {
       if (state.truncated) return;
-      state.buf += chunkStr;
-      if (state.buf.length > MAX_OUTPUT_BUF_CHARS) {
-        state.buf = state.buf.slice(0, MAX_OUTPUT_BUF_CHARS) + '\n[truncated: output too large]';
+      const room = MAX_OUTPUT_BUF_BYTES - state.bytes;
+      if (chunk.length > room) {
+        state.chunks.push(chunk.subarray(0, room));
+        state.bytes = MAX_OUTPUT_BUF_BYTES;
         state.truncated = true;
+        return;
       }
+      state.chunks.push(chunk);
+      state.bytes += chunk.length;
     },
     get value() {
-      return state.buf;
+      const text = decodeCommandOutput(Buffer.concat(state.chunks, state.bytes));
+      return state.truncated ? `${text}\n[truncated: output too large]` : text;
     },
   };
 }
@@ -615,6 +699,30 @@ function sandboxLauncherPathFor(app) {
   const devDist = path.join(REPO_ROOT, 'electron', 'sandbox-launcher', 'dist', process.platform, exe);
   if (fs.existsSync(devDist)) return devDist;
   return path.join(REPO_ROOT, 'electron', 'sandbox-launcher', 'target', 'release', exe);
+}
+
+/**
+ * Everything about the host that must hold before a command can run at all.
+ * Both conditions below used to reach the caller as the same
+ * `spawn <launcherPath> ENOENT` from child_process, so neither the user nor
+ * the model could tell a missing launcher from a missing working directory,
+ * and neither message named anything the user could act on.
+ *
+ * Returns a Chinese, actionable sentence, or null when the host is fine.
+ */
+function preflightCommandHost(launcherPath, cwd) {
+  if (!fs.existsSync(launcherPath)) {
+    return `阿布的命令启动器不在应有的位置（${launcherPath}），所有命令执行都无法使用。这个文件通常是被安全软件删除或隔离了：把阿布的安装目录加入安全软件的信任列表，然后重新安装阿布。`;
+  }
+  if (cwd) {
+    if (!fs.existsSync(cwd)) {
+      return `工作目录不存在：${cwd}。请换一个存在的目录，或者先创建它。`;
+    }
+    if (!fs.statSync(cwd).isDirectory()) {
+      return `工作目录不是一个目录：${cwd}。请换成一个目录。`;
+    }
+  }
+  return null;
 }
 
 function makeLauncherConfig(spec, sandboxEnabled) {
@@ -739,7 +847,15 @@ function abortCommand(commandId) {
   if (typeof commandId !== 'string' || commandId.length === 0) return false;
   const set = activeCommands.get(commandId);
   if (!set || set.size === 0) return false;
-  for (const entry of Array.from(set)) killProcessTree(entry);
+  for (const entry of Array.from(set)) {
+    // Marked first, so the row settles as stopped although the launcher exits
+    // with a kill status. A killed entry was already stopped through the table
+    // or its row is gone (stopConversation).
+    if (entry.backgroundCommandId && !entry.killed && !entry.completed) {
+      requireBackgroundCommands().markStopRequested(entry.backgroundCommandId);
+    }
+    killProcessTree(entry);
+  }
   return true;
 }
 
@@ -754,12 +870,15 @@ function ensureCommandHostLifecycleHooks(app) {
   lifecycleHooksRegistered = true;
   const cleanup = () => teardownCommandHost();
   process.once('exit', cleanup);
-  app?.once?.('before-quit', cleanup);
+  // 'will-quit' comes once the quit is certain; 'before-quit' also fires for a
+  // quit the user calls off, and commands in flight have to outlive that one.
+  app?.once?.('will-quit', cleanup);
 }
 
 function __resetCommandHostForTests() {
   teardownCommandHost();
   activeCommands.clear();
+  backgroundCommands = null;
 }
 
 /**
@@ -769,10 +888,17 @@ function __resetCommandHostForTests() {
  * Object with KILL_ON_JOB_CLOSE inside the launcher.
  */
 function spawnForeground(app, spec, opts, timeoutSecs, commandId) {
+  ownedChildProcesses.assertAdmission();
   return new Promise((resolve) => {
     const { file, args, env } = spec;
     const launcherPath = sandboxLauncherPathFor(app);
+    const hostProblem = preflightCommandHost(launcherPath, opts.cwd);
+    if (hostProblem) {
+      resolve({ stdout: '', stderr: hostProblem, code: -1 });
+      return;
+    }
     const spawnEnv = { ...process.env, ...(env || {}), ...(opts.envOverride || {}) };
+    opts.assertCurrent?.();
 
     let child;
     try {
@@ -788,12 +914,15 @@ function spawnForeground(app, spec, opts, timeoutSecs, commandId) {
     }
 
     const entry = { commandId, child, completed: false, killed: false, forceKillTimer: null };
+    ownedChildProcesses.track(child, () => killProcessTree(entry));
+    opts.onConsumerStarted?.(() => killProcessTree(entry));
+    child.once('close', () => opts.onConsumerClosed?.());
     addActiveCommand(entry);
 
     const stdoutC = makeCappedCollector();
     const stderrC = makeCappedCollector();
-    child.stdout?.on('data', (chunk) => stdoutC.push(chunk.toString('utf8')));
-    child.stderr?.on('data', (chunk) => stderrC.push(chunk.toString('utf8')));
+    child.stdout?.on('data', (chunk) => stdoutC.push(chunk));
+    child.stderr?.on('data', (chunk) => stderrC.push(chunk));
     child.stdin?.on('error', () => {});
     child.stdin?.write(`${JSON.stringify(makeLauncherConfig({ file, args }, opts.sandboxEnabled))}\n`);
 
@@ -841,12 +970,39 @@ function spawnForeground(app, spec, opts, timeoutSecs, commandId) {
  * collecting initial output OR until the process exits early, then return —
  * keeping the process tracked for abort_command/app teardown if still alive.
  * The 3s return semantics and placeholder string match Tauri.
+ *
+ * The command is also registered in the background command table, which keeps
+ * its output and status after the 3s result; the result carries the row's id.
+ * `opts.onFinished(code)` is called once, when the process really exits or
+ * fails to start.
  */
 function spawnBackground(app, spec, opts, commandId) {
+  ownedChildProcesses.assertAdmission();
+  const table = requireBackgroundCommands();
   return new Promise((resolve) => {
+    let finished = false;
+    const finishOnce = (code) => {
+      if (finished) return;
+      finished = true;
+      opts.onFinished(code);
+    };
     const { file, args, env } = spec;
     const launcherPath = sandboxLauncherPathFor(app);
+    const hostProblem = preflightCommandHost(launcherPath, opts.cwd);
+    if (hostProblem) {
+      finishOnce(-1);
+      resolve({ stdout: '', stderr: hostProblem, code: -1 });
+      return;
+    }
     const spawnEnv = { ...process.env, ...(env || {}), ...(opts.envOverride || {}) };
+
+    // Registered before spawn, so a table that refuses the row leaves no process behind.
+    const registration = table.register({
+      conversationId: opts.conversationId,
+      command: opts.command,
+      cwd: opts.cwd,
+    });
+    const backgroundCommandId = registration.id;
 
     let child;
     try {
@@ -857,17 +1013,23 @@ function spawnBackground(app, spec, opts, commandId) {
         detached: process.platform !== 'win32',
       });
     } catch (e) {
+      table.discard(backgroundCommandId);
+      finishOnce(-1);
       resolve({ stdout: '', stderr: `Failed to spawn command: ${e instanceof Error ? e.message : String(e)}`, code: -1 });
       return;
     }
 
-    const entry = { commandId, child, completed: false, killed: false, forceKillTimer: null };
+    const entry = { commandId, child, completed: false, killed: false, forceKillTimer: null, backgroundCommandId };
+    ownedChildProcesses.track(child, () => killProcessTree(entry));
     addActiveCommand(entry);
+    // Attached before the listeners below, so the row has settled by the time
+    // an early exit resolves the result.
+    registration.attach({ child, stop: () => killProcessTree(entry) });
 
     const stdoutC = makeCappedCollector();
     const stderrC = makeCappedCollector();
-    child.stdout?.on('data', (chunk) => stdoutC.push(chunk.toString('utf8')));
-    child.stderr?.on('data', (chunk) => stderrC.push(chunk.toString('utf8')));
+    child.stdout?.on('data', (chunk) => stdoutC.push(chunk));
+    child.stderr?.on('data', (chunk) => stderrC.push(chunk));
     child.stdin?.on('error', () => {});
     child.stdin?.write(`${JSON.stringify(makeLauncherConfig({ file, args }, opts.sandboxEnabled))}\n`);
 
@@ -882,6 +1044,8 @@ function spawnBackground(app, spec, opts, commandId) {
         stdout: stdoutResult.trim() === '' && stderrResult.trim() === '' ? '服务已在后台启动' : stdoutResult,
         stderr: stderrResult,
         code: 0, // process is still running; 0 = "started successfully" (matches Rust)
+        backgroundCommandId,
+        running: true,
       });
       // Deliberately NOT killed — the process continues running in the
       // background (matches Tauri semantics). It remains in activeCommands so
@@ -895,16 +1059,20 @@ function spawnBackground(app, spec, opts, commandId) {
       removeActiveCommand(entry);
       clearTimeout(waitTimer);
       if (entry.forceKillTimer) clearTimeout(entry.forceKillTimer);
+      // The command never started, so it is not listed.
+      table.discard(backgroundCommandId);
+      finishOnce(-1);
       resolve({ stdout: stdoutC.value, stderr: stderrC.value || String(e.message || e), code: -1 });
     });
     child.once('close', (code) => {
       entry.completed = true;
       removeActiveCommand(entry);
       if (entry.forceKillTimer) clearTimeout(entry.forceKillTimer);
+      finishOnce(code ?? -1);
       if (settled) return;
       settled = true;
       clearTimeout(waitTimer);
-      resolve({ stdout: stdoutC.value, stderr: stderrC.value, code: code ?? -1 });
+      resolve({ stdout: stdoutC.value, stderr: stderrC.value, code: code ?? -1, backgroundCommandId, running: false });
     });
   });
 }
@@ -917,6 +1085,10 @@ async function runShellCommand(app, args) {
   const command = String(a.command ?? '');
   const cwd = typeof a.cwd === 'string' && a.cwd ? a.cwd : undefined;
   const isBackground = !!a.background;
+  const conversationId = a.conversationId;
+  if (isBackground && (typeof conversationId !== 'string' || conversationId === '')) {
+    throw new TypeError('run_shell_command: a background command requires a conversationId');
+  }
   const timeoutSecs = Math.min(Math.max(1, Number(a.timeout ?? 30) || 30), 300); // default 30s, max 300s
   const commandId = typeof a.commandId === 'string' && a.commandId ? a.commandId : makeCommandId('shell');
   const sandboxEnabled = a.sandboxEnabled !== false; // unwrap_or(true)
@@ -935,28 +1107,44 @@ async function runShellCommand(app, args) {
   const envOverride = bundledRuntimeEnv(app);
 
   const startedAt = Date.now();
-  const result = isBackground
-    ? await spawnBackground(app, spec, { cwd, envOverride, sandboxEnabled }, commandId)
-    : await spawnForeground(app, spec, { cwd, envOverride, sandboxEnabled }, timeoutSecs, commandId);
   // The observability layer redacts and truncates `command` (see
   // runtimeObservability's sanitizeAttributes) — pass the raw caller command.
-  runtimeState.noteCommandFinished({
-    command,
-    exitCode: result.code,
-    durationMs: Date.now() - startedAt,
-    sandboxEnabled,
-    executionPath: isBackground ? 'background' : 'foreground',
-  });
+  const noteFinished = (exitCode) =>
+    runtimeState.noteCommandFinished({
+      command,
+      exitCode,
+      durationMs: Date.now() - startedAt,
+      sandboxEnabled,
+      executionPath: isBackground ? 'background' : 'foreground',
+    });
+  let result;
+  if (isBackground) {
+    // A background command is noted when its process exits, with its real exit code.
+    result = await spawnBackground(
+      app,
+      spec,
+      { cwd, envOverride, sandboxEnabled, conversationId, command, onFinished: noteFinished },
+      commandId,
+    );
+  } else {
+    result = await spawnForeground(app, spec, { cwd, envOverride, sandboxEnabled }, timeoutSecs, commandId);
+    noteFinished(result.code);
+  }
 
-  return {
+  const response = {
     stdout: result.stdout,
     stderr: annotateSandboxViolations(result.stderr, command, sandboxEnabled),
     code: result.code,
   };
+  if (result.backgroundCommandId) {
+    response.backgroundCommandId = result.backgroundCommandId;
+    response.running = result.running;
+  }
+  return response;
 }
 
 /** No background mode: argv tools are always foreground with a timeout (matches Rust). */
-async function runArgvCommand(app, args) {
+async function runArgvCommand(app, args, internalOptions = {}) {
   ensureCommandHostLifecycleHooks(app);
   const a = args || {};
   const program = String(a.program ?? '');
@@ -984,7 +1172,7 @@ async function runArgvCommand(app, args) {
   const result = await spawnForeground(
     app,
     spec,
-    { cwd, envOverride, sandboxEnabled },
+    { cwd, envOverride, sandboxEnabled, ...internalOptions },
     timeoutSecs,
     commandId
   );
@@ -1047,14 +1235,33 @@ function getEnvVars(args) {
  * @param {string} cmd
  * @param {Record<string, unknown>} args
  */
-async function commandDispatch(app, cmd, args) {
+async function commandDispatch(app, cmd, args, internalOptions) {
   switch (cmd) {
     case 'run_shell_command':
       return runShellCommand(app, args);
     case 'run_argv_command':
-      return runArgvCommand(app, args);
+      return runArgvCommand(app, args, internalOptions);
     case 'abort_command':
       return abortCommand((args || {}).commandId);
+    // The table checks that the conversation owns the row and throws otherwise.
+    case 'background_command_list':
+      return requireBackgroundCommands().list((args || {}).conversationId);
+    case 'background_command_output': {
+      const a = args || {};
+      return requireBackgroundCommands().read(a.conversationId, a.id, a.since);
+    }
+    case 'background_command_stop': {
+      const a = args || {};
+      return requireBackgroundCommands().requestStop(a.conversationId, a.id);
+    }
+    case 'background_command_clear':
+      requireBackgroundCommands().clear((args || {}).conversationId);
+      return null;
+    case 'background_command_stop_conversation':
+      requireBackgroundCommands().stopConversation((args || {}).conversationId);
+      return null;
+    case 'background_command_running_count':
+      return requireBackgroundCommands().runningCount((args || {}).conversationId);
     case 'get_env_vars':
       return getEnvVars(args);
     default:
@@ -1066,6 +1273,8 @@ module.exports = {
   commandDispatch,
   COMMAND_MISS,
   teardownCommandHost,
+  installBackgroundCommands,
+  legacyConsoleEncoding,
   // exported for the verify harness + potential reuse
   generateSeatbeltProfile,
   buildSandboxedCommandSpec,
@@ -1077,6 +1286,10 @@ module.exports = {
   ENV_VAR_ALLOWED_PREFIXES,
   __resetCommandHostForTests,
   unixDescendantPids,
+  codePageEncodingLabel,
+  decodeCommandOutput,
+  makeCappedCollector,
+  preflightCommandHost,
   sandboxLauncherPathFor,
   rewriteWindowsBundledPythonCommand,
 };

@@ -1,89 +1,73 @@
 // src/components/settings/sections/EnterpriseSection.tsx
-import { useState } from 'react'
 import { useI18n } from '@/i18n'
 import { useEnterpriseStore } from '@/stores/enterpriseStore'
 import { MountPoint } from '@/core/enterprise/mounts'
-import { getEnterpriseMount } from '@/core/enterprise/mounts-registry'
-import { Button } from '@/components/ui/button'
-import BindToEnterpriseFlow from '@/components/enterprise/BindToEnterpriseFlow'
+import { Button } from '@/components/ds/button'
+import { useConfirm } from '@/components/ds/confirm-context'
+import { StatusIcon } from '@/components/ds/status-icon'
+import { Tag } from '@/components/ds/tag'
+import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader'
+import EnterpriseConnectionSlot from '@/components/enterprise/EnterpriseConnectionSlot'
 // Side-effect import: registers BrandSlot in the enterprise mounts registry.
 import '@/components/enterprise/BrandSlot'
-// The /me transparency page and migration wizard are registered by the
-// enterprise-modules entry point (real impls in the enterprise build, no-op in
-// OSS). Read below via getEnterpriseMount() — NullComponent fallback in OSS, so
-// this file never imports enterprise UI directly.
 
 export default function EnterpriseSection() {
   const { t } = useI18n()
   const mode = useEnterpriseStore(s => s.mode)
   const unbind = useEnterpriseStore(s => s.unbind)
-  const [showBind, setShowBind] = useState(false)
-  const [showMe, setShowMe] = useState(false)
-  const [showMigration, setShowMigration] = useState(false)
+  const confirm = useConfirm()
 
   if (mode.kind === 'personal') {
     return (
       <div className="space-y-4">
-        <div>
-          <h2 className="text-h-sm font-semibold text-[var(--abu-text-primary)] mb-1">{t.enterprise.title}</h2>
-          <p className="text-body text-[var(--abu-text-tertiary)]">
-            {t.enterprise.description}
-          </p>
-        </div>
-        <section className="space-y-3 rounded-xl border border-[var(--abu-border)] p-4">
-          <h3 className="text-body font-medium text-[var(--abu-text-primary)]">{t.enterprise.bindSectionTitle}</h3>
-          <p className="text-minor text-[var(--abu-text-tertiary)]">
-            {t.enterprise.bindSectionDesc}
-          </p>
-          <Button size="sm" onClick={() => setShowBind(true)}>{t.enterprise.bindButton}</Button>
-        </section>
-        {showBind && (
-          <BindToEnterpriseFlow
-            onDone={() => setShowBind(false)}
-            onCancel={() => setShowBind(false)}
-          />
-        )}
+        <SettingsSectionHeader title={t.enterprise.title} description={t.enterprise.description} />
+        <EnterpriseConnectionSlot />
       </div>
     )
   }
 
   const binding = mode.kind === 'enterprise' || mode.kind === 'offline' ? mode.binding : null
   const config = mode.kind === 'enterprise' ? mode.config : mode.kind === 'offline' ? mode.lastConfig : null
+  const licenseValid = config?.licenseStatus === 'valid'
 
-  const MeView = getEnterpriseMount('meTransparencyPage')
-  const MigrationWizard = getEnterpriseMount('migrationWizard')
+  const askToUnbind = async () => {
+    const asked = binding?.serverUrl
+    if (!await confirm({ title: t.enterprise.unbindConfirm, message: asked, confirmLabel: t.enterprise.unbindButton, tone: 'danger' })) return
+    // Read again at answer time: only the instance the question named is unbound.
+    const now = useEnterpriseStore.getState().mode
+    if (now.kind === 'personal' || now.binding.serverUrl !== asked) return
+    void unbind()
+  }
 
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-h-sm font-semibold text-[var(--abu-text-primary)] mb-1">
-          {t.enterprise.title}
-          {mode.kind === 'offline' && (
-            <span className="ml-2 text-minor text-[var(--abu-warning)] font-normal">{t.enterprise.offlineBadge}</span>
-          )}
-        </h2>
-        <p className="text-body text-[var(--abu-text-tertiary)]">{t.enterprise.boundStatus}</p>
+        <SettingsSectionHeader title={t.enterprise.title} description={t.enterprise.boundStatus} />
+        {mode.kind === 'offline' && (
+          <div className="mt-2"><Tag tone="warning">{t.enterprise.offlineBadge}</Tag></div>
+        )}
       </div>
 
-      <section className="space-y-3 rounded-xl border border-[var(--abu-border)] p-4">
+      <section className="space-y-3 rounded-panel border border-separator p-4">
         <MountPoint slot="brandSlot" binding={binding} config={config} size="md" />
-        <dl className="mt-3 space-y-2 text-body">
+        <dl className="mt-3 space-y-2 text-ui">
           <div className="flex justify-between">
-            <dt className="text-[var(--abu-text-tertiary)]">{t.enterprise.instanceLabel}</dt>
-            <dd className="text-[var(--abu-text-primary)] font-mono text-minor">{binding?.serverUrl}</dd>
+            <dt className="text-label-tertiary">{t.enterprise.instanceLabel}</dt>
+            <dd className="font-code text-ui-sm text-label">{binding?.serverUrl}</dd>
           </div>
           <div className="flex justify-between">
-            <dt className="text-[var(--abu-text-tertiary)]">{t.enterprise.loginIdentityLabel}</dt>
-            <dd className="text-[var(--abu-text-primary)]">{binding?.userEmail}</dd>
+            <dt className="text-label-tertiary">{t.enterprise.loginIdentityLabel}</dt>
+            <dd className="text-label">{binding?.userEmail}</dd>
           </div>
           <div className="flex justify-between">
-            <dt className="text-[var(--abu-text-tertiary)]">{t.enterprise.boundAtLabel}</dt>
-            <dd className="text-[var(--abu-text-primary)]">{binding?.boundAt?.slice(0, 10)}</dd>
+            <dt className="text-label-tertiary">{t.enterprise.boundAtLabel}</dt>
+            <dd className="text-label">{binding?.boundAt?.slice(0, 10)}</dd>
           </div>
           {config?.licenseStatus && (
             <div className="flex justify-between">
-              <dt className="text-[var(--abu-text-tertiary)]">License</dt>
-              <dd className={config.licenseStatus === 'valid' ? 'text-[var(--abu-success)]' : 'text-[var(--abu-warning)]'}>
+              <dt className="text-label-tertiary">License</dt>
+              <dd className={licenseValid ? 'inline-flex items-center gap-1 text-success' : 'inline-flex items-center gap-1 text-warning'}>
+                <StatusIcon tone={licenseValid ? 'success' : 'warning'} size="sm" />
                 {config.licenseStatus}
               </dd>
             </div>
@@ -91,45 +75,9 @@ export default function EnterpriseSection() {
         </dl>
       </section>
 
-      {/* /me transparency panel */}
-      <section className="space-y-2">
-        <div className="flex items-center justify-between">
-          <h3 className="text-body font-medium text-[var(--abu-text-primary)]">{t.enterprise.myDataTitle}</h3>
-          <Button variant="ghost" size="sm" onClick={() => setShowMe(v => !v)}>
-            {showMe ? t.enterprise.collapseData : t.enterprise.viewMyData}
-          </Button>
-        </div>
-        {showMe && binding && (
-          <MeView binding={binding} config={config} />
-        )}
-      </section>
-
-      {/* Personal-to-enterprise migration */}
-      <section className="space-y-2">
-        <div className="flex items-center justify-between">
-          <h3 className="text-body font-medium text-[var(--abu-text-primary)]">{t.enterprise.migrationTitle}</h3>
-          <Button variant="ghost" size="sm" onClick={() => setShowMigration(true)}>
-            {t.enterprise.migrateButton}
-          </Button>
-        </div>
-        <p className="text-minor text-[var(--abu-text-tertiary)]">
-          {t.enterprise.migrateDescription}
-        </p>
-      </section>
-
-      <Button
-        variant="destructive"
-        size="sm"
-        onClick={() => {
-          if (confirm(t.enterprise.unbindConfirm)) {
-            void unbind()
-          }
-        }}
-      >
+      <Button variant="danger" size="sm" onClick={() => void askToUnbind()}>
         {t.enterprise.unbindButton}
       </Button>
-
-      {showMigration && <MigrationWizard onClose={() => setShowMigration(false)} />}
     </div>
   )
 }

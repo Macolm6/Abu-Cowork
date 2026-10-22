@@ -1,0 +1,13 @@
+{
+  "name": "broken-fixture",
+  "plugins": [
+    { "name": "missing-min-version", "version": "1.0.0", "source": "./plugins/missing-min-version" },
+    { "name": "unsafe-skill-name", "version": "1.0.0", "source": "./plugins/unsafe-skill-name" },
+    { "name": "bad-mcp-shape", "version": "1.0.0", "source": "./plugins/bad-mcp-shape" }
+  ],
+  "apps": [
+    { "name": "wrong-ref", "source": "./apps/wrong-ref" },
+    { "name": "unknown-plugin", "source": "./apps/unknown-plugin" },
+    { "name": "version-drift", "version": "2.0.0", "description": { "en-US": "Version mismatch" }, "source": "./apps/version-drift" }
+  ]
+}

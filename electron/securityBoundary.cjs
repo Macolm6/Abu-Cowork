@@ -29,6 +29,11 @@ const TEXT_RAW_BODY_COMMANDS = new Map([
   ['append_file_text', { required: ['path'], optional: [], singleLine: false }],
   ['atomic_write_text', { required: ['path'], optional: [], singleLine: false }],
 ]);
+// A file's bytes published whole: the body is the content as it is, the
+// `path` and `mode` headers say where and how (fsHost.cjs writeFileAtomic).
+// It has no plain-args form.
+const ATOMIC_FILE_WRITE_COMMAND = 'write_file_atomic';
+const ATOMIC_FILE_WRITE_MODES = new Set(['replace', 'create']);
 const RESTRICTED_WINDOW_COMMANDS = new Map([
   [
     'pet',
@@ -49,6 +54,7 @@ const RESTRICTED_WINDOW_COMMANDS = new Map([
   ],
   ['overlay', new Set(['plugin:event|listen', 'plugin:event|unlisten'])],
   ['stop-button', new Set(['plugin:event|emit'])],
+  ['overlay-strip', new Set(['plugin:event|listen', 'plugin:event|unlisten', 'plugin:event|emit'])],
 ]);
 const RESTRICTED_EMITTED_EVENTS = new Map([
   [
@@ -62,10 +68,12 @@ const RESTRICTED_EMITTED_EVENTS = new Map([
     ]),
   ],
   ['stop-button', new Set(['computer-use-abort'])],
+  ['overlay-strip', new Set(['computer-use-abort', 'computer-use-resume', 'computer-use-dismiss'])],
 ]);
 const RESTRICTED_LISTENED_EVENTS = new Map([
   ['pet', new Set(['pet-status-update', 'tauri://move'])],
-  ['overlay', new Set(['computer-use-status'])],
+  ['overlay', new Set(['computer-use-status', 'computer-use-heartbeat', 'computer-use-cursor'])],
+  ['overlay-strip', new Set(['computer-use-status', 'computer-use-heartbeat'])],
 ]);
 const BASE_DIRECTORY_VALUES = new Set(Array.from({ length: 23 }, (_v, i) => i + 1));
 const PATH_KEYS = new Set([
@@ -337,6 +345,20 @@ function assertTrustedIpcSender(event) {
   return result.record;
 }
 
+/**
+ * Whether `rawUrl` is the registered page of the main window's WebContents.
+ * Used by Chromium permission handlers, which see a WebContents + URL rather
+ * than an IPC event.
+ *
+ * @param {object | null | undefined} webContents
+ * @param {string} rawUrl
+ */
+function isTrustedMainWindowPage(webContents, rawUrl) {
+  const record = webContents && trustedWebContents.get(webContents);
+  if (!record || record.label !== 'main' || isDestroyedSender(webContents)) return false;
+  return typeof rawUrl === 'string' && isAllowedRegisteredPage(record, rawUrl);
+}
+
 function assertTrustedMainIpcSender(event) {
   const record = assertTrustedIpcSender(event);
   if (record.label !== 'main') {
@@ -556,6 +578,39 @@ function validateTextRawBody(cmd, spec, args, body, headers) {
   return { cmd, args: { path: decodedPath }, body: bytes, headers: rest };
 }
 
+// The one form of `write_file_atomic`: bytes in `body`, exactly the `path`
+// and `mode` headers. Returns the decoded path and the mode as `args`.
+function validateAtomicFileWrite(cmd, args, body, headers) {
+  if (args !== undefined && args !== null) throw new Error(`${cmd} must not carry args`);
+  const bodyBytes = bodyByteLength(body);
+  if (bodyBytes == null) throw new Error(`${cmd} requires a binary body`);
+  const limit = rawBodyLimitFor(cmd);
+  if (bodyBytes > limit) throw createPayloadTooLargeError({ bytes: bodyBytes, limit, method: cmd });
+  if (!isPlainRecord(headers)) throw new Error(`${cmd} requires plain-object headers`);
+  for (const key of Object.keys(headers)) {
+    if (key !== 'path' && key !== 'mode') throw new Error(`${cmd} header ${key} is not allowed`);
+  }
+  const { path: encodedPath, mode } = headers;
+  if (
+    typeof encodedPath !== 'string'
+    || encodedPath.length === 0
+    || encodedPath.includes('\0')
+    || byteLength(encodedPath) > MAX_PATH_BYTES
+  ) {
+    throw new Error(`${cmd} header path is invalid`);
+  }
+  if (!ATOMIC_FILE_WRITE_MODES.has(mode)) throw new Error(`${cmd} header mode is invalid`);
+  let decodedPath;
+  try {
+    decodedPath = decodeURIComponent(encodedPath);
+  } catch {
+    throw new Error(`${cmd} path header is not valid URI encoding`);
+  }
+  assertSafePath(decodedPath, `${cmd} path header`);
+  assertAbsolutePath(decodedPath, `${cmd} path header`);
+  return { cmd, args: { path: decodedPath, mode }, body: toBuffer(body) };
+}
+
 function validateInvokePayload(record, payload) {
   if (!isPlainRecord(payload)) throw new Error('IPC payload must be a plain object');
   for (const key of Object.keys(payload)) {
@@ -579,6 +634,7 @@ function validateInvokePayload(record, payload) {
   if (textSpec && (body !== undefined || headers !== undefined)) {
     return validateTextRawBody(cmd, textSpec, args, body, headers);
   }
+  if (cmd === ATOMIC_FILE_WRITE_COMMAND) return validateAtomicFileWrite(cmd, args, body, headers);
 
   if (args != null) {
     if (!isPlainRecord(args)) throw new Error('IPC args must be a plain object');
@@ -652,6 +708,7 @@ module.exports = {
   validateTrustedIpcSender,
   assertTrustedIpcSender,
   assertTrustedMainIpcSender,
+  isTrustedMainWindowPage,
   canonicalFilePage,
   isWindowsAbsolutePath,
   canonicalNavigatedFilePage,

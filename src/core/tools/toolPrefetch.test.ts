@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { CORE_TOOL_NAMES, prefetchTools, type PrefetchContext } from './toolPrefetch';
 
 function makeCtx(overrides: Partial<PrefetchContext> = {}): PrefetchContext {
@@ -13,8 +13,16 @@ function makeCtx(overrides: Partial<PrefetchContext> = {}): PrefetchContext {
 
 describe('toolPrefetch', () => {
   describe('CORE_TOOL_NAMES', () => {
-    it('should contain 16 core tools', () => {
-      expect(CORE_TOOL_NAMES.size).toBe(16);
+    it('should contain 18 core tools', () => {
+      expect(CORE_TOOL_NAMES.size).toBe(18);
+    });
+
+    it('offers present_files on every turn, since it is called when a turn ends', () => {
+      expect(CORE_TOOL_NAMES.has('present_files')).toBe(true);
+    });
+
+    it('offers report_plan on every turn, so a plan can still be moved on late in a long task', () => {
+      expect(CORE_TOOL_NAMES.has('report_plan')).toBe(true);
     });
 
     it('should include essential tools', () => {
@@ -41,24 +49,34 @@ describe('toolPrefetch', () => {
   describe('prefetchTools', () => {
     it('should return first-turn tools for generic input on turn 0', () => {
       const result = prefetchTools(makeCtx({ userInput: '你好', turnCount: 0 }));
-      expect(result).toContain('report_plan');
       expect(result).toContain('get_system_info');
     });
 
-    it('should return report_plan on turn 1-3', () => {
+    it('should not return get_system_info after the first turn', () => {
       const result = prefetchTools(makeCtx({ userInput: '你好', turnCount: 1 }));
-      expect(result).toContain('report_plan');
       expect(result).not.toContain('get_system_info');
     });
 
-    it('should not return report_plan after turn 3', () => {
-      const result = prefetchTools(makeCtx({ userInput: '你好', turnCount: 4 }));
-      expect(result).not.toContain('report_plan');
+    it('never lists report_plan as an extra, since it is always loaded', () => {
+      for (const turnCount of [0, 1, 3, 4, 20]) {
+        expect(prefetchTools(makeCtx({ userInput: '你好', turnCount }))).not.toContain('report_plan');
+      }
     });
 
     it('should match schedule keywords', () => {
       const result = prefetchTools(makeCtx({ userInput: '帮我设置一个定时任务' }));
       expect(result).toContain('manage_scheduled_task');
+    });
+
+    it('should load manage_goal for "until done" requests', () => {
+      expect(prefetchTools(makeCtx({ userInput: '把这些合同全部做完再停' }))).toContain('manage_goal');
+      expect(prefetchTools(makeCtx({ userInput: 'keep going until it passes' }))).toContain('manage_goal');
+      expect(prefetchTools(makeCtx({ userInput: '把目标文件夹里的图片压缩一下' }))).not.toContain('manage_goal');
+    });
+
+    it('should keep manage_goal loaded while the conversation has a goal', () => {
+      expect(prefetchTools(makeCtx({ userInput: '继续', turnCount: 9, hasGoal: true }))).toContain('manage_goal');
+      expect(prefetchTools(makeCtx({ userInput: '继续', turnCount: 9 }))).not.toContain('manage_goal');
     });
 
     it('should match trigger keywords', () => {
@@ -129,6 +147,14 @@ describe('toolPrefetch', () => {
         activeSkills: [{ name: 'test', description: 'test', content: '' } as import('../../types').Skill],
       }));
       expect(result).toContain('read_skill_file');
+    });
+
+    it('should load app_prepare while the app builder skill is active', () => {
+      const builder = prefetchTools(makeCtx({
+        activeSkills: [{ name: 'abu-app-builder', description: '', content: '' } as import('../../types').Skill],
+      }));
+      expect(builder).toContain('app_prepare');
+      expect(prefetchTools(makeCtx({ userInput: '创建一个应用' }))).not.toContain('app_prepare');
     });
 
     it('should load only the runtime owned by the active browser skill', () => {
@@ -215,5 +241,48 @@ describe('browser tool prefetch list vs the real tool surface', () => {
     for (const name of registered) {
       expect(offered).toContain(`abu-browser__${name}`);
     }
+  });
+});
+
+/// Measured in a real run: the model had to spend a `tool_search` round-trip
+/// discovering `check_open_document` before it could ask whether the
+/// spreadsheet the user named was open. It is not core — that would cost every
+/// turn of every conversation — so the file name is what promotes it.
+describe('check_open_document prefetch', () => {
+  const ask = (userInput: string) => prefetchTools(makeCtx({ userInput }));
+
+  it('promotes it when the user names a document file', async () => {
+    const { initPlatform } = await import('../../utils/platform');
+    const { platform } = await import('@tauri-apps/plugin-os');
+    vi.mocked(platform).mockResolvedValue('windows');
+    await initPlatform();
+
+    for (const input of [
+      '把桌面上 abu-com-verify.xlsx 的 B 列求和写到 C1',
+      '帮我改一下 report.docx 的标题',
+      '这个 deck.pptx 里第三页写错了',
+      '把 data.csv 里的空行删掉',
+      '用 Excel 打开的那个表算一下总和',
+    ]) {
+      expect(ask(input), input).toContain('check_open_document');
+    }
+  });
+
+  it('stays out of the way when no document is in play', () => {
+    expect(ask('帮我查一下今天的天气')).not.toContain('check_open_document');
+    expect(ask('给 QQ 联系人 Shawn 发条消息')).not.toContain('check_open_document');
+  });
+
+  // Promotion is session-sticky, so prefetching it on a platform with no
+  // attach surface would leave a tool in the roster for the rest of the
+  // conversation whose only answer is "not supported here".
+  it('is not promoted where there is nothing to attach to', async () => {
+    const { initPlatform } = await import('../../utils/platform');
+    const { platform } = await import('@tauri-apps/plugin-os');
+    vi.mocked(platform).mockResolvedValue('macos');
+    await initPlatform();
+
+    expect(ask('把桌面上 abu-com-verify.xlsx 的 B 列求和写到 C1'))
+      .not.toContain('check_open_document');
   });
 });

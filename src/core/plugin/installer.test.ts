@@ -460,9 +460,9 @@ describe('installPlugin', () => {
     expect(record.key).toBe('weather@official');
     // The contributed list is what makes uninstall correct — it must never be
     // re-derived by scanning directories after the fact.
-    // `agents` is empty until the payload route lands (spec §5.2) — the key
-    // is present so consumers never meet an undefined list.
-    expect(record.contributed).toEqual({ skills: ['today'], mcpServers: ['forecast'], agents: [] });
+    // `agents` and `teams` are empty for this package — the keys are present
+    // so consumers never meet an undefined list.
+    expect(record.contributed).toEqual({ skills: ['today'], mcpServers: ['forecast'], agents: [], teams: [] });
     expect(record.installedAt).toBeTruthy();
     // The outcome also carries the mcp specs (for registration) out of the one
     // planInstall, so no caller has to re-plan.
@@ -1195,6 +1195,68 @@ describe('agents payload discovery', () => {
 
     expect(d.agents).toHaveLength(1);
     expect(d.agents[0].name).toBe('dup');
+  });
+});
+
+/**
+ * `teams/*.json` are validated against what the package itself ships, and go
+ * into the disclosure the user approves.
+ */
+describe('teams disclosure', () => {
+  const entry = { name: 'shop', source: { kind: 'relative', path: './plugins/shop' } as PluginSource };
+  const pkg = '/mkt/plugins/shop';
+  const manifest = (fields: Record<string, unknown>) => JSON.stringify({ name: 'shop', version: '1.0.0', minAbuVersion: '0.51.0', ...fields });
+  const team = JSON.stringify({ name: 'Ops', description: 'ops', leader: 'advisor', members: ['advisor', 'builtin:数据分析师'] });
+  const advisor = '---\nname: advisor\n---\n\nBody.\n';
+
+  it('discloses teams with resolved role ids', async () => {
+    mountFiles({
+      [`${pkg}/.abu-plugin/plugin.json`]: manifest({}),
+      [`${pkg}/teams/ops.json`]: team,
+      [`${pkg}/agents/advisor.md`]: advisor,
+    });
+    vi.mocked(exists).mockResolvedValue(false);
+    const d = await planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry });
+    expect(d.teams).toEqual([expect.objectContaining({ id: 'ops', leaderRoleId: 'plugin:advisor', memberRoleIds: ['plugin:advisor', 'builtin:数据分析师'] })]);
+  });
+
+  it('discloses an empty team list for a plain plugin', async () => {
+    mountFiles({ [`${pkg}/.abu-plugin/plugin.json`]: JSON.stringify({ name: 'shop' }) });
+    const d = await planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry });
+    expect(d.teams).toEqual([]);
+  });
+
+  it('names the field when a team references something the package does not ship', async () => {
+    mountFiles({
+      [`${pkg}/.abu-plugin/plugin.json`]: manifest({}),
+      [`${pkg}/teams/ops.json`]: JSON.stringify({ name: 'Ops', description: 'ops', leader: 'ghost', members: ['ghost', 'builtin:数据分析师'] }),
+    });
+    await expect(planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry })).rejects.toMatchObject({ field: 'teams.ops.members[0]' });
+  });
+
+  it('refuses a package that needs a newer Abu', async () => {
+    mountFiles({ [`${pkg}/.abu-plugin/plugin.json`]: manifest({ minAbuVersion: '99.0.0' }) });
+    await expect(planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry })).rejects.toMatchObject({ field: 'minAbuVersion', message: expect.stringContaining('99.0.0') });
+  });
+
+  it('requires minAbuVersion once the package ships teams/', async () => {
+    mountFiles({
+      [`${pkg}/.abu-plugin/plugin.json`]: JSON.stringify({ name: 'shop' }),
+      [`${pkg}/teams/ops.json`]: team,
+      [`${pkg}/agents/advisor.md`]: advisor,
+    });
+    await expect(planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry })).rejects.toMatchObject({ field: 'minAbuVersion' });
+  });
+
+  it('refuses a team leader that will not be installed because its name is taken', async () => {
+    mountFiles({
+      [`${pkg}/.abu-plugin/plugin.json`]: manifest({}),
+      [`${pkg}/teams/ops.json`]: team,
+      [`${pkg}/agents/advisor.md`]: advisor,
+    });
+    registryFixture.discovered = ['advisor'];
+    vi.mocked(exists).mockResolvedValue(false);
+    await expect(planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry })).rejects.toMatchObject({ field: 'teams.ops.leader', message: expect.stringContaining('exists') });
   });
 });
 

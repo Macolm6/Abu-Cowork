@@ -44,12 +44,11 @@ import {
   deleteSecret,
   listFailedSecrets,
   listSecrets,
-  clearAllSecrets,
 } from '@/utils/secretStore';
 // Relocated to a pure module so the sidecar bundle (and anything else that
 // needs zero store-graph coupling) can import them directly — see
 // settingsSelectors.ts's module doc. Re-exported below unchanged.
-import { getActiveProvider, getActiveApiKey, resolveAgentModel, getEffectiveModel, providerRequiresApiKey } from '../utils/settingsSelectors';
+import { getActiveProvider, getActiveApiKey, resolveAgentModel, getEffectiveModel, providerRequiresApiKey, providerHasCredentials } from '../utils/settingsSelectors';
 export { getActiveProvider, getActiveApiKey, resolveAgentModel, getEffectiveModel, providerRequiresApiKey };
 // PROVIDER_CONFIGS is a plain static object literal (not store-derived) —
 // relocated to providerConfigs.ts for the same bundle-graph reason. See that
@@ -180,9 +179,10 @@ function createDefaultProviders(): ProviderInstance[] {
 // View mode types
 // ============================================================
 
-export type ViewMode = 'chat' | 'automation' | 'extensions' | 'settings' | 'todos' | 'inbox' | 'team';
+export type ViewMode = 'chat' | 'automation' | 'extensions' | 'settings' | 'todos' | 'inbox' | 'team' | 'app-page';
+
 export type AutomationTab = 'schedule' | 'trigger';
-export type SystemSettingsTab = 'general' | 'capabilities' | 'ai-services' | 'sandbox' | 'im-channels' | 'pet' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'author' | 'feedback' | 'enterprise' | 'labs';
+export type SystemSettingsTab = 'account' | 'general' | 'capabilities' | 'ai-services' | 'sandbox' | 'im-channels' | 'pet' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'author' | 'feedback' | 'enterprise' | 'labs' | 'voice-input';
 /** Tabs of the Extensions view (插件 / 技能 / 连接器). Agents live in the Team view, not here. */
 export type ExtensionsTab = 'plugins' | 'skills' | 'mcp';
 
@@ -260,6 +260,8 @@ export interface SettingsState {
   /** System settings render as an overlay dialog on top of the current view,
    *  decoupled from viewMode. Ephemeral — not persisted. */
   systemSettingsOpen: boolean;
+  /** Centered personal/enterprise account entry dialog. Ephemeral. */
+  accountLoginOpen: boolean;
   /** Ephemeral deep link used when an in-flight task needs user setup. */
   capabilitySetupTarget: CapabilitySetupTarget | null;
   disabledSkills: string[];
@@ -526,6 +528,8 @@ interface SettingsActions {
   requestCapabilitySetup: (target: CapabilitySetupTarget) => void;
   clearCapabilitySetupTarget: () => void;
   closeSystemSettings: () => void;
+  openAccountLogin: () => void;
+  closeAccountLogin: () => void;
   setActiveSystemTab: (tab: SystemSettingsTab) => void;
   /** Toggle a Labs (experimental features) flag. Takes effect immediately. */
   setLabsFlag: (id: string, enabled: boolean) => void;
@@ -674,7 +678,7 @@ function userOwnedProviders(providers: ProviderInstance[]): ProviderInstance[] {
  *    later, so "missing" at that point only means "not registered yet".
  *    `markManagedProvidersReady()` runs this rule once registration has had
  *    its turn.
- * 2. Active provider disabled but has key (or is ollama) → silently re-enable.
+ * 2. Active provider disabled but has key (or needs none) → silently re-enable.
  * 3. Active provider disabled and unusable → switch to a usable fallback;
  *    only force-enable as a last resort so getActiveProvider() keeps resolving.
  */
@@ -689,7 +693,7 @@ export function reconcileActiveProvider(
     if (!options.managedProvidersReady) return;
     const fallback =
       state.providers.find(
-        p => p.enabled && (p.apiKey.trim().length > 0 || p.id === 'ollama' || p.id === 'lmstudio')
+        p => p.enabled && providerHasCredentials(p)
       ) ?? state.providers.find(p => p.enabled);
     if (fallback) {
       state.activeModel = {
@@ -701,8 +705,7 @@ export function reconcileActiveProvider(
   }
   if (activeProvider.enabled) return;
 
-  const isUsable =
-    activeProvider.apiKey.trim().length > 0 || activeProvider.id === 'ollama' || activeProvider.id === 'lmstudio';
+  const isUsable = providerHasCredentials(activeProvider);
   if (isUsable) {
     activeProvider.enabled = true;
     return;
@@ -712,7 +715,7 @@ export function reconcileActiveProvider(
     p =>
       p.id !== activeProvider.id &&
       p.enabled &&
-      (p.apiKey.trim().length > 0 || p.id === 'ollama' || p.id === 'lmstudio')
+      providerHasCredentials(p)
   );
   if (fallback) {
     state.activeModel = {
@@ -722,14 +725,10 @@ export function reconcileActiveProvider(
     // Leave activeProvider disabled — user's intent is preserved.
   } else {
     // No usable alternative. Only re-enable if the active provider itself is
-    // usable (has a key, or is keyless like ollama/lmstudio). If it has no key,
+    // usable (has a key, or needs none). If it has no key,
     // leave everything disabled so the first-run banner keeps showing and guides
     // the user to configure a provider.
-    if (
-      activeProvider.apiKey.trim().length > 0 ||
-      activeProvider.id === 'ollama' ||
-      activeProvider.id === 'lmstudio'
-    ) {
+    if (providerHasCredentials(activeProvider)) {
       activeProvider.enabled = true;
     }
   }
@@ -979,11 +978,13 @@ const settingsStateStorage: StateStorage = {
           if (pending.length) repairBrowserConfig(pending, diskBeforeWrite);
           return;
         }
-        // A current-version blob already has the shape restore expects. Older
-        // blobs must fall back to the migrated baseline recorded at hydration;
-        // restoring their raw pre-migration fields would reintroduce invalid or
-        // absent values after a failed save.
-        confirmedBeforeWrite = diskBeforeWrite?.version === 53 ? diskBeforeWrite : null;
+        // A blob stored at V53 or later already has the shape restore expects.
+        // Older blobs must fall back to the migrated baseline recorded at
+        // hydration; restoring their raw pre-migration fields would reintroduce
+        // invalid or absent values after a failed save.
+        confirmedBeforeWrite = diskBeforeWrite !== null && typeof diskBeforeWrite.version === 'number' && diskBeforeWrite.version >= 53
+          ? diskBeforeWrite
+          : null;
         if (intended !== null) {
           // A counter orders cooperative writers, not authority. An ordinary
           // blob save must keep the valid permissions read under this lock,
@@ -1069,6 +1070,25 @@ const settingsStateStorage: StateStorage = {
     });
   },
 };
+
+/**
+ * Run `task` after every settings blob write already requested in this origin
+ * and before any requested later. Those writes wait for the lock above, so they
+ * reach localStorage after the state change that caused them; a caller whose own
+ * localStorage write must come after them runs that write here.
+ */
+export function afterQueuedSettingsWrites<T>(task: () => T): Promise<T> {
+  return navigator.locks.request(BROWSER_PERMISSION_LOCK, () => {
+    browserPermissionLockHeld = true;
+    try { return task(); } finally { browserPermissionLockHeld = false; }
+  });
+}
+
+/** A list field as the stored settings blob holds it; null without a readable blob. */
+export function storedSettingsList(field: 'disabledSkills' | 'disabledAgents'): string[] | null {
+  const value = parsePersistedSettings(safeLocalStorage()?.getItem(SETTINGS_STORAGE_KEY) ?? null)?.state[field];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : null;
+}
 
 /**
  * Bring memory back in line with what is actually stored, for named fields
@@ -1272,7 +1292,7 @@ export const useSettingsStore = create<SettingsStore>()(
       pendingImageGenSecretBridge: undefined,
 
       // ── General settings defaults ──
-      theme: 'light',
+      theme: 'system',
       showSettings: false,
       sidebarCollapsed: false,
       rightPanelCollapsed: false,
@@ -1289,6 +1309,7 @@ export const useSettingsStore = create<SettingsStore>()(
       viewMode: 'chat' as ViewMode,
       activeTeamTab: 'members' as TeamTab,
       systemSettingsOpen: false,
+      accountLoginOpen: false,
       capabilitySetupTarget: null,
       disabledSkills: [
         'alert-sop', 'algorithmic-art', 'brand-guidelines', 'canvas-design',
@@ -1640,6 +1661,8 @@ export const useSettingsStore = create<SettingsStore>()(
         set({ capabilitySetupTarget: null }),
       closeSystemSettings: () =>
         set({ systemSettingsOpen: false, capabilitySetupTarget: null }),
+      openAccountLogin: () => set({ accountLoginOpen: true }),
+      closeAccountLogin: () => set({ accountLoginOpen: false }),
       setActiveSystemTab: (tab) => set({
         activeSystemTab: tab,
         ...(tab !== 'capabilities' ? { capabilitySetupTarget: null } : {}),
@@ -1932,8 +1955,8 @@ export const useSettingsStore = create<SettingsStore>()(
 
       clearAllStoredKeys: async () => {
         const s = useSettingsStore.getState();
-        // Collect the full set of known secret keys so the Windows/Linux
-        // keyring path (no enumeration API) has something to iterate.
+        // This action is scoped to API keys. Delete those exact entries so an
+        // unrelated account credential in the same OS store remains intact.
         const knownKeys = [
           ...userOwnedProviders(s.providers).map((p) => SECRET_KEYS.provider(p.id)),
           SECRET_KEYS.auxWebSearch,
@@ -1941,7 +1964,9 @@ export const useSettingsStore = create<SettingsStore>()(
           ...s.imageGeneration.backends.map((b) => SECRET_KEYS.imageGenBackend(b.id)),
         ];
         try {
-          await clearAllSecrets(knownKeys);
+          const outcomes = await Promise.allSettled(knownKeys.map((key) => deleteSecret(key)));
+          const failure = outcomes.find((outcome) => outcome.status === 'rejected');
+          if (failure?.status === 'rejected') throw failure.reason;
         } catch (err) {
           console.warn('[secrets] clearAll backend failed:', err);
           // Continue anyway — at minimum blank the in-memory keys so the
@@ -1976,7 +2001,7 @@ export const useSettingsStore = create<SettingsStore>()(
       // in this source file, so that a seeded localStorage entry can never
       // drift from the app's own version. A constant here would break it.
       name: 'abu-settings',
-      version: 53,
+      version: 54,
       // The default is `createJSONStorage(() => localStorage)`; this is the
       // same thing with a per-field merge and a read-back confirmation for the
       // browser authorization fields (S18). See `settingsStateStorage`.
@@ -2892,6 +2917,13 @@ export const useSettingsStore = create<SettingsStore>()(
 
         // V53: one conservative browser permission model, after existing migrations.
         if (version < 53) state.browserPermissionConfigV2 = migrateBrowserPermissionConfig(state);
+
+        // V54: the appearance follows the system, once, for every existing store. The V42 step
+        // wrote 'light' into every store, so a stored value does not tell a choice from that
+        // write. A choice made after this step is kept: the step runs only below 54. It sits
+        // last because the V42 step above writes 'light' for stores older than 42. The blocking
+        // script in index.html paints by the same rule before this store has loaded.
+        if (version < 54) state.theme = 'system';
         return state;
       },
       partialize: (state) => ({
@@ -3010,6 +3042,7 @@ export const useSettingsStore = create<SettingsStore>()(
         state.viewMode = 'chat';
         state.updateDownloadProgress = null;
         state.updateInstalling = false;
+        state.accountLoginOpen = false;
         rememberHydratedBrowserConfig(state);
         // Main owns the runtime gate. Restore it only from persisted user
         // settings; Computer Use tools are never allowed to enable themselves.

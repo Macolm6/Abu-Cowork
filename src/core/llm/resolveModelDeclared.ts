@@ -1,11 +1,13 @@
 import type { DeclaredCapabilities, ProviderInstance } from '@/types/provider';
+import { resolveCapabilities } from './modelCapabilities';
 
 /**
  * Resolve the effective DeclaredCapabilities for one model on a provider.
  * - Model-varying fields (tools/images/reasoning/efforts/maxInput/maxOutput): the model's
  *   own override wins; falls back to the provider-level value (legacy / shared default).
  * - Endpoint/protocol-level fields (useRawUrl/thinkingFormat/maxTokensField/
- *   requiresToolResultName): always taken from the provider.
+ *   requiresToolResultName/reasoningReplay/toolSchemaDialect/sendTemperature/
+ *   promptCacheKey): always taken from the provider.
  * Returns undefined only when neither model nor provider declares anything, so callers can
  * keep treating a missing result as "auto-detect" exactly like the old provider-level read.
  */
@@ -24,9 +26,19 @@ export function resolveModelDeclared(
     supportedEfforts: m?.supportedEfforts ?? p?.supportedEfforts,
     maxInputTokens: m?.maxInputTokens ?? p?.maxInputTokens,
     maxOutputTokens: m?.maxOutputTokens ?? p?.maxOutputTokens,
+    parallelToolCalls: m?.parallelToolCalls ?? p?.parallelToolCalls,
     useRawUrl: p?.useRawUrl,
     thinkingFormat: p?.thinkingFormat,
     maxTokensField: p?.maxTokensField,
     requiresToolResultName: p?.requiresToolResultName,
+    reasoningReplay: p?.reasoningReplay,
+    toolSchemaDialect: p?.toolSchemaDialect,
+    sendTemperature: p?.sendTemperature,
+    promptCacheKey: p?.promptCacheKey,
   };
+}
+
+/** 这个模型能不能看图：与运行时同一口径，用户的勾选优先，其次按名字。 */
+export function resolveModelVision(provider: ProviderInstance | undefined, modelId: string): boolean {
+  return resolveModelDeclared(provider, modelId)?.supportsImages ?? resolveCapabilities(modelId).vision;
 }

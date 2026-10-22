@@ -35,6 +35,7 @@ approvalBridge.setDequeueShortCircuit('file-permission', (payload) => {
 // ── Loop Context (per-loop Map) ──
 
 export interface LoopContext {
+  operationOwner?: import('../tools/operationAuthorization').ToolOperationOwner;
   commandConfirmCallback: (info: ConfirmationInfo) => Promise<boolean>;
   filePermissionCallback: FilePermissionCallback;
   signal: AbortSignal;
@@ -280,6 +281,8 @@ export function cancelCommandConfirmation(requestId: string): void {
 // ── File Permission Request Infrastructure ──
 
 export interface FilePermissionRequest {
+  /** Identifies this request among those that follow it in the queue (a window per request). */
+  id: string;
   path: string;
   capability: 'read' | 'write';
   toolName: string;
@@ -381,6 +384,8 @@ export async function requestFilePermission(request: Parameters<FilePermissionCa
 // ── Workspace Request Infrastructure ──
 
 export interface WorkspaceRequest {
+  /** Identifies this request against a newer one that takes its place (a window per request). */
+  id: string;
   reason: string;
   conversationId: string;
   suggestedPath?: string;
@@ -405,6 +410,15 @@ export function getPendingWorkspaceRequest(): WorkspaceRequest | null {
  */
 export function resolveWorkspaceRequest(path: string | null): void {
   approvalBridge.resolveActive('workspace', path);
+}
+
+/**
+ * Resolve one specific workspace request. No-op when that request is no
+ * longer the pending one (timed out, drained, or replaced) — for answers that
+ * arrive after an await, such as a folder picked in the system dialog.
+ */
+export function resolveWorkspaceRequestById(id: string, path: string | null): void {
+  approvalBridge.resolve('workspace', id, path);
 }
 
 /**

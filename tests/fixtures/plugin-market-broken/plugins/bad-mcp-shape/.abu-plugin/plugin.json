@@ -1,0 +1,6 @@
+{
+  "name": "bad-mcp-shape",
+  "version": "1.0.0",
+  "mcpServers": ["not-an-object"],
+  "interface": { "displayName": "Bad connectors", "shortDescription": "mcpServers is an array, which no installer reads" }
+}

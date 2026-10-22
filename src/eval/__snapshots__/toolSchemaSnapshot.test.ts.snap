@@ -1,9 +1,14 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`Tool count stability > total builtin tool count matches snapshot 1`] = `46`;
+exports[`Tool count stability > total builtin tool count matches snapshot 1`] = `52`;
 
 exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
 [
+  {
+    "name": "app_prepare",
+    "paramNames": [],
+    "requiredParams": [],
+  },
   {
     "name": "ask_user_question",
     "paramNames": [
@@ -14,9 +19,26 @@ exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
     ],
   },
   {
+    "name": "background_command_output",
+    "paramNames": [
+      "id",
+      "tail_lines",
+    ],
+    "requiredParams": [],
+  },
+  {
     "name": "capability_snapshot",
     "paramNames": [],
     "requiredParams": [],
+  },
+  {
+    "name": "check_open_document",
+    "paramNames": [
+      "path",
+    ],
+    "requiredParams": [
+      "path",
+    ],
   },
   {
     "name": "clipboard_read",
@@ -52,12 +74,17 @@ exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
       "expected_state_id",
       "height",
       "key",
+      "method",
       "modifiers",
+      "path",
+      "screenshot_id",
       "show_user",
       "startX",
       "startY",
+      "target_selector",
       "text",
       "width",
+      "window_ref",
       "x",
       "y",
     ],
@@ -208,6 +235,20 @@ exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
     ],
   },
   {
+    "name": "manage_goal",
+    "paramNames": [
+      "action",
+      "evidence",
+      "max_rounds",
+      "objective",
+      "reason",
+      "summary",
+    ],
+    "requiredParams": [
+      "action",
+    ],
+  },
+  {
     "name": "manage_mcp_server",
     "paramNames": [
       "action",
@@ -273,6 +314,15 @@ exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
     "name": "plugin_prepare",
     "paramNames": [],
     "requiredParams": [],
+  },
+  {
+    "name": "present_files",
+    "paramNames": [
+      "files",
+    ],
+    "requiredParams": [
+      "files",
+    ],
   },
   {
     "name": "process_image",
@@ -482,6 +532,15 @@ exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
     ],
     "requiredParams": [
       "name",
+    ],
+  },
+  {
+    "name": "stop_background_command",
+    "paramNames": [
+      "id",
+    ],
+    "requiredParams": [
+      "id",
     ],
   },
   {

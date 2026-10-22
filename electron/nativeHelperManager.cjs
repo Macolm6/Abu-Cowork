@@ -33,13 +33,15 @@
 'use strict';
 
 const { spawn } = require('node:child_process');
+const { ownedChildProcesses } = require('./ownedChildProcesses.cjs');
 const path = require('node:path');
 const fs = require('node:fs');
 const { runtimeState } = require('./runtimeObservability.cjs');
+const { COMPUTER_USE_REQUEST_CONTEXT_ARG } = require('./computerUseCommands.cjs');
 
 /** Sentinel returned when `cmd` isn't a native-helper command. */
 const NATIVE_HELPER_MISS = Symbol('native-helper-dispatch-miss');
-const NATIVE_HELPER_PROTOCOL_VERSION = 1;
+const NATIVE_HELPER_PROTOCOL_VERSION = 2;
 
 // Commands routed to the helper. Input synthesis + screen capture + TCC checks
 // + the AX session-cache family. (get_abu_window_id / overlay / get_active_window
@@ -48,6 +50,13 @@ const NATIVE_HELPER_PROTOCOL_VERSION = 1;
 // attributes them to the Abu application instead of this command-line child.)
 const HELPER_CMDS = new Set([
   'native_helper_health',
+  'input_lease_begin',
+  'input_lease_activate',
+  'input_lease_commit_observation',
+  'input_lease_observe',
+  'input_lease_pause',
+  'input_lease_resume',
+  'input_lease_end',
   'resolve_app_identity',
   'mouse_click',
   'mouse_move',
@@ -62,9 +71,20 @@ const HELPER_CMDS = new Set([
   'ax_snapshot',
   'ax_press',
   'ax_set_value',
+  'ax_replace_text',
   'ax_perform_action',
+  'ax_restore_focus',
   'ax_close_session',
   'activate_app',
+  'list_apps',
+  'list_windows',
+  'get_window',
+  'get_window_graph',
+  'frontmost_matches_target',
+  'activate_window',
+  'launch_app',
+  'resolve_launch_target',
+  'office_documents',
 ]);
 
 // Built (release) helper binary.
@@ -77,6 +97,7 @@ function nativeHelperExecutableName(platform = process.platform) {
 
 function resolveHelperPath(options = {}) {
   const platform = options.platform || process.platform;
+  const platformPath = platform === 'win32' ? path.win32 : path.posix;
   let packaged = options.packaged;
   if (typeof packaged !== 'boolean') {
     packaged = false;
@@ -89,12 +110,224 @@ function resolveHelperPath(options = {}) {
   const executable = nativeHelperExecutableName(platform);
   const resourcesPath = options.resourcesPath || process.resourcesPath;
   return packaged
-    ? path.join(resourcesPath, 'native-helper', executable)
-    : path.join(__dirname, 'native-helper', 'target', 'release', executable);
+    ? platformPath.join(resourcesPath, 'native-helper', executable)
+    : platformPath.join(__dirname, 'native-helper', 'target', 'release', executable);
 }
 const HELPER_PATH = resolveHelperPath();
 
-const CALL_TIMEOUT_MS = 30_000;
+const DEFAULT_CALL_TIMEOUT_MS = 10_000;
+const OBSERVATION_CALL_TIMEOUT_MS = 15_000;
+const HELPER_EVENT_TYPES = new Set([
+  'user-interrupted',
+  'user-input-detected',
+  'window-invalidated',
+]);
+
+function resolveHelperCallTimeoutMs(method) {
+  if (method === 'hello' || method === 'health' || method === 'ping') return 5_000;
+  if (
+    method === 'ax_snapshot'
+    || method === 'capture_screen'
+    || method === 'capture_screen_excluding'
+    || method === 'get_window_state'
+    || method === 'get_window_graph'
+    || method === 'launch_app'
+    || method === 'activate_app'
+  ) {
+    return OBSERVATION_CALL_TIMEOUT_MS;
+  }
+  return DEFAULT_CALL_TIMEOUT_MS;
+}
+
+function normalizeHelperEvent(message) {
+  if (!message || typeof message !== 'object' || !HELPER_EVENT_TYPES.has(message.event)) {
+    return null;
+  }
+  const context = message.context && typeof message.context === 'object'
+    ? message.context
+    : {};
+  return Object.freeze({
+    type: message.event,
+    conversationId: typeof context.conversation_id === 'string'
+      ? context.conversation_id.slice(0, 256)
+      : null,
+    loopId: typeof context.loop_id === 'string'
+      ? context.loop_id.slice(0, 256)
+      : null,
+    reason: typeof message.reason === 'string'
+      ? message.reason.slice(0, 160)
+      : null,
+  });
+}
+
+function createSerialExecutor() {
+  let tail = Promise.resolve();
+  let epoch = 0;
+  return {
+    run(task) {
+      const scheduledEpoch = epoch;
+      const execute = async () => {
+        if (scheduledEpoch !== epoch) {
+          throw new Error('native-helper request was invalidated before execution');
+        }
+        return task();
+      };
+      const result = tail.then(execute, execute);
+      tail = result.catch(() => undefined);
+      return result;
+    },
+    invalidate() {
+      epoch += 1;
+    },
+  };
+}
+
+const HELPER_SUPERVISOR_STATES = Object.freeze([
+  'stopped',
+  'starting',
+  'ready',
+  'busy',
+  'awaiting-approval',
+  'resetting',
+  'failed',
+]);
+const APPROVAL_SAFE_HELPER_METHODS = new Set([
+  'health',
+  'ping',
+  'input_lease_resume',
+  'input_lease_end',
+]);
+
+/** Explicit lifecycle state for the long-lived helper process. */
+function createNativeHelperSupervisorState(options = {}) {
+  const now = typeof options.now === 'function' ? options.now : Date.now;
+  const onTransition = typeof options.onTransition === 'function'
+    ? options.onTransition
+    : null;
+  let state = 'stopped';
+  let generation = 0;
+  let activeMethod = null;
+  let pendingCount = 0;
+  let approvalPaused = false;
+  let lastTransitionAt = now();
+  let lastReason = 'initial';
+
+  const snapshot = () => Object.freeze({
+    state,
+    generation,
+    activeMethod,
+    pendingCount,
+    approvalPaused,
+    lastTransitionAt,
+    lastReason,
+  });
+  const transition = (nextState, reason, patch = {}) => {
+    if (!HELPER_SUPERVISOR_STATES.includes(nextState)) {
+      throw new Error(`invalid native-helper supervisor state '${String(nextState)}'`);
+    }
+    state = nextState;
+    if (Object.hasOwn(patch, 'generation')) generation = patch.generation;
+    if (Object.hasOwn(patch, 'activeMethod')) activeMethod = patch.activeMethod;
+    if (Object.hasOwn(patch, 'pendingCount')) pendingCount = patch.pendingCount;
+    if (Object.hasOwn(patch, 'approvalPaused')) approvalPaused = patch.approvalPaused;
+    lastTransitionAt = now();
+    lastReason = String(reason || nextState).slice(0, 160);
+    const value = snapshot();
+    try { onTransition?.(value); } catch { /* telemetry cannot break CU */ }
+    return value;
+  };
+
+  const api = {
+    snapshot,
+    canDispatch(method) {
+      return !approvalPaused || APPROVAL_SAFE_HELPER_METHODS.has(method);
+    },
+    spawnStarted(nextGeneration) {
+      return transition('starting', 'spawn-started', {
+        generation: nextGeneration,
+        activeMethod: null,
+        pendingCount: 0,
+        approvalPaused: false,
+      });
+    },
+    ready(nextGeneration = generation) {
+      return transition('ready', 'handshake-ready', {
+        generation: nextGeneration,
+        activeMethod: null,
+        pendingCount: 0,
+        approvalPaused: false,
+      });
+    },
+    requestStarted(method, nextPendingCount) {
+      if (!api.canDispatch(method)) {
+        throw new Error(
+          `native-helper is awaiting user approval; '${method}' is blocked until the input lease resumes`,
+        );
+      }
+      return transition(
+        state === 'starting' && method === 'hello' ? 'starting' : 'busy',
+        `request:${method}`,
+        { activeMethod: method, pendingCount: nextPendingCount },
+      );
+    },
+    requestCompleted(method, nextPendingCount) {
+      if (method === 'hello') {
+        return transition('starting', 'hello-received', {
+          activeMethod: null,
+          pendingCount: nextPendingCount,
+        });
+      }
+      if (method === 'input_lease_pause') {
+        return transition('awaiting-approval', 'approval-paused', {
+          activeMethod: null,
+          pendingCount: nextPendingCount,
+          approvalPaused: true,
+        });
+      }
+      if (method === 'input_lease_resume' || method === 'input_lease_end') {
+        return transition('ready', `approval-${method === 'input_lease_resume' ? 'resumed' : 'ended'}`, {
+          activeMethod: null,
+          pendingCount: nextPendingCount,
+          approvalPaused: false,
+        });
+      }
+      return transition(approvalPaused ? 'awaiting-approval' : 'ready', 'request-completed', {
+        activeMethod: null,
+        pendingCount: nextPendingCount,
+      });
+    },
+    requestFailed(method, nextPendingCount, reason = 'request-failed') {
+      const remainsPaused = approvalPaused
+        || method === 'input_lease_resume'
+        || method === 'input_lease_end';
+      return transition(remainsPaused ? 'awaiting-approval' : 'ready', reason, {
+        activeMethod: null,
+        pendingCount: nextPendingCount,
+        approvalPaused: remainsPaused,
+      });
+    },
+    resetting(reason) {
+      return transition('resetting', reason, { activeMethod: null });
+    },
+    stopped(nextGeneration, reason) {
+      return transition('stopped', reason, {
+        generation: nextGeneration,
+        activeMethod: null,
+        pendingCount: 0,
+        approvalPaused: false,
+      });
+    },
+    failed(nextGeneration, reason) {
+      return transition('failed', reason, {
+        generation: nextGeneration,
+        activeMethod: null,
+        pendingCount: 0,
+        approvalPaused: false,
+      });
+    },
+  };
+  return Object.freeze(api);
+}
 
 /** @type {import('node:child_process').ChildProcess | null} */
 let child = null;
@@ -103,11 +336,17 @@ let nextId = 1;
 const pending = new Map();
 let stdoutBuf = '';
 let helperHandshake = null;
+let lastDriverCapabilities = null;
+const helperEventListeners = new Set();
+const requestScheduler = createSerialExecutor();
 // Monotonically changes whenever the helper process identity changes. Host-side
 // Computer Use state binds to this generation so a crash/restart cannot reuse an
 // observation or AX session created by the previous native process.
 let helperGeneration = 0;
 let hasSpawnedHelper = false;
+const helperSupervisor = createNativeHelperSupervisorState({
+  onTransition: (snapshot) => runtimeState.noteNativeHelperSupervisorTransition?.(snapshot),
+});
 
 /** Convert an args object's keys camelCase→snake_case (shallow — these command
  * args are flat), reproducing Tauri's JS→Rust param casing. */
@@ -129,6 +368,39 @@ function rejectAllPending(err) {
   pending.clear();
 }
 
+const HELPER_EXECUTIONS = new Set(['not-executed', 'dispatched', 'outcome-unknown']);
+
+/**
+ * Turn a helper `error` payload into an Error that carries the structured
+ * verdict as `error.helper = { code, execution, retryable }`.
+ *
+ * The helper classifies at the raising site (electron/native-helper/src/error.rs);
+ * this only preserves that classification across the process boundary. A
+ * legacy string error — or a malformed object — becomes `legacy` with the
+ * pessimistic `outcome-unknown` verdict, so nothing downstream can treat an
+ * unclassified failure as safe to replay. Nobody may branch on `message`.
+ */
+function normalizeHelperError(raw) {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const code = typeof raw.code === 'string' && raw.code.trim() ? raw.code.trim() : null;
+    const execution = HELPER_EXECUTIONS.has(raw.execution) ? raw.execution : null;
+    const message = typeof raw.message === 'string' && raw.message
+      ? raw.message
+      : JSON.stringify(raw);
+    if (code && execution) {
+      const error = new Error(message);
+      error.helper = Object.freeze({ code, execution, retryable: raw.retryable === true });
+      return error;
+    }
+    const error = new Error(message);
+    error.helper = Object.freeze({ code: 'legacy', execution: 'outcome-unknown', retryable: false });
+    return error;
+  }
+  const error = new Error(typeof raw === 'string' ? raw : JSON.stringify(raw));
+  error.helper = Object.freeze({ code: 'legacy', execution: 'outcome-unknown', retryable: false });
+  return error;
+}
+
 function handleLine(line) {
   const trimmed = line.trim();
   if (!trimmed) return;
@@ -139,21 +411,34 @@ function handleLine(line) {
     // Non-JSON stdout line — ignore (helper only emits JSON on stdout).
     return;
   }
+  const helperEvent = normalizeHelperEvent(msg);
+  if (helperEvent) {
+    for (const listener of helperEventListeners) {
+      try {
+        listener(helperEvent);
+      } catch (error) {
+        console.warn('[native-helper] event listener failed', error);
+      }
+    }
+    return;
+  }
   const p = pending.get(msg.id);
   if (!p) return;
   pending.delete(msg.id);
   clearTimeout(p.timer);
   if (msg.error !== undefined && msg.error !== null) {
-    p.reject(new Error(typeof msg.error === 'string' ? msg.error : JSON.stringify(msg.error)));
+    p.reject(normalizeHelperError(msg.error));
   } else {
     p.resolve(msg.result);
   }
 }
 
 function ensureChild() {
+  ownedChildProcesses.assertAdmission();
   if (child && !child.killed && child.exitCode === null) return child;
   if (!fs.existsSync(HELPER_PATH)) {
     const failedGeneration = helperGeneration + 1;
+    helperSupervisor.failed(failedGeneration, 'binary-not-found');
     runtimeState.noteNativeHelperSpawnStarted(failedGeneration, hasSpawnedHelper);
     runtimeState.noteNativeHelperSpawnFailed(failedGeneration, 'binary_not_found');
     throw new Error(
@@ -161,9 +446,14 @@ function ensureChild() {
     );
   }
   const spawnedChild = spawn(HELPER_PATH, [], { stdio: ['pipe', 'pipe', 'pipe'] });
+  ownedChildProcesses.track(spawnedChild, () => {
+    if (child === spawnedChild) killNativeHelper('app-exit');
+    else if (!spawnedChild.killed) spawnedChild.kill('SIGKILL');
+  });
   child = spawnedChild;
   helperGeneration += 1;
   const spawnedGeneration = helperGeneration;
+  helperSupervisor.spawnStarted(spawnedGeneration);
   runtimeState.noteNativeHelperSpawnStarted(spawnedGeneration, hasSpawnedHelper);
   hasSpawnedHelper = true;
   stdoutBuf = '';
@@ -196,7 +486,9 @@ function ensureChild() {
     rejectAllPending(new Error(`native-helper exited (${reason}); it will respawn on the next call`));
     child = null;
     helperHandshake = null;
+    lastDriverCapabilities = null;
     helperGeneration += 1;
+    helperSupervisor.failed(helperGeneration, reason);
   };
   spawnedChild.on('error', (err) => onGone(err.message));
   spawnedChild.on('close', (code, sig) => onGone(`code=${code} sig=${sig}`));
@@ -210,30 +502,67 @@ function ensureChild() {
  * @param {Record<string, unknown>} params
  * @returns {Promise<unknown>}
  */
-function callHelper(method, params) {
+function callHelper(method, params, context = null, boundChild = null, control = false) {
   return new Promise((resolve, reject) => {
     let c;
     try {
-      c = ensureChild();
+      if (boundChild && (child !== boundChild || boundChild.killed || boundChild.exitCode !== null)) {
+        throw new Error('Native file session belongs to a stopped helper');
+      }
+      c = boundChild || ensureChild();
     } catch (err) {
       reject(err);
       return;
     }
     const callGeneration = helperGeneration;
     const id = nextId++;
+    try {
+      if (!control) helperSupervisor.requestStarted(method, pending.size + 1);
+    } catch (err) {
+      reject(err);
+      return;
+    }
+    const timeoutMs = resolveHelperCallTimeoutMs(method);
     const timer = setTimeout(() => {
       if (pending.has(id)) {
         pending.delete(id);
-        runtimeState.noteNativeHelperCallTimeout(callGeneration, method, CALL_TIMEOUT_MS);
-        reject(new Error(`native-helper call '${method}' timed out after ${CALL_TIMEOUT_MS}ms`));
+        runtimeState.noteNativeHelperCallTimeout(callGeneration, method, timeoutMs);
+        if (!control) helperSupervisor.requestFailed(method, pending.size, `timeout:${method}`);
+        if (child === c) killNativeHelper(`timeout:${method}`);
+        reject(new Error(`native-helper call '${method}' timed out after ${timeoutMs}ms`));
       }
-    }, CALL_TIMEOUT_MS);
-    pending.set(id, { resolve, reject, timer });
+    }, timeoutMs);
+    pending.set(id, {
+      method,
+      resolve(value) {
+        if (!control) helperSupervisor.requestCompleted(method, pending.size);
+        resolve(value);
+      },
+      reject(error) {
+        if (!control) helperSupervisor.requestFailed(
+          method,
+          pending.size,
+          error instanceof Error ? error.message : String(error),
+        );
+        reject(error);
+      },
+      timer,
+    });
     try {
-      c.stdin.write(JSON.stringify({ id, method, params }) + '\n');
+      c.stdin.write(JSON.stringify({
+        id,
+        method,
+        params,
+        ...(context ? { context } : {}),
+      }) + '\n');
     } catch (err) {
       pending.delete(id);
       clearTimeout(timer);
+      if (!control) helperSupervisor.requestFailed(
+        method,
+        pending.size,
+        err instanceof Error ? err.message : String(err),
+      );
       reject(err instanceof Error ? err : new Error(String(err)));
     }
   });
@@ -248,7 +577,46 @@ function callHelper(method, params) {
 function buildNativeHelperRequest(cmd, args) {
   if (!HELPER_CMDS.has(cmd)) return null;
   if (cmd === 'native_helper_health') return { method: 'health', params: {} };
-  return { method: cmd, params: toSnakeArgs(args) };
+  let requestArgs = args && typeof args === 'object' ? { ...args } : {};
+  if (cmd.startsWith('input_lease_')) {
+    const allowedKeys = {
+      input_lease_begin: ['leaseId'],
+      input_lease_activate: ['leaseId', 'expectedInputEpoch'],
+      input_lease_commit_observation: ['leaseId', 'expectedInputEpoch'],
+      input_lease_observe: ['leaseId'],
+      input_lease_pause: ['leaseId', 'consentOwnerProcessId'],
+      input_lease_resume: ['leaseId'],
+      input_lease_end: ['leaseId'],
+    }[cmd] || [];
+    requestArgs = Object.fromEntries(
+      allowedKeys
+        .filter((key) => Object.hasOwn(requestArgs, key))
+        .map((key) => [key, requestArgs[key]]),
+    );
+  }
+  const rawContext = requestArgs[COMPUTER_USE_REQUEST_CONTEXT_ARG];
+  delete requestArgs[COMPUTER_USE_REQUEST_CONTEXT_ARG];
+  const target = rawContext?.target && typeof rawContext.target === 'object'
+    ? {
+        app_id: typeof rawContext.target.appId === 'string' ? rawContext.target.appId.slice(0, 1024) : null,
+        process_id: Number.isSafeInteger(rawContext.target.processId) ? rawContext.target.processId : null,
+        window_id: typeof rawContext.target.windowId === 'string' ? rawContext.target.windowId.slice(0, 128) : null,
+      }
+    : null;
+  const context = rawContext && typeof rawContext === 'object'
+    ? {
+        conversation_id: typeof rawContext.conversationId === 'string'
+          ? rawContext.conversationId.slice(0, 256)
+          : null,
+        loop_id: typeof rawContext.loopId === 'string' ? rawContext.loopId.slice(0, 256) : null,
+        target,
+      }
+    : null;
+  return {
+    method: cmd,
+    params: toSnakeArgs(requestArgs),
+    ...(context ? { context } : {}),
+  };
 }
 
 function validateHelperHello(value) {
@@ -266,10 +634,117 @@ function validateHelperHello(value) {
     || !Array.isArray(value.supported_commands)
     || !value.supported_commands.every((command) => typeof command === 'string')
     || typeof value.started_at_ms !== 'number'
+    || !value.capabilities
+    || typeof value.capabilities !== 'object'
+    || value.capabilities.transport !== 'ndjson-stdio'
+    || value.capabilities.request_serialization !== 'host'
+    || value.capabilities.legacy_v1_request_adapter !== true
+    || !Array.isArray(value.capabilities.events)
+    || !value.capabilities.events.every((event) => typeof event === 'string')
   ) {
     throw new Error('native-helper compatibility check failed: incomplete hello response');
   }
   return value;
+}
+
+const DRIVER_IDENTITIES = new Set(['runtime-id', 'session-index', 'none']);
+const DRIVER_EMPTY_VALUES = new Set(['string', 'null', 'unknown']);
+// Contract §2.8: what the helper process actually got, not what it asked for.
+const DRIVER_DPI_AWARENESS = new Set(['per-monitor-v2', 'per-monitor', 'system', 'unaware', 'unknown']);
+
+function helloPlatformToNode(platform) {
+  if (platform === 'windows') return 'win32';
+  if (platform === 'macos') return 'darwin';
+  return platform;
+}
+
+/**
+ * What the Host assumes about a helper that predates the L3 declaration:
+ * nothing is promised beyond what every driver has always had to do.
+ */
+function legacyDriverCapabilities(platform = process.platform) {
+  return deepFreeze({
+    id: platform === 'win32' ? 'windows-uia' : platform === 'darwin' ? 'macos-ax' : 'unavailable',
+    declared: false,
+    input: {
+      foreground_required: true,
+      background_element_actions: false,
+      unicode_text: false,
+      clipboard_paste: false,
+      chords: true,
+      ime_aware: false,
+      physical_input_monitoring: false,
+    },
+    capture: { display: 'unknown', occluded_window: false, excludes_own_window: false, dpi_awareness: 'unknown' },
+    elements: { identity: 'session-index', empty_value: 'unknown', actions: [] },
+    boundaries: [],
+    activation: { can_activate_window: true },
+  });
+}
+
+function deepFreeze(value) {
+  if (value && typeof value === 'object') {
+    for (const key of Object.keys(value)) deepFreeze(value[key]);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+const flag = (value) => value === true;
+const stringList = (value) => (Array.isArray(value)
+  ? value.filter((item) => typeof item === 'string' && item.length <= 64).slice(0, 64)
+  : []);
+
+/**
+ * L3 driver capability declaration (contract §2.8), read from the hello. A
+ * missing or malformed declaration yields the legacy table; a present one is
+ * taken field by field with the conservative value for anything unparseable —
+ * a driver can only ever under-promise by omission, never over-promise.
+ */
+function normalizeDriverCapabilities(hello, platform = null) {
+  const nodePlatform = platform ?? helloPlatformToNode(hello?.platform) ?? process.platform;
+  const raw = hello?.capabilities?.driver;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || typeof raw.id !== 'string' || !raw.id.trim()) {
+    return legacyDriverCapabilities(nodePlatform);
+  }
+  const input = raw.input && typeof raw.input === 'object' ? raw.input : {};
+  const capture = raw.capture && typeof raw.capture === 'object' ? raw.capture : {};
+  const elements = raw.elements && typeof raw.elements === 'object' ? raw.elements : {};
+  const activation = raw.activation && typeof raw.activation === 'object' ? raw.activation : {};
+  return deepFreeze({
+    id: raw.id.trim().slice(0, 64),
+    declared: true,
+    input: {
+      // Foreground is required unless the driver explicitly says otherwise.
+      foreground_required: input.foreground_required !== false,
+      background_element_actions: flag(input.background_element_actions),
+      unicode_text: flag(input.unicode_text),
+      clipboard_paste: flag(input.clipboard_paste),
+      chords: flag(input.chords),
+      ime_aware: flag(input.ime_aware),
+      physical_input_monitoring: flag(input.physical_input_monitoring),
+    },
+    capture: {
+      display: typeof capture.display === 'string' && capture.display ? capture.display.slice(0, 64) : 'unknown',
+      occluded_window: flag(capture.occluded_window),
+      excludes_own_window: flag(capture.excludes_own_window),
+      dpi_awareness: DRIVER_DPI_AWARENESS.has(capture.dpi_awareness) ? capture.dpi_awareness : 'unknown',
+    },
+    elements: {
+      identity: DRIVER_IDENTITIES.has(elements.identity) ? elements.identity : 'session-index',
+      empty_value: DRIVER_EMPTY_VALUES.has(elements.empty_value) ? elements.empty_value : 'unknown',
+      actions: stringList(elements.actions),
+    },
+    boundaries: stringList(raw.boundaries),
+    activation: {
+      can_activate_window: activation.can_activate_window !== false,
+    },
+  });
+}
+
+/** Declaration of the running helper; null until the handshake completes. */
+function getNativeHelperDriverCapabilities() {
+  return lastDriverCapabilities;
 }
 
 async function ensureHelperCompatibility() {
@@ -277,10 +752,16 @@ async function ensureHelperCompatibility() {
     helperHandshake = callHelper('hello', {})
       .then((value) => {
         const hello = validateHelperHello(value);
+        lastDriverCapabilities = normalizeDriverCapabilities(hello);
+        helperSupervisor.ready(helperGeneration);
         runtimeState.noteNativeHelperReady(helperGeneration, hello);
         return hello;
       })
       .catch((error) => {
+        helperSupervisor.failed(
+          helperGeneration,
+          error instanceof Error ? error.message : String(error),
+        );
         runtimeState.noteNativeHelperSpawnFailed(
           helperGeneration,
           error instanceof Error ? error.name : typeof error,
@@ -301,26 +782,136 @@ async function ensureHelperCompatibility() {
 function nativeHelperDispatch(cmd, args) {
   const request = buildNativeHelperRequest(cmd, args);
   if (!request) return NATIVE_HELPER_MISS;
-  return (async () => {
+  return requestScheduler.run(async () => {
     const hello = await ensureHelperCompatibility();
     if (!hello.supported_commands.includes(request.method)) {
       throw new Error(
         `native-helper ${hello.binary_version} does not support '${request.method}'`
       );
     }
-    return callHelper(request.method, request.params);
-  })();
+    const result = await callHelper(request.method, request.params, request.context);
+    if (cmd === 'native_helper_health' && result && typeof result === 'object') {
+      return { ...result, supervisor: helperSupervisor.snapshot() };
+    }
+    return result;
+  });
+}
+
+/** Main-only filesystem metadata query; absent from renderer command dispatch. */
+function readDirectoryNameComparison(directoryPath) {
+  return requestScheduler.run(async () => {
+    const hello = await ensureHelperCompatibility();
+    if (!hello.supported_commands.includes('directory_name_comparison')) {
+      throw new Error('native-helper does not support directory name comparison');
+    }
+    const result = await callHelper('directory_name_comparison', { path: directoryPath });
+    if (!result || !['sensitive', 'insensitive'].includes(result.caseMode)
+      || typeof result.directoryIdentity !== 'string' || !result.directoryIdentity
+      || typeof result.filesystem !== 'string' || !result.filesystem
+      || !['windows', 'macos'].includes(result.platform)) {
+      throw new Error('native-helper returned invalid directory comparison facts');
+    }
+    return result;
+  });
+}
+
+let nextFileSession = 0n;
+
+/** A session remains attached to the child that accepted its immutable plan. */
+function createNativeFileSession(targets) {
+  let cancelled = false;
+  let session = null;
+  let ownerChild = null;
+  let ownerGeneration = null;
+  let openError;
+  let releasePromise;
+  const invalidationListeners = new Set();
+  const invalidate = () => {
+    cancelled = true;
+    for (const listener of invalidationListeners) listener();
+    invalidationListeners.clear();
+  };
+  const current = () => {
+    if (cancelled || (ownerChild && (child !== ownerChild || helperGeneration !== ownerGeneration))) {
+      throw new Error('Native file operation is no longer active');
+    }
+  };
+  const opened = requestScheduler.run(async () => {
+    current();
+    const hello = await ensureHelperCompatibility();
+    current();
+    if (!hello.supported_commands.includes('file_operation')) throw new Error('Native file operations are unavailable');
+    if (nextFileSession >= 0xffff_ffff_ffff_ffffn) throw new Error('Native file session sequence exhausted');
+    session = String(++nextFileSession);
+    ownerChild = child;
+    ownerGeneration = helperGeneration;
+    ownerChild.once('exit', invalidate);
+    ownerChild.once('error', invalidate);
+    await callHelper('file_operation', { action: 'open', session, targets }, null, ownerChild);
+    current();
+  }).then(undefined, error => { openError = error; });
+  const cancel = () => {
+    if (cancelled) return Promise.resolve();
+    invalidate();
+    if (!session || child !== ownerChild || helperGeneration !== ownerGeneration) return Promise.resolve();
+    // Cancellation reaches the existing reader while ordinary work is queued.
+    return callHelper('file_operation', { action: 'cancel', session }, null, ownerChild, true);
+  };
+  return Object.freeze({
+    async request(action, request) {
+      current();
+      await opened;
+      if (openError) throw openError;
+      current();
+      return requestScheduler.run(async () => {
+        current();
+        const result = await callHelper('file_operation', { ...request, action, session }, null, ownerChild);
+        current();
+        return result;
+      });
+    },
+    assertCurrent: current,
+    onInvalidated(listener) {
+      if (cancelled || (ownerChild && (child !== ownerChild || helperGeneration !== ownerGeneration))) listener();
+      else invalidationListeners.add(listener);
+      return () => invalidationListeners.delete(listener);
+    },
+    release() {
+      if (releasePromise) return releasePromise;
+      const cancellation = cancel();
+      releasePromise = (async () => {
+        try {
+          await cancellation;
+          await opened;
+          await requestScheduler.run(() => {
+            if (!session || child !== ownerChild || helperGeneration !== ownerGeneration
+              || ownerChild.exitCode !== null || ownerChild.signalCode !== null) return;
+            return callHelper('file_operation', { action: 'release', session }, null, ownerChild, true);
+          });
+        } finally {
+          ownerChild?.removeListener('exit', invalidate);
+          ownerChild?.removeListener('error', invalidate);
+        }
+      })();
+      return releasePromise;
+    },
+  });
 }
 
 /** Kill the helper child (called on app quit; no orphans). */
-function killNativeHelper() {
+function killNativeHelper(reason = 'stopped') {
+  requestScheduler.invalidate();
   const stoppedChild = child;
   if (stoppedChild) {
-    runtimeState.noteNativeHelperStopped(helperGeneration);
+    helperSupervisor.resetting(reason);
+    runtimeState.noteNativeHelperStopped(helperGeneration, reason);
     child = null;
     helperHandshake = null;
+    lastDriverCapabilities = null;
     helperGeneration += 1;
-    rejectAllPending(new Error('native-helper was stopped; a fresh Computer Use observation is required'));
+    rejectAllPending(new Error(
+      `native-helper was stopped (${reason}); a fresh Computer Use observation is required`
+    ));
   }
   if (stoppedChild && !stoppedChild.killed) {
     try {
@@ -329,10 +920,23 @@ function killNativeHelper() {
       /* already dead */
     }
   }
+  helperSupervisor.stopped(helperGeneration, reason);
+}
+
+function subscribeNativeHelperEvents(listener) {
+  if (typeof listener !== 'function') {
+    throw new TypeError('native-helper event listener must be a function');
+  }
+  helperEventListeners.add(listener);
+  return () => helperEventListeners.delete(listener);
 }
 
 function getNativeHelperGeneration() {
   return helperGeneration;
+}
+
+function getNativeHelperSupervisorSnapshot() {
+  return helperSupervisor.snapshot();
 }
 
 // No orphans on shell exit or termination signals (a signal doesn't run 'exit'
@@ -347,15 +951,31 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
 }
 
 module.exports = {
+  createNativeFileSession,
+  readDirectoryNameComparison,
   nativeHelperDispatch,
+  normalizeHelperError,
+  normalizeDriverCapabilities,
+  legacyDriverCapabilities,
+  getNativeHelperDriverCapabilities,
+  HELPER_EXECUTIONS,
   NATIVE_HELPER_MISS,
   killNativeHelper,
   getNativeHelperGeneration,
+  getNativeHelperSupervisorSnapshot,
   callHelper,
   HELPER_CMDS,
   nativeHelperExecutableName,
   resolveHelperPath,
   buildNativeHelperRequest,
   validateHelperHello,
+  resolveHelperCallTimeoutMs,
+  normalizeHelperEvent,
+  createSerialExecutor,
+  createNativeHelperSupervisorState,
+  HELPER_SUPERVISOR_STATES,
+  subscribeNativeHelperEvents,
   NATIVE_HELPER_PROTOCOL_VERSION,
+  DEFAULT_CALL_TIMEOUT_MS,
+  OBSERVATION_CALL_TIMEOUT_MS,
 };

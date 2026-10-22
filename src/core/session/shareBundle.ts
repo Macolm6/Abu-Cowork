@@ -20,13 +20,18 @@
 import { readFile } from '@tauri-apps/plugin-fs';
 import type { Conversation, Message, MessageContent, ToolCall } from '@/types';
 import { uint8ArrayToBase64 } from '@/utils/base64';
-import { normalizeSeparators } from '@/utils/pathUtils';
-import { listSnapshots, readSnapshotBytes, type SnapshotEntry, type SnapshotSource } from './outputSnapshots';
+import { joinPath, normalizeSeparators } from '@/utils/pathUtils';
+import { extractFileOutputs } from '@/utils/workflowExtractor';
+import { expandTilde, listSnapshots, readSnapshotBytes, type SnapshotEntry, type SnapshotSource } from './outputSnapshots';
 import { redactText, redactDeep, type RedactionSample } from './shareRedactor';
 import { isCompactBoundary } from '@/core/context/compactBoundary';
 import { isBrowserRunReportMessage } from '@/core/observability/browserRunReport';
 import { isMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
 import { normalizeUpstreamErrorDetails, sanitizeUntrustedLlmErrorText } from '@/core/llm/adapter';
+import { fileChangeWithoutHunks } from '@/core/files/fileChangeBudget';
+import type { FileChange } from '@/types/fileChange';
+import type { ExecutionStepSnapshot } from '@/types/execution';
+import { isCutSnapshotBlock } from '@/core/agent/executionSnapshot';
 
 export const SHARE_SCHEMA_VERSION = 1 as const;
 
@@ -128,7 +133,8 @@ export async function buildShareBundle(
     opts.onProgress?.(++done, visible.length);
   }
 
-  const attachments = await collectAttachments(conv.id, snapshotEntries, tier);
+  const references = await collectExportedReferences(visible, conv.workspacePath);
+  const attachments = await collectAttachments(conv.id, snapshotEntries, tier, references);
 
   const embeddedCount = Object.values(attachments).filter((a) => a.data).length;
   const bundle: ShareBundle = {
@@ -163,6 +169,15 @@ export function serializeShareBundle(bundle: ShareBundle): string {
 // ────────────────────────────────────────────────────────────────────────────
 // Internals
 // ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The base64 source of an image or document block. Its data is bytes written
+ * out as text, and a run of it can look like a key (`AIza…`, `AKIA…`), so the
+ * rules are never applied to it.
+ */
+function isMediaData(node: Record<string, unknown>): boolean {
+  return node.type === 'base64' && typeof node.data === 'string';
+}
 
 function indexByNormalizedPath(entries: SnapshotEntry[]): Map<string, SnapshotEntry> {
   const out = new Map<string, SnapshotEntry>();
@@ -212,7 +227,7 @@ async function prepareMessage(
     clone.toolCalls = clone.toolCalls.map((tc) => redactToolCall(tc, onRedaction));
   }
   if (clone.toolCallsForContext && clone.toolCallsForContext.length > 0) {
-    const r = redactDeep(clone.toolCallsForContext);
+    const r = redactDeep(clone.toolCallsForContext, isMediaData);
     onRedaction({ count: r.count, samples: r.samples });
     clone.toolCallsForContext = r.value as typeof clone.toolCallsForContext;
   }
@@ -252,7 +267,34 @@ async function prepareMessage(
     if (redactedDetails) clone.runErrorDetails = redactedDetails;
     else delete clone.runErrorDetails;
   }
-  return clone;
+  // Everything else on the message goes out through the same rules: the step
+  // snapshot a reopened conversation shows, the text blocks of tool results,
+  // plans, answers, interface context and any field added later. Text redacted
+  // above matches no rule again, so it adds nothing to the count here.
+  const rest = redactDeep(clone, isMediaData);
+  onRedaction({ count: rest.count, samples: rest.samples });
+  const redacted = rest.value as Message;
+  if (redacted.executionSteps) redacted.executionSteps = redacted.executionSteps.map(dropCutTails);
+  return redacted;
+}
+
+/**
+ * A snapshot block cut at its character limit may end inside a key or a path,
+ * whose half no rule recognizes. The run of text the cut ended in goes, for
+ * the same reason a shortened file change goes out without its lines.
+ */
+function dropCutTails(step: ExecutionStepSnapshot): ExecutionStepSnapshot {
+  return {
+    ...step,
+    ...(step.detailBlocks
+      ? {
+        detailBlocks: step.detailBlocks.map((block) => (block.content && isCutSnapshotBlock(block)
+          ? { ...block, content: `${block.content.replace(/\.\.\.$/, '').replace(/\S*$/, '')}...` }
+          : block)),
+      }
+      : {}),
+    ...(step.childSteps ? { childSteps: step.childSteps.map(dropCutTails) } : {}),
+  };
 }
 
 async function prepareImageBlock(
@@ -319,7 +361,7 @@ function redactToolCall(
 ): ToolCall {
   const out: ToolCall = { ...tc, isExecuting: false };
   if (out.input !== undefined) {
-    const r = redactDeep(out.input);
+    const r = redactDeep(out.input, isMediaData);
     onRedaction({ count: r.count, samples: r.samples });
     out.input = r.value as typeof out.input;
   }
@@ -328,22 +370,111 @@ function redactToolCall(
     onRedaction(r);
     out.result = r.text;
   } else if (out.result !== undefined) {
-    const r = redactDeep(out.result);
+    const r = redactDeep(out.result, isMediaData);
     onRedaction({ count: r.count, samples: r.samples });
     out.result = r.value as typeof out.result;
   }
+  if (out.fileChange) {
+    const path = redactText(out.fileChange.path);
+    onRedaction(path);
+    const change: FileChange = { ...out.fileChange, path: path.text };
+    // Hunks go out only as they are: the file text is checked as one string,
+    // so a rule that spans lines applies, and a change with shortened lines
+    // may hold a credential no rule recognizes.
+    const text = redactText(
+      (change.hunks ?? []).flatMap((hunk) => hunk.lines.map((line) => line.slice(1))).join('\n'),
+    );
+    onRedaction(text);
+    out.fileChange = text.count > 0 || change.cut ? fileChangeWithoutHunks(change) : change;
+  }
+  if (out.backgroundCommand) {
+    const command = redactText(out.backgroundCommand.command);
+    onRedaction(command);
+    out.backgroundCommand = { command: command.text };
+  }
   return out;
+}
+
+/**
+ * What the exported messages refer to. An attachment goes out only when one
+ * of these ties it to a message that is in the bundle.
+ */
+interface ExportedReferences {
+  messageIds: Set<string>;
+  toolCallIds: Set<string>;
+  /** Raw message text, for a code save whose file is the text of a code block. */
+  texts: string[];
+  /** Normalized paths the messages name as written outputs or attached images. */
+  paths: Set<string>;
+}
+
+async function collectExportedReferences(
+  messages: Message[],
+  workspacePath: string | null | undefined,
+): Promise<ExportedReferences> {
+  const refs: ExportedReferences = {
+    messageIds: new Set(),
+    toolCallIds: new Set(),
+    texts: [],
+    paths: new Set(),
+  };
+  const addPath = async (raw: string): Promise<void> => {
+    const resolved = workspacePath && !/^(?:\/|[A-Za-z]:[\\/]|~)/.test(raw) ? joinPath(workspacePath, raw) : raw;
+    refs.paths.add(normalizeSeparators(await expandTilde(resolved)).replace(/\/+$/, ''));
+  };
+  for (const m of messages) {
+    refs.messageIds.add(m.id);
+    if (typeof m.content === 'string') {
+      refs.texts.push(m.content);
+    } else if (Array.isArray(m.content)) {
+      for (const block of m.content as MessageContent[]) {
+        if (block.type === 'text') refs.texts.push(block.text);
+        else if (block.type === 'image' && block.filePath) await addPath(block.filePath);
+      }
+    }
+    if (m.toolCalls && m.toolCalls.length > 0) {
+      for (const tc of m.toolCalls) refs.toolCallIds.add(tc.id);
+      const outputs = extractFileOutputs(m.toolCalls, { mode: 'deliverables', includeReads: false });
+      for (const o of outputs) {
+        if (o.operation === 'create' || o.operation === 'write') await addPath(o.path);
+      }
+    }
+  }
+  return refs;
+}
+
+/**
+ * Whether an exported message accounts for this manifest entry. A tool output
+ * is tied by its tool call id, a user upload by its message id, an entry
+ * installed from an imported bundle by a path a message names, and a code
+ * save by its text appearing in a message; the last needs the file's bytes.
+ */
+function isReferencedByExport(entry: SnapshotEntry, refs: ExportedReferences, bytes: Uint8Array | null): boolean {
+  if (entry.source === 'code-save') {
+    if (!bytes || bytes.length === 0) return false;
+    const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+    return refs.texts.some((t) => t.includes(text));
+  }
+  if (entry.refId === 'shared-import') return refs.paths.has(entry.originalPath);
+  if (entry.source === 'tool-output') return refs.toolCallIds.has(entry.refId);
+  return refs.messageIds.has(entry.refId);
 }
 
 async function collectAttachments(
   convId: string,
   entries: SnapshotEntry[],
   tier: ShareTier,
+  refs: ExportedReferences,
 ): Promise<Record<string, ShareAttachment>> {
   const out: Record<string, ShareAttachment> = {};
   let totalEmbedded = 0;
 
   for (const e of entries) {
+    // A code save is confirmed by its bytes, read below; every other entry is
+    // settled here, before anything is read for it.
+    const confirmedByBytes = e.source === 'code-save';
+    if (!confirmedByBytes && !isReferencedByExport(e, refs, null)) continue;
+
     const keyPath = redactText(e.originalPath).text;
     const base: ShareAttachment = {
       basename: e.basename,
@@ -357,23 +488,28 @@ async function collectAttachments(
       continue;
     }
     if (!e.snapshotRelPath) {
+      if (confirmedByBytes) continue;
       out[keyPath] = { ...base, skipReason: 'snapshot-unavailable' };
       continue;
     }
     if (e.size > MAX_ATTACHMENT_BYTES) {
+      if (confirmedByBytes) continue;
       out[keyPath] = { ...base, skipReason: 'oversized' };
       continue;
     }
     if (totalEmbedded + e.size > MAX_TOTAL_ATTACHMENT_BYTES) {
+      if (confirmedByBytes) continue;
       out[keyPath] = { ...base, skipReason: 'budget-exceeded' };
       continue;
     }
 
     const bytes = await readSnapshotBytes(convId, e.snapshotRelPath);
     if (!bytes) {
+      if (confirmedByBytes) continue;
       out[keyPath] = { ...base, skipReason: 'missing' };
       continue;
     }
+    if (confirmedByBytes && !isReferencedByExport(e, refs, bytes)) continue;
 
     out[keyPath] = {
       ...base,

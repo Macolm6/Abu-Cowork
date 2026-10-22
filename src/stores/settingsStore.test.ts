@@ -164,6 +164,21 @@ describe('reconcileActiveProvider', () => {
       expect(state.providers[0].enabled).toBe(true);
     });
 
+    it('silently re-enables a keyless custom OpenAI-compatible provider on this machine', () => {
+      const p = makeProvider({
+        id: 'local-vllm',
+        source: 'custom',
+        enabled: false,
+        apiKey: '',
+        baseUrl: 'http://127.0.0.1:8000/v1',
+      });
+      const state = makeState([p], { providerId: 'local-vllm', modelId: 'm1' });
+
+      reconcileActiveProvider(state);
+
+      expect(state.providers[0].enabled).toBe(true);
+    });
+
     it('treats whitespace-only apiKey as empty (not usable)', () => {
       const whitespaceKey = makeProvider({
         id: 'p1',
@@ -457,6 +472,70 @@ describe('settingsStore partialize', () => {
     const snapshot = partialize(useSettingsStore.getState());
     expect(snapshot.pendingImageGenSecretBridge).toBe('backend-123');
     useSettingsStore.setState({ pendingImageGenSecretBridge: undefined });
+  });
+});
+
+describe('settingsStore account login dialog', () => {
+  it('opens and closes without changing the current view or settings selection', () => {
+    const previous = useSettingsStore.getState();
+    const surroundingUi = () => {
+      const state = useSettingsStore.getState();
+      return {
+        viewMode: state.viewMode,
+        activeSystemTab: state.activeSystemTab,
+        systemSettingsOpen: state.systemSettingsOpen,
+      };
+    };
+
+    try {
+      useSettingsStore.setState({
+        viewMode: 'automation',
+        activeSystemTab: 'sandbox',
+        systemSettingsOpen: true,
+        accountLoginOpen: false,
+      });
+      const before = surroundingUi();
+
+      useSettingsStore.getState().openAccountLogin();
+      expect(useSettingsStore.getState().accountLoginOpen).toBe(true);
+      expect(surroundingUi()).toEqual(before);
+
+      useSettingsStore.getState().closeAccountLogin();
+      expect(useSettingsStore.getState().accountLoginOpen).toBe(false);
+      expect(surroundingUi()).toEqual(before);
+    } finally {
+      useSettingsStore.setState({
+        viewMode: previous.viewMode,
+        activeSystemTab: previous.activeSystemTab,
+        systemSettingsOpen: previous.systemSettingsOpen,
+        accountLoginOpen: previous.accountLoginOpen,
+      });
+    }
+  });
+
+  it('does not restore an open account dialog from persisted settings', async () => {
+    const previous = useSettingsStore.getState();
+    const previousStoredSettings = localStorage.getItem('abu-settings');
+    __resetBrowserConfigPersistenceForTests();
+
+    try {
+      useSettingsStore.setState({ accountLoginOpen: true });
+      const storedSettings = localStorage.getItem('abu-settings');
+      expect(storedSettings).not.toBeNull();
+      expect(JSON.parse(storedSettings!).state).not.toHaveProperty('accountLoginOpen');
+
+      await useSettingsStore.persist.rehydrate();
+
+      expect(useSettingsStore.getState().accountLoginOpen).toBe(false);
+    } finally {
+      useSettingsStore.setState({ accountLoginOpen: previous.accountLoginOpen });
+      if (previousStoredSettings === null) {
+        localStorage.removeItem('abu-settings');
+      } else {
+        localStorage.setItem('abu-settings', previousStoredSettings);
+      }
+      __resetBrowserConfigPersistenceForTests();
+    }
   });
 });
 
@@ -814,32 +893,73 @@ describe('settingsStore labs flags', () => {
     });
   });
 
-  describe('v42 migration (one-time theme reset to light)', () => {
+  describe('v42 migration (theme reset to light; the v54 step runs after it)', () => {
     const getMigrate = () =>
       (useSettingsStore as unknown as {
         persist: { getOptions: () => { migrate: (data: unknown, version: number) => Record<string, unknown> } };
       }).persist.getOptions().migrate;
 
-    it('resets a persisted dark theme to light on upgrade from v41', () => {
-      // Pre-fix users had 'dark' persisted from the old default, even if they
-      // never opened theme settings — the whole point of this migration.
+    it('a dark theme stored before v42 ends on follow-the-system', () => {
       const migrated = getMigrate()({ theme: 'dark' }, 41);
-      expect(migrated.theme).toBe('light');
+      expect(migrated.theme).toBe('system');
     });
 
-    it('also resets an explicit system choice to light (accepted trade-off)', () => {
+    it('a system choice stored before v42 ends on follow-the-system', () => {
       const migrated = getMigrate()({ theme: 'system' }, 41);
-      expect(migrated.theme).toBe('light');
+      expect(migrated.theme).toBe('system');
     });
 
-    it('materializes theme to light even when the field was absent', () => {
+    it('a store from before v42 without the field ends on follow-the-system', () => {
       const migrated = getMigrate()({}, 41);
-      expect(migrated.theme).toBe('light');
+      expect(migrated.theme).toBe('system');
     });
 
-    it('does NOT re-run for users already at v42 (dark re-choice sticks)', () => {
+    it('a dark theme stored at v42 ends on follow-the-system', () => {
       const migrated = getMigrate()({ theme: 'dark' }, 42);
-      expect(migrated.theme).toBe('dark');
+      expect(migrated.theme).toBe('system');
+    });
+  });
+
+  describe('v54 migration (appearance follows the system once)', () => {
+    const getMigrate = () =>
+      (useSettingsStore as unknown as {
+        persist: { getOptions: () => { version: number; migrate: (data: unknown, version: number) => Record<string, unknown> } };
+      }).persist.getOptions().migrate;
+
+    it('a new install follows the system', () => {
+      expect(useSettingsStore.getInitialState().theme).toBe('system');
+    });
+
+    // Every store from before v54 ends on follow-the-system, whatever it held: an earlier version
+    // wrote 'light' for everybody, so a stored value does not show a choice. The v42 step sets
+    // 'light' for stores older than 42 and runs before this one.
+    it.each([0, 41, 42, 52, 53])('a store at version %i ends on follow-the-system whatever it held', (version) => {
+      for (const stored of ['light', 'dark', 'system']) {
+        expect(getMigrate()({ theme: stored }, version).theme).toBe('system');
+      }
+      expect(getMigrate()({}, version).theme).toBe('system');
+    });
+
+    it.each(['light', 'dark', 'system'])('a store at version 54 keeps %s: the step runs once', (stored) => {
+      expect(getMigrate()({ theme: stored }, 54).theme).toBe(stored);
+    });
+
+    it('a store written by a later version is left as it is', () => {
+      expect(getMigrate()({ theme: 'light' }, 55).theme).toBe('light');
+    });
+
+    it('changes nothing else in a store at version 53', () => {
+      const stored = {
+        theme: 'light', language: 'zh-CN', permissionMode: 'smart', sandboxEnabled: false,
+        closeAction: 'minimize', composerEnterBehavior: 'modEnter', userNickname: 'e2e', guideShown: true,
+        labs: { pet: true }, disabledSkills: ['docx'], imChannel: { allowLanWebhook: true },
+        browserPermissionConfigV2: { schemaVersion: 1, marker: 'kept as stored' },
+        providers: [{ id: 'p1', apiKey: '', models: [{ id: 'm1' }] }], activeModel: { providerId: 'p1', modelId: 'm1' },
+      };
+      const { theme: _before, ...rest } = structuredClone(stored);
+      const { theme: _after, ...migratedRest } = getMigrate()(structuredClone(stored), 53);
+      void _before; void _after;
+      expect(migratedRest).toEqual(rest);
     });
   });
 
@@ -1518,6 +1638,58 @@ describe('bootstrapSecrets — orphaned imagegen:<id> secret sweep', () => {
 
     await expect(bootstrapSecrets()).resolves.toBeUndefined();
     expect(deleted).toEqual([]);
+  });
+});
+
+describe('clearAllStoredKeys — API key scope', () => {
+  const invokeMock = vi.mocked(invoke);
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    useSettingsStore.setState({
+      providers: [makeProvider({ id: 'p1', apiKey: 'sk-provider' })],
+      auxiliaryServices: {
+        webSearch: { provider: 'tavily', apiKey: 'sk-search', baseUrl: 'https://search.example.com' },
+        imageGen: { apiKey: 'sk-image', baseUrl: '', model: '' },
+      },
+      imageGeneration: {
+        backends: [{
+          id: 'bk1',
+          name: 'Image',
+          vendor: 'custom',
+          baseUrl: 'https://images.example.com',
+          apiKey: 'sk-backend',
+          model: 'image-model',
+        }],
+        defaultId: 'bk1',
+      },
+    });
+  });
+
+  it('deletes only API keys and preserves an existing account credential', async () => {
+    const secrets = new Map([
+      ['provider:p1', 'sk-provider'],
+      ['aux:webSearch', 'sk-search'],
+      ['aux:imageGen', 'sk-image'],
+      ['imagegen:bk1', 'sk-backend'],
+      ['account:credentials:v1', 'account-secret'],
+    ]);
+    invokeMock.mockImplementation(async (cmd: unknown, args?: unknown) => {
+      if (cmd === 'secret_delete') {
+        secrets.delete((args as { key: string }).key);
+        return undefined;
+      }
+      if (cmd === 'secret_clear_all') throw new Error('must not clear the account store');
+      return undefined;
+    });
+
+    await useSettingsStore.getState().clearAllStoredKeys();
+
+    expect(secrets).toEqual(new Map([['account:credentials:v1', 'account-secret']]));
+    expect(invokeMock).not.toHaveBeenCalledWith('secret_clear_all', expect.anything());
+    expect(useSettingsStore.getState().providers[0].apiKey).toBe('');
+    expect(useSettingsStore.getState().auxiliaryServices.webSearch?.apiKey).toBe('');
+    expect(useSettingsStore.getState().imageGeneration.backends[0].apiKey).toBe('');
   });
 });
 

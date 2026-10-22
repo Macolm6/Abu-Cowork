@@ -4,6 +4,7 @@
  */
 export const TOOL_NAMES = {
   PLUGIN_PREPARE: 'plugin_prepare',
+  APP_PREPARE: 'app_prepare',
   // Core file/system tools
   GET_SYSTEM_INFO: 'get_system_info',
   READ_FILE: 'read_file',
@@ -12,7 +13,10 @@ export const TOOL_NAMES = {
   LIST_DIRECTORY: 'list_directory',
   SEARCH_FILES: 'search_files',
   FIND_FILES: 'find_files',
+  CHECK_OPEN_DOCUMENT: 'check_open_document',
   RUN_COMMAND: 'run_command',
+  BACKGROUND_COMMAND_OUTPUT: 'background_command_output',
+  STOP_BACKGROUND_COMMAND: 'stop_background_command',
   DELETE_FILE: 'delete_file',
 
   // Web & network
@@ -34,6 +38,8 @@ export const TOOL_NAMES = {
   SKILL_MANAGE: 'skill_manage',
   DELEGATE_TO_AGENT: 'delegate_to_agent',
   REPORT_PLAN: 'report_plan',
+  /** Goal mode: the conversation's persistent objective (goalTools.ts). */
+  MANAGE_GOAL: 'manage_goal',
   /** @deprecated save_skill was removed in favor of skill_manage. The constant
    *  is kept solely because the shared factory in agentTools.ts still references
    *  it in an unreachable branch; delete both once save_agent gets its own
@@ -63,6 +69,9 @@ export const TOOL_NAMES = {
 
   // IM outbound (only usable inside an IM channel session)
   SEND_FILE: 'send_file',
+
+  // Turn deliverables shown as file cards under the reply
+  PRESENT_FILES: 'present_files',
 
   // Computer use
   COMPUTER: 'computer',

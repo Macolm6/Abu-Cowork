@@ -8,22 +8,26 @@ vi.mock('./tauriFetch', () => ({
 // Mock Anthropic SDK — we control the stream behavior
 const mockCreate = vi.fn();
 vi.mock('@anthropic-ai/sdk', () => {
+  class MockAPIError extends Error {
+    status: number;
+    constructor(status: number, message: string) {
+      super(message);
+      this.status = status;
+    }
+  }
   return {
     default: class MockAnthropic {
+      static APIError = MockAPIError;
       messages = { create: mockCreate };
     },
-    APIError: class MockAPIError extends Error {
-      status: number;
-      constructor(status: number, message: string) {
-        super(message);
-        this.status = status;
-      }
-    },
+    APIError: MockAPIError,
   };
 });
 
+import { APIError } from '@anthropic-ai/sdk';
 import { ClaudeAdapter } from './claude';
 import { LLMError } from './adapter';
+import { getTauriFetch } from './tauriFetch';
 
 // Filler timestamp (TESTING.md §3) — not asserted on below.
 const FIXED_TIMESTAMP = 1_700_000_000_000;
@@ -94,6 +98,96 @@ describe('ClaudeAdapter', () => {
       // No error/done events emitted — the failure flows through the thrown error
       expect(events.find((e) => e.type === 'done')).toBeUndefined();
       await expect(chatPromise).rejects.toBeInstanceOf(LLMError);
+      expect(vi.mocked(getTauriFetch).mock.calls).toEqual([[{ localServer: false }]]);
+    });
+
+    it('gives a local Anthropic-format server 10 minutes before its first event, and does not retry that', async () => {
+      // 本机的自定义服务商（apiFormat anthropic）：请求建立后一直没有事件，直到被中止
+      mockCreate.mockImplementation((_params: unknown, options?: { signal?: AbortSignal }) => {
+        const signal = options?.signal;
+        return Promise.resolve({
+          [Symbol.asyncIterator]: () => ({
+            next: () => new Promise((_resolve, reject) => {
+              if (signal?.aborted) return reject(abortError());
+              signal?.addEventListener('abort', () => reject(abortError()), { once: true });
+            }),
+          }),
+        });
+      });
+
+      const adapter = new ClaudeAdapter();
+      const chatPromise = adapter.chat(
+        [{ role: 'user', content: 'hello', id: '1', timestamp: FIXED_TIMESTAMP }],
+        { apiKey: '', baseUrl: 'http://127.0.0.1:8080', model: 'local-model', maxTokens: 1024, localServer: true },
+        () => {},
+      );
+      let settled = false;
+      chatPromise.then(() => { settled = true; }, () => { settled = true; });
+
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(599_000);
+      expect(settled).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(chatPromise).rejects.toMatchObject({ code: 'local_server_timeout', retryable: false });
+      // 按本地服务发出请求，传输层不会先于这 10 分钟断开
+      expect(vi.mocked(getTauriFetch).mock.calls).toEqual([[{ localServer: true }]]);
+    });
+
+    it('ends at once when the user stops a local Anthropic-format server during the 10 minute wait', async () => {
+      mockCreate.mockImplementation((_params: unknown, options?: { signal?: AbortSignal }) => {
+        const signal = options?.signal;
+        return Promise.resolve({
+          [Symbol.asyncIterator]: () => ({
+            next: () => new Promise((_resolve, reject) => {
+              if (signal?.aborted) return reject(abortError());
+              signal?.addEventListener('abort', () => reject(abortError()), { once: true });
+            }),
+          }),
+        });
+      });
+
+      const controller = new AbortController();
+      const events: Array<{ type: string; stopReason?: string }> = [];
+      const chatPromise = new ClaudeAdapter().chat(
+        [{ role: 'user', content: 'hello', id: '1', timestamp: FIXED_TIMESTAMP }],
+        { apiKey: '', baseUrl: 'http://127.0.0.1:8080', model: 'local-model', maxTokens: 1024, localServer: true, signal: controller.signal },
+        (event) => events.push(event),
+      );
+      let settled = false;
+      chatPromise.then(() => { settled = true; }, () => { settled = true; });
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(settled).toBe(false);
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toBe(true);
+      // 用户主动停止：按现有路径以 cancelled 结束，不算超时
+      await chatPromise;
+      expect(events.at(-1)).toMatchObject({ type: 'done', stopReason: 'cancelled' });
+    });
+  });
+
+  describe('API errors', () => {
+    it('erases the request key a provider echoed in its error body', async () => {
+      vi.useRealTimers();
+      const apiKey = 'abu-test-not-a-secret';
+      mockCreate.mockRejectedValue(new APIError(
+        401,
+        `401 ${JSON.stringify({ error: { message: `the key ${apiKey} was rejected` } })}`,
+      ));
+
+      const failure = await new ClaudeAdapter().chat(
+        [{ role: 'user', content: 'hello', id: '1', timestamp: FIXED_TIMESTAMP }],
+        { apiKey, model: 'claude-sonnet-4-6', maxTokens: 1024 },
+        () => {},
+      ).catch((err: unknown) => err);
+
+      expect(failure).toBeInstanceOf(LLMError);
+      const err = failure as LLMError;
+      expect(err.code).toBe('authentication');
+      expect(err.upstream?.summary).toBe('the key [REDACTED] was rejected');
+      expect(JSON.stringify([err.message, err.rawBody, err.upstream])).not.toContain(apiKey);
     });
   });
 
@@ -246,6 +340,185 @@ describe('ClaudeAdapter', () => {
       const count = countBreakpoints(params);
       expect(count).toBeGreaterThanOrEqual(3); // tools + system + history all marked
       expect(count).toBeLessThanOrEqual(4);
+    });
+  });
+
+  describe('extended thinking signature', () => {
+    type Block = Record<string, unknown>;
+    type CapturedMessages = Array<{ role: string; content: string | Block[] }>;
+
+    async function captureMessages(messages: Parameters<ClaudeAdapter['chat']>[0]): Promise<CapturedMessages> {
+      vi.useRealTimers();
+      mockCreate.mockResolvedValue({
+        async *[Symbol.asyncIterator]() {
+          yield { type: 'message_stop' };
+        },
+      });
+      const adapter = new ClaudeAdapter();
+      await adapter.chat(
+        messages,
+        { apiKey: 'test-key', model: 'claude-sonnet-4-6', maxTokens: 4096, enableThinking: true },
+        () => {},
+      );
+      return (mockCreate.mock.calls[0][0] as { messages: CapturedMessages }).messages;
+    }
+
+    it('emits the thinking text, then its signature, then the tool call, in stream order', async () => {
+      vi.useRealTimers();
+      mockCreate.mockResolvedValue({
+        async *[Symbol.asyncIterator]() {
+          yield { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } };
+          yield { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'Let me ' } };
+          yield { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'check.' } };
+          yield { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig-abc' } };
+          yield { type: 'content_block_stop', index: 0 };
+          yield { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_1', name: 'get_time', input: {} } };
+          yield { type: 'content_block_stop', index: 1 };
+          yield { type: 'message_stop' };
+        },
+      });
+
+      const events: Array<Record<string, unknown>> = [];
+      const adapter = new ClaudeAdapter();
+      await adapter.chat(
+        [{ role: 'user', content: 'what time is it', id: '1', timestamp: FIXED_TIMESTAMP }],
+        { apiKey: 'test-key', model: 'claude-sonnet-4-6', maxTokens: 4096, enableThinking: true },
+        (event) => events.push(event as Record<string, unknown>),
+      );
+
+      const kinds = events.map((e) => e.type);
+      expect(kinds).toEqual(['thinking', 'thinking_signature', 'tool_use', 'done']);
+      expect(events[0]).toEqual({ type: 'thinking', thinking: 'Let me check.' });
+      expect(events[1]).toEqual({ type: 'thinking_signature', signature: 'sig-abc' });
+    });
+
+    it('emits a redacted_thinking event carrying the opaque payload from the block start', async () => {
+      vi.useRealTimers();
+      mockCreate.mockResolvedValue({
+        async *[Symbol.asyncIterator]() {
+          yield { type: 'content_block_start', index: 0, content_block: { type: 'redacted_thinking', data: 'blob-1' } };
+          yield { type: 'content_block_stop', index: 0 };
+          yield { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } };
+          yield { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'ok' } };
+          yield { type: 'content_block_stop', index: 1 };
+          yield { type: 'message_stop' };
+        },
+      });
+
+      const events: Array<Record<string, unknown>> = [];
+      const adapter = new ClaudeAdapter();
+      await adapter.chat(
+        [{ role: 'user', content: 'hi', id: '1', timestamp: FIXED_TIMESTAMP }],
+        { apiKey: 'test-key', model: 'claude-sonnet-4-6', maxTokens: 4096, enableThinking: true },
+        (event) => events.push(event as Record<string, unknown>),
+      );
+
+      expect(events.map((e) => e.type)).toEqual(['redacted_thinking', 'text', 'done']);
+      expect(events[0]).toEqual({ type: 'redacted_thinking', data: 'blob-1' });
+    });
+
+    it('emits the signature alone when the API withheld the thinking text', async () => {
+      vi.useRealTimers();
+      mockCreate.mockResolvedValue({
+        async *[Symbol.asyncIterator]() {
+          yield { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } };
+          yield { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig-only' } };
+          yield { type: 'content_block_stop', index: 0 };
+          yield { type: 'message_stop' };
+        },
+      });
+
+      const events: Array<Record<string, unknown>> = [];
+      const adapter = new ClaudeAdapter();
+      await adapter.chat(
+        [{ role: 'user', content: 'hi', id: '1', timestamp: FIXED_TIMESTAMP }],
+        { apiKey: 'test-key', model: 'claude-sonnet-4-6', maxTokens: 4096, enableThinking: true },
+        (event) => events.push(event as Record<string, unknown>),
+      );
+
+      expect(events.map((e) => e.type)).toEqual(['thinking_signature', 'done']);
+    });
+
+    it('replays a signed thinking block ahead of the tool_use block', async () => {
+      const messages = await captureMessages([
+        { role: 'user', content: 'what time is it', id: '1', timestamp: FIXED_TIMESTAMP },
+        {
+          role: 'assistant',
+          content: '',
+          id: '2',
+          timestamp: FIXED_TIMESTAMP,
+          thinking: 'Let me check.',
+          thinkingSignature: 'sig-abc',
+          toolCallsForContext: [{ name: 'get_time', input: {}, result: '12:00' }],
+        },
+      ]);
+
+      const assistant = messages[1];
+      expect(assistant.role).toBe('assistant');
+      const blocks = assistant.content as Block[];
+      expect(blocks[0]).toEqual({ type: 'thinking', thinking: 'Let me check.', signature: 'sig-abc' });
+      expect(blocks[1]).toMatchObject({ type: 'tool_use', name: 'get_time' });
+    });
+
+    it('replays redacted blocks verbatim, before the signed thinking block', async () => {
+      const messages = await captureMessages([
+        { role: 'user', content: 'go', id: '1', timestamp: FIXED_TIMESTAMP },
+        {
+          role: 'assistant',
+          content: '',
+          id: '2',
+          timestamp: FIXED_TIMESTAMP,
+          thinking: 'visible part',
+          thinkingSignature: 'sig-abc',
+          redactedThinking: ['blob-1', 'blob-2'],
+          toolCallsForContext: [{ name: 'get_time', input: {}, result: '12:00' }],
+        },
+      ]);
+
+      const blocks = messages[1].content as Block[];
+      expect(blocks.slice(0, 3)).toEqual([
+        { type: 'redacted_thinking', data: 'blob-1' },
+        { type: 'redacted_thinking', data: 'blob-2' },
+        { type: 'thinking', thinking: 'visible part', signature: 'sig-abc' },
+      ]);
+      expect(blocks[3]).toMatchObject({ type: 'tool_use' });
+    });
+
+    it('replays a signature whose text was withheld as a thinking block with empty text', async () => {
+      const messages = await captureMessages([
+        { role: 'user', content: 'go', id: '1', timestamp: FIXED_TIMESTAMP },
+        {
+          role: 'assistant',
+          content: '',
+          id: '2',
+          timestamp: FIXED_TIMESTAMP,
+          thinkingSignature: 'sig-only',
+          toolCallsForContext: [{ name: 'get_time', input: {}, result: '12:00' }],
+        },
+      ]);
+
+      const blocks = messages[1].content as Block[];
+      expect(blocks[0]).toEqual({ type: 'thinking', thinking: '', signature: 'sig-only' });
+    });
+
+    it('replays unsigned thinking (another model family, or an older record) as plain text and never as a thinking block', async () => {
+      const messages = await captureMessages([
+        { role: 'user', content: 'what time is it', id: '1', timestamp: FIXED_TIMESTAMP },
+        {
+          role: 'assistant',
+          content: 'Checking now.',
+          id: '2',
+          timestamp: FIXED_TIMESTAMP,
+          thinking: 'reasoning from a different model',
+          toolCallsForContext: [{ name: 'get_time', input: {}, result: '12:00' }],
+        },
+      ]);
+
+      const blocks = messages[1].content as Block[];
+      expect(blocks.map((b) => b.type)).toEqual(['text', 'text', 'tool_use']);
+      expect(blocks[0]).toEqual({ type: 'text', text: 'reasoning from a different model' });
+      expect(blocks[1]).toEqual({ type: 'text', text: 'Checking now.' });
+      expect(JSON.stringify(messages)).not.toContain('"signature"');
     });
   });
 });

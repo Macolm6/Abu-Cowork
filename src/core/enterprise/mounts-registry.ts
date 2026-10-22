@@ -38,14 +38,6 @@ export interface PolicyAdvisorProps {
   context: 'soul' | 'permissions' | 'global'
 }
 
-/** /me transparency page. */
-export type MeTransparencyProps = SlotProps
-
-/** Personal→enterprise data migration wizard (modal). */
-export interface MigrationWizardProps {
-  onClose: () => void
-}
-
 // ===== V1.5+ extension slots (declared early so future plugins can target a stable shape) =====
 
 export interface KbModuleProps extends SlotProps {
@@ -55,7 +47,11 @@ export interface PolicyEnforcerProps extends SlotProps {
   resource: 'tool' | 'skill' | 'mcp'
   action: string
 }
-export type AgentMarketProps = TabSlotProps
+export interface AgentMarketProps extends TabSlotProps {
+  scopeRoleIds?: ReadonlySet<string>
+  /** Close the host surface after the user starts a conversation. */
+  onClose?: () => void
+}
 export type ImConnectorProps = SlotProps
 export type CrossUserTaskProps = SlotProps
 
@@ -65,8 +61,6 @@ export interface EnterpriseMounts {
   brandSlot: ComponentType<BrandSlotProps>
   skillTab: ComponentType<TabSlotProps>
   mcpTab: ComponentType<TabSlotProps>
-  meTransparencyPage: ComponentType<MeTransparencyProps>
-  migrationWizard: ComponentType<MigrationWizardProps>
   policyAdvisor: ComponentType<PolicyAdvisorProps>
 
   // optional — undefined unless V1.5+ plugin overrides
@@ -77,6 +71,8 @@ export interface EnterpriseMounts {
   pluginTab?: ComponentType<TabSlotProps>
   imConnector?: ComponentType<ImConnectorProps>
   crossUserTasks?: ComponentType<CrossUserTaskProps>
+  /** 设置里用量页顶部提示下方的一行说明。个人版不注册，这个位置不渲染任何内容。 */
+  usageNote?: ComponentType<SlotProps>
 }
 
 /** No-op default that renders null. Used as fallback when a slot is unset. */
@@ -86,8 +82,6 @@ const _registry: EnterpriseMounts = {
   brandSlot: NullComponent as unknown as ComponentType<BrandSlotProps>,
   skillTab: NullComponent as unknown as ComponentType<TabSlotProps>,
   mcpTab: NullComponent as unknown as ComponentType<TabSlotProps>,
-  meTransparencyPage: NullComponent as unknown as ComponentType<MeTransparencyProps>,
-  migrationWizard: NullComponent as unknown as ComponentType<MigrationWizardProps>,
   policyAdvisor: NullComponent as unknown as ComponentType<PolicyAdvisorProps>,
 }
 

@@ -7,8 +7,12 @@
  */
 
 import { format, getI18n } from '@/i18n';
+import { PluginManifestError } from '../../../electron/shared/pluginManifestError.mjs';
+import { validateMinAbuVersion } from '../../../electron/shared/pluginSpec.mjs';
 import { normalizePluginComponentPath } from './paths';
 import { pluginConfigFields } from './configuration';
+
+export { PluginManifestError };
 
 /** 单个 MCP server 声明：stdio（command/args/env）或 http/sse（url）二选一。 */
 export interface McpServerSpec {
@@ -49,25 +53,19 @@ export interface PluginManifest {
   skills?: string | string[];
   mcpServers?: string | Record<string, McpServerSpec>;
   interface?: PluginInterface;
+  /** Lowest Abu version that can use this package; required once `teams/` is used. */
+  minAbuVersion?: string;
   // 未知字段前向兼容保留，见 parsePluginManifest 尾部的字段回填。
   [key: string]: unknown;
 }
 
-/** File references resolved within the package before disclosure/installation. */
-export interface ResolvedPluginManifest extends PluginManifest {
+/** MCP file references resolved within the package. */
+export interface ScannedManifest extends PluginManifest {
   mcpServers?: Record<string, McpServerSpec>;
 }
 
-/** 清单校验失败时抛出；field 指向具体不合法的字段路径，便于上层定位报错。 */
-export class PluginManifestError extends Error {
-  readonly field?: string;
-
-  constructor(message: string, field?: string) {
-    super(message);
-    this.name = 'PluginManifestError';
-    this.field = field;
-  }
-}
+/** Everything resolved and validated, as disclosed and installed. */
+export type ResolvedPluginManifest = ScannedManifest;
 
 /**
  * 三候选清单相对路径，按序尝试：Abu 自有目录优先，找不到依次回退到 Claude
@@ -230,6 +228,7 @@ export function parsePluginManifest(raw: unknown): PluginManifest {
     for (const path of paths) validateComponentPath(path as string, 'skills');
   }
   const iface = validateInterface(raw.interface);
+  const minAbuVersion = validateMinAbuVersion(raw.minAbuVersion);
 
   return {
     // 先展开未知字段做前向兼容兜底，再用校验过的字段覆盖，确保类型正确的值优先。
@@ -237,5 +236,6 @@ export function parsePluginManifest(raw: unknown): PluginManifest {
     name,
     mcpServers,
     interface: iface,
+    minAbuVersion,
   };
 }
