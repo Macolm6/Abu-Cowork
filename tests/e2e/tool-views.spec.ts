@@ -560,6 +560,7 @@ test.describe('the step list', () => {
     await expect(list.locator(gateStep(2))).toBeAttached({ timeout: REPLY_TIMEOUT });
     await expect.poll(() => list.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
     await expect.poll(() => distanceFromEnd(list)).toBeLessThanOrEqual(1);
+    await shot(page, '08-step-list-at-end', list);
 
     // The reader scrolls up; the next step leaves the scroll position where it is.
     const readerTop = await list.evaluate(async (element) => {
