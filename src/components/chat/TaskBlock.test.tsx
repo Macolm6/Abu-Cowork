@@ -815,6 +815,47 @@ describe('TaskBlock — tool views', () => {
     expect(screen.getByText('命令已结束：npm test')).toBeInTheDocument();
   });
 
+  it.each([
+    ['read_file', 'file-read', { path: '/w/missing.md' }, 'Error reading file: ENOENT: no such file'],
+    ['http_fetch', 'tool', { url: pageUrl }, 'Error making HTTP request: fetch failed'],
+  ])('shows the failure text of a %s step that holds an error block, with the title colour of its status', (toolName, type, input, failure) => {
+    const step = commandStep({
+      type: type as ExecutionStep['type'], toolName, toolInput: input, status: 'completed',
+      detailBlocks: [{
+        id: 'step-1-error', stepId: 'step-1', type: 'error', label: 'Error', labelKey: 'error',
+        content: failure, isTruncated: false, isExpanded: true,
+      }],
+    });
+    const { container } = renderOpen([step], { toolResults: new Map([['call-1', failure]]) });
+    const title = screen.getByRole('button', { name: labelOf(toolName, input) });
+    fireEvent.click(title);
+    const failureText = container.querySelector<HTMLElement>('[data-step-view] [data-tool-result]')!;
+    expect(failureText).toHaveTextContent(failure);
+    expect(failureText).toHaveClass('text-danger');
+    const titleLine = title.closest('.pb-3')!.firstElementChild!;
+    expect(titleLine).not.toHaveClass('text-danger');
+    expect(titleLine).toHaveClass('text-label-tertiary');
+  });
+
+  it('shows the failure text of an error block saved in a snapshot, without the whole results', () => {
+    const failure = 'Error reading file: ENOENT: no such file';
+    const input = { path: '/w/missing.md' };
+    const step = commandStep({
+      type: 'file-read', toolName: 'read_file', toolInput: input, toolResult: undefined, label: labelOf('read_file', input),
+      detailBlocks: [{
+        id: 'step-1-error', stepId: 'step-1', type: 'error', label: 'Error', labelKey: 'error',
+        content: failure, isTruncated: false, isExpanded: true,
+      }],
+    });
+    const { container } = renderOpen(snapshotToExecutionSteps(snapshotExecutionSteps([step])), {
+      toolViewRecords: new Map([['call-1', { input }]]),
+    });
+    fireEvent.click(screen.getByRole('button', { name: labelOf('read_file', input) }));
+    const failureText = container.querySelector<HTMLElement>('[data-step-view] [data-tool-result]')!;
+    expect(failureText).toHaveTextContent(failure);
+    expect(failureText).toHaveClass('text-danger');
+  });
+
   it('says the whole result is not in the conversation under the view', () => {
     const { container } = renderOpen([commandStep({ toolInput: npmTest })], { toolResults: new Map() });
     fireEvent.click(screen.getByRole('button', { name: labelOf('run_command', npmTest) }));

@@ -36,18 +36,24 @@ const STEP_DIFF_FOLD: DiffFold = { head: 5, tail: 4 };
 // The title of a step that opens its tool's view.
 const STEP_TITLE_BUTTON = 'inline rounded-control text-left transition-colors duration-fast hover:text-label';
 
-/** What a step's view reads: its whole result, or the part the conversation kept. */
+/**
+ * What a step's view reads: its whole result, or the part the conversation
+ * kept. A step that holds an error block failed, whatever its status, and its
+ * view reads that block.
+ */
 function stepViewText(
   step: UnifiedStep,
   toolResults: ReadonlyMap<string, string> | undefined,
-): { text: string; fullUnavailable: boolean } {
-  const block = step.detailBlocks?.find((b) => b.type === (step.status === 'error' ? 'error' : 'result') || b.type === 'list');
+): { text: string; fullUnavailable: boolean; failed: boolean } {
+  const errorBlock = step.detailBlocks?.find((b) => b.type === 'error');
+  const failed = errorBlock !== undefined || step.status === 'error';
+  const block = errorBlock ?? step.detailBlocks?.find((b) => b.type === (failed ? 'error' : 'result') || b.type === 'list');
   const full = block ? blockFullText(block, step, toolResults) : undefined;
-  let view: { text: string; fullUnavailable: boolean };
-  if (typeof full === 'string') view = { text: full, fullUnavailable: false };
-  else if (full === null) view = { text: block!.content, fullUnavailable: true };
-  else view = { text: block?.content ?? step.toolResult ?? '', fullUnavailable: false };
-  if (step.status === 'error' && view.text.startsWith('Error: ')) view.text = view.text.slice('Error: '.length);
+  let view: { text: string; fullUnavailable: boolean; failed: boolean };
+  if (typeof full === 'string') view = { text: full, fullUnavailable: false, failed };
+  else if (full === null) view = { text: block!.content, fullUnavailable: true, failed };
+  else view = { text: block?.content ?? step.toolResult ?? '', fullUnavailable: false, failed };
+  if (failed && view.text.startsWith('Error: ')) view.text = view.text.slice('Error: '.length);
   return view;
 }
 
@@ -877,17 +883,21 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t,
         {renderDetailBlocks()}
         {renderLegacyDetails()}
 
-        {viewToolName !== undefined && viewExpanded && (
-          <div className="mt-2">
-            <StepToolView
-              toolName={viewToolName}
-              status={step.status}
-              input={toolViewRecord?.input ?? step.toolInput ?? {}}
-              record={toolViewRecord}
-              {...stepViewText(step, toolResults)}
-            />
-          </div>
-        )}
+        {viewToolName !== undefined && viewExpanded && (() => {
+          const { text, fullUnavailable, failed } = stepViewText(step, toolResults);
+          return (
+            <div className="mt-2">
+              <StepToolView
+                toolName={viewToolName}
+                status={failed ? 'error' : step.status}
+                input={toolViewRecord?.input ?? step.toolInput ?? {}}
+                record={toolViewRecord}
+                text={text}
+                fullUnavailable={fullUnavailable}
+              />
+            </div>
+          );
+        })()}
 
         {/* Completion message */}
         {isCompleted && completionMsg && (
