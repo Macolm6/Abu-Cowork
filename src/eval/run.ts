@@ -34,8 +34,18 @@ const { positionals, values } = parseArgs({
     label:       { type: 'string' },
     'max-turns': { type: 'string', default: '12' },
     'run-id':    { type: 'string' },
+    'prompt-variant': { type: 'string', default: 'family' },
   },
 });
+
+/** `--prompt-variant default` builds the prompt without the target family's fragments (the A side of an A/B run). */
+function familyPromptEnabled(): boolean {
+  const value = values['prompt-variant'];
+  if (value === 'family') return true;
+  if (value === 'default') return false;
+  console.error(`Error: --prompt-variant must be "family" or "default", got "${value}"`);
+  process.exit(1);
+}
 
 const command = positionals[0];
 
@@ -60,6 +70,7 @@ Options:
   --label <name>    Custom label for this target
   --max-turns <n>   file-edit: model requests allowed per case (default: 12)
   --run-id <id>     file-edit: workspace folder name under .agent/eval-workspace/
+  --prompt-variant <family|default>  Prompt fragments: the target family's (default) or the plain default ones
   --diff <a> <b>    Diff two reports by filename hint
 
 Results are saved under eval-results/<family>/<date>-<model>-<dataset>.json.
@@ -154,7 +165,8 @@ async function runToolSelection() {
   console.log(`   Transport: ${format === 'anthropic' ? 'anthropic sdk' : 'abu openai-compatible adapter'}`);
   console.log(`   Thinking: ${values.thinking ? 'on' : 'off'}\n`);
 
-  const filters = { filter: values.filter?.split(','), category: values.category };
+  const filters = { filter: values.filter?.split(','), category: values.category, familyPrompt: familyPromptEnabled() };
+  console.log(`   Prompt fragments: ${filters.familyPrompt ? 'target family' : 'default'}\n`);
   const results = format === 'anthropic'
     ? await runToolSelectionEval(cases, target, {
         apiKey,
@@ -210,9 +222,13 @@ async function runFileEdit() {
   });
 
   // The real system prompt sections, built the same way the tool-selection
-  // eval builds them; the workspace is the run's root folder.
+  // eval builds them; the workspace is the run's root folder, and the target
+  // model's profile picks the family's prompt fragments.
+  const { resolveModelProfile } = await import('@/core/llm/modelProfile');
   const route = routeInput('');
-  const sections = await buildSystemPromptSections(route, '', `eval-${runId}`, { platform: 'eval', workspacePath: rootDir }, 0);
+  const familyPrompt = familyPromptEnabled();
+  const profile = familyPrompt ? resolveModelProfile({ modelId: target.modelId, baseUrl }) : undefined;
+  const sections = await buildSystemPromptSections(route, '', `eval-${runId}`, { platform: 'eval', workspacePath: rootDir }, 0, undefined, profile);
   const systemPrompt = sectionsToString(sections);
 
   console.log(`\n✏️  Running file-edit eval`);
@@ -220,7 +236,8 @@ async function runFileEdit() {
   console.log(`   Cases: ${cases.length}`);
   console.log(`   Adapter: ${format === 'anthropic' ? 'ClaudeAdapter' : 'OpenAICompatibleAdapter'} → ${baseUrl}`);
   console.log(`   Workspace: ${rootDir}`);
-  console.log(`   Max turns per case: ${maxTurns}\n`);
+  console.log(`   Max turns per case: ${maxTurns}`);
+  console.log(`   Prompt fragments: ${familyPrompt ? 'target family' : 'default'}\n`);
 
   const results = await runFileEditEval(cases, target, {
     adapter: await createAdapter(format),

@@ -43,6 +43,7 @@ import { adapterKindFor, usageProtocolFor } from '../llm/adapterKind';
 import { promptTokensOf } from '../llm/usageAccounting';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelProfile } from '../llm/modelProfile';
+import { familyNotesFor } from './prompts/variants';
 import { getCapsPort, type CapsPort } from './ports/capsPort';
 import { getWorkspaceReader, type WorkspaceReader } from './ports/workspaceReader';
 import { enforceContextBudget, trimOldScreenshots } from '../context/contextManager';
@@ -822,6 +823,12 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         });
       }
     }
+
+    // The model family's working notes (prompts/variants), the one family
+    // fragment a subagent gets: its persona and workflow are the agent's own.
+    // Appended before the safety block so the rules stay last.
+    const familyNotes = familyNotesFor(startupProfile);
+    if (familyNotes) systemPrompt += '\n' + familyNotes;
 
     // Safety boundary for subagents. The prompt-injection bullet enumerates the
     // same delimiter the orchestrator's safety anchor does: this loop is the
