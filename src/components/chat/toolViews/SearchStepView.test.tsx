@@ -68,7 +68,7 @@ describe('SearchStepView', () => {
   it('says there are no matches, and nothing else', () => {
     const t = getI18n();
     const { container } = render(<SearchStepView pattern="nowhere" status="completed" text="No matches found." />);
-    expect(container.textContent).toBe(`nowhere${t.task.searchNoMatches}`);
+    expect(container.textContent).toBe(t.task.searchNoMatches);
     expect(container.querySelector('[data-tool-result]')).toBeNull();
   });
 

@@ -54,13 +54,21 @@ export function SearchStepView({ pattern, status, text }: {
     return { header: search.header, fold: foldRowList(search.rows, isMatch) };
   }, [completed, text]);
 
+  if (view?.header.kind === 'none') {
+    return (
+      <div className="overflow-hidden rounded-panel bg-code">
+        <div className="px-3 py-2 text-caption text-label-tertiary">{t.task.searchNoMatches}</div>
+      </div>
+    );
+  }
+
   return (
     <div className="overflow-hidden rounded-panel bg-code">
       <div className="whitespace-pre-wrap break-all px-3 py-2 font-code text-mono text-label">{pattern}</div>
       {view && (
         <div className="border-t border-separator">
           <div className="px-3 py-2 text-caption text-label-tertiary">{headerText(view.header, t)}</div>
-          {view.header.kind !== 'none' && view.fold.rows.length > 0 && (
+          {view.fold.rows.length > 0 && (
             <FoldedRows
               fold={view.fold}
               renderRows={(rows) => <SearchRows visible={rows} all={view.fold.rows} t={t} />}

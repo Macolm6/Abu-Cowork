@@ -49,13 +49,21 @@ export function PathListStepView({ kind, subject, status, text }: {
     return { header: list.header, fold: foldRowList(list.rows, isListed) };
   }, [completed, kind, text]);
 
+  if (view?.header.kind === 'empty') {
+    return (
+      <div className="overflow-hidden rounded-panel bg-code">
+        <div className="px-3 py-2 text-caption text-label-tertiary">{t.task.directoryEmpty}</div>
+      </div>
+    );
+  }
+
   return (
     <div className="overflow-hidden rounded-panel bg-code">
       <div className="whitespace-pre-wrap break-all px-3 py-2 font-code text-mono text-label">{subject}</div>
       {view && (
         <div className="border-t border-separator">
           <div className="px-3 py-2 text-caption text-label-tertiary">{headerText(view.header, t)}</div>
-          {view.header.kind !== 'empty' && view.fold.rows.length > 0 && (
+          {view.fold.rows.length > 0 && (
             <FoldedRows
               fold={view.fold}
               renderRows={(rows) => rows.map((row, index) => <PathRow key={index} row={row} t={t} />)}
@@ -66,7 +74,7 @@ export function PathListStepView({ kind, subject, status, text }: {
                   itemContent={(_index, row) => <PathRow row={row} t={t} />}
                 />
               )}
-              className="pt-0 text-label"
+              className="py-0 text-label"
             />
           )}
         </div>

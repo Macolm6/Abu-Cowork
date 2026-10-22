@@ -59,6 +59,11 @@ describe('PathListStepView', () => {
     fireEvent.click(screen.getByRole('button', { name: format(t.chat.toolResultShowAllLines, { count: 23 }) }));
     expect(harness.props?.data).toHaveLength(23);
     expect(harness.props?.className).toBe('h-[300px]');
+    // The list scrolls inside the 300px Virtuoso alone: its box adds no vertical padding around it.
+    const box = screen.getByTestId('mock-virtuoso').closest('[data-tool-result]');
+    expect(box).toHaveClass('py-0');
+    expect(box).not.toHaveClass('py-2');
+    expect(box).not.toHaveClass('pb-2');
     const shown = Array.from(screen.getByTestId('mock-virtuoso').children, (item) => item.textContent);
     expect(shown).toEqual(PATHS);
   });
@@ -81,7 +86,7 @@ describe('PathListStepView', () => {
   it('says the folder is empty, and nothing else', () => {
     const t = getI18n();
     const { container } = render(<PathListStepView kind="list" subject="/work/empty" status="completed" text='Directory "/work/empty" is empty.' />);
-    expect(container.textContent).toBe(`/work/empty${t.task.directoryEmpty}`);
+    expect(container.textContent).toBe(t.task.directoryEmpty);
     expect(container.querySelector('[data-tool-result]')).toBeNull();
   });
 
