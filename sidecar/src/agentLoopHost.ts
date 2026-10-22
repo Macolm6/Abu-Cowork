@@ -67,6 +67,7 @@ import {
 } from '@/core/agent/agentRunTerminal';
 import { normalizeBatchTerminalSummary } from '@/core/agent/batchTerminalSummary';
 import { parseFileChange } from '@/core/files/fileChange';
+import { parseBackgroundCommandRef } from '@/core/tools/helpers/backgroundCommandRef';
 import { enqueueUserInputWithId } from '@/core/agent/userInputQueue';
 import { applyPlanModeState } from '@/core/agent/planMode';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
@@ -357,6 +358,13 @@ function parseToolExecutionMetadata(
       throw new RpcError(-32603, 'Invalid tool.invoke file change envelope');
     }
     metadata.fileChange = fileChange;
+  }
+  if (value.backgroundCommand !== undefined) {
+    const backgroundCommand = parseBackgroundCommandRef(value.backgroundCommand);
+    if (!backgroundCommand) {
+      throw new RpcError(-32603, 'Invalid tool.invoke background command envelope');
+    }
+    metadata.backgroundCommand = backgroundCommand;
   }
   return Object.keys(metadata).length > 0 ? metadata : undefined;
 }
@@ -1230,7 +1238,10 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
     toolInvoker,
     resolvedCreds: params.resolvedCreds,
     locale: params.locale,
-    pushFrame: pushOrdered,
+    // Session checkpoints carry whole messages, tool images included, so they
+    // take the same media-encoding path as the chat frames those images first
+    // crossed on (see `pushPreparedTransportFrame`).
+    pushFrame: (frame) => chatDelta.pushPreparedTransportFrame(frame, conversationId),
   };
 
   if (params.planMode) applyPlanModeState(conversationId, params.planMode);

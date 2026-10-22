@@ -3,6 +3,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 import { current, enableMapSet } from 'immer';
+import { invoke } from '@tauri-apps/api/core';
 import type { Message, Conversation, AgentStatus, RetryInfo, TokenUsage, ConversationStatus, ToolCallForContext, ToolResultContent, ToolCall, NoticeCardAction, SandboxRecoveryAction, ToolExecutionMetadata, UserQuestionResult, UpstreamErrorDetails } from '../types';
 import type { ExecutionStepSnapshot, PlannedStep } from '../types/execution';
 import type { MaxTurnsNoticeAction } from '../core/agent/maxTurnsNotice';
@@ -64,6 +65,7 @@ import { appendBoundedSubagentToolCall } from '../core/session/durableToolResult
 import { normalizeUpstreamErrorDetails } from '../core/llm/adapter';
 import { redactFailureText } from '../core/diagnostic/scrub';
 import { parseFileChange } from '../core/files/fileChangeBudget';
+import { parseBackgroundCommandRef } from '../core/tools/helpers/backgroundCommandRef';
 import {
   ACTIVE_RUN_STATES,
   RUN_FAILURE_STATES,
@@ -159,10 +161,17 @@ export function sanitizeImportedMessage(msg: Message, answeredLoopIds?: Readonly
         sandboxRecovery: _sandboxRecovery,
         sandboxRecoveryAction: _sandboxRecoveryAction,
         fileChange: untrustedFileChange,
+        backgroundCommand: untrustedBackgroundCommand,
         ...safeToolCall
       } = tc;
       const fileChange = parseFileChange(untrustedFileChange);
-      return { ...safeToolCall, ...(fileChange ? { fileChange } : {}), isExecuting: false };
+      const backgroundCommand = parseBackgroundCommandRef(untrustedBackgroundCommand);
+      return {
+        ...safeToolCall,
+        ...(fileChange ? { fileChange } : {}),
+        ...(backgroundCommand ? { backgroundCommand } : {}),
+        isExecuting: false,
+      };
     }),
   }, { answeredLoopIds }));
 }
@@ -786,6 +795,10 @@ interface ChatActions {
   deleteMessagesFrom: (convId: string, messageId: string) => void;
   updateMessageThinking: (convId: string, thinking: string, msgId?: string) => void;
   updateMessageThinkingDuration: (convId: string, duration: number, msgId?: string) => void;
+  /** Records the Anthropic signature for the message's `thinking` (see `Message.thinkingSignature`). */
+  updateMessageThinkingSignature: (convId: string, signature: string, msgId?: string) => void;
+  /** Appends one opaque `redacted_thinking` payload (see `Message.redactedThinking`). */
+  appendMessageRedactedThinking: (convId: string, data: string, msgId?: string) => void;
   updateMessageUsage: (convId: string, usage: TokenUsage, msgId?: string) => void;
   /**
    * Force a specific message's `isStreaming` flag directly (looked up by exact
@@ -1258,6 +1271,9 @@ export const useChatStore = create<ChatStore>()(
           controller.abort('conversation-deleted');
           abortControllers.delete(id);
         }
+        // Background commands outlive their run; nothing would be left to stop them once the
+        // conversation is gone. A failed stop is not caught: it surfaces as an unhandled rejection.
+        void invoke('background_command_stop_conversation', { conversationId: id });
         // Clean up per-conversation state in external modules
         clearInputQueue(id);
         useTeamConfirmationStore.getState().clearConversation(id);
@@ -1614,6 +1630,7 @@ export const useChatStore = create<ChatStore>()(
               tc.isExecuting = false;
               if (metadata?.computerStep) tc.computerStep = metadata.computerStep;
               if (metadata?.fileChange) tc.fileChange = metadata.fileChange;
+              if (metadata?.backgroundCommand) tc.backgroundCommand = metadata.backgroundCommand;
               if (
                 metadata?.subagentStopReason
                 && !(tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed' && metadata.subagentStopReason === 'completed')
@@ -1680,6 +1697,7 @@ export const useChatStore = create<ChatStore>()(
           if (!tc) return;
           if (metadata.computerStep) tc.computerStep = metadata.computerStep;
           if (metadata.fileChange) tc.fileChange = metadata.fileChange;
+          if (metadata.backgroundCommand) tc.backgroundCommand = metadata.backgroundCommand;
           if (
             metadata.subagentStopReason
             && !(tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed' && metadata.subagentStopReason === 'completed')
@@ -2045,6 +2063,26 @@ export const useChatStore = create<ChatStore>()(
             msgId ?? FALLBACK_LAST,
           );
           if (target) target.thinkingDuration = duration;
+        });
+      },
+
+      updateMessageThinkingSignature: (convId, signature, msgId) => {
+        set((state) => {
+          const target = findTargetMessage(
+            state.conversations[convId]?.messages,
+            msgId ?? FALLBACK_LAST,
+          );
+          if (target) target.thinkingSignature = signature;
+        });
+      },
+
+      appendMessageRedactedThinking: (convId, data, msgId) => {
+        set((state) => {
+          const target = findTargetMessage(
+            state.conversations[convId]?.messages,
+            msgId ?? FALLBACK_LAST,
+          );
+          if (target) target.redactedThinking = [...(target.redactedThinking ?? []), data];
         });
       },
 

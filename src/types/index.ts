@@ -154,6 +154,13 @@ export interface ToolExecutionMetadata {
   batchTerminalSummary?: BatchTerminalSummary;
   /** write_file, edit_file, delete_file: what the call did to its file. */
   fileChange?: FileChange;
+  /** background_command_output, stop_background_command: the command the call acted on. */
+  backgroundCommand?: BackgroundCommandRef;
+}
+
+/** The command a background-command tool call acted on, kept for its tool row. */
+export interface BackgroundCommandRef {
+  command: string;
 }
 
 /** Payload for a "save this as a skill?" proposal card. */
@@ -323,6 +330,8 @@ export interface ToolCall {
   batchTerminalSummary?: BatchTerminalSummary;
   /** Line counts and hunks of a write_file, edit_file or delete_file call. */
   fileChange?: FileChange;
+  /** The command a background_command_output or stop_background_command call acted on. */
+  backgroundCommand?: BackgroundCommandRef;
   /**
    * MCP Apps interface for this step (extension `io.modelcontextprotocol/ui`).
    *
@@ -467,6 +476,20 @@ export interface Message {
   fileCards?: 'declared';
   // Extended thinking content
   thinking?: string;
+  /**
+   * Anthropic's signature over `thinking`. The API only accepts a replayed
+   * thinking block together with the signature it issued, so a Claude turn
+   * records it here and `claude.ts` sends `{thinking, signature}` back. A
+   * thinking text without one (an older record, or a turn produced by
+   * another model family) cannot be replayed as a thinking block.
+   */
+  thinkingSignature?: string;
+  /**
+   * Opaque `redacted_thinking` payloads, in arrival order. Anthropic emits
+   * these in place of readable thinking when its safety systems flag the
+   * reasoning; they carry no text and are replayed verbatim.
+   */
+  redactedThinking?: string[];
   // Thinking duration in seconds
   thinkingDuration?: number;
   // Token usage for this message
@@ -920,6 +943,10 @@ export interface TokenUsage {
 export type StreamEvent =
   | { type: 'text'; text: string }
   | { type: 'thinking'; thinking: string }
+  /** Signature Anthropic issued for the thinking block that just ended (see `Message.thinkingSignature`). */
+  | { type: 'thinking_signature'; signature: string }
+  /** One opaque `redacted_thinking` block (see `Message.redactedThinking`). */
+  | { type: 'redacted_thinking'; data: string }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
   | { type: 'tool_result'; toolUseId: string; result: string }
   | { type: 'usage'; usage: TokenUsage }

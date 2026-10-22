@@ -4,6 +4,8 @@ import { useSettingsStore } from './settingsStore';
 import { useBatchProgressStore } from './batchProgressStore';
 import { closeBrowserViews, type BrowserCloseReason } from '@/core/browser/browserViewLifecycle';
 import { makeBatchKey, type BatchIdentity } from '@/types';
+import type { VersionOrigin } from '@/utils/canvasVersions';
+import { normalizeSeparators } from '@/utils/pathUtils';
 import {
   buildBrowserSignalContext,
   buildBrowserSignalRecord,
@@ -11,6 +13,16 @@ import {
   noteTabCreated,
   safeRecordBrowserSignal,
 } from '@/core/observability/browserSignals';
+
+export type VersionReverter = (id: string, origin: VersionOrigin | null) => Promise<void>;
+
+/** Normalized path → the previews that registered to restore its versions, latest last. */
+const versionReverters = new Map<string, Array<{ revert: VersionReverter }>>();
+
+/** The latest preview registered to restore the versions of `path`, or null. */
+export function versionReverterFor(path: string): VersionReverter | null {
+  return versionReverters.get(normalizeSeparators(path).replace(/\/+$/, ''))?.at(-1)?.revert ?? null;
+}
 
 /** This tracks the in-app right-panel browser workspace tab, not a
  *  Chrome-extension-bridge action — `channel` is always 'builtin'. Uses the
@@ -263,6 +275,10 @@ interface PreviewState {
   openTurnChanges: (target: TurnChangesTarget) => string;
   // Show another file in a changes tab. No-op for any other tab.
   selectTurnChangesFile: (id: string, fileIndex: number) => void;
+  // A preview that shows `path` restores its versions itself, so its editor and
+  // its pending autosave follow the restore. The latest registration of a path
+  // is used; the returned function takes this one back.
+  registerVersionReverter: (path: string, revert: VersionReverter) => () => void;
   // Make an existing tab the active one. No-op if the id doesn't exist.
   activateTab: (id: string) => void;
   consumeFocusTabRequest: (id: string) => void;
@@ -585,6 +601,17 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
     commitTabs(nextTabs, id);
     expandRightPanel();
     return id;
+  },
+
+  registerVersionReverter: (path, revert) => {
+    const key = normalizeSeparators(path).replace(/\/+$/, '');
+    const entry = { revert };
+    versionReverters.set(key, [...(versionReverters.get(key) ?? []), entry]);
+    return () => {
+      const rest = (versionReverters.get(key) ?? []).filter((item) => item !== entry);
+      if (rest.length > 0) versionReverters.set(key, rest);
+      else versionReverters.delete(key);
+    };
   },
 
   selectTurnChangesFile: (id, fileIndex) => {

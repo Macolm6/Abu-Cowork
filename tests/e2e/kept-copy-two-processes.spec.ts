@@ -152,6 +152,9 @@ test('a copy the sidecar keeps after the renderer has read the record opens in t
   await reopenedComposer.press('Enter');
   await expect(reopened.getByText(SECOND_TEXT)).toBeVisible({ timeout: REPLY_TIMEOUT });
   await expect.poll(() => keptCopies(root.rootDir, SECOND_FILE), { timeout: RECORD_TIMEOUT }).toHaveLength(1);
+  // The summary lists the files a turn changed once the turn's record is saved, which is when
+  // its card shows; a file gone before that was created and deleted, and is not listed.
+  await expect(reopened.getByTestId('changed-files-card').filter({ hasText: SECOND_FILE })).toBeVisible({ timeout: RECORD_TIMEOUT });
 
   // The second file leaves its folder while the app runs; the task is opened again.
   fs.rmSync(secondPath);

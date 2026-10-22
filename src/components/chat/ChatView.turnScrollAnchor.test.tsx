@@ -16,7 +16,7 @@ interface MockVirtuosoProps {
   components?: { Footer?: React.ComponentType<{ context?: unknown }> };
   context?: unknown;
   data?: Message[][];
-  followOutput?: (atBottom: boolean) => 'auto' | false;
+  followOutput?: false | ((atBottom: boolean) => 'auto' | false);
   itemContent?: (index: number, group: Message[]) => React.ReactNode;
   totalListHeightChanged?: (height: number) => void;
 }
@@ -120,6 +120,12 @@ class RecordingResizeObserver {
   }
 }
 
+/** What Virtuoso would do with new output: the prop itself when it is a value. */
+function followDecision(): 'auto' | false | undefined {
+  const followOutput = harness.props?.followOutput;
+  return typeof followOutput === 'function' ? followOutput(false) : followOutput;
+}
+
 /** Fire the observer watching `target`, mirroring a post-layout resize. */
 function fireResizeFor(target: Element | null): boolean {
   if (!target) return false;
@@ -138,12 +144,24 @@ const geometry = {
   anchorHeight: 40,
   baselineContentHeight: 100,
   contentHeight: 100,
-  /** Scroll range below the spacer that the arm's ledger never allocated —
-   *  models the cold-start settlement surplus (late Virtuoso list-height
-   *  materialization + native scroll anchoring adjustments). */
-  extraScrollRange: 0,
   scroller: null as HTMLElement | null,
 };
+
+/** The content's own height: the list (which grows with the active tail) plus padding. */
+function naturalContentHeight(): number {
+  return 300 + Math.max(0, geometry.contentHeight - geometry.baselineContentHeight);
+}
+
+function minContentHeight(): number {
+  return Number.parseFloat(
+    document.querySelector<HTMLElement>('[data-chat-scroll-content]')?.style.minHeight || '0',
+  );
+}
+
+/** Models the flex filler: whatever part of the minimum height the list does not cover. */
+function fillerHeight(): number {
+  return Math.max(0, minContentHeight() - naturalContentHeight());
+}
 
 function rect(input: Partial<DOMRect> = {}): DOMRect {
   return {
@@ -176,15 +194,7 @@ function setupConversation(): string {
 function installGeometry(scroller: HTMLElement): { getScrollTop: () => number } {
   geometry.scroller = scroller;
   let scrollTop = 0;
-  const spacerHeight = () => Number.parseFloat(
-    document.querySelector<HTMLElement>('[data-turn-bottom-spacer]')?.style.height || '0',
-  );
-  const scrollHeight = () => (
-    300
-    + Math.max(0, geometry.contentHeight - geometry.baselineContentHeight)
-    + spacerHeight()
-    + geometry.extraScrollRange
-  );
+  const scrollHeight = () => Math.max(naturalContentHeight(), minContentHeight());
   Object.defineProperties(scroller, {
     clientHeight: { configurable: true, value: 300 },
     clientWidth: { configurable: true, value: 800 },
@@ -201,20 +211,17 @@ function installGeometry(scroller: HTMLElement): { getScrollTop: () => number } 
   return { getScrollTop: () => scrollTop };
 }
 
-async function armNewTurn(conversationId: string, expectedSpacer: string | null = '200'): Promise<HTMLElement> {
+async function armNewTurn(conversationId: string, expectedFiller: number | null = 200): Promise<void> {
   announceChatTurnScrollIntent({ conversationId, source: 'composer' });
   await act(async () => {
     const store = useChatStore.getState();
     store.setConversationStatus(conversationId, 'running');
     store.addMessage(conversationId, message('new-user', 'user', 'new prompt', 'new-loop'));
   });
-  const spacer = await screen.findByTestId('mock-virtuoso').then(() => (
-    document.querySelector<HTMLElement>('[data-turn-bottom-spacer]')!
-  ));
-  if (expectedSpacer != null) {
-    await waitFor(() => expect(spacer.dataset.spacerHeight).toBe(expectedSpacer));
+  await screen.findByTestId('mock-virtuoso');
+  if (expectedFiller != null) {
+    await waitFor(() => expect(fillerHeight()).toBe(expectedFiller));
   }
-  return spacer;
 }
 
 describe('ChatView active-turn scroll state machine', () => {
@@ -224,8 +231,8 @@ describe('ChatView active-turn scroll state machine', () => {
     harness.props = null;
     harness.scrollToIndex.mockReset();
     geometry.anchorHeight = 40;
+    geometry.anchorDocumentTop = 220;
     geometry.contentHeight = geometry.baselineContentHeight;
-    geometry.extraScrollRange = 0;
     geometry.scroller = null;
     resizeObservers.length = 0;
     vi.stubGlobal('ResizeObserver', RecordingResizeObserver);
@@ -236,14 +243,19 @@ describe('ChatView active-turn scroll state machine', () => {
       const element = this as HTMLElement;
       const scroller = geometry.scroller;
       if (element === scroller) return rect({ right: 816, width: 816, height: 300, bottom: 300 });
+      const scrollTop = scroller?.scrollTop ?? 0;
       const row = element.closest<HTMLElement>('[data-index]');
-      const rowTop = geometry.anchorDocumentTop - (scroller?.scrollTop ?? 0);
+      const rowTop = geometry.anchorDocumentTop - scrollTop;
+      if (element.hasAttribute('data-chat-scroll-content')) {
+        const height = Math.max(naturalContentHeight(), minContentHeight());
+        return rect({ top: -scrollTop, bottom: height - scrollTop, height });
+      }
       if (element.hasAttribute('data-message-id')) {
         return rect({ top: rowTop, bottom: rowTop + geometry.anchorHeight, height: geometry.anchorHeight });
       }
       if (element.hasAttribute('data-turn-bottom-spacer')) {
-        const height = Number.parseFloat(element.style.height || '0');
-        const top = rowTop + geometry.contentHeight;
+        const height = fillerHeight();
+        const top = naturalContentHeight() - scrollTop;
         return rect({ top, bottom: top + height, height });
       }
       if (row === element) return rect({ top: rowTop, bottom: rowTop + geometry.contentHeight, height: geometry.contentHeight });
@@ -257,79 +269,63 @@ describe('ChatView active-turn scroll state machine', () => {
     cleanup();
   });
 
-  it('accounts spacer growth and exhausts with scrollTop compensation in the same callback', async () => {
+  it('holds the anchor while the list grows and hands over to the bottom once it fills the hold', async () => {
     const conversationId = setupConversation();
     render(<ChatView />);
     const scroller = document.querySelector<HTMLElement>('.overlay-scroll')!;
     const { getScrollTop } = installGeometry(scroller);
-    const spacer = await armNewTurn(conversationId);
+    await armNewTurn(conversationId);
 
     expect(getScrollTop()).toBe(200);
+    expect(minContentHeight()).toBe(500);
+    // A held turn keeps the list end above the viewport bottom; Virtuoso's own
+    // bottom-stick stays off only for a literal `false`.
+    expect(harness.props?.followOutput).toBe(false);
     geometry.contentHeight = 180;
     act(() => harness.props?.totalListHeightChanged?.(380));
-    expect(spacer.dataset.spacerHeight).toBe('120');
+    expect(fillerHeight()).toBe(120);
     expect(getScrollTop()).toBe(200);
+    expect(scroller.scrollHeight - getScrollTop() - 300).toBe(0);
 
     geometry.contentHeight = 320;
     act(() => harness.props?.totalListHeightChanged?.(520));
-    expect(spacer.dataset.spacerHeight).toBe('0');
+    expect(minContentHeight()).toBe(0);
+    expect(fillerHeight()).toBe(0);
     expect(getScrollTop()).toBe(220);
-    expect(harness.props?.followOutput?.(false)).toBe('auto');
+    expect(followDecision()).toBe('auto');
   });
 
-  it('reclaims a cold-start settlement surplus into the spacer without moving the viewport', async () => {
+  it('follows the anchor when a row above it is measured again', async () => {
     const conversationId = setupConversation();
     render(<ChatView />);
     const scroller = document.querySelector<HTMLElement>('.overlay-scroll')!;
     const { getScrollTop } = installGeometry(scroller);
-    const spacer = await armNewTurn(conversationId);
-    expect(getScrollTop()).toBe(200);
+    await armNewTurn(conversationId);
 
-    // The arm's multi-frame settlement (late Virtuoso list-height + native
-    // scroll anchoring) leaves 26px of scroll range below the pinned anchor.
-    geometry.extraScrollRange = 26;
-    act(() => harness.props?.totalListHeightChanged?.(326));
+    geometry.anchorDocumentTop = 250;
+    act(() => harness.props?.totalListHeightChanged?.(330));
 
-    // The surplus is returned by shrinking the spacer; the viewport (and the
-    // pinned anchor) do not move, and the bottom gap closes to zero.
-    expect(spacer.dataset.spacerHeight).toBe('174');
-    expect(getScrollTop()).toBe(200);
-    expect(scroller.scrollHeight - getScrollTop() - 300).toBe(0);
-
-    // Later growth reconciles against the reduced ledger — the reclaimed
-    // pixels stay gone and the gap stays closed.
-    geometry.contentHeight = 180;
-    act(() => harness.props?.totalListHeightChanged?.(406));
-    expect(spacer.dataset.spacerHeight).toBe('94');
-    expect(scroller.scrollHeight - getScrollTop() - 300).toBe(0);
+    expect(getScrollTop()).toBe(230);
+    expect(minContentHeight()).toBe(530);
+    expect(fillerHeight()).toBe(230);
   });
 
-  it('does not re-reclaim while Virtuoso has not yet applied the previous shrink', async () => {
+  it('hands over when the list fills the hold between list-height events', async () => {
     const conversationId = setupConversation();
     render(<ChatView />);
     const scroller = document.querySelector<HTMLElement>('.overlay-scroll')!;
     const { getScrollTop } = installGeometry(scroller);
-    const spacer = await armNewTurn(conversationId);
-    expect(getScrollTop()).toBe(200);
+    await armNewTurn(conversationId);
 
-    geometry.extraScrollRange = 26;
-    act(() => harness.props?.totalListHeightChanged?.(326));
-    expect(spacer.dataset.spacerHeight).toBe('174');
+    geometry.contentHeight = 340;
+    const content = scroller.querySelector<HTMLElement>('[data-chat-scroll-content]');
+    act(() => {
+      expect(fireResizeFor(content), 'the scrolled content is not observed').toBe(true);
+    });
 
-    // In the real renderer the spacer's style shrink reaches scrollHeight only
-    // on Virtuoso's next height pass. Model that lag: scrollHeight still
-    // carries the 26 reclaimed pixels, so the measured gap is stale — a second
-    // reconcile must NOT shave the spacer again.
-    geometry.extraScrollRange = 52;
-    act(() => harness.props?.totalListHeightChanged?.(326));
-    expect(spacer.dataset.spacerHeight).toBe('174');
-
-    // Virtuoso catches up (the stale pixels leave scrollHeight): the gap is
-    // truly closed and reconciliation stays quiet.
-    geometry.extraScrollRange = 26;
-    act(() => harness.props?.totalListHeightChanged?.(326));
-    expect(spacer.dataset.spacerHeight).toBe('174');
-    expect(scroller.scrollHeight - getScrollTop() - 300).toBe(0);
+    expect(minContentHeight()).toBe(0);
+    expect(getScrollTop()).toBe(240);
+    expect(followDecision()).toBe('auto');
   });
 
   it('re-sticks when content grows after the last list-height event', async () => {
@@ -377,6 +373,43 @@ describe('ChatView active-turn scroll state machine', () => {
     expect(getScrollTop()).toBe(0);
   });
 
+  it('keeps the view in place when a compaction summary below the anchor expands during a run', async () => {
+    const user = userEvent.setup();
+    const conversationId = setupConversation();
+    render(<ChatView />);
+    const scroller = document.querySelector<HTMLElement>('.overlay-scroll')!;
+    const { getScrollTop } = installGeometry(scroller);
+    await armNewTurn(conversationId);
+    expect(getScrollTop()).toBe(200);
+
+    // An automatic compaction during the run puts its marker below the new prompt.
+    act(() => useChatStore.getState().addMessage(conversationId, {
+      id: 'compact-boundary-run',
+      role: 'system',
+      content: '',
+      timestamp: 2,
+      compactBoundary: {
+        summaryText: 'keep the API stable',
+        summarizedFromId: 'old-user',
+        summarizedToId: 'old-assistant',
+        createdAt: 2,
+        source: 'auto',
+      },
+    }));
+
+    await user.click(screen.getByRole('button', { name: /Context compacted/ }));
+    // The opened summary grows the tail past the spacer.
+    geometry.contentHeight = 320;
+    act(() => harness.props?.totalListHeightChanged?.(520));
+    act(() => harness.props?.atBottomStateChange?.(false));
+
+    // The frozen hold stays, and the grown list now covers all of it.
+    expect(minContentHeight()).toBe(500);
+    expect(fillerHeight()).toBe(0);
+    expect(getScrollTop()).toBe(200);
+    expect(screen.getByRole('button', { name: 'Scroll to bottom' })).toBeInTheDocument();
+  });
+
   it('leaves an unpinned reader alone when late content resizes', async () => {
     const conversationId = setupConversation();
     render(<ChatView />);
@@ -410,14 +443,14 @@ describe('ChatView active-turn scroll state machine', () => {
     for (let i = 0; i < 20; i += 1) {
       act(() => harness.props?.totalListHeightChanged?.(400));
     }
-    expect(harness.props?.followOutput?.(false)).toBe(false);
+    expect(followDecision()).toBe(false);
     expect(getScrollTop()).toBe(before);
 
     // Past the budget the gate self-clears and ordinary follow recovers.
     for (let i = 0; i < 20; i += 1) {
       act(() => harness.props?.totalListHeightChanged?.(400));
     }
-    expect(harness.props?.followOutput?.(false)).toBe('auto');
+    expect(followDecision()).toBe('auto');
   });
 
   it('disarms on a run terminal and clears spacer with a synchronous bottom decision', async () => {
@@ -425,13 +458,13 @@ describe('ChatView active-turn scroll state machine', () => {
     render(<ChatView />);
     const scroller = document.querySelector<HTMLElement>('.overlay-scroll')!;
     const { getScrollTop } = installGeometry(scroller);
-    const spacer = await armNewTurn(conversationId);
+    await armNewTurn(conversationId);
 
     act(() => useChatStore.getState().setConversationStatus(conversationId, 'idle'));
 
-    expect(spacer.dataset.spacerHeight).toBe('0');
+    expect(fillerHeight()).toBe(0);
     expect(getScrollTop()).toBe(0);
-    expect(harness.props?.followOutput?.(false)).toBe('auto');
+    expect(followDecision()).toBe('auto');
   });
 
   it.each([
@@ -443,14 +476,14 @@ describe('ChatView active-turn scroll state machine', () => {
     render(<ChatView />);
     const scroller = document.querySelector<HTMLElement>('.overlay-scroll')!;
     const { getScrollTop } = installGeometry(scroller);
-    const spacer = await armNewTurn(conversationId);
+    await armNewTurn(conversationId);
     scroller.scrollTop = 195;
 
     act(gesture);
 
-    expect(spacer.dataset.spacerHeight).toBe('200');
+    expect(fillerHeight()).toBe(200);
     expect(getScrollTop()).toBe(195);
-    expect(harness.props?.followOutput?.(false)).toBe('auto');
+    expect(followDecision()).toBe('auto');
     expect(screen.queryByText(/bottom|latest|最新|底部/i)).not.toBeInTheDocument();
   });
 
@@ -459,15 +492,15 @@ describe('ChatView active-turn scroll state machine', () => {
     render(<ChatView />);
     const scroller = document.querySelector<HTMLElement>('.overlay-scroll')!;
     const { getScrollTop } = installGeometry(scroller);
-    const spacer = await armNewTurn(conversationId);
+    await armNewTurn(conversationId);
     scroller.scrollTop = 120;
     act(() => scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -12 })));
 
     act(() => useChatStore.getState().setConversationStatus(conversationId, 'idle'));
 
-    expect(spacer.dataset.spacerHeight).toBe('200');
+    expect(fillerHeight()).toBe(200);
     expect(getScrollTop()).toBe(120);
-    expect(harness.props?.followOutput?.(false)).toBe('auto');
+    expect(followDecision()).toBe('auto');
   });
 
   it('abandons pending cleanly instead of top-anchoring a viewport-height user message', async () => {
@@ -477,10 +510,10 @@ describe('ChatView active-turn scroll state machine', () => {
     const scroller = document.querySelector<HTMLElement>('.overlay-scroll')!;
     installGeometry(scroller);
 
-    const spacer = await armNewTurn(conversationId, null);
+    await armNewTurn(conversationId, null);
 
-    await waitFor(() => expect(harness.props?.followOutput?.(false)).toBe('auto'));
-    expect(spacer.dataset.spacerHeight).toBe('0');
+    await waitFor(() => expect(followDecision()).toBe('auto'));
+    expect(fillerHeight()).toBe(0);
   });
 
   it('clears a frozen spacer for an explicit latest jump', async () => {
@@ -489,13 +522,13 @@ describe('ChatView active-turn scroll state machine', () => {
     render(<ChatView />);
     const scroller = document.querySelector<HTMLElement>('.overlay-scroll')!;
     installGeometry(scroller);
-    const spacer = await armNewTurn(conversationId);
+    await armNewTurn(conversationId);
     scroller.scrollTop = 0;
     act(() => scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -12 })));
-    expect(spacer.dataset.spacerHeight).toBe('200');
+    expect(fillerHeight()).toBe(200);
 
     await user.click(screen.getByText(/bottom|latest|最新|底部/i));
-    expect(spacer.dataset.spacerHeight).toBe('0');
+    expect(fillerHeight()).toBe(0);
   });
 
   it('clears spacer before the chapter rail changes the Virtuoso target', async () => {
@@ -514,9 +547,9 @@ describe('ChatView active-turn scroll state machine', () => {
     render(<ChatView />);
     const scroller = document.querySelector<HTMLElement>('.overlay-scroll')!;
     installGeometry(scroller);
-    const spacer = await armNewTurn(conversationId);
+    await armNewTurn(conversationId);
     await user.click(screen.getByTestId('chapter-jump'));
-    expect(spacer.dataset.spacerHeight).toBe('0');
+    expect(fillerHeight()).toBe(0);
     expect(harness.scrollToIndex).toHaveBeenCalled();
   });
 
@@ -525,11 +558,11 @@ describe('ChatView active-turn scroll state machine', () => {
     render(<ChatView />);
     const scroller = document.querySelector<HTMLElement>('.overlay-scroll')!;
     installGeometry(scroller);
-    const spacer = await armNewTurn(conversationId);
+    await armNewTurn(conversationId);
 
     act(() => useChatStore.getState().setPendingSearchJump({ convId: conversationId, query: 'old prompt' }));
     await waitFor(() => expect(harness.scrollToIndex).toHaveBeenCalled());
-    expect(spacer.dataset.spacerHeight).toBe('0');
+    expect(fillerHeight()).toBe(0);
 
     const secondConversation = useChatStore.getState().createConversation();
     useChatStore.getState().addMessage(
@@ -537,6 +570,6 @@ describe('ChatView active-turn scroll state machine', () => {
       message('second-user', 'user', 'second conversation', 'second-loop'),
     );
     await waitFor(() => expect(useChatStore.getState().activeConversationId).toBe(secondConversation));
-    expect(document.querySelector<HTMLElement>('[data-turn-bottom-spacer]')?.dataset.spacerHeight).toBe('0');
+    expect(minContentHeight()).toBe(0);
   });
 });

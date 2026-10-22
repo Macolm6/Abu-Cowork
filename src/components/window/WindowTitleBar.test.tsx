@@ -144,7 +144,7 @@ describe('WindowTitleBar', () => {
     expect(dragStrip).toHaveAttribute('data-tauri-drag-region');
     const sidebarButton = screen.getByRole('button', { name: 'Hide sidebar' });
     expect(sidebarButton).toHaveAttribute('data-electron-no-drag');
-    expect(sidebarButton).toHaveStyle({ top: '23px', left: '200px' });
+    expect(sidebarButton).toHaveStyle({ top: '18px', left: '200px' });
     expect(overlay?.contains(sidebarButton)).toBe(true);
     // The buttons move with the sidebar at once and keep the icon button's colour fade.
     [sidebarButton, screen.getByRole('button', { name: 'Search' })].forEach((button) => {
@@ -181,11 +181,11 @@ describe('WindowTitleBar', () => {
       expect(overlay?.contains(control)).toBe(true);
     });
     expect(screen.getByRole('button', { name: 'Show sidebar' }))
-      .toHaveStyle({ top: '23px', left: '96px' });
+      .toHaveStyle({ top: '18px', left: '96px' });
     expect(screen.getByRole('button', { name: 'Search' }))
-      .toHaveStyle({ top: '23px', left: '126px' });
+      .toHaveStyle({ top: '18px', left: '126px' });
     expect(screen.getByRole('button', { name: 'New task' }))
-      .toHaveStyle({ top: '23px', left: '156px' });
+      .toHaveStyle({ top: '18px', left: '156px' });
     expect(screen.getByRole('button', { name: 'Show panel' }))
       .toHaveClass('right-4');
 

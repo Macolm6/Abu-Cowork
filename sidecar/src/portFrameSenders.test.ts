@@ -211,6 +211,126 @@ describe('createFrameChatDelta', () => {
     expect((frames[2].a[1] as { content: string }).content).toBe('');
   });
 
+  describe('pushPreparedTransportFrame', () => {
+    const checkpointMessage = {
+      id: 'm1',
+      role: 'assistant' as const,
+      content: '',
+      timestamp: 0,
+      toolCalls: [{
+        id: 'tc1',
+        name: 'read_file',
+        input: { path: '/Users/alice/Desktop/secret-shot.png' },
+        result: imageResultText,
+        resultContent: imageResult,
+      }],
+    };
+
+    it('encodes a session checkpoint\'s inline tool image as a delegated ref that the shell restores', async () => {
+      delegatedMediaStoreMocks.persistDelegatedMedia.mockResolvedValueOnce({
+        id: 'media_checkpoint',
+        sha256: 'c'.repeat(64),
+        mediaType: 'image/png',
+        bytes: pngBytes.byteLength,
+      });
+      delegatedMediaStoreMocks.readDelegatedMedia.mockResolvedValueOnce(pngBytes);
+      const frames: PortFrame[] = [];
+      const delta = createFrameChatDelta((frame) => frames.push(frame));
+
+      delta.pushPreparedTransportFrame(
+        { p: 'session', m: 'replaceMessageById', a: ['conv-1', checkpointMessage] },
+        'conv-1',
+      );
+
+      await vi.waitFor(() => expect(frames).toHaveLength(1));
+      expect(frames[0].p).toBe('session');
+      expect(frames[0].m).toBe('replaceMessageById');
+      const wire = JSON.stringify(frames);
+      expect(wire).not.toContain(pngBase64);
+      expect(wire).not.toContain('/Users/alice/Desktop/secret-shot.png');
+      expect(sidecarValueHasOpaqueMediaRefs(frames)).toBe(true);
+
+      const shellFrames = await materializeSidecarMediaRefsForShell(frames, 'conv-1');
+      const [, message] = shellFrames[0].a as [string, typeof checkpointMessage];
+      expect(message.id).toBe('m1');
+      expect(message.toolCalls[0].resultContent).toEqual([
+        { type: 'text', text: 'Screenshot saved to: [REDACTED:path]' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: pngBase64 } },
+      ]);
+    });
+
+    it('sends a media-free session frame verbatim, paths intact', () => {
+      const frames: PortFrame[] = [];
+      const delta = createFrameChatDelta((frame) => frames.push(frame));
+      const message = { id: 'm1', role: 'assistant' as const, content: 'see /Users/alice/notes.md', timestamp: 0 };
+
+      delta.pushPreparedTransportFrame({ p: 'session', m: 'replaceMessageById', a: ['conv-1', message] }, 'conv-1');
+
+      expect(frames).toEqual([{ p: 'session', m: 'replaceMessageById', a: ['conv-1', message] }]);
+      expect(delegatedMediaStoreMocks.persistDelegatedMedia).not.toHaveBeenCalled();
+    });
+
+    it('still delivers the frame, scrubbed of raw media, when persistence fails', async () => {
+      delegatedMediaStoreMocks.persistDelegatedMedia.mockRejectedValueOnce(new Error('disk full'));
+      const frames: PortFrame[] = [];
+      const delta = createFrameChatDelta((frame) => frames.push(frame));
+
+      delta.pushPreparedTransportFrame(
+        { p: 'session', m: 'replaceMessageById', a: ['conv-1', checkpointMessage] },
+        'conv-1',
+      );
+
+      await vi.waitFor(() => expect(frames).toHaveLength(1));
+      expect(frames[0].m).toBe('replaceMessageById');
+      const wire = JSON.stringify(frames);
+      expect(wire).not.toContain(pngBase64);
+      expect(() => sidecarValueHasOpaqueMediaRefs(frames)).not.toThrow();
+    });
+
+    it('keeps order with chat frames queued behind the same media transport', async () => {
+      let resolvePersist!: (ref: {
+        id: string;
+        sha256: string;
+        mediaType: string;
+        bytes: number;
+      }) => void;
+      delegatedMediaStoreMocks.persistDelegatedMedia
+        .mockReturnValueOnce(new Promise((resolve) => { resolvePersist = resolve; }))
+        .mockResolvedValueOnce({
+          id: 'media_checkpoint_second',
+          sha256: 'd'.repeat(64),
+          mediaType: 'image/png',
+          bytes: pngBytes.byteLength,
+        });
+      const frames: PortFrame[] = [];
+      const delta = createFrameChatDelta((frame) => frames.push(frame));
+
+      delta.updateToolCall('conv-1', 'm1', 'tc1', imageResultText, imageResult, false);
+      delta.pushPreparedTransportFrame(
+        { p: 'session', m: 'replaceMessageById', a: ['conv-1', checkpointMessage] },
+        'conv-1',
+      );
+      delta.addMessage('conv-1', { id: 'm2', role: 'assistant', content: '', timestamp: 0 });
+
+      await Promise.resolve();
+      expect(frames).toHaveLength(0);
+      resolvePersist({
+        id: 'media_checkpoint_first',
+        sha256: 'c'.repeat(64),
+        mediaType: 'image/png',
+        bytes: pngBytes.byteLength,
+      });
+      await delta.drain();
+
+      expect(frames.map((frame) => `${frame.p}.${frame.m}`)).toEqual([
+        'chat.updateToolCall',
+        'session.replaceMessageById',
+        'chat.addMessage',
+      ]);
+      expect(JSON.stringify(frames)).not.toContain(pngBase64);
+    });
+  });
+
   it('keeps drain pending when another media frame is enqueued while it waits', async () => {
     let resolveFirst!: (ref: {
       id: string;

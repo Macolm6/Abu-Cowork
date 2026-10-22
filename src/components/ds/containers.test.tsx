@@ -87,14 +87,11 @@ describe('containers and navigation', () => {
     try {
       const { container } = render(<ScrollArea className="h-16"><p>Long list</p></ScrollArea>);
       fireEvent.pointerEnter(container.firstElementChild as HTMLElement);
-      const vertical = await waitFor(() => {
-        const bar = container.querySelector('[data-orientation="vertical"]');
-        expect(bar).not.toBeNull();
-        return bar;
+      // The two scrollbars can mount on different renders, so wait for both of them.
+      await waitFor(() => {
+        expect(container.querySelector('[data-orientation="vertical"]')).toHaveClass('z-sticky');
+        expect(container.querySelector('[data-orientation="horizontal"]')).toHaveClass('z-sticky');
       });
-      const horizontal = container.querySelector('[data-orientation="horizontal"]');
-      expect(vertical).toHaveClass('z-sticky');
-      expect(horizontal).toHaveClass('z-sticky');
     } finally {
       for (const spy of spies) spy.mockRestore();
       vi.unstubAllGlobals();

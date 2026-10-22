@@ -1083,6 +1083,47 @@ describe('agentLoopHost', () => {
       ];
       expect(lastDeltaOrder).toBeLessThan(terminalOrder);
     });
+
+    it('ships a session checkpoint that carries a tool image as a delegated ref, never raw base64', async () => {
+      const params = reliableParams({ runId: 'checkpoint-media', conversationId: 'conv-checkpoint-media' });
+      const pngBase64 = 'iVBORw0KGgo=';
+      const resultText = 'Image: /Users/alice/Desktop/probe.png (1375KB, image/png)';
+      const imageResult = [
+        { type: 'text' as const, text: resultText },
+        { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: pngBase64 } },
+      ];
+      delegatedMediaStoreMocks.persistDelegatedMedia.mockResolvedValue({
+        id: 'media_host_checkpoint',
+        sha256: 'f'.repeat(64),
+        mediaType: 'image/png',
+        bytes: 8,
+      });
+      runAgentLoopMock.mockImplementationOnce(async () => {
+        const ctx = getCurrentAgentRunContext();
+        ctx.chatDelta.updateToolCall(ctx.conversationId, 'm1', 'tc1', resultText, imageResult, false);
+        ctx.pushFrame({
+          p: 'session',
+          m: 'replaceMessageById',
+          a: [ctx.conversationId, {
+            id: 'm1',
+            role: 'assistant',
+            content: '',
+            timestamp: 1,
+            toolCalls: [{ id: 'tc1', name: 'read_file', input: { path: '/Users/alice/Desktop/probe.png' }, result: resultText, resultContent: imageResult }],
+          }],
+        });
+        return { reason: 'completed' };
+      });
+      handleAgentStart(params);
+      await expect(handleAgentRun(params)).resolves.toEqual({ reason: 'completed' });
+
+      const deltaCalls = sendNotificationMock.mock.calls.filter((call) => call[0] === 'agent.delta');
+      const frames = deltaCalls.flatMap((call) => (call[1] as { frames: { p: string; m: string; a: unknown[] }[] }).frames);
+      expect(frames.map((frame) => `${frame.p}.${frame.m}`)).toEqual(['chat.updateToolCall', 'session.replaceMessageById']);
+      expect(JSON.stringify(frames)).not.toContain(pngBase64);
+      const checkpoint = frames[1].a[1] as { toolCalls: { resultContent: unknown[] }[] };
+      expect(JSON.stringify(checkpoint.toolCalls[0].resultContent)).toContain('media_host_checkpoint');
+    });
   });
 
   describe('local tool dispatch (P1-3d-1 / P1-3d-3 approval gate)', () => {
@@ -1560,6 +1601,35 @@ describe('agentLoopHost', () => {
           { reportMetadata },
         ),
       )).rejects.toThrow('Invalid tool.invoke file change envelope');
+      expect(reportMetadata).not.toHaveBeenCalled();
+    });
+
+    it('replays the background command metadata of a tool run in the shell', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      mockSendRequest({
+        toolInvokeResult: {
+          result: 'Stop requested for background command bg-0a1b2c3d (npm run dev).',
+          metadata: { backgroundCommand: { command: 'npm run dev', unknownField: 'dropped' } },
+        },
+      });
+      const reportMetadata = vi.fn();
+
+      const result = await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('stop_background_command', { id: 'bg-0a1b2c3d' }, undefined, undefined, { reportMetadata }),
+      );
+
+      expect(result).toBe('Stop requested for background command bg-0a1b2c3d (npm run dev).');
+      expect(reportMetadata).toHaveBeenCalledWith({ backgroundCommand: { command: 'npm run dev' } });
+    });
+
+    it('rejects a background command metadata envelope without a command', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      mockSendRequest({ toolInvokeResult: { result: 'status: running', metadata: { backgroundCommand: { command: '' } } } });
+      const reportMetadata = vi.fn();
+
+      await expect(withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('background_command_output', { id: 'bg-0a1b2c3d' }, undefined, undefined, { reportMetadata }),
+      )).rejects.toThrow('Invalid tool.invoke background command envelope');
       expect(reportMetadata).not.toHaveBeenCalled();
     });
 

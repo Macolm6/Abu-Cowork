@@ -8,6 +8,7 @@ import { readFileTool, writeFileTool, editFileTool, deleteFileTool, listDirector
 
 // --- Command tools ---
 import { runCommandTool } from './definitions/commandTools';
+import { backgroundCommandOutputTool, stopBackgroundCommandTool } from './definitions/backgroundCommandTools';
 
 // --- Agent tools ---
 // save_skill was deprecated in favor of skill_manage (Module E self-evolution).
@@ -78,6 +79,8 @@ export function registerBuiltinTools(): void {
   toolRegistry.register(deleteFileTool);
   toolRegistry.register(listDirectoryTool);
   toolRegistry.register(runCommandTool);
+  toolRegistry.register(backgroundCommandOutputTool);
+  toolRegistry.register(stopBackgroundCommandTool);
   toolRegistry.register(searchFilesTool);
   toolRegistry.register(findFilesTool);
   // Registered on every platform, like computerTool, rather than behind

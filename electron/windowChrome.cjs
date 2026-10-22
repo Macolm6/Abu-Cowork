@@ -63,7 +63,9 @@ function mainWindowPlatformOptions(platform = process.platform, dark = false, ma
     return {
       backgroundColor,
       titleBarStyle: 'hidden',
-      trafficLightPosition: { x: 20, y: 27 },
+      // Centres the 16px-tall buttons on the content card's title row (centre 30px down),
+      // level with the renderer's controls in WindowTitleBar.tsx.
+      trafficLightPosition: { x: 20, y: 22 },
       vibrancy: 'sidebar',
       // Fades with the window when it loses focus, like every other macOS window.
       visualEffectState: 'followWindow',

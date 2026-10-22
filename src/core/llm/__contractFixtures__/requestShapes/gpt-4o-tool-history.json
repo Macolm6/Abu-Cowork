@@ -1,0 +1,81 @@
+{
+  "url": "https://api.openai.com/v1/chat/completions",
+  "body": {
+    "model": "gpt-4o",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Read the config"
+      },
+      {
+        "role": "assistant",
+        "content": "Reading it now.",
+        "tool_calls": [
+          {
+            "id": "toolu_1_0",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\":\"config.json\"}"
+            }
+          }
+        ],
+        "reasoning_content": "The user wants the config file."
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "toolu_1_0",
+        "content": "{\"a\":1}"
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "[SCREENSHOT] Tool results produced these screenshot(s). You MUST describe what you actually see in the image before deciding next action. If you cannot see the image, say \"I cannot see the screenshot\" — do NOT guess or fabricate what is on screen."
+          },
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": "Thanks, now summarize it"
+      },
+      {
+        "role": "user",
+        "content": "[context] todo: none"
+      }
+    ],
+    "max_tokens": 4096,
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    },
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "read_file",
+          "description": "Read a file",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Path to file"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
+        }
+      }
+    ]
+  }
+}

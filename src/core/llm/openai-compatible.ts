@@ -12,8 +12,10 @@ import {
   LOCAL_FIRST_RESPONSE_TIMEOUT_MS,
 } from './heartbeat';
 import { createLogger } from '../logging/logger';
-import { resolveOpenAIBaseUrl, buildFullChatUrl } from './urlUtils';
+import { buildFullChatUrl } from './urlUtils';
 import { applyModelRequestProcessors } from './modelRequestProcessors';
+import { resolveModelProfile } from './modelProfile';
+import type { ReasoningReplay } from './model-data/families';
 import { observeCompatEvent } from '../observability/compatEvents';
 import { createDefaultUsageRecorder, type UsageAttemptRecorder } from './usageRecorder';
 import { createTextToolCallParser, type TextSegment, type TextToolCall } from './textToolCalls';
@@ -235,7 +237,11 @@ function toOpenAIContentParts(blocks: PreparedContentBlock[]): OpenAIContentPart
  *
  * Thin serializer — all logic (orphan fix, ID gen, image extraction) is in normalizeMessages.
  */
-function serializeForOpenAI(turns: PreparedTurn[], systemPrompt?: string): OpenAIMessage[] {
+function serializeForOpenAI(
+  turns: PreparedTurn[],
+  systemPrompt: string | undefined,
+  reasoningReplay: ReasoningReplay,
+): OpenAIMessage[] {
   const result: OpenAIMessage[] = [];
 
   if (systemPrompt) {
@@ -276,12 +282,12 @@ function serializeForOpenAI(turns: PreparedTurn[], systemPrompt?: string): OpenA
           content: turn.text || null,
           tool_calls: toolCalls,
         };
-        if (turn.thinking) {
+        if (turn.thinking && reasoningReplay !== 'none') {
           assistantMsg.reasoning_content = turn.thinking;
-        } else {
+        } else if (reasoningReplay === 'reasoning_content-or-empty') {
           // Kimi K2.5 / DeepSeek R1 in thinking mode require reasoning_content
           // on every assistant message carrying tool_calls. Fill empty string
-          // when the turn has no captured thinking — other providers ignore it.
+          // when the turn has no captured thinking.
           assistantMsg.reasoning_content = '';
         }
         result.push(assistantMsg);
@@ -315,7 +321,7 @@ function serializeForOpenAI(turns: PreparedTurn[], systemPrompt?: string): OpenA
         }
       } else {
         const assistantMsg: OpenAIMessage = { role: 'assistant', content: turn.text };
-        if (turn.thinking) {
+        if (turn.thinking && reasoningReplay !== 'none') {
           assistantMsg.reasoning_content = turn.thinking;
         }
         result.push(assistantMsg);
@@ -327,9 +333,14 @@ function serializeForOpenAI(turns: PreparedTurn[], systemPrompt?: string): OpenA
 }
 
 /** Convert messages through normalize → serialize pipeline */
-function convertMessages(messages: Message[], systemPrompt?: string, supportsVision?: boolean): OpenAIMessage[] {
+function convertMessages(
+  messages: Message[],
+  systemPrompt: string | undefined,
+  supportsVision: boolean | undefined,
+  reasoningReplay: ReasoningReplay,
+): OpenAIMessage[] {
   const turns = normalizeMessages(messages, { supportsVision: supportsVision !== false });
-  return serializeForOpenAI(turns, systemPrompt);
+  return serializeForOpenAI(turns, systemPrompt, reasoningReplay);
 }
 
 /**
@@ -388,10 +399,6 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     onEvent: (event: StreamEvent) => void,
     recorder: UsageAttemptRecorder,
   ): Promise<void> {
-    // Normalize + auto-append /v1 via shared util — keeps UI preview consistent
-    // and defensively trims whitespace users paste in (e.g. trailing space
-    // would otherwise bypass the regex and emit /%20/v1/... to the server).
-    const baseUrl = resolveOpenAIBaseUrl(options.baseUrl);
     // Full URL for POST — idempotent: a user-pasted URL that already ends in
     // /chat/completions is not double-appended. useRawUrl bypasses all
     // normalization for proxies with non-standard paths.
@@ -405,7 +412,17 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
 
     const hasTools = !!(options.tools && options.tools.length > 0);
 
-    const convertedMessages = convertMessages(messages, options.systemPrompt, options.supportsVision);
+    // The profile decides every provider-specific shape below; the adapter
+    // itself never looks at the model id.
+    const profile = resolveModelProfile({
+      modelId: options.model,
+      declared: options.declaredCapabilities,
+      requestHost,
+    });
+
+    const convertedMessages = convertMessages(
+      messages, options.systemPrompt, options.supportsVision, profile.wire.reasoningReplay,
+    );
     // Volatile context tail rides as the LAST message, after the whole stored
     // history: automatic prefix caching (DeepSeek/OpenAI) then keeps matching
     // the stable [system + history] prefix across turns and only this small
@@ -414,15 +431,11 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     if (options.volatileContextTail) {
       convertedMessages.push({ role: 'user', content: options.volatileContextTail });
     }
-    // Official OpenAI endpoint only: pin the automatic prefix cache to this
-    // conversation with prompt_cache_key (improves cache routing across
-    // requests; same discipline as Codex CLI). Gated to api.openai.com — an
-    // unknown body param can be rejected by strict OpenAI-compatible gateways,
-    // and other providers (DeepSeek/GLM/…) don't support it.
+    // Pin the automatic prefix cache to this conversation with
+    // prompt_cache_key where the profile says the endpoint reads it (the
+    // official OpenAI endpoint; same discipline as Codex CLI). An unknown body
+    // param can be rejected by strict OpenAI-compatible gateways.
     const promptCacheKey = options.metadata?.conversationId;
-    const isOfficialOpenAI = /(^|\.)api\.openai\.com$/i.test((() => {
-      try { return new URL(baseUrl).hostname; } catch { return ''; }
-    })());
     const body: Record<string, unknown> = {
       model: options.model,
       messages: convertedMessages,
@@ -430,7 +443,7 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
       stream: true,
       // Request token usage in streaming responses (OpenAI-compatible providers, e.g. GLM)
       stream_options: { include_usage: true },
-      ...(isOfficialOpenAI && promptCacheKey ? { prompt_cache_key: promptCacheKey } : {}),
+      ...(profile.wire.promptCacheKey && promptCacheKey ? { prompt_cache_key: promptCacheKey } : {}),
     };
 
     // Reasoning controls. thinkingBudget is only set for reasoning models (the
@@ -459,12 +472,7 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
       }
     }
 
-    applyModelRequestProcessors(body, {
-      modelId: options.model,
-      requestHost,
-      hasTools,
-      caps: options.declaredCapabilities,
-    });
+    applyModelRequestProcessors(body, { profile, hasTools });
 
     const requestHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
     if (options.apiKey) {

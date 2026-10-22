@@ -17,6 +17,7 @@ import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { getBaseName } from '@/utils/pathUtils';
 import type { FileChange } from '@/types/fileChange';
+import type { BackgroundCommandRef } from '@/types';
 import { DiffLines, type DiffFold } from '@/components/diff/DiffLines';
 import DetailBlockView from './DetailBlockView';
 import { blockFullText } from './toolResultTexts';
@@ -201,25 +202,34 @@ function resolveStepLabel(
   toolName: string | undefined,
   toolInput: Record<string, unknown> | undefined,
   fallback: string,
-  locale: string
+  locale: string,
+  backgroundCommand?: BackgroundCommandRef,
 ): string {
   if (!toolName) return fallback;
   // A persisted snapshot carries the label but not the input it was derived
   // from (executionSnapshot.ts strips toolInput); recomputing from an empty
   // input degrades "执行 sleep 180" to the generic "执行命令". Keep the label.
+  // A background-command step is named by the command its tool call recorded.
   const hasInput = !!toolInput && Object.keys(toolInput).length > 0;
-  if (!hasInput && fallback) return fallback;
-  return getToolLabel(toolName, toolInput ?? {}, locale).label;
+  if (!hasInput && fallback && !backgroundCommand) return fallback;
+  return getToolLabel(toolName, toolInput ?? {}, locale, { backgroundCommand }).label;
 }
 
 // Convert WorkflowStep to UnifiedStep
-function convertWorkflowStep(step: WorkflowStep, locale: string): UnifiedStep {
+function convertWorkflowStep(
+  step: WorkflowStep,
+  locale: string,
+  backgroundCommands?: ReadonlyMap<string, BackgroundCommandRef>,
+): UnifiedStep {
   return {
     id: step.id,
     // A legacy step built from a tool call carries that call's id as its own.
     toolCallId: step.toolName ? step.id : undefined,
     type: step.type,
-    label: resolveStepLabel(step.toolName, step.toolInput, step.label, locale),
+    label: resolveStepLabel(
+      step.toolName, step.toolInput, step.label, locale,
+      step.toolName ? backgroundCommands?.get(step.id) : undefined,
+    ),
     detail: step.detail,
     status: step.status,
     duration: step.duration,
@@ -231,12 +241,19 @@ function convertWorkflowStep(step: WorkflowStep, locale: string): UnifiedStep {
 
 // Convert ExecutionStep to UnifiedStep (recursive for childSteps)
 // eslint-disable-next-line react-refresh/only-export-components
-export function convertExecutionStep(step: ExecutionStep, locale: string): UnifiedStep {
+export function convertExecutionStep(
+  step: ExecutionStep,
+  locale: string,
+  backgroundCommands?: ReadonlyMap<string, BackgroundCommandRef>,
+): UnifiedStep {
   return {
     id: step.id,
     toolCallId: step.toolCallId,
     type: step.type,
-    label: resolveStepLabel(step.toolName, step.toolInput, step.label, locale),
+    label: resolveStepLabel(
+      step.toolName, step.toolInput, step.label, locale,
+      step.toolCallId ? backgroundCommands?.get(step.toolCallId) : undefined,
+    ),
     detail: step.detail,
     status: step.status,
     duration: step.duration,
@@ -246,7 +263,7 @@ export function convertExecutionStep(step: ExecutionStep, locale: string): Unifi
     detailBlocks: step.detailBlocks,
     executionId: step.executionId,
     agentName: step.agentName,
-    childSteps: step.childSteps?.map((child) => convertExecutionStep(child, locale)),
+    childSteps: step.childSteps?.map((child) => convertExecutionStep(child, locale, backgroundCommands)),
     batchTask: step.batchTask,
   };
 }
@@ -268,6 +285,8 @@ interface TaskBlockProps {
   fileChanges?: ReadonlyMap<string, FileChange>;
   /** Each step's whole result as Abu read it, by tool call id. */
   toolResults?: ReadonlyMap<string, string>;
+  /** The command each background-command tool call acted on, by tool call id. */
+  backgroundCommands?: ReadonlyMap<string, BackgroundCommandRef>;
 }
 
 /**
@@ -279,19 +298,19 @@ const PREVIEW_LIMIT = 3;
 
 type DisplayMode = 'collapsed' | 'preview' | 'expanded';
 
-export default function TaskBlock({ steps, executionSteps, isActive, isStopped = false, onRetry, fileChanges, toolResults }: TaskBlockProps) {
+export default function TaskBlock({ steps, executionSteps, isActive, isStopped = false, onRetry, fileChanges, toolResults, backgroundCommands }: TaskBlockProps) {
   const { t, locale } = useI18n();
 
   // Convert to unified steps
   const unifiedSteps = useMemo(() => {
     if (executionSteps && executionSteps.length > 0) {
-      return executionSteps.map((s) => convertExecutionStep(s, locale));
+      return executionSteps.map((s) => convertExecutionStep(s, locale, backgroundCommands));
     }
     if (steps && steps.length > 0) {
-      return steps.map((s) => convertWorkflowStep(s, locale));
+      return steps.map((s) => convertWorkflowStep(s, locale, backgroundCommands));
     }
     return [];
-  }, [steps, executionSteps, locale]);
+  }, [steps, executionSteps, locale, backgroundCommands]);
 
   // Lazy initializer: when the block mounts during a live execution, start in 'preview'
   // so the body (with running thinking content / inline tool steps) is visible without

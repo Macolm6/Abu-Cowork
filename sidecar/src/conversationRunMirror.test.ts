@@ -97,6 +97,21 @@ describe('conversationRunMirror', () => {
       expect(mirror.reader.getConversation('conv-1')?.messages[0].thinking).toBe('step 1 step 2');
     });
 
+    it('setThinkingSignature stores the signature on the targeted message', () => {
+      const conv = makeConversation({ messages: [makeMessage({ id: 'm1' })] });
+      const mirror = createConversationRunMirror('conv-1', { conversation: conv });
+      mirror.applyChatDeltaWrite('setThinkingSignature', ['conv-1', 'sig-abc', 'm1']);
+      expect(mirror.reader.getConversation('conv-1')?.messages[0].thinkingSignature).toBe('sig-abc');
+    });
+
+    it('appendRedactedThinking appends each opaque block in arrival order', () => {
+      const conv = makeConversation({ messages: [makeMessage({ id: 'm1' })] });
+      const mirror = createConversationRunMirror('conv-1', { conversation: conv });
+      mirror.applyChatDeltaWrite('appendRedactedThinking', ['conv-1', 'blob-1', 'm1']);
+      mirror.applyChatDeltaWrite('appendRedactedThinking', ['conv-1', 'blob-2', 'm1']);
+      expect(mirror.reader.getConversation('conv-1')?.messages[0].redactedThinking).toEqual(['blob-1', 'blob-2']);
+    });
+
     it('setMessageToolCalls sets toolCalls and clears isStreaming', () => {
       const conv = makeConversation({ messages: [makeMessage({ id: 'm1', isStreaming: true })] });
       const mirror = createConversationRunMirror('conv-1', { conversation: conv });
@@ -196,6 +211,29 @@ describe('conversationRunMirror', () => {
       const toolCalls = mirror.reader.getConversation('conv-1')?.messages[0].toolCalls;
       expect(toolCalls?.[0].fileChange).toEqual(edited);
       expect(toolCalls?.[1].fileChange).toEqual(created);
+    });
+
+    it('records the background command a tool acted on from result and checkpoint metadata', () => {
+      const conv = makeConversation({
+        messages: [makeMessage({
+          id: 'm1',
+          toolCalls: [
+            { id: 'tc1', name: 'background_command_output', input: { id: 'bg-0a1b2c3d' }, isExecuting: true },
+            { id: 'tc2', name: 'stop_background_command', input: { id: 'bg-0a1b2c3d' }, isExecuting: true },
+          ],
+        })],
+      });
+      const mirror = createConversationRunMirror('conv-1', { conversation: conv });
+      const backgroundCommand = { command: 'npm run dev' };
+
+      mirror.applyChatDeltaWrite('updateToolCall', [
+        'conv-1', 'm1', 'tc1', 'status: running', undefined, false, undefined, { backgroundCommand },
+      ]);
+      mirror.applyChatDeltaWrite('checkpointToolCallMetadata', ['conv-1', 'm1', 'tc2', { backgroundCommand }]);
+
+      const toolCalls = mirror.reader.getConversation('conv-1')?.messages[0].toolCalls;
+      expect(toolCalls?.[0].backgroundCommand).toEqual(backgroundCommand);
+      expect(toolCalls?.[1].backgroundCommand).toEqual(backgroundCommand);
     });
 
     it('accepts trusted recovery metadata only for run_command', () => {

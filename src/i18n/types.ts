@@ -169,6 +169,17 @@ export interface TranslationDict {
     deleteUnreadableTitle: string;
     /** `{name}` is the task's title. */
     deleteUnreadableMessage: string;
+    /** The question before a task with running background commands is deleted. `{count}` is how many run. */
+    deleteWithBackgroundCommandsTitle: string;
+    /** Singular of `deleteWithBackgroundCommandsTitle`, for exactly one command. */
+    deleteWithBackgroundCommandsTitleOne: string;
+    deleteWithBackgroundCommandsMessage: string;
+    /** Singular of `deleteWithBackgroundCommandsMessage`, for exactly one command. */
+    deleteWithBackgroundCommandsMessageOne: string;
+    /** Both at once: the record cannot be read and background commands run. `{name}` is the task's title. */
+    deleteUnreadableWithBackgroundCommandsMessage: string;
+    /** Singular of `deleteUnreadableWithBackgroundCommandsMessage`, for exactly one command. */
+    deleteUnreadableWithBackgroundCommandsMessageOne: string;
     importSession: string;
     renameConversation: string;
     moreActions: string;
@@ -386,6 +397,21 @@ export interface TranslationDict {
     /** Notice after an undo or a put-back in which files failed; `{done}` and `{notDone}` are counts. */
     undoPartialNotice: string;
     reapplyPartialNotice: string;
+    /** The question before a turn is redone: title and confirming button per entry. */
+    redoRegenerateTitle: string;
+    redoRegenerateConfirm: string;
+    redoEditTitle: string;
+    redoEditConfirm: string;
+    redoRetryTitle: string;
+    redoRetryConfirm: string;
+    redoResendTitle: string;
+    redoResendConfirm: string;
+    /** `{count}` is the number of later turns the redo deletes. */
+    redoLaterTurns: string;
+    /** The option to restore the files of the redone turns, and the two notes under it. */
+    redoRestoreFiles: string;
+    redoNoPutBack: string;
+    redoCommandNotRestored: string;
     userMessageShowMore: string;
     userMessageCollapse: string;
     runPending: string;
@@ -774,6 +800,46 @@ export interface TranslationDict {
     compactDivider: {
       compacted: string;
       compactedManual: string;
+      noSummary: string;
+      // Accessible names of the row's toggle only
+      expand: string;
+      collapse: string;
+    };
+    // The conversation header's list of background commands
+    backgroundCommands: {
+      /** {count} */
+      running: string;
+      /** Singular of `running`, for exactly one command. */
+      runningOne: string;
+      /** {count} */
+      total: string;
+      /** Singular of `total`, for exactly one command. */
+      totalOne: string;
+      statusRunning: string;
+      statusStopping: string;
+      statusCompleted: string;
+      /** {code} */
+      statusFailedWithCode: string;
+      statusFailed: string;
+      statusStopped: string;
+      /** {count} */
+      finished: string;
+      clear: string;
+      stop: string;
+      confirmStop: string;
+      stopFailed: string;
+      outputDropped: string;
+      noOutput: string;
+      /** {duration} */
+      runningFor: string;
+      /** {duration} */
+      took: string;
+      /** {s} */
+      durationSeconds: string;
+      /** {m}, {s} */
+      durationMinutes: string;
+      /** {h}, {m} */
+      durationHours: string;
     };
     // /compact slash command toasts
     compactCommand: {
@@ -848,12 +914,6 @@ export interface TranslationDict {
       /** Shown on the max-turns card instead of Continue while goal mode drives the rounds. */
       maxTurnsAutoContinue: string;
     };
-    /** Rewind confirmation (edit-resend / regenerate / retry) — shown only
-     * when the redone turn is not the conversation's last, so later turns
-     * would otherwise be silently and permanently discarded. */
-    rewindConfirmTitle: string;
-    /** Body. {count} = number of later turns that will be discarded. */
-    rewindConfirmMessage: string;
   };
 
   // Share (conversation export / import)
@@ -931,6 +991,10 @@ export interface TranslationDict {
     collapse: string;
     /** Shown in tool-call detail when the task was aborted mid-execution */
     cancelled: string;
+    /** Tool-row labels of background commands; {command} is the command text, or its id */
+    runInBackground: string;
+    readBackgroundCommandOutput: string;
+    stopBackgroundCommand: string;
   };
 
   // Notice menubar summaries (noticeMenubarStore.ts)
@@ -3064,7 +3128,6 @@ export interface TranslationDict {
   // Panels
   panel: {
     workspace: string;
-    files: string;
     preview: string;
     /** Title of the tab that compares the one file a turn changed; `{name}` is the file name. */
     changesTabSingle: string;
@@ -3144,11 +3207,19 @@ export interface TranslationDict {
     versionHistoryLoadFailed: string;
     versionSourceAi: string;
     versionRevertPoint: string;
-    // FilesSection
-    operationRead: string;
+    /** {name}, {time} */
+    versionRestoreTitle: string;
+    versionRestoreMessage: string;
+    versionRestoreConfirm: string;
+    // ChangedFilesSection
+    changedFiles: string;
+    changedFilesEmpty: string;
+    /** {count} */
+    changedFilesMore: string;
+    operationDelete: string;
+    viewChanges: string;
     operationModify: string;
     operationCreate: string;
-    clickToPreview: string;
     showInFinderButton: string;
     noReferencedFiles: string;
     filesCount: string;
@@ -3164,9 +3235,7 @@ export interface TranslationDict {
     // ContextSection
     context: string;
     contextEmptyHint: string;
-    accessedFiles: string;
     toolUsage: string;
-    moreFiles: string;
     collapse: string;
     connectors: string;
     refreshing: string;
@@ -3758,6 +3827,10 @@ export interface TranslationDict {
     agentRunningWarning: string;
     /** The question asked when the application is quit while a conversation is running. */
     quitWhileRunning: string;
+    /** Background commands that quitting stops ({count}). */
+    backgroundCommandsRunning: string;
+    /** Singular of `backgroundCommandsRunning`, for exactly one command. */
+    backgroundCommandsRunningOne: string;
     quit: string;
     minimize: string;
     rememberChoice: string;
@@ -4525,6 +4598,16 @@ export interface TranslationDict {
     errBusy: string;
   };
   toolResult: {
+    /** background_command_output / stop_background_command results */
+    backgroundCommand: {
+      noCommands: string;
+      listHeader: string;
+      earlierOutputDropped: string;
+      noOutput: string;
+      outputTail: string;
+      stopRequested: string;
+      alreadyFinished: string;
+    };
     team: {
       invalidInput: string;
       unavailableAgents: string;

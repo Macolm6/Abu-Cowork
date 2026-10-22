@@ -6,7 +6,8 @@ import { resolveCapabilities } from './modelCapabilities';
  * - Model-varying fields (tools/images/reasoning/efforts/maxInput/maxOutput): the model's
  *   own override wins; falls back to the provider-level value (legacy / shared default).
  * - Endpoint/protocol-level fields (useRawUrl/thinkingFormat/maxTokensField/
- *   requiresToolResultName): always taken from the provider.
+ *   requiresToolResultName/reasoningReplay/toolSchemaDialect/sendTemperature/
+ *   promptCacheKey): always taken from the provider.
  * Returns undefined only when neither model nor provider declares anything, so callers can
  * keep treating a missing result as "auto-detect" exactly like the old provider-level read.
  */
@@ -25,10 +26,15 @@ export function resolveModelDeclared(
     supportedEfforts: m?.supportedEfforts ?? p?.supportedEfforts,
     maxInputTokens: m?.maxInputTokens ?? p?.maxInputTokens,
     maxOutputTokens: m?.maxOutputTokens ?? p?.maxOutputTokens,
+    parallelToolCalls: m?.parallelToolCalls ?? p?.parallelToolCalls,
     useRawUrl: p?.useRawUrl,
     thinkingFormat: p?.thinkingFormat,
     maxTokensField: p?.maxTokensField,
     requiresToolResultName: p?.requiresToolResultName,
+    reasoningReplay: p?.reasoningReplay,
+    toolSchemaDialect: p?.toolSchemaDialect,
+    sendTemperature: p?.sendTemperature,
+    promptCacheKey: p?.promptCacheKey,
   };
 }
 

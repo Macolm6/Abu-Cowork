@@ -6,7 +6,7 @@
  * Message history is maintained in a local array and never written to chatStore.
  */
 
-import type { StreamEvent, Message, SubagentDefinition, SubagentStopReason, TokenUsage, ToolDefinition, ToolExecutionContext, ToolResultContent, UpstreamErrorDetails } from '../../types';
+import type { StreamEvent, Message, SubagentDefinition, SubagentStopReason, TokenUsage, ToolCall, ToolDefinition, ToolExecutionContext, ToolResultContent, UpstreamErrorDetails } from '../../types';
 import type { IMContext } from './orchestrator';
 import type { LLMAdapter } from '../llm/adapter';
 import { LLMError, formatLlmDisplayError, normalizeUpstreamErrorDetails } from '../llm/adapter';
@@ -42,6 +42,8 @@ import { localServerKind } from '../llm/localProvider';
 import { adapterKindFor, usageProtocolFor } from '../llm/adapterKind';
 import { promptTokensOf } from '../llm/usageAccounting';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
+import { resolveModelProfile } from '../llm/modelProfile';
+import { repairToolCallsForProfile } from './toolArgumentRepair';
 import { getCapsPort, type CapsPort } from './ports/capsPort';
 import { getWorkspaceReader, type WorkspaceReader } from './ports/workspaceReader';
 import { enforceContextBudget, trimOldScreenshots } from '../context/contextManager';
@@ -204,6 +206,22 @@ export function shouldRecoverMaxTokens(params: {
  * mid-word cut is stitched back together rather than gaining a spurious break.
  */
 /** Abort reason (a string on the signal, e.g. the stall watchdog's note) appended to the abort result. */
+/** `Promise.allSettled` in the model's order, one call at a time. */
+async function settleSequentially<T, R>(
+  items: T[],
+  run: (item: T) => Promise<R>,
+): Promise<PromiseSettledResult<R>[]> {
+  const settled: PromiseSettledResult<R>[] = [];
+  for (const item of items) {
+    try {
+      settled.push({ status: 'fulfilled', value: await run(item) });
+    } catch (reason) {
+      settled.push({ status: 'rejected', reason });
+    }
+  }
+  return settled;
+}
+
 function abortedResultText(resultBuffer: string, signal: AbortSignal | undefined): string {
   const base = resultBuffer || getI18n().chat.subagent.taskCancelled;
   const reason = typeof signal?.reason === 'string' ? signal.reason.trim() : '';
@@ -683,6 +701,11 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
   const adapterKind = adapterKindFor(startupProvider, startupCreds?.forceOpenAiCompatible === true);
   const startupDeclared = resolveDelegatedDeclaredCapabilities(startupProvider, effectiveModelId);
   const startupCaps = applyDeclaredCapabilities(resolveCapabilities(effectiveModelId), startupDeclared);
+  const startupProfile = resolveModelProfile({
+    modelId: effectiveModelId,
+    provider: startupProvider,
+    declared: startupDeclared,
+  });
   // 子代理自己的模型能不能看图、电脑操控走哪一档（与主循环同一算法）
   const agentCapabilities = resolveDelegatedModelCapabilities(agent.model, settings);
   const delegatedPreflight = preflightDelegatedMedia(
@@ -1319,9 +1342,10 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       };
       messages.push(assistantMsg);
 
-      // Execute tools in parallel (routed through preToolCall/postToolCall hooks)
-      const toolResults = await Promise.allSettled(
-        collectedToolCalls.map(async (tc): Promise<{
+      // Execute tools (routed through preToolCall/postToolCall hooks): in
+      // parallel, or one after another when the model's profile says it
+      // cannot take parallel tool calls.
+      const runToolCall = async (tc: ToolCall): Promise<{
           id: string;
           result: string;
           resultContentToken?: ActiveToolResultToken;
@@ -1463,8 +1487,13 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             });
             return { id: tc.id, result };
           }
-        })
-      );
+        };
+      // 按工具的 inputSchema 修复写错形状的参数（档案打开该护栏时）；修不好的
+      // 原样交给工具，由工具把错误返回给模型
+      const dispatchToolCalls = repairToolCallsForProfile(collectedToolCalls, tools, startupProfile, logger);
+      const toolResults = startupProfile.capabilities.parallelToolCalls
+        ? await Promise.allSettled(dispatchToolCalls.map(runToolCall))
+        : await settleSequentially(dispatchToolCalls, runToolCall);
 
       // Build tool result entries
       const toolResultEntries = toolResults.map((r, i) => {

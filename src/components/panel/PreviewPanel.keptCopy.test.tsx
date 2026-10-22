@@ -6,7 +6,9 @@ import { exists, readTextFile, watch, type WatchEvent } from '@tauri-apps/plugin
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { getI18n, initLanguage } from '@/i18n';
 import { atomicWrite } from '@/utils/atomicFs';
-import { snapshotVersion } from '@/utils/canvasVersions';
+import { revertToVersion, snapshotVersion } from '@/utils/canvasVersions';
+import { revertFileVersion } from '@/utils/revertFileVersion';
+import { usePreviewStore } from '@/stores/previewStore';
 import PreviewPanel from './PreviewPanel';
 
 // The real editor needs layout; a text box drives the same value/onChange pair and shows `readOnly`.
@@ -24,6 +26,7 @@ vi.mock('@/utils/canvasVersions', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/utils/canvasVersions')>()),
   snapshotVersion: vi.fn().mockResolvedValue(undefined),
   listVersions: vi.fn().mockResolvedValue([]),
+  revertToVersion: vi.fn(),
 }));
 
 const WATCH_DEBOUNCE_MS = 250;
@@ -151,6 +154,7 @@ describe('PreviewPanel for a file at its own path', () => {
     });
     vi.mocked(atomicWrite).mockClear();
     vi.mocked(snapshotVersion).mockClear();
+    usePreviewStore.setState({ currentConversationId: 'c1' });
   });
 
   afterEach(() => {
@@ -159,6 +163,7 @@ describe('PreviewPanel for a file at its own path', () => {
     vi.mocked(exists).mockReset().mockResolvedValue(false);
     vi.mocked(readTextFile).mockReset().mockResolvedValue('');
     vi.mocked(watch).mockReset().mockResolvedValue(() => {});
+    usePreviewStore.setState({ currentConversationId: null });
   });
 
   it('shows no line about a copy, an editable source view and the version history', async () => {
@@ -170,7 +175,7 @@ describe('PreviewPanel for a file at its own path', () => {
     expect(notice()).toBeNull();
     expect(historyButton()).toBeInTheDocument();
     expect(screen.getByText(getI18n().panel.saved)).toBeInTheDocument();
-    expect(snapshotVersion).toHaveBeenCalledWith(ORIGINAL, 'first line');
+    expect(snapshotVersion).toHaveBeenCalledWith(ORIGINAL, 'first line', { origin: { conversationId: 'c1' } });
   });
 
   it('saves an edit to the file one second after the last change and records the version', async () => {
@@ -184,6 +189,30 @@ describe('PreviewPanel for a file at its own path', () => {
     await act(() => vi.advanceTimersByTimeAsync(AUTOSAVE_DEBOUNCE_MS));
 
     expect(atomicWrite).toHaveBeenCalledWith(ORIGINAL, 'first line, edited');
-    expect(snapshotVersion).toHaveBeenCalledWith(ORIGINAL, 'first line, edited');
+    expect(snapshotVersion).toHaveBeenCalledWith(ORIGINAL, 'first line, edited', { origin: { conversationId: 'c1' } });
+  });
+
+  it('keeps a version restored from elsewhere on disk and in the editor while an edit waited to be saved', async () => {
+    vi.mocked(revertToVersion).mockImplementation(async (path) => {
+      disk.set(String(path), 'restored');
+      return 'restored';
+    });
+    disk.set(ORIGINAL, 'first line');
+    const view = openPreview(ORIGINAL, false);
+    const editor = await screen.findByRole('textbox', { name: 'source' });
+    fireEvent.change(editor, { target: { value: 'unsaved edit' } });
+
+    await act(() => revertFileVersion(ORIGINAL, 'v1', { conversationId: 'c1' }));
+    await act(() => vi.advanceTimersByTimeAsync(AUTOSAVE_DEBOUNCE_MS * 2));
+
+    expect(revertToVersion).toHaveBeenCalledExactlyOnceWith(ORIGINAL, 'v1', { conversationId: 'c1' });
+    expect(atomicWrite).not.toHaveBeenCalled();
+    expect(disk.get(ORIGINAL)).toBe('restored');
+    expect(screen.getByRole('textbox', { name: 'source' })).toHaveValue('restored');
+
+    view.unmount();
+    vi.mocked(revertToVersion).mockClear();
+    await revertFileVersion(ORIGINAL, 'v2', { conversationId: 'c1' });
+    expect(revertToVersion).toHaveBeenCalledExactlyOnceWith(ORIGINAL, 'v2', { conversationId: 'c1' });
   });
 });

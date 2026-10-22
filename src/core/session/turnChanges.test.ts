@@ -442,9 +442,10 @@ describe('turnChanges', () => {
       const saved = fs.readJson<{ files: unknown[]; total: number }>(`${CHANGES}/loop-1.json`);
       expect(saved.files).toMatchObject([{ display: 'plan.md', status: 'modified', added: 1, deleted: 1 }]);
       expect(saved.total).toBe(1);
+      const planFiles = [{ path: `${WS}/plan.md`, display: 'plan.md', status: 'modified' }];
       expect(fs.readJson(`${CHANGES}/index.json`)).toEqual({
         version: 1,
-        turns: { 'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md', restorable: 1, settledAt: 1, copyBytes: 4 } },
+        turns: { 'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md', files: planFiles, restorable: 1, settledAt: 1, copyBytes: 4 } },
       });
       const undoRecord = fs.read(`${CHANGES}/loop-1/undo.json`);
       expect(JSON.parse(undoRecord)).toMatchObject({ state: 'applied', entries: [{ path: `${WS}/plan.md` }] });
@@ -453,7 +454,7 @@ describe('turnChanges', () => {
 
       const afterRestart = await restart();
       await expect(afterRestart.readTurnIndex('conv-1')).resolves.toEqual({
-        'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md', restorable: 1, settledAt: 1, copyBytes: 4 },
+        'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md', files: planFiles, restorable: 1, settledAt: 1, copyBytes: 4 },
       });
       expect(fs.readJson(`${CHANGES}/loop-1.json`)).toEqual(saved);
       expect(fs.read(`${CHANGES}/loop-1/undo.json`)).toBe(undoRecord);
@@ -473,7 +474,19 @@ describe('turnChanges', () => {
       expect(saved.files.map((file) => file.display)).toEqual(['by-command.md', 'plan.md']);
       expect(saved.total).toBe(2);
       await expect(mod.readTurnIndex('conv-1')).resolves.toEqual({
-        'loop-1': { total: 2, added: 1, deleted: 1, firstFile: 'by-command.md', restorable: 1, settledAt: 1, copyBytes: 4 },
+        'loop-1': {
+          total: 2,
+          added: 1,
+          deleted: 1,
+          firstFile: 'by-command.md',
+          files: [
+            { path: `${WS}/by-command.md`, display: 'by-command.md', status: 'created' },
+            { path: `${WS}/plan.md`, display: 'plan.md', status: 'modified' },
+          ],
+          restorable: 1,
+          settledAt: 1,
+          copyBytes: 4,
+        },
       });
       expect(told).toEqual(['loop-1', 'loop-1']);
     });
@@ -551,7 +564,16 @@ describe('turnChanges', () => {
       expect(saved.total).toBe(502);
       expect(saved.added).toBe(2);
       await expect(mod.readTurnIndex('conv-1')).resolves.toEqual({
-        'loop-1': { total: 502, added: 2, deleted: 0, firstFile: name(0), restorable: 1, settledAt: 1, copyBytes: 0 },
+        'loop-1': {
+          total: 502,
+          added: 2,
+          deleted: 0,
+          firstFile: name(0),
+          files: saved.files.map(({ display }) => ({ path: `${WS}/${display}`, display, status: 'created' })),
+          restorable: 1,
+          settledAt: 1,
+          copyBytes: 0,
+        },
       });
     });
 
@@ -626,8 +648,26 @@ describe('turnChanges', () => {
       expect(fs.readJson(`${CHANGES}/index.json`)).toEqual({
         version: 1,
         turns: {
-          'loop-1': { total: 1, added: 2, deleted: 1, firstFile: 'plan.md', restorable: 1, settledAt: 1, copyBytes: 4 },
-          'loop-2': { total: 1, added: 1, deleted: 0, firstFile: 'b.md', restorable: 1, settledAt: 2, copyBytes: 0 },
+          'loop-1': {
+            total: 1,
+            added: 2,
+            deleted: 1,
+            firstFile: 'plan.md',
+            files: [{ path: `${WS}/docs/plan.md`, display: 'docs/plan.md', status: 'modified' }],
+            restorable: 1,
+            settledAt: 1,
+            copyBytes: 4,
+          },
+          'loop-2': {
+            total: 1,
+            added: 1,
+            deleted: 0,
+            firstFile: 'b.md',
+            files: [{ path: `${WS}/b.md`, display: 'b.md', status: 'created' }],
+            restorable: 1,
+            settledAt: 2,
+            copyBytes: 0,
+          },
         },
       });
       expect(saved).toEqual([['conv-1', 'loop-1'], ['conv-1', 'loop-2']]);
@@ -724,6 +764,178 @@ describe('turnChanges', () => {
     });
   });
 
+  describe('forgetTurns', () => {
+    it('forgets the record, the copies and the index entry of each turn and tells listeners', async () => {
+      fs.write(`${WS}/a.md`, 'a\n');
+      await runTurn('loop-1', async (capture) => {
+        await capture(`${WS}/a.md`);
+        fs.write(`${WS}/a.md`, 'a1\n');
+      });
+      await runTurn('loop-2', async (capture) => {
+        await capture(`${WS}/a.md`);
+        fs.write(`${WS}/a.md`, 'a2\n');
+      });
+      expect(fs.has(`${CHANGES}/loop-2/undo.json`)).toBe(true);
+      const told: Array<[string, string]> = [];
+      mod.onTurnChangesSaved((conversationId, loopId) => told.push([conversationId, loopId]));
+
+      await mod.forgetTurns('conv-1', ['loop-2']);
+
+      expect(fs.has(`${CHANGES}/loop-2.json`)).toBe(false);
+      expect(fs.has(`${CHANGES}/loop-2/undo.json`)).toBe(false);
+      expect(fs.has(`${CHANGES}/loop-2`)).toBe(false);
+      const index = await mod.readTurnIndex('conv-1');
+      expect(index).not.toHaveProperty('loop-2');
+      expect(index).toHaveProperty('loop-1');
+      expect(fs.has(`${CHANGES}/loop-1/undo.json`)).toBe(true);
+      expect(told).toEqual([['conv-1', 'loop-2']]);
+    });
+
+    it('ignores a loop id that has no record', async () => {
+      fs.write(`${WS}/a.md`, 'a\n');
+      await runTurn('loop-1', async (capture) => {
+        await capture(`${WS}/a.md`);
+        fs.write(`${WS}/a.md`, 'a1\n');
+      });
+      const indexBefore = fs.read(`${CHANGES}/index.json`);
+      const told: Array<[string, string]> = [];
+      mod.onTurnChangesSaved((conversationId, loopId) => told.push([conversationId, loopId]));
+
+      await mod.forgetTurns('conv-1', ['loop-x']);
+
+      expect(fs.read(`${CHANGES}/index.json`)).toBe(indexBefore);
+      expect(fs.has(`${CHANGES}/loop-1.json`)).toBe(true);
+      expect(told).toEqual([['conv-1', 'loop-x']]);
+    });
+
+    it('refuses a loop id outside the loop-id grammar before touching the disk', async () => {
+      await expect(mod.forgetTurns('conv-1', ['index'])).rejects.toThrow();
+      await expect(mod.forgetTurns('conv-1', ['../x'])).rejects.toThrow();
+      expect(fs.has(CHANGES)).toBe(false);
+    });
+  });
+
+  describe('file list in the index', () => {
+    it('keeps the path, display path and status of each file of a turn, in the order of the saved turn', async () => {
+      fs.write(`${WS}/plan.md`, 'one\n');
+      fs.write(`${WS}/old.md`, 'gone\n');
+      await runTurn('loop-1', async (capture) => {
+        for (const file of ['plan.md', 'new.md', 'old.md']) await capture(`${WS}/${file}`);
+        fs.write(`${WS}/plan.md`, 'two\n');
+        fs.write(`${WS}/new.md`, 'n\n');
+        fs.delete(`${WS}/old.md`);
+      });
+
+      const saved = fs.readJson<{ files: Array<{ path: string; display: string; status: string }> }>(`${CHANGES}/loop-1.json`);
+      const index = fs.readJson<{ turns: Record<string, { files: unknown }> }>(`${CHANGES}/index.json`);
+      expect(index.turns['loop-1'].files).toEqual([
+        { path: `${WS}/new.md`, display: 'new.md', status: 'created' },
+        { path: `${WS}/old.md`, display: 'old.md', status: 'deleted' },
+        { path: `${WS}/plan.md`, display: 'plan.md', status: 'modified' },
+      ]);
+      expect(index.turns['loop-1'].files).toEqual(saved.files.map(({ path, display, status }) => ({ path, display, status })));
+      await expect(mod.readTurnIndex('conv-1')).resolves.toMatchObject({ 'loop-1': { files: index.turns['loop-1'].files } });
+    });
+
+    it('keeps at most 500 files, like the saved turn', async () => {
+      await runTurn('loop-1', () => {
+        for (let index = 0; index < 502; index++) fs.write(`${WS}/f${String(index).padStart(4, '0')}.md`, 'x\n');
+      });
+
+      const index = await mod.readTurnIndex('conv-1');
+      expect(index['loop-1'].files).toHaveLength(500);
+      expect(index['loop-1'].total).toBe(502);
+    });
+
+    it('keeps the file list when an undo record is saved and when a turn loses its copies to the limit', async () => {
+      mod.__testing.setConversationCopyLimit(15);
+      fs.write(`${WS}/a.md`, '0123456789');
+      await runTurn('loop-1', async (capture) => {
+        await capture(`${WS}/a.md`);
+        fs.write(`${WS}/a.md`, 'changed');
+      });
+      const files = [{ path: `${WS}/a.md`, display: 'a.md', status: 'modified' }];
+      const record = await mod.readTurnUndoRecord('conv-1', 'loop-1');
+      await mod.saveUndoRecord('conv-1', CHANGES, { ...(record as NonNullable<typeof record>), state: 'undone' });
+      await expect(mod.readTurnIndex('conv-1')).resolves.toMatchObject({ 'loop-1': { undone: true, files } });
+
+      fs.write(`${WS}/b.md`, '0123456789');
+      await runTurn('loop-2', async (capture) => {
+        await capture(`${WS}/b.md`);
+        fs.write(`${WS}/b.md`, 'changed');
+      });
+
+      const index = await mod.readTurnIndex('conv-1');
+      expect(index['loop-1'].restorable).toBeUndefined();
+      expect(index['loop-1'].files).toEqual(files);
+    });
+
+    it('keeps the file list of a turn the restart recovery brings in line with its record', async () => {
+      fs.write(`${WS}/plan.md`, 'one\n');
+      await runTurn('loop-1', async (capture) => {
+        await capture(`${WS}/plan.md`);
+        fs.write(`${WS}/plan.md`, 'two\n');
+      });
+      fs.delete(`${CHANGES}/loop-1/undo.json`);
+
+      await expect((await restart()).readTurnIndex('conv-1')).resolves.toEqual({
+        'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md', files: [{ path: `${WS}/plan.md`, display: 'plan.md', status: 'modified' }] },
+      });
+    });
+
+    it('fills in the file list of an index written before it had one, once, from the saved turns', async () => {
+      fs.write(`${WS}/plan.md`, 'one\n');
+      await runTurn('loop-1', async (capture) => {
+        await capture(`${WS}/plan.md`);
+        fs.write(`${WS}/plan.md`, 'two\n');
+      });
+      await runTurn('loop-2', () => {
+        fs.write(`${WS}/by-command.md`, 'x\n');
+      });
+      const current = fs.readJson<{ version: number; turns: Record<string, Record<string, unknown>> }>(`${CHANGES}/index.json`);
+      const withoutFiles = Object.fromEntries(Object.entries(current.turns).map(([loopId, entry]) => {
+        const { files: _files, ...rest } = entry;
+        return [loopId, rest];
+      }));
+      fs.write(`${CHANGES}/index.json`, JSON.stringify({ version: 1, turns: withoutFiles }));
+
+      const afterRestart = await restart();
+      await expect(afterRestart.readTurnIndex('conv-1')).resolves.toEqual(current.turns);
+      expect(fs.readJson(`${CHANGES}/index.json`)).toEqual(current);
+
+      const reads = vi.spyOn(fs.pluginFs, 'readTextFile');
+      await expect(afterRestart.readTurnIndex('conv-1')).resolves.toEqual(current.turns);
+      expect(reads.mock.calls.map(([path]) => path).filter((path) => path.endsWith('/loop-1.json') || path.endsWith('/loop-2.json'))).toEqual([]);
+    });
+
+    it('fills in an empty file list for an index entry written before it had one whose saved turn is gone', async () => {
+      fs.write(`${CHANGES}/index.json`, JSON.stringify({ version: 1, turns: { 'loop-1': { total: 1, added: 0, deleted: 0, firstFile: 'a.md' } } }));
+
+      await expect(mod.readTurnIndex('conv-1')).resolves.toEqual({
+        'loop-1': { total: 1, added: 0, deleted: 0, firstFile: 'a.md', files: [] },
+      });
+      expect(fs.readJson(`${CHANGES}/index.json`)).toEqual({
+        version: 1,
+        turns: { 'loop-1': { total: 1, added: 0, deleted: 0, firstFile: 'a.md', files: [] } },
+      });
+    });
+
+    it.each([
+      ['no array', 'a.md'],
+      ['an entry without a display path', [{ path: `${WS}/a.md`, status: 'created' }]],
+      ['an entry with a relative path', [{ path: 'a.md', display: 'a.md', status: 'created' }]],
+      ['an entry of another status', [{ path: `${WS}/a.md`, display: 'a.md', status: 'renamed' }]],
+    ])('builds an index whose file list is %s again from the turn files beside it', async (_label, files) => {
+      await runTurn('loop-1', () => {
+        fs.write(`${WS}/by-command.md`, 'x\n');
+      });
+      const before = await mod.readTurnIndex('conv-1');
+      fs.write(`${CHANGES}/index.json`, JSON.stringify({ version: 1, turns: { 'loop-1': { ...before['loop-1'], files } } }));
+
+      await expect((await restart()).readTurnIndex('conv-1')).resolves.toEqual(before);
+    });
+  });
+
   describe('a conversation deleted while its turn runs', () => {
     it('writes nothing at the end of the turn', async () => {
       let present = true;
@@ -806,6 +1018,76 @@ describe('turnChanges', () => {
       host.listWorkspace.mockRejectedValueOnce(new Error('list failed'));
       await expect(mod.endTurn('loop-1')).rejects.toThrow('list failed');
       await expect(mod.beginTurn('conv-1', 'loop-2', WS)).resolves.toBeUndefined();
+    });
+  });
+
+  describe('whenTurnsEnded', () => {
+    function yieldToMainThread(): Promise<void> {
+      return new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    it('resolves at once with no open turn', async () => {
+      await expect(mod.whenTurnsEnded('conv-1')).resolves.toBeUndefined();
+    });
+
+    it('waits for an open turn of the conversation', async () => {
+      await mod.beginTurn('conv-1', 'loop-1', WS);
+      let ended = false;
+      const waiting = mod.whenTurnsEnded('conv-1').then(() => { ended = true; });
+      await yieldToMainThread();
+      expect(ended).toBe(false);
+
+      await mod.endTurn('loop-1');
+      await waiting;
+      expect(ended).toBe(true);
+    });
+
+    it('resolves for a turn whose endTurn was called, before its settle has run', async () => {
+      let release: () => void = () => {};
+      let listRequested: () => void = () => {};
+      const requested = new Promise<void>((resolve) => { listRequested = resolve; });
+      await mod.beginTurn('conv-1', 'loop-1', WS);
+      host.listWorkspace.mockImplementationOnce(() => new Promise<ConversationWorkspaceFiles>((resolve) => {
+        release = () => resolve({ root: WS, exceeded: false, files: [] });
+        listRequested();
+      }));
+      const ending = mod.endTurn('loop-1');
+      await requested;
+
+      await expect(mod.whenTurnsEnded('conv-1')).resolves.toBeUndefined();
+      expect(mod.hasOpenTurn('conv-1')).toBe(false);
+      release();
+      await ending;
+    });
+
+    it('queues work asked after the wait behind the settle', async () => {
+      fs.write(`${WS}/plan.md`, 'one\n');
+      await mod.beginTurn('conv-1', 'loop-1', WS);
+      await mod.captureBefore('loop-1', `${WS}/plan.md`);
+      fs.write(`${WS}/plan.md`, 'two\n');
+
+      const waited = mod.whenTurnsEnded('conv-1').then(() => mod.enqueue('conv-1', async () => fs.has(`${CHANGES}/loop-1.json`)));
+      await yieldToMainThread();
+      await mod.endTurn('loop-1');
+
+      await expect(waited).resolves.toBe(true);
+    });
+
+    it('does not wait for a turn of another conversation', async () => {
+      await mod.beginTurn('conv-2', 'loop-2', null);
+      await expect(mod.whenTurnsEnded('conv-1')).resolves.toBeUndefined();
+    });
+
+    it('resolves when the turns open at the call end, while a turn opened meanwhile is still open', async () => {
+      await mod.beginTurn('conv-1', 'loop-1', WS);
+      const waiting = mod.whenTurnsEnded('conv-1');
+      await mod.beginTurn('conv-1', 'loop-2', WS);
+
+      await mod.endTurn('loop-1');
+
+      await expect(waiting).resolves.toBeUndefined();
+      expect(mod.hasOpenTurn('conv-1')).toBe(true);
+      await mod.endTurn('loop-2');
     });
   });
 
@@ -902,7 +1184,15 @@ describe('turnChanges', () => {
       expect(fs.has(`${CHANGES}/loop-1`)).toBe(false);
       expect(fs.readJson(`${CHANGES}/index.json`)).toEqual({
         version: 1,
-        turns: { 'loop-1': { total: 1, added: 0, deleted: 0, firstFile: 'by-command.md' } },
+        turns: {
+          'loop-1': {
+            total: 1,
+            added: 0,
+            deleted: 0,
+            firstFile: 'by-command.md',
+            files: [{ path: `${WS}/by-command.md`, display: 'by-command.md', status: 'created' }],
+          },
+        },
       });
       await expect(mod.readTurnUndoRecord('conv-1', 'loop-1')).resolves.toBeNull();
     });
@@ -978,7 +1268,7 @@ describe('turnChanges', () => {
         fs.delete(`${CHANGES}/loop-1/undo.json`);
 
         await expect((await restart()).readTurnIndex('conv-1')).resolves.toEqual({
-          'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md' },
+          'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md', files: [{ path: `${WS}/plan.md`, display: 'plan.md', status: 'modified' }] },
         });
         expect(fs.has(`${CHANGES}/loop-1`)).toBe(false);
       });
@@ -999,8 +1289,17 @@ describe('turnChanges', () => {
           fs.write(`${CHANGES}/loop-1/undo.json`, unreadable);
           const kept = fs.list(`${CHANGES}/loop-1/`).map((path) => [path, fs.read(path)]);
           const expected = {
-            'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md' },
-            'loop-2': { total: 1, added: 1, deleted: 1, firstFile: 'notes.md', restorable: 1, settledAt: 2, copyBytes: 3 },
+            'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md', files: [{ path: `${WS}/plan.md`, display: 'plan.md', status: 'modified' }] },
+            'loop-2': {
+              total: 1,
+              added: 1,
+              deleted: 1,
+              firstFile: 'notes.md',
+              files: [{ path: `${WS}/notes.md`, display: 'notes.md', status: 'modified' }],
+              restorable: 1,
+              settledAt: 2,
+              copyBytes: 3,
+            },
           };
 
           const afterRestart = await restart();
@@ -1049,7 +1348,13 @@ describe('turnChanges', () => {
       const index = await mod.readTurnIndex('conv-1');
       expect(index['loop-b']).toMatchObject({ settledAt: 1, copyBytes: 10 });
       expect(index['loop-a']).toMatchObject({ settledAt: 2, copyBytes: 10 });
-      expect(index['loop-x']).toEqual({ total: 1, added: 0, deleted: 0, firstFile: 'by-command.md' });
+      expect(index['loop-x']).toEqual({
+        total: 1,
+        added: 0,
+        deleted: 0,
+        firstFile: 'by-command.md',
+        files: [{ path: `${WS}/by-command.md`, display: 'by-command.md', status: 'created' }],
+      });
     });
 
     it('removes the copies of the turns settled longest ago once the limit is passed', async () => {
@@ -1067,7 +1372,13 @@ describe('turnChanges', () => {
       expect(fs.has(`${CHANGES}/loop-a/undo.json`)).toBe(true);
       expect(fs.has(`${CHANGES}/loop-b/undo.json`)).toBe(true);
       const index = await mod.readTurnIndex('conv-1');
-      expect(index['loop-c']).toEqual({ total: 1, added: 1, deleted: 1, firstFile: 'c.md' });
+      expect(index['loop-c']).toEqual({
+        total: 1,
+        added: 1,
+        deleted: 1,
+        firstFile: 'c.md',
+        files: [{ path: `${WS}/c.md`, display: 'c.md', status: 'modified' }],
+      });
       expect(index['loop-a']).toMatchObject({ restorable: 1 });
       expect(index['loop-b']).toMatchObject({ restorable: 1 });
       expect(fs.has(`${CHANGES}/loop-c.json`)).toBe(true);
@@ -1104,7 +1415,16 @@ describe('turnChanges', () => {
 
       expect(fs.has(`${CHANGES}/loop-1`)).toBe(false);
       await expect(mod.readTurnIndex('conv-1')).resolves.toEqual({
-        'loop-1': { total: 2, added: 1, deleted: 1, firstFile: 'a.md' },
+        'loop-1': {
+          total: 2,
+          added: 1,
+          deleted: 1,
+          firstFile: 'a.md',
+          files: [
+            { path: `${WS}/a.md`, display: 'a.md', status: 'modified' },
+            { path: `${WS}/by-command.md`, display: 'by-command.md', status: 'created' },
+          ],
+        },
       });
     });
 
@@ -1138,7 +1458,19 @@ describe('turnChanges', () => {
       const index = await afterRestart.readTurnIndex('conv-1');
 
       expect(index).toEqual({
-        'loop-1': { total: 2, added: 2, deleted: 1, firstFile: 'new.md', restorable: 2, settledAt: 1, copyBytes: 4 },
+        'loop-1': {
+          total: 2,
+          added: 2,
+          deleted: 1,
+          firstFile: 'new.md',
+          files: [
+            { path: `${WS}/new.md`, display: 'new.md', status: 'created' },
+            { path: `${WS}/plan.md`, display: 'plan.md', status: 'modified' },
+          ],
+          restorable: 2,
+          settledAt: 1,
+          copyBytes: 4,
+        },
       });
       const turn = await afterRestart.readTurnChanges('conv-1', 'loop-1');
       expect(turn?.files.map((file) => [file.display, file.status, file.added, file.deleted])).toEqual([
@@ -1222,7 +1554,7 @@ describe('turnChanges', () => {
       fs.write(`${CHANGES}/loop-2/before/manifest.json`, JSON.stringify({ version: 1, loopId: 'loop-2', workspaceRoots: [WS], entries: [] }));
 
       await expect(mod.readTurnIndex('conv-1')).resolves.toEqual({
-        'loop-2': { total: 1, added: 3, deleted: 0, firstFile: 'a.md' },
+        'loop-2': { total: 1, added: 3, deleted: 0, firstFile: 'a.md', files: [{ path: `${WS}/docs/a.md`, display: 'docs/a.md', status: 'created' }] },
       });
     });
 

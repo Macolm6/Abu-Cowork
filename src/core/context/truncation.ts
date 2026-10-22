@@ -11,12 +11,23 @@ interface TruncationRule {
   headLines: number;
   tailLines: number;
   maxChars: number;
+  /**
+   * 'end': the first `headLines` lines are a fixed header that is always kept,
+   * and the rest is cut from its start, so the most recent lines stay.
+   * `tailLines` is unused; context pressure scales `maxChars` only.
+   */
+  keep?: 'end';
 }
 
 const TRUNCATION_RULES: Record<string, TruncationRule> = {
   [TOOL_NAMES.READ_FILE]: { headLines: 150, tailLines: 20, maxChars: 15000 },
   [TOOL_NAMES.LIST_DIRECTORY]: { headLines: 100, tailLines: 0, maxChars: 8000 },
   [TOOL_NAMES.RUN_COMMAND]: { headLines: 150, tailLines: 30, maxChars: 15000 },
+  // `formatOutput` in backgroundCommandTools.ts starts every result with four
+  // lines before any output line: id, command, status, then the exit code, the
+  // dropped-output note or the output heading. The last output lines (a final
+  // error) matter most.
+  [TOOL_NAMES.BACKGROUND_COMMAND_OUTPUT]: { headLines: 4, tailLines: 0, maxChars: 15000, keep: 'end' },
   [TOOL_NAMES.SEARCH_FILES]: { headLines: 50, tailLines: 0, maxChars: 8000 },
   [TOOL_NAMES.FIND_FILES]: { headLines: 100, tailLines: 0, maxChars: 8000 },
   [TOOL_NAMES.WEB_SEARCH]: { headLines: 0, tailLines: 0, maxChars: 8000 },
@@ -149,6 +160,8 @@ export function truncateToolResult(toolName: string, result: string, contextUsag
   // If within char limit, no truncation needed
   if (result.length <= rule.maxChars) return result;
 
+  if (baseRule.keep === 'end') return keepHeaderAndEnd(result, baseRule.headLines, rule.maxChars);
+
   // Line-based truncation for tools with line rules
   if (rule.headLines > 0) {
     const lines = result.split('\n');
@@ -188,4 +201,38 @@ function charTruncate(text: string, maxChars: number): string {
   const omitted = text.length - headChars - tailChars;
 
   return `${head}\n\n${charsOmittedMarker(omitted)}\n\n${tail}`;
+}
+
+/** Longest header line kept whole by `keepHeaderAndEnd` (a long command line is cut). */
+const HEADER_LINE_MAX_CHARS = 200;
+/** Room for the two omission lines `keepHeaderAndEnd` may write. */
+const OMISSION_LINES_CHARS = 100;
+
+/**
+ * Keep the first `headerLines` lines and as many of the last lines as fit in
+ * `maxChars`. A last line longer than the room left keeps its end.
+ */
+function keepHeaderAndEnd(text: string, headerLines: number, maxChars: number): string {
+  const lines = text.split('\n');
+  const header = lines.slice(0, headerLines).flatMap((line) => (
+    line.length <= HEADER_LINE_MAX_CHARS
+      ? [line]
+      : [line.slice(0, HEADER_LINE_MAX_CHARS), charsOmittedMarker(line.length - HEADER_LINE_MAX_CHARS)]
+  ));
+  const body = lines.slice(headerLines);
+  const room = Math.max(0, maxChars - header.join('\n').length - OMISSION_LINES_CHARS);
+
+  let first = body.length;
+  let used = 0;
+  while (first > 0 && used + body[first - 1].length + 1 <= room) {
+    used += body[first - 1].length + 1;
+    first -= 1;
+  }
+  if (first === 0) return [...header, ...body].join('\n');
+  if (first < body.length) return [...header, linesOmittedMarker(first), ...body.slice(first)].join('\n');
+
+  const last = body[body.length - 1];
+  const kept = last.slice(last.length - room);
+  const omitted = body.length > 1 ? [linesOmittedMarker(body.length - 1)] : [];
+  return [...header, ...omitted, charsOmittedMarker(last.length - kept.length), kept].join('\n');
 }

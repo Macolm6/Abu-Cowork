@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { act, cleanup, render as renderBare, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render as renderBare, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ComponentProps, ReactElement } from 'react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -26,6 +26,9 @@ const harness = vi.hoisted(() => ({
   tooltipRenders: vi.fn(),
   teamLeader: null as null | Record<string, unknown>,
   macOS: false,
+  // Rows the list has scrolled out of view: the stand-in unmounts them like Virtuoso does.
+  unmountedRowIds: new Set<string>(),
+  refreshList: null as null | (() => void),
 }));
 
 vi.mock('@/utils/platform', async (importOriginal) => {
@@ -40,11 +43,13 @@ vi.mock('react-virtuoso', async () => {
   return {
     Virtuoso: React.forwardRef(function MockVirtuoso(props: MockVirtuosoProps, ref) {
       harness.props = props;
+      const [, refresh] = React.useReducer((n: number) => n + 1, 0);
+      harness.refreshList = refresh;
       React.useImperativeHandle(ref, () => ({ scrollToIndex: harness.scrollToIndex }));
       return React.createElement(
         'div',
         { 'data-testid': 'mock-virtuoso' },
-        ...(props.data ?? []).map((group, index) => React.createElement(
+        ...(props.data ?? []).map((group, index) => harness.unmountedRowIds.has(group[0]?.id) ? null : React.createElement(
           'div',
           { 'data-index': String(index), key: group[0]?.id ?? index },
           props.itemContent?.(index, group),
@@ -105,6 +110,46 @@ function setupConversation(): string {
   return conversationId;
 }
 
+const COMPACT_SUMMARY = 'keep the API stable';
+
+/** Per summary: one earlier turn, then a compaction marker as its own row. */
+function setupCompactedConversation(
+  summaries: string[] = [COMPACT_SUMMARY],
+): { conversationId: string; markerId: string } {
+  const store = useChatStore.getState();
+  const conversationId = store.createConversation();
+  const markerIds = summaries.map((summaryText, index) => {
+    const turn = index + 1;
+    const markerId = `compact-boundary-${conversationId}-${turn}`;
+    store.addMessage(conversationId, message(`user-${turn}`, 'user', `prompt ${turn}`, `loop-${turn}`));
+    store.addMessage(conversationId, message(`assistant-${turn}`, 'assistant', `answer ${turn}`, `loop-${turn}`));
+    store.addMessage(conversationId, {
+      id: markerId,
+      role: 'system',
+      content: '',
+      timestamp: 2,
+      compactBoundary: {
+        summaryText,
+        summarizedFromId: `user-${turn}`,
+        summarizedToId: `assistant-${turn}`,
+        createdAt: 2,
+        source: 'auto',
+      },
+    });
+    return markerId;
+  });
+  store.setConversationStatus(conversationId, 'idle');
+  return { conversationId, markerId: markerIds[0] };
+}
+
+function compactRows() {
+  return screen.getAllByRole('button', { name: /Context compacted/ });
+}
+
+function compactRow() {
+  return screen.getByRole('button', { name: /Context compacted/ });
+}
+
 function setupUser() {
   return userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 }
@@ -123,6 +168,8 @@ describe('ChatView frame', () => {
     harness.tooltipRenders.mockReset();
     harness.teamLeader = null;
     harness.macOS = false;
+    harness.unmountedRowIds.clear();
+    harness.refreshList = null;
     useChatStore.setState(useChatStore.getInitialState(), true);
     useSettingsStore.setState(useSettingsStore.getInitialState(), true);
     useEnterpriseStore.setState({ mode: { kind: 'personal' }, initialized: true });
@@ -254,6 +301,82 @@ describe('ChatView frame', () => {
 
     await user.click(button);
     expect(harness.scrollToIndex).toHaveBeenCalledWith({ index: 'LAST', align: 'end', behavior: 'smooth' });
+  });
+
+  it('keeps a compaction summary expanded after its row remounts', async () => {
+    const user = setupUser();
+    const { markerId } = setupCompactedConversation();
+    render(<ChatView />);
+
+    await user.click(compactRow());
+    expect(await screen.findByText(COMPACT_SUMMARY)).toBeInTheDocument();
+
+    act(() => {
+      harness.unmountedRowIds.add(markerId);
+      harness.refreshList?.();
+    });
+    expect(screen.queryByRole('button', { name: /Context compacted/ })).toBeNull();
+
+    act(() => {
+      harness.unmountedRowIds.delete(markerId);
+      harness.refreshList?.();
+    });
+    expect(compactRow()).toHaveAttribute('aria-expanded', 'true');
+    expect(await screen.findByText(COMPACT_SUMMARY)).toBeInTheDocument();
+  });
+
+  it('shows each compaction’s own summary under its own row', async () => {
+    const user = setupUser();
+    const secondSummary = 'ship on Friday';
+    setupCompactedConversation([COMPACT_SUMMARY, secondSummary]);
+    render(<ChatView />);
+
+    const [firstRow, secondRow] = compactRows();
+    await user.click(firstRow);
+    await user.click(secondRow);
+
+    expect(firstRow).toHaveAttribute('aria-expanded', 'true');
+    expect(secondRow).toHaveAttribute('aria-expanded', 'true');
+    const firstBox = within(firstRow.parentElement!);
+    const secondBox = within(secondRow.parentElement!);
+    expect(await firstBox.findByText(COMPACT_SUMMARY)).toBeInTheDocument();
+    expect(firstBox.queryByText(secondSummary)).toBeNull();
+    expect(await secondBox.findByText(secondSummary)).toBeInTheDocument();
+    expect(secondBox.queryByText(COMPACT_SUMMARY)).toBeNull();
+
+    await user.click(firstRow);
+    expect(firstRow).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText(COMPACT_SUMMARY)).toBeNull();
+    expect(secondBox.getByText(secondSummary)).toBeInTheDocument();
+  });
+
+  it('resets expanded summaries when the conversation changes', async () => {
+    const user = setupUser();
+    const { conversationId } = setupCompactedConversation();
+    render(<ChatView />);
+
+    await user.click(compactRow());
+    expect(await screen.findByText(COMPACT_SUMMARY)).toBeInTheDocument();
+
+    const otherId = setupConversation();
+    act(() => useChatStore.setState({ activeConversationId: otherId }));
+    expect(screen.queryByRole('button', { name: /Context compacted/ })).toBeNull();
+    act(() => useChatStore.setState({ activeConversationId: conversationId }));
+
+    expect(compactRow()).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText(COMPACT_SUMMARY)).toBeNull();
+  });
+
+  it('releases the bottom pin when a summary expands', async () => {
+    const user = setupUser();
+    setupCompactedConversation();
+    render(<ChatView />);
+    await screen.findByTestId('mock-virtuoso');
+
+    await user.click(compactRow());
+    act(() => harness.props?.atBottomStateChange?.(false));
+
+    expect(screen.getByRole('button', { name: 'Scroll to bottom' })).toBeInTheDocument();
   });
 
   it('shows usage, the disclaimer and the task number with a copy button under the composer', async () => {

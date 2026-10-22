@@ -30,6 +30,8 @@ import { isMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
 import { normalizeUpstreamErrorDetails, sanitizeUntrustedLlmErrorText } from '@/core/llm/adapter';
 import { fileChangeWithoutHunks } from '@/core/files/fileChangeBudget';
 import type { FileChange } from '@/types/fileChange';
+import type { ExecutionStepSnapshot } from '@/types/execution';
+import { isCutSnapshotBlock } from '@/core/agent/executionSnapshot';
 
 export const SHARE_SCHEMA_VERSION = 1 as const;
 
@@ -168,6 +170,15 @@ export function serializeShareBundle(bundle: ShareBundle): string {
 // Internals
 // ────────────────────────────────────────────────────────────────────────────
 
+/**
+ * The base64 source of an image or document block. Its data is bytes written
+ * out as text, and a run of it can look like a key (`AIza…`, `AKIA…`), so the
+ * rules are never applied to it.
+ */
+function isMediaData(node: Record<string, unknown>): boolean {
+  return node.type === 'base64' && typeof node.data === 'string';
+}
+
 function indexByNormalizedPath(entries: SnapshotEntry[]): Map<string, SnapshotEntry> {
   const out = new Map<string, SnapshotEntry>();
   for (const e of entries) {
@@ -216,7 +227,7 @@ async function prepareMessage(
     clone.toolCalls = clone.toolCalls.map((tc) => redactToolCall(tc, onRedaction));
   }
   if (clone.toolCallsForContext && clone.toolCallsForContext.length > 0) {
-    const r = redactDeep(clone.toolCallsForContext);
+    const r = redactDeep(clone.toolCallsForContext, isMediaData);
     onRedaction({ count: r.count, samples: r.samples });
     clone.toolCallsForContext = r.value as typeof clone.toolCallsForContext;
   }
@@ -256,7 +267,34 @@ async function prepareMessage(
     if (redactedDetails) clone.runErrorDetails = redactedDetails;
     else delete clone.runErrorDetails;
   }
-  return clone;
+  // Everything else on the message goes out through the same rules: the step
+  // snapshot a reopened conversation shows, the text blocks of tool results,
+  // plans, answers, interface context and any field added later. Text redacted
+  // above matches no rule again, so it adds nothing to the count here.
+  const rest = redactDeep(clone, isMediaData);
+  onRedaction({ count: rest.count, samples: rest.samples });
+  const redacted = rest.value as Message;
+  if (redacted.executionSteps) redacted.executionSteps = redacted.executionSteps.map(dropCutTails);
+  return redacted;
+}
+
+/**
+ * A snapshot block cut at its character limit may end inside a key or a path,
+ * whose half no rule recognizes. The run of text the cut ended in goes, for
+ * the same reason a shortened file change goes out without its lines.
+ */
+function dropCutTails(step: ExecutionStepSnapshot): ExecutionStepSnapshot {
+  return {
+    ...step,
+    ...(step.detailBlocks
+      ? {
+        detailBlocks: step.detailBlocks.map((block) => (block.content && isCutSnapshotBlock(block)
+          ? { ...block, content: `${block.content.replace(/\.\.\.$/, '').replace(/\S*$/, '')}...` }
+          : block)),
+      }
+      : {}),
+    ...(step.childSteps ? { childSteps: step.childSteps.map(dropCutTails) } : {}),
+  };
 }
 
 async function prepareImageBlock(
@@ -323,7 +361,7 @@ function redactToolCall(
 ): ToolCall {
   const out: ToolCall = { ...tc, isExecuting: false };
   if (out.input !== undefined) {
-    const r = redactDeep(out.input);
+    const r = redactDeep(out.input, isMediaData);
     onRedaction({ count: r.count, samples: r.samples });
     out.input = r.value as typeof out.input;
   }
@@ -332,7 +370,7 @@ function redactToolCall(
     onRedaction(r);
     out.result = r.text;
   } else if (out.result !== undefined) {
-    const r = redactDeep(out.result);
+    const r = redactDeep(out.result, isMediaData);
     onRedaction({ count: r.count, samples: r.samples });
     out.result = r.value as typeof out.result;
   }
@@ -348,6 +386,11 @@ function redactToolCall(
     );
     onRedaction(text);
     out.fileChange = text.count > 0 || change.cut ? fileChangeWithoutHunks(change) : change;
+  }
+  if (out.backgroundCommand) {
+    const command = redactText(out.backgroundCommand.command);
+    onRedaction(command);
+    out.backgroundCommand = { command: command.text };
   }
   return out;
 }
