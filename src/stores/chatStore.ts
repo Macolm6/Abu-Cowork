@@ -794,6 +794,10 @@ interface ChatActions {
   deleteMessagesFrom: (convId: string, messageId: string) => void;
   updateMessageThinking: (convId: string, thinking: string, msgId?: string) => void;
   updateMessageThinkingDuration: (convId: string, duration: number, msgId?: string) => void;
+  /** Records the Anthropic signature for the message's `thinking` (see `Message.thinkingSignature`). */
+  updateMessageThinkingSignature: (convId: string, signature: string, msgId?: string) => void;
+  /** Appends one opaque `redacted_thinking` payload (see `Message.redactedThinking`). */
+  appendMessageRedactedThinking: (convId: string, data: string, msgId?: string) => void;
   updateMessageUsage: (convId: string, usage: TokenUsage, msgId?: string) => void;
   /**
    * Force a specific message's `isStreaming` flag directly (looked up by exact
@@ -2055,6 +2059,26 @@ export const useChatStore = create<ChatStore>()(
             msgId ?? FALLBACK_LAST,
           );
           if (target) target.thinkingDuration = duration;
+        });
+      },
+
+      updateMessageThinkingSignature: (convId, signature, msgId) => {
+        set((state) => {
+          const target = findTargetMessage(
+            state.conversations[convId]?.messages,
+            msgId ?? FALLBACK_LAST,
+          );
+          if (target) target.thinkingSignature = signature;
+        });
+      },
+
+      appendMessageRedactedThinking: (convId, data, msgId) => {
+        set((state) => {
+          const target = findTargetMessage(
+            state.conversations[convId]?.messages,
+            msgId ?? FALLBACK_LAST,
+          );
+          if (target) target.redactedThinking = [...(target.redactedThinking ?? []), data];
         });
       },
 

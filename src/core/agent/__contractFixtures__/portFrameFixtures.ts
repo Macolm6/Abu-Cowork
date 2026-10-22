@@ -35,7 +35,7 @@
  *
  * TODO (not yet covered by either contract test — tracked here, not
  * silently dropped): none for chat/exec — this fixture + the 3 dedicated
- * special-case tests cover all 29 ChatDelta + all 14 ExecutionPort methods.
+ * special-case tests cover all 31 ChatDelta + all 14 ExecutionPort methods.
  * The `session` port's one method (`replaceMessageById`) is covered
  * separately, on BOTH sides: sender in
  * `sidecar/src/shims/conversationStorageRun.contract.test.ts` (its sender
@@ -166,6 +166,8 @@ export const CHAT_CONTRACT_FIXTURES: ContractFixtureEntry[] = [
   { port: 'chat', method: 'setLastMessageContent', args: ['conv-1', 'full content', 'msg-1'] },
   { port: 'chat', method: 'appendThinking', args: ['conv-1', 'thinking chunk', 'msg-1'] },
   { port: 'chat', method: 'setThinkingDuration', args: ['conv-1', 3.5, 'msg-1'] },
+  { port: 'chat', method: 'setThinkingSignature', args: ['conv-1', 'sig-abc', 'msg-1'] },
+  { port: 'chat', method: 'appendRedactedThinking', args: ['conv-1', 'redacted-blob', 'msg-1'] },
   { port: 'chat', method: 'flushTokens', args: ['conv-1', 'msg-1'] },
   { port: 'chat', method: 'finishStreaming', args: ['conv-1', 'msg-1'] },
   { port: 'chat', method: 'deactivateSkills', args: ['conv-1'] },

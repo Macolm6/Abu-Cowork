@@ -9,7 +9,7 @@
  * taskExecutionStore/scratchpadStore state after applying a handful of
  * frames), this file swaps in a SPY `ChatDelta`/`ExecutionPort`
  * implementation (via `setChatDelta`/`setExecutionPort`) and asserts the
- * exact positional args each real port method receives, for ALL 40 generic
+ * exact positional args each real port method receives, for ALL 42 generic
  * methods plus the special cases — so a change to `applyChatFrame`/
  * `applyExecFrame`'s dispatch order (or to the shared fixture reflecting a
  * `portFrameSenders.ts` change) turns THIS file red even when
@@ -24,7 +24,8 @@ import { CHAT_CONTRACT_FIXTURES, EXEC_CONTRACT_FIXTURES } from './__contractFixt
 import { applyDeltaFrames } from './frameApplier';
 
 const CHAT_METHOD_NAMES: (keyof ChatDelta)[] = [
-  'appendText', 'setLastMessageContent', 'appendThinking', 'setThinkingDuration', 'flushTokens',
+  'appendText', 'setLastMessageContent', 'appendThinking', 'setThinkingDuration', 'setThinkingSignature',
+  'appendRedactedThinking', 'flushTokens',
   'finishStreaming', 'cancelStreaming', 'deactivateSkills', 'setMessageStreamingFlag', 'setMessageToolCalls',
   'addMessage', 'deleteMessagesFrom', 'updateToolCall', 'checkpointToolCallMetadata', 'appendToolCallContext', 'appendMessageToolCall', 'updateMessageUsage',
   'setExecutionStepsSnapshot', 'setPlannedStepsSnapshot', 'setConversationStatus', 'setAgentStatus',

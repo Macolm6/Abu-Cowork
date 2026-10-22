@@ -61,6 +61,10 @@ export interface ChatDelta {
   appendThinking(convId: string, thinking: string, msgId?: string): void;
   /** Mirrors chatStore's `updateMessageThinkingDuration`. */
   setThinkingDuration(convId: string, duration: number, msgId?: string): void;
+  /** Mirrors chatStore's `updateMessageThinkingSignature`. */
+  setThinkingSignature(convId: string, signature: string, msgId?: string): void;
+  /** Mirrors chatStore's `appendMessageRedactedThinking`. */
+  appendRedactedThinking(convId: string, data: string, msgId?: string): void;
   /** Mirrors the module-level `flushTokenBuffer()` export (not a store action). */
   flushTokens(convId?: string, msgId?: string): void;
   /** Mirrors chatStore's `finishStreaming`. */
@@ -160,6 +164,10 @@ export function createInProcessChatDelta(): ChatDelta {
       useChatStore.getState().updateMessageThinking(convId, thinking, msgId),
     setThinkingDuration: (convId, duration, msgId) =>
       useChatStore.getState().updateMessageThinkingDuration(convId, duration, msgId),
+    setThinkingSignature: (convId, signature, msgId) =>
+      useChatStore.getState().updateMessageThinkingSignature(convId, signature, msgId),
+    appendRedactedThinking: (convId, data, msgId) =>
+      useChatStore.getState().appendMessageRedactedThinking(convId, data, msgId),
     flushTokens: (convId, msgId) => flushTokenBuffer(convId, msgId),
     finishStreaming: (convId, msgId) => useChatStore.getState().finishStreaming(convId, msgId),
     cancelStreaming: (convId, opts) => useChatStore.getState().cancelStreaming(convId, opts),
