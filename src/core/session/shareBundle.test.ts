@@ -28,6 +28,8 @@ import { buildShareBundle, SHARE_SCHEMA_VERSION } from './shareBundle';
 import { createCompactBoundaryMarker } from '@/core/context/compactBoundary';
 import { createMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
 import { createBrowserRunReportMessage } from '@/core/observability/browserRunReport';
+import { snapshotExecutionSteps } from '@/core/agent/executionSnapshot';
+import type { ExecutionStep } from '@/types/execution';
 
 function makeConv(messages: Message[], overrides: Partial<Conversation> = {}): Conversation {
   return {
@@ -140,6 +142,153 @@ describe('buildShareBundle', () => {
     expect(bundle.messages[0].toolCalls?.[0].backgroundCommand?.command).toContain('[REDACTED:anthropic-key]');
     expect(JSON.stringify(bundle)).not.toContain('sk-ant-abc');
     expect(conv.messages[0].toolCalls?.[0].backgroundCommand?.command).toContain('sk-ant-abc');
+  });
+
+  describe('fields without a rule of their own', () => {
+    const KEY = 'sk-ant-abcdefghijklmnopqrstuvwxyz123456';
+
+    it('redacts the step snapshot a restored conversation shows, nested steps included', async () => {
+      const conv = makeConv([{
+        id: 'm1',
+        role: 'assistant',
+        content: 'done',
+        timestamp: 1,
+        executionSteps: [{
+          id: 's1', type: 'command', label: 'Run cat /Users/alice/.env', status: 'completed', toolName: 'run_command',
+          completionMessage: `read ${KEY}`,
+          detailBlocks: [{ id: 's1-result', title: 'Result', type: 'result', content: `API_KEY=${KEY}` }],
+          childSteps: [{
+            id: 'c1', type: 'command', label: 'Run env', status: 'completed', toolName: 'run_command',
+            detailBlocks: [{ id: 'c1-result', title: 'Result', type: 'result', content: `TOKEN=${KEY}` }],
+          }],
+        }],
+        plannedSteps: [{ index: 0, description: `Use ${KEY} to call the API`, status: 'completed' }],
+      }]);
+
+      const bundle = await buildShareBundle(conv);
+      const json = JSON.stringify(bundle.messages);
+
+      expect(json).not.toContain('sk-ant-abc');
+      expect(json).not.toContain('/Users/alice');
+      expect(bundle.messages[0].executionSteps?.[0].detailBlocks?.[0].content).toBe('API_KEY=[REDACTED:anthropic-key]');
+      expect(bundle.messages[0].executionSteps?.[0].childSteps?.[0].detailBlocks?.[0].content).toBe('TOKEN=[REDACTED:anthropic-key]');
+      expect(bundle.stats.redactionCount).toBe(5);
+      expect(conv.messages[0].executionSteps?.[0].detailBlocks?.[0].content).toContain('sk-ant-abc');
+    });
+
+    it('redacts the text blocks of a tool result and what an interface or the user added to a tool call', async () => {
+      const conv = makeConv([{
+        id: 'm1',
+        role: 'assistant',
+        content: 'done',
+        timestamp: 1,
+        toolCalls: [{
+          id: 't1',
+          name: 'read_file',
+          input: { path: 'config.txt' },
+          result: 'read',
+          resultContent: [{ type: 'text', text: `key=${KEY}` }],
+          modelContext: `context ${KEY}`,
+        }],
+      }]);
+
+      const bundle = await buildShareBundle(conv);
+
+      expect(JSON.stringify(bundle.messages)).not.toContain('sk-ant-abc');
+      expect(bundle.messages[0].toolCalls?.[0].resultContent?.[0]).toEqual({ type: 'text', text: 'key=[REDACTED:anthropic-key]' });
+      expect(bundle.stats.redactionCount).toBe(2);
+    });
+
+    it('redacts a key inside the content of a very long file the agent wrote', async () => {
+      const content = `${'row,value\n'.repeat(20_000)}API_KEY=${KEY}\n`;
+      const conv = makeConv([{
+        id: 'm1',
+        role: 'assistant',
+        content: 'written',
+        timestamp: 1,
+        toolCalls: [{ id: 't1', name: 'write_file', input: { path: 'data.csv', content }, result: 'ok' }],
+      }]);
+
+      const bundle = await buildShareBundle(conv);
+      const written = bundle.messages[0].toolCalls?.[0].input.content as string;
+
+      expect(written).not.toContain('sk-ant-abc');
+      expect(written.endsWith('API_KEY=[REDACTED:anthropic-key]\n')).toBe(true);
+      expect(bundle.stats.redactionCount).toBe(1);
+    });
+
+    describe('a step snapshot cut through a key or a path', () => {
+      function stepWithResult(result: string): ExecutionStep {
+        return {
+          id: 's1', executionId: 'e1', toolCallId: 't1', type: 'command', label: 'Run', status: 'completed',
+          toolName: 'run_command', toolInput: {}, source: 'agent',
+          detailBlocks: [{
+            id: 's1-result', stepId: 's1', type: 'result', label: 'Result', labelKey: 'result',
+            content: result, isTruncated: false, isExpanded: false,
+          }],
+        };
+      }
+
+      async function exportedSnapshotText(result: string): Promise<string | undefined> {
+        const conv = makeConv([{
+          id: 'm1', role: 'assistant', content: 'done', timestamp: 1,
+          executionSteps: snapshotExecutionSteps([stepWithResult(result)]),
+        }]);
+        const bundle = await buildShareBundle(conv);
+        return bundle.messages[0].executionSteps?.[0].detailBlocks?.[0].content;
+      }
+
+      it('drops the half of a key the cut left, which no rule can recognize', async () => {
+        const content = await exportedSnapshotText(`${'x '.repeat(231)}AIza${'Q'.repeat(35)} tail`);
+
+        expect(content).not.toContain('AIza');
+        expect(content?.endsWith('...')).toBe(true);
+        expect(content).toContain('x x x');
+      });
+
+      it('drops a home path the cut stopped inside, user name and all', async () => {
+        const content = await exportedSnapshotText(`${'y '.repeat(244)}open /Users/alice`);
+
+        expect(content).not.toContain('/Users');
+        expect(content).toContain('open');
+      });
+
+      it('keeps the end of a block the snapshot did not cut', async () => {
+        expect(await exportedSnapshotText('exit code: 0')).toBe('exit code: 0');
+      });
+    });
+
+    it('leaves image data as it is, even where its base64 happens to look like a key', async () => {
+      const data = `iVBOR${'AIza'}${'B'.repeat(35)}xyz`;
+      const conv = makeConv([{
+        id: 'm1',
+        role: 'assistant',
+        content: 'shot',
+        timestamp: 1,
+        toolCalls: [{
+          id: 't1',
+          name: 'computer',
+          input: { action: 'screenshot' },
+          result: 'Screenshot taken',
+          resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data } }],
+        }],
+        toolCallsForContext: [{
+          id: 't1',
+          name: 'computer',
+          input: { action: 'screenshot' },
+          result: 'Screenshot taken',
+          resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data } }],
+        }],
+      }]);
+
+      const bundle = await buildShareBundle(conv);
+      const block = bundle.messages[0].toolCalls?.[0].resultContent?.[0];
+      const contextBlock = bundle.messages[0].toolCallsForContext?.[0].resultContent?.[0];
+
+      expect(block?.type === 'image' && block.source.data).toBe(data);
+      expect(contextBlock?.type === 'image' && contextBlock.source.data).toBe(data);
+      expect(bundle.stats.redactionCount).toBe(0);
+    });
   });
 
   describe('tool call file change', () => {

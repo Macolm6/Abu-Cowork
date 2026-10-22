@@ -47,6 +47,26 @@ interface Rule {
    * added without deciding whether the memory-hygiene path gets it too.
    */
   credential: boolean;
+  /**
+   * Where the last possible match ends. The rule runs on the text before it
+   * only, so a start with no end after it is never scanned to the end of the
+   * text again and again.
+   */
+  searchEnd?: (text: string) => number;
+}
+
+const PRIVATE_KEY_END = /-----END (?:RSA |OPENSSH |EC |DSA |PGP |ENCRYPTED )?PRIVATE KEY-----/g;
+
+function afterLastPrivateKeyEnd(text: string): number {
+  let end = 0;
+  PRIVATE_KEY_END.lastIndex = 0;
+  // End lines may overlap (a header's closing dashes open the next one), so
+  // the search moves on by one character, never past a whole match.
+  for (let match = PRIVATE_KEY_END.exec(text); match; match = PRIVATE_KEY_END.exec(text)) {
+    end = match.index + match[0].length;
+    PRIVATE_KEY_END.lastIndex = match.index + 1;
+  }
+  return end;
 }
 
 // Anthropic key must come before the generic OpenAI rule so it wins.
@@ -92,8 +112,12 @@ const RULES: Rule[] = [
   },
   {
     kind: 'jwt',
-    regex: /eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
-    replace: '[REDACTED:jwt]',
+    // A token's first part runs to the end of its run of token characters, so
+    // only the first "eyJ" of a run can start one. The match therefore starts
+    // at the run's start and keeps the text before that "eyJ"; trying every
+    // "eyJ" of a long run would rescan the run from each of them.
+    regex: /(?<![A-Za-z0-9_-])((?:(?!eyJ)[A-Za-z0-9_-])*)eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
+    replace: (_m, prefix: string) => `${prefix}[REDACTED:jwt]`,
     credential: true,
   },
   {
@@ -101,6 +125,7 @@ const RULES: Rule[] = [
     regex: /-----BEGIN (?:RSA |OPENSSH |EC |DSA |PGP |ENCRYPTED )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |OPENSSH |EC |DSA |PGP |ENCRYPTED )?PRIVATE KEY-----/g,
     replace: '[REDACTED:private-key-block]',
     credential: true,
+    searchEnd: afterLastPrivateKeyEnd,
   },
   {
     kind: 'bearer-header',
@@ -146,8 +171,10 @@ function applyRules(input: string, rules: readonly Rule[]): RedactionResult {
   const samples: RedactionSample[] = [];
 
   for (const rule of rules) {
+    const end = rule.searchEnd ? rule.searchEnd(text) : text.length;
+    const head = text.slice(0, end);
     // Collect samples before replacing so we preserve the original form.
-    const matches = text.match(rule.regex);
+    const matches = head.match(rule.regex);
     if (matches && matches.length > 0) {
       count += matches.length;
       // Keep the first original match per rule for the preview.
@@ -155,9 +182,9 @@ function applyRules(input: string, rules: readonly Rule[]): RedactionResult {
         kind: rule.kind,
         preview: matches[0].slice(0, 20),
       });
-      text = typeof rule.replace === 'string'
-        ? text.replace(rule.regex, rule.replace)
-        : text.replace(rule.regex, rule.replace);
+      text = (typeof rule.replace === 'string'
+        ? head.replace(rule.regex, rule.replace)
+        : head.replace(rule.regex, rule.replace)) + text.slice(end);
     }
   }
 
@@ -170,20 +197,28 @@ export function redactText(input: string): RedactionResult {
 }
 
 /**
- * Recursively redact every string inside a structured value. Used for tool
- * inputs / results whose shape we don't control. Image base64 blobs are
- * skipped by length — we only touch strings shorter than a threshold that
- * could plausibly contain credentials.
+ * A whole string that is one base64 data URL (`data:image/png;base64,...`).
+ * Its payload is encoded bytes, which a rule could match by chance and
+ * corrupt; text that only begins with `data:` is not one.
  */
-const MAX_STRING_LEN_FOR_REDACTION = 100_000;
+const BASE64_DATA_URL = /^data:[\w.+-]+\/[\w.+-]+(?:;[\w.+-]+=[\w.+-]+)*;base64,[A-Za-z0-9+/=\s]*$/;
 
-export function redactDeep(value: unknown): { value: unknown; count: number; samples: RedactionSample[] } {
+/**
+ * Recursively redact every string inside a structured value, whatever its
+ * length. Used for tool inputs / results whose shape we don't control. A
+ * base64 data URL, and an object `keep` accepts, are returned as they are,
+ * with nothing inside them redacted.
+ */
+export function redactDeep(
+  value: unknown,
+  keep?: (node: Record<string, unknown>) => boolean,
+): { value: unknown; count: number; samples: RedactionSample[] } {
   let count = 0;
   const samples: RedactionSample[] = [];
 
   const walk = (v: unknown): unknown => {
     if (typeof v === 'string') {
-      if (v.length > MAX_STRING_LEN_FOR_REDACTION) return v;
+      if (BASE64_DATA_URL.test(v)) return v;
       const r = redactText(v);
       count += r.count;
       samples.push(...r.samples);
@@ -191,6 +226,7 @@ export function redactDeep(value: unknown): { value: unknown; count: number; sam
     }
     if (Array.isArray(v)) return v.map(walk);
     if (v && typeof v === 'object') {
+      if (keep?.(v as Record<string, unknown>)) return v;
       const out: Record<string, unknown> = {};
       for (const [k, vv] of Object.entries(v as Record<string, unknown>)) {
         out[k] = walk(vv);

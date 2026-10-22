@@ -1,0 +1,22 @@
+{
+  "url": "https://api.openai.com/v1/chat/completions",
+  "body": {
+    "model": "gpt-5.5",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are Abu."
+      },
+      {
+        "role": "user",
+        "content": "hi"
+      }
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    },
+    "reasoning_effort": "medium",
+    "max_completion_tokens": 8192
+  }
+}
