@@ -10,7 +10,8 @@ import { snapshotExecutionSteps, snapshotToExecutionSteps } from '@/core/agent/e
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { usePreviewStore } from '@/stores/previewStore';
 import { getToolLabel } from '@/utils/toolLabels';
-import type { ExecutionStep } from '@/types/execution';
+import type { DetailBlock, ExecutionStep } from '@/types/execution';
+import type { WorkflowStep } from '@/utils/workflowExtractor';
 import type { FileChange } from '@/types/fileChange';
 import type { ToolViewRecord } from './toolViews/toolViewRecords';
 
@@ -768,6 +769,100 @@ describe('TaskBlock — tool views', () => {
     renderOpen([commandStep({ toolInput: npmTest, status: 'cancelled' as never })]);
     expect(screen.getByRole('status', { name: '已停止' })).toHaveTextContent('已停止');
     expect(screen.queryByText('[已取消]')).toBeNull();
+  });
+
+  describe('in a stopped turn', () => {
+    const scriptBlock: DetailBlock = {
+      id: 'step-1-script', stepId: 'step-1', type: 'script', label: 'Script', labelKey: 'script',
+      content: 'sleep 30', isTruncated: false, isExpanded: true,
+    };
+    function renderStopped(steps: ExecutionStep[]) {
+      const view = render(<TaskBlock executionSteps={steps} isActive={false} isStopped />, { wrapper: DesignSystemProvider });
+      fireEvent.click(screen.getAllByRole('button')[0]);
+      return view;
+    }
+    const sleep = { command: 'sleep 30' };
+
+    it.each([
+      ['running', [scriptBlock]],
+      ['pending', []],
+      ['error', [scriptBlock]],
+    ] as const)('says stopped on a %s step that holds no result and no error, and shows only its command', (status, blocks) => {
+      const { container } = renderStopped([commandStep({ status, toolInput: sleep, detailBlocks: [...blocks] })]);
+      expect(screen.getByRole('status', { name: '已停止' })).toHaveTextContent('已停止');
+      expect(screen.queryByText('执行出错')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: labelOf('run_command', sleep) }));
+      const view = container.querySelector<HTMLElement>('[data-step-view="command"]')!;
+      expect(view).toHaveTextContent('sleep 30');
+      expect(view.querySelector('[data-tool-result]')).toBeNull();
+      expect(within(view).queryByText('运行中…')).toBeNull();
+    });
+
+    it.each(['AbortError: Aborted', 'Error: AbortError: Aborted'])('says stopped on a step whose only error is the abort of Stop (%s)', (content) => {
+      const { container } = renderStopped([commandStep({
+        status: 'error', toolInput: sleep,
+        detailBlocks: [scriptBlock, { ...scriptBlock, id: 'step-1-error', type: 'error', label: 'Error', labelKey: 'error', content }],
+      })]);
+      expect(screen.getByRole('status', { name: '已停止' })).toBeInTheDocument();
+      expect(screen.queryByText('执行出错')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: labelOf('run_command', sleep) }));
+      const view = container.querySelector<HTMLElement>('[data-step-view="command"]')!;
+      expect(view).toHaveTextContent('sleep 30');
+      expect(view).not.toHaveTextContent('AbortError');
+    });
+
+    it('says stopped on a saved step whose call holds the abort of Stop', () => {
+      const legacy: WorkflowStep = {
+        id: 'call-1', type: 'command', label: labelOf('run_command', sleep), status: 'error', timestamp: 0,
+        toolName: 'run_command', toolInput: sleep, toolResult: 'Error: AbortError: Aborted',
+      };
+      render(<TaskBlock steps={[legacy]} isActive={false} isStopped />, { wrapper: DesignSystemProvider });
+      fireEvent.click(screen.getAllByRole('button')[0]);
+      expect(screen.getByRole('status', { name: '已停止' })).toBeInTheDocument();
+    });
+
+    it('keeps a step that failed with an error as failed', () => {
+      renderStopped([commandStep({
+        status: 'error', toolInput: sleep,
+        detailBlocks: [{ ...scriptBlock, id: 'step-1-error', type: 'error', label: 'Error', labelKey: 'error', content: 'boom' }],
+      })]);
+      expect(screen.queryByRole('status', { name: '已停止' })).toBeNull();
+      expect(screen.getByText('执行出错')).toBeInTheDocument();
+    });
+
+    it('keeps a finished step as finished', () => {
+      renderStopped([commandStep({ toolInput: sleep })]);
+      expect(screen.queryByRole('status', { name: '已停止' })).toBeNull();
+    });
+
+    it.each(['[已取消]', '[Cancelled]'])('says stopped on a saved step whose call Stop marked %s', (result) => {
+      const legacy: WorkflowStep = {
+        id: 'call-1', type: 'command', label: labelOf('run_command', sleep), status: 'completed', timestamp: 0,
+        toolName: 'run_command', toolInput: sleep, toolResult: result,
+      };
+      const { container } = render(<TaskBlock steps={[legacy]} isActive={false} isStopped />, { wrapper: DesignSystemProvider });
+      fireEvent.click(screen.getAllByRole('button')[0]);
+      expect(screen.getByRole('status', { name: '已停止' })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: labelOf('run_command', sleep) }));
+      const view = container.querySelector<HTMLElement>('[data-step-view="command"]')!;
+      expect(view).toHaveTextContent('sleep 30');
+      expect(view.querySelector('[data-tool-result]')).toBeNull();
+    });
+
+    it('keeps a saved step that a hook blocked as it was', () => {
+      const legacy: WorkflowStep = {
+        id: 'call-1', type: 'command', label: labelOf('run_command', sleep), status: 'completed', timestamp: 0,
+        toolName: 'run_command', toolInput: sleep, toolResult: '[被 hook 拦截]',
+      };
+      render(<TaskBlock steps={[legacy]} isActive={false} isStopped />, { wrapper: DesignSystemProvider });
+      fireEvent.click(screen.getAllByRole('button')[0]);
+      expect(screen.queryByRole('status', { name: '已停止' })).toBeNull();
+    });
+
+    it('leaves a running step running while the turn is not stopped', () => {
+      renderOpen([commandStep({ status: 'running', toolInput: sleep, detailBlocks: [scriptBlock] })]);
+      expect(screen.queryByRole('status', { name: '已停止' })).toBeNull();
+    });
   });
 
   it('keeps an image read as it is', () => {

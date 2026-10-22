@@ -10,6 +10,7 @@ import { StatusIcon } from '@/components/ds/status-icon';
 import { Tag } from '@/components/ds/tag';
 import { useI18n, format, type TranslationDict } from '@/i18n';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
+import { NOT_RUN_TOOL_RESULTS, TOOL_RESULT_HOOK_BLOCKED_MARKER } from '@/core/agent/toolResultMarkers';
 import type { WorkflowStep, StepType } from '@/utils/workflowExtractor';
 import type { ExecutionStep, DetailBlock, StepType as ExecStepType, BatchTaskRef } from '@/types/execution';
 import { generateCompletionMessage } from '@/utils/workflowExtractor';
@@ -295,6 +296,34 @@ export function convertExecutionStep(
   };
 }
 
+/** What Stop writes on a call that was still running, in either locale. */
+const STOPPED_RESULTS: ReadonlySet<string> = new Set(
+  [...NOT_RUN_TOOL_RESULTS].filter((result) => result !== TOOL_RESULT_HOOK_BLOCKED_MARKER),
+);
+
+/** The error toolExecutor records for a call that Stop's abort signal ended. */
+const ABORTED_BY_STOP = 'AbortError: Aborted';
+
+const isAbortedByStop = (text: string) => text.replace(/^Error: /, '') === ABORTED_BY_STOP;
+
+/**
+ * A step of a stopped turn that did not end on its own: still running, never
+ * started, failed with no text kept but the abort of Stop, or holding the
+ * result Stop writes on a call that was still running.
+ */
+function asStoppedStep(step: UnifiedStep): UnifiedStep {
+  const kept = [
+    ...(step.detailBlocks ?? []).filter((b) => b.type === 'result' || b.type === 'error').map((b) => b.content),
+    ...(step.toolResult !== undefined ? [step.toolResult] : []),
+  ];
+  const endedByStop = step.status === 'running'
+    || step.status === 'pending'
+    || (step.status === 'error' && kept.every(isAbortedByStop))
+    || (step.toolResult !== undefined && STOPPED_RESULTS.has(step.toolResult));
+  const childSteps = step.childSteps?.map(asStoppedStep);
+  return { ...step, status: endedByStop ? 'cancelled' : step.status, childSteps };
+}
+
 /** run_agent_batch children are per-member records for the member tab; the
  *  batch card (BatchProgress) is their in-chat view, so they are not nested inline. */
 // eslint-disable-next-line react-refresh/only-export-components
@@ -332,14 +361,14 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
 
   // Convert to unified steps
   const unifiedSteps = useMemo(() => {
+    let converted: UnifiedStep[] = [];
     if (executionSteps && executionSteps.length > 0) {
-      return executionSteps.map((s) => convertExecutionStep(s, locale, backgroundCommands));
+      converted = executionSteps.map((s) => convertExecutionStep(s, locale, backgroundCommands));
+    } else if (steps && steps.length > 0) {
+      converted = steps.map((s) => convertWorkflowStep(s, locale, backgroundCommands));
     }
-    if (steps && steps.length > 0) {
-      return steps.map((s) => convertWorkflowStep(s, locale, backgroundCommands));
-    }
-    return [];
-  }, [steps, executionSteps, locale, backgroundCommands]);
+    return isStopped ? converted.map(asStoppedStep) : converted;
+  }, [steps, executionSteps, locale, backgroundCommands, isStopped]);
 
   // Lazy initializer: when the block mounts during a live execution, start in 'preview'
   // so the body (with running thinking content / inline tool steps) is visible without
@@ -889,7 +918,7 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t,
             <div className="mt-2">
               <StepToolView
                 toolName={viewToolName}
-                status={failed ? 'error' : step.status}
+                status={failed && !isCancelled ? 'error' : step.status}
                 input={toolViewRecord?.input ?? step.toolInput ?? {}}
                 record={toolViewRecord}
                 text={text}
