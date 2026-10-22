@@ -15,8 +15,16 @@ class RecordingResizeObserver {
   disconnect() {}
 }
 
-/** A list element whose scroll height the test sets; it shows 400px of it. */
-function listWithHeight(initial: number): { list: HTMLDivElement; grow: (height: number) => void } {
+/**
+ * A list element whose scroll height the test sets; it shows 400px of it.
+ * `grow` changes the height and reports the resize; `growUnobserved` changes
+ * it before the observer has run.
+ */
+function listWithHeight(initial: number): {
+  list: HTMLDivElement;
+  grow: (height: number) => void;
+  growUnobserved: (height: number) => void;
+} {
   let height = initial;
   const list = document.createElement('div');
   list.appendChild(document.createElement('div'));
@@ -27,6 +35,9 @@ function listWithHeight(initial: number): { list: HTMLDivElement; grow: (height:
     grow: (next) => {
       height = next;
       act(() => resizeCallbacks.forEach((callback) => callback()));
+    },
+    growUnobserved: (next) => {
+      height = next;
     },
   };
 }
@@ -64,6 +75,20 @@ describe('useStepListScroll', () => {
     expect(result.current.edges).toEqual({ canScrollUp: true, canScrollDown: false });
     grow(1500);
     expect(list.scrollTop).toBe(1100);
+  });
+
+  it('keeps following when content grows between its own scroll and the scroll event', () => {
+    const { list, grow, growUnobserved } = listWithHeight(1000);
+    const ref = { current: list };
+    const { result } = renderHook(() => useStepListScroll(ref, true, true));
+    grow(1200);
+    expect(list.scrollTop).toBe(800);
+
+    // The scroll event of that jump arrives after more content was committed.
+    growUnobserved(1500);
+    act(() => result.current.onScroll());
+    grow(1800);
+    expect(list.scrollTop).toBe(1400);
   });
 
   it('opens a running list at its end and a finished list at its start', () => {

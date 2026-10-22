@@ -464,104 +464,104 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
             'block-expand-enter',
           )}
         >
-        <div
-          ref={stepListRef}
-          data-step-list
-          onScroll={onScroll}
-          className={cn(
-            STEP_LIST,
-            edges.canScrollUp && STEP_LIST_FADE_TOP,
-            edges.canScrollDown && STEP_LIST_FADE_BOTTOM,
-          )}
-        >
-        <div className="flow-timeline pl-1">
-          {unifiedSteps.map((step, index) => {
-            const isLast = index === unifiedSteps.length - 1;
-            // Show connector if not the last step, or if there are trailing nodes
-            const hasTrailingNodes = allCompleted || isStopped || isActive || hasError;
-            const showConnector = !isLast || hasTrailingNodes;
-            // For a thinking step, signal whether execution has moved on to a
-            // tool step after it — used to auto-collapse the reasoning panel.
-            const hasLaterToolStep = unifiedSteps
-              .slice(unifiedSteps.indexOf(step) + 1)
-              .some((s) => s.type !== 'thinking');
+          <div
+            ref={stepListRef}
+            data-step-list
+            onScroll={onScroll}
+            className={cn(
+              STEP_LIST,
+              edges.canScrollUp && STEP_LIST_FADE_TOP,
+              edges.canScrollDown && STEP_LIST_FADE_BOTTOM,
+            )}
+          >
+            <div className="flow-timeline pl-1">
+              {unifiedSteps.map((step, index) => {
+                const isLast = index === unifiedSteps.length - 1;
+                // Show connector if not the last step, or if there are trailing nodes
+                const hasTrailingNodes = allCompleted || isStopped || isActive || hasError;
+                const showConnector = !isLast || hasTrailingNodes;
+                // For a thinking step, signal whether execution has moved on to a
+                // tool step after it — used to auto-collapse the reasoning panel.
+                const hasLaterToolStep = unifiedSteps
+                  .slice(unifiedSteps.indexOf(step) + 1)
+                  .some((s) => s.type !== 'thinking');
 
-            return (
-              <TaskStepItem
-                key={step.id}
-                step={step}
-                showConnector={showConnector}
-                hasLaterToolStep={hasLaterToolStep}
-                locale={locale}
-                t={t}
-                fileChange={step.toolCallId ? fileChanges?.get(step.toolCallId) : undefined}
-                toolResults={toolResults}
-                toolViewRecord={step.toolCallId ? toolViewRecords?.get(step.toolCallId) : undefined}
-                timelineOpen={isOpen}
-              />
-            );
-          })}
+                return (
+                  <TaskStepItem
+                    key={step.id}
+                    step={step}
+                    showConnector={showConnector}
+                    hasLaterToolStep={hasLaterToolStep}
+                    locale={locale}
+                    t={t}
+                    fileChange={step.toolCallId ? fileChanges?.get(step.toolCallId) : undefined}
+                    toolResults={toolResults}
+                    toolViewRecord={step.toolCallId ? toolViewRecords?.get(step.toolCallId) : undefined}
+                    timelineOpen={isOpen}
+                  />
+                );
+              })}
 
-          {/* Done node */}
-          {allCompleted && !isStopped && (
-            <div className="flex items-start gap-3">
-              <StepIconSlot>
-                <StatusIcon tone="success" size="sm" />
-              </StepIconSlot>
-              <div className="flex-1 min-w-0 pb-2">
-                <div className="text-ui text-label-tertiary">{t.task.done}</div>
-              </div>
-            </div>
-          )}
-
-          {/* User-stopped node — distinct from successful completion. */}
-          {isStopped && (
-            <div className="flex items-start gap-3">
-              <StepIconSlot>
-                <Icon icon={AppIcons.stopped} size="sm" className="text-label-tertiary" />
-              </StepIconSlot>
-              <div className="flex-1 min-w-0 pb-2">
-                <div className="text-ui text-label-tertiary">{t.task.stopped}</div>
-              </div>
-            </div>
-          )}
-
-          {/* Error node */}
-          {hasError && !isActive && (
-            <div className="flex items-start gap-3">
-              <StepIconSlot>
-                <StatusIcon tone="danger" size="sm" />
-              </StepIconSlot>
-              <div className="flex-1 min-w-0 pb-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-ui text-danger">
-                    {t.task.errorOccurred}
-                  </span>
-                  {onRetry && (
-                    <Button variant="secondary" size="sm" icon={AppIcons.retry} onClick={onRetry}>
-                      {t.task.retryAction}
-                    </Button>
-                  )}
+              {/* Done node */}
+              {allCompleted && !isStopped && (
+                <div className="flex items-start gap-3">
+                  <StepIconSlot>
+                    <StatusIcon tone="success" size="sm" />
+                  </StepIconSlot>
+                  <div className="flex-1 min-w-0 pb-2">
+                    <div className="text-ui text-label-tertiary">{t.task.done}</div>
+                  </div>
                 </div>
-              </div>
-            </div>
-          )}
+              )}
 
-          {/* Running node: still icon, the header holds the block's spinner */}
-          {isActive && (
-            <div className="flex items-start gap-3">
-              <StepIconSlot>
-                <Icon icon={AppIcons.loading} size="sm" className="text-label-tertiary" />
-              </StepIconSlot>
-              <div className="flex-1 min-w-0 pb-2">
-                <div className="text-ui text-label-tertiary">
-                  {t.task.running}
+              {/* User-stopped node — distinct from successful completion. */}
+              {isStopped && (
+                <div className="flex items-start gap-3">
+                  <StepIconSlot>
+                    <Icon icon={AppIcons.stopped} size="sm" className="text-label-tertiary" />
+                  </StepIconSlot>
+                  <div className="flex-1 min-w-0 pb-2">
+                    <div className="text-ui text-label-tertiary">{t.task.stopped}</div>
+                  </div>
                 </div>
-              </div>
+              )}
+
+              {/* Error node */}
+              {hasError && !isActive && (
+                <div className="flex items-start gap-3">
+                  <StepIconSlot>
+                    <StatusIcon tone="danger" size="sm" />
+                  </StepIconSlot>
+                  <div className="flex-1 min-w-0 pb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-ui text-danger">
+                        {t.task.errorOccurred}
+                      </span>
+                      {onRetry && (
+                        <Button variant="secondary" size="sm" icon={AppIcons.retry} onClick={onRetry}>
+                          {t.task.retryAction}
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Running node: still icon, the header holds the block's spinner */}
+              {isActive && (
+                <div className="flex items-start gap-3">
+                  <StepIconSlot>
+                    <Icon icon={AppIcons.loading} size="sm" className="text-label-tertiary" />
+                  </StepIconSlot>
+                  <div className="flex-1 min-w-0 pb-2">
+                    <div className="text-ui text-label-tertiary">
+                      {t.task.running}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
-          )}
-        </div>
-        </div>
+          </div>
         </div>
       )}
     </div>
