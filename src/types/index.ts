@@ -156,11 +156,39 @@ export interface ToolExecutionMetadata {
   fileChange?: FileChange;
   /** background_command_output, stop_background_command: the command the call acted on. */
   backgroundCommand?: BackgroundCommandRef;
+  /** run_command: how the command ended and where its outputs sit in the result. */
+  commandOutcome?: CommandOutcome;
+  /** read_file: what the read returned and where the file body starts in the result. */
+  fileReadOutcome?: FileReadOutcome;
+  /** http_fetch: the response status and where the page body sits in the result. */
+  httpFetchOutcome?: HttpFetchOutcome;
 }
 
 /** The command a background-command tool call acted on, kept for its tool row. */
 export interface BackgroundCommandRef {
   command: string;
+}
+
+/** How a run_command call ended; ranges are [start, end) offsets into the tool result. */
+export interface CommandOutcome {
+  exitCode: number;
+  background?: true;
+  stdout?: [number, number];
+  stderr?: [number, number];
+}
+
+/** What a read_file call returned; for text, bodyStart is the offset of the file body in the result. */
+export type FileReadOutcome =
+  | { kind: 'text'; startLine: number; lineCount: number; totalLines: number; bodyStart: number }
+  | { kind: 'document' }
+  | { kind: 'notice' };
+
+/** How an http_fetch call ended; body is the [start, end) range of the page body in the result. */
+export interface HttpFetchOutcome {
+  status: number;
+  statusText: string;
+  body: [number, number];
+  truncated: boolean;
 }
 
 /** Payload for a "save this as a skill?" proposal card. */
@@ -332,6 +360,12 @@ export interface ToolCall {
   fileChange?: FileChange;
   /** The command a background_command_output or stop_background_command call acted on. */
   backgroundCommand?: BackgroundCommandRef;
+  /** How a run_command call ended (see CommandOutcome). */
+  commandOutcome?: CommandOutcome;
+  /** What a read_file call returned (see FileReadOutcome). */
+  fileReadOutcome?: FileReadOutcome;
+  /** How an http_fetch call ended (see HttpFetchOutcome). */
+  httpFetchOutcome?: HttpFetchOutcome;
   /**
    * MCP Apps interface for this step (extension `io.modelcontextprotocol/ui`).
    *
