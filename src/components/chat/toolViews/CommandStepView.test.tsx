@@ -86,6 +86,16 @@ describe('CommandStepView', () => {
     expect(screen.getByText(/line 15/)).toBeInTheDocument();
   });
 
+  it('folds one long line of output and of error output by characters', () => {
+    const t = getI18n();
+    const { text, outcome } = commandResult('a'.repeat(3000), 'b'.repeat(1500), 1);
+    render(<CommandStepView command="build" background={false} status="completed" outcome={outcome} text={text} />);
+    expect(sectionOf(t.task.output)).toHaveTextContent(format(t.chat.toolResultShowAllChars, { count: 3000 }));
+    expect(sectionOf(t.task.errorOutput)).toHaveTextContent(format(t.chat.toolResultShowAllChars, { count: 1500 }));
+    fireEvent.click(screen.getByRole('button', { name: format(t.chat.toolResultShowAllChars, { count: 3000 }) }));
+    expect(sectionOf(t.task.output)).toHaveTextContent('a'.repeat(3000));
+  });
+
   it('shows only the command while running, with the pending line', () => {
     const t = getI18n();
     render(<CommandStepView command="sleep 5" background={false} status="running" outcome={undefined} text="" />);

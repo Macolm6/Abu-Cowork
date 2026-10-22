@@ -2,13 +2,11 @@ import { useMemo } from 'react';
 import { Link } from '@/components/ds/link';
 import { useI18n } from '@/i18n';
 import type { HttpFetchOutcome } from '@/types';
-import { foldRowList, type ToolResultRow } from '@/utils/toolResultFold';
+import { foldResultRows } from '@/utils/toolResultFold';
 import { webFetchView } from '@/utils/toolViews/webFetchView';
 import { ResultRows } from '@/components/chat/DetailBlockView';
 import { FoldedRows } from './FoldedRows';
 import type { StepViewStatus } from './CommandStepView';
-
-const isText = (row: ToolResultRow) => row.kind === 'text';
 
 /** An http_fetch step: the address, then the response status and the page body. */
 export function WebFetchStepView({ url, status, outcome, text }: {
@@ -22,7 +20,7 @@ export function WebFetchStepView({ url, status, outcome, text }: {
   const view = useMemo(() => {
     if (!completed) return null;
     const fetched = webFetchView(text, outcome);
-    return { status: fetched.status, truncated: fetched.truncated, body: foldRowList(fetched.body, isText) };
+    return { status: fetched.status, truncated: fetched.truncated, body: foldResultRows(fetched.body) };
   }, [completed, text, outcome]);
 
   return (

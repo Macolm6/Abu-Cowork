@@ -1,9 +1,9 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { getI18n, initLanguage } from '@/i18n';
+import { format, getI18n, initLanguage } from '@/i18n';
 import type { HttpFetchOutcome } from '@/types';
 import { WebFetchStepView } from './WebFetchStepView';
 
@@ -61,6 +61,16 @@ describe('WebFetchStepView', () => {
     expect(link).toHaveAttribute('rel', 'noopener noreferrer');
     expect(link).toHaveTextContent(URL_TEXT);
     expect(container.querySelector('[data-tool-result]')).toBeNull();
+  });
+
+  it('folds a body of one long line by characters', () => {
+    const t = getI18n();
+    const { text, outcome } = fetchResult(200, 'OK', `{"data":"${'x'.repeat(2989)}"}`);
+    const { container } = render(<WebFetchStepView url={URL_TEXT} status="completed" outcome={outcome} text={text} />);
+    const button = screen.getByRole('button', { name: format(t.chat.toolResultShowAllChars, { count: 3000 }) });
+    expect(container.querySelector('[data-tool-result]')).not.toHaveTextContent('x'.repeat(1001));
+    fireEvent.click(button);
+    expect(container.querySelector('[data-tool-result]')).toHaveTextContent('x'.repeat(2989));
   });
 
   it('shows the whole text without a record', () => {

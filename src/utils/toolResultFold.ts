@@ -104,12 +104,11 @@ export function foldRowList<T>(rows: readonly T[], countsAsLine: (row: T) => boo
 }
 
 /**
- * How a tool result shows before the user asks for all of it: the rows fold
+ * How result rows show before the user asks for all of them: the rows fold
  * as `foldRowList` folds them; on fewer rows past 1000 characters the first
  * 700 and the last 300. The count is what Abu read, notes left out.
  */
-export function foldToolResult(text: string): ToolResultFold {
-  const rows = toResultRows(text);
+export function foldResultRows(rows: ToolResultRow[]): ToolResultFold {
   const byRows = foldRowList(rows, (row) => row.kind === 'text');
   if (byRows.hidden) return byRows;
   const count = rows.reduce((total, row) => total + textLength(row), 0);
@@ -122,4 +121,9 @@ export function foldToolResult(text: string): ToolResultFold {
     };
   }
   return { rows, head: rows, tail: [], hidden: null };
+}
+
+/** How a tool result shows before the user asks for all of it: its rows folded by `foldResultRows`. */
+export function foldToolResult(text: string): ToolResultFold {
+  return foldResultRows(toResultRows(text));
 }

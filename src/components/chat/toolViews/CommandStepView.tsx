@@ -1,17 +1,14 @@
 import { useMemo } from 'react';
-import stripAnsi from 'strip-ansi';
 import { IconButton } from '@/components/ds/button';
 import { AppIcons } from '@/components/ds/icons';
 import { useI18n } from '@/i18n';
 import type { CommandOutcome } from '@/types';
-import { foldRowList, foldToolResult, type ToolResultFold, type ToolResultRow } from '@/utils/toolResultFold';
+import { foldResultRows, type ToolResultFold, type ToolResultRow } from '@/utils/toolResultFold';
 import { commandOutputSections } from '@/utils/toolViews/commandView';
 import { ResultRows } from '@/components/chat/DetailBlockView';
 import { FoldedRows } from './FoldedRows';
 
 export type StepViewStatus = 'pending' | 'running' | 'completed' | 'error' | 'cancelled';
-
-const isText = (row: ToolResultRow) => row.kind === 'text';
 
 interface CommandFolds {
   stdout: ToolResultFold | null;
@@ -22,9 +19,9 @@ interface CommandFolds {
 function commandFolds(text: string, outcome: CommandOutcome | undefined): CommandFolds {
   const sections = commandOutputSections(text, outcome);
   return {
-    stdout: sections.stdout && foldRowList(sections.stdout, isText),
-    stderr: sections.stderr && foldRowList(sections.stderr, isText),
-    whole: sections.whole && foldToolResult(stripAnsi(text)),
+    stdout: sections.stdout && foldResultRows(sections.stdout),
+    stderr: sections.stderr && foldResultRows(sections.stderr),
+    whole: sections.whole && foldResultRows(sections.whole),
   };
 }
 
