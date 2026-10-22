@@ -48,6 +48,14 @@ type Push = (frame: PortFrame) => void;
 export type FrameChatDelta = ChatDelta & {
   /** Push any non-chat port frame through the same media-ordering barrier. */
   pushTransportFrame: (frame: PortFrame) => void;
+  /**
+   * Push a frame of any port whose args may carry inline media (a `session`
+   * checkpoint holds whole messages, tool images included) through the same
+   * media-encoding path as `setMessageToolCalls`: inline base64 becomes a
+   * delegated ref the shell restores, so the shell's raw-media guard never
+   * has to scrub the frame and the ledger keeps the image.
+   */
+  pushPreparedTransportFrame: (frame: PortFrame, conversationId: string | undefined) => void;
   /** Queue an arbitrary sidecar→shell transport task behind pending media frames. */
   pushTransportTask: (task: () => void | Promise<void>) => void;
   /** Wait until every queued sidecar→shell transport frame has been pushed in order. */
@@ -168,9 +176,12 @@ export function createFrameChatDelta(push: Push, onLocalApply?: (m: string, a: u
     pushWireFrame({ p: 'chat', m, a });
   }
 
-  function sendPrepared(m: string, a: unknown[], conversationId: string | undefined): void {
-    const wireArgs = cloneWireValue(a);
-    onLocalApply?.(m, a);
+  /**
+   * `wireArgs` is already the caller's own copy (cloned before any local
+   * apply), so the media preparation below can read it after the mirror has
+   * moved on.
+   */
+  function pushPreparedWireFrame(p: PortFrame['p'], m: string, wireArgs: unknown[], conversationId: string | undefined): void {
     if (!sidecarValueNeedsMediaEncoding(wireArgs)) {
       // No media to encode: the frame goes out verbatim. Path redaction is a
       // media-transport measure (see prepareSidecarValueForWire) and a
@@ -178,24 +189,34 @@ export function createFrameChatDelta(push: Push, onLocalApply?: (m: string, a: u
       // and every `/word` in tool inputs, results and execution-step labels
       // to `[REDACTED:path]` in the persisted transcript (file cards then
       // showed "文件已不可访问" for files that exist).
-      pushWireFrame({ p: 'chat', m, a: collapseInlineMediaForWire(wireArgs) });
+      pushWireFrame({ p, m, a: collapseInlineMediaForWire(wireArgs) });
       return;
     }
     enqueueTransport(async () => {
       try {
         push({
-          p: 'chat',
+          p,
           m,
           a: await prepareSidecarValueForWire(conversationId, wireArgs),
         });
       } catch {
         push({
-          p: 'chat',
+          p,
           m,
-          a: failClosedPreparedChatArgs(m, wireArgs),
+          a: p === 'chat' ? failClosedPreparedChatArgs(m, wireArgs) : redactSidecarValueForWireFailure(wireArgs),
         });
       }
     });
+  }
+
+  function sendPrepared(m: string, a: unknown[], conversationId: string | undefined): void {
+    const wireArgs = cloneWireValue(a);
+    onLocalApply?.(m, a);
+    pushPreparedWireFrame('chat', m, wireArgs, conversationId);
+  }
+
+  function pushPreparedTransportFrame(frame: PortFrame, conversationId: string | undefined): void {
+    pushPreparedWireFrame(frame.p, frame.m, cloneWireValue(frame.a), conversationId);
   }
 
   function sendUpdateToolCall(
@@ -330,6 +351,7 @@ export function createFrameChatDelta(push: Push, onLocalApply?: (m: string, a: u
     setPendingProposalSignal: (convId, signal) => send('setPendingProposalSignal', [convId, signal]),
     removeActiveAgent: (convId, agentName) => send('removeActiveAgent', [convId, agentName]),
     pushTransportFrame: pushWireFrame,
+    pushPreparedTransportFrame,
     pushTransportTask: enqueueTransport,
     drain,
     flush: drain,
