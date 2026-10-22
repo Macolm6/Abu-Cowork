@@ -113,6 +113,12 @@ export interface ToolBatchParams {
   continueLoop: boolean;
   /** Current context window usage (0-100). Scales tool result truncation under pressure. */
   contextUsagePercent?: number;
+  /**
+   * The model profile's `capabilities.parallelToolCalls`. `false` runs every
+   * call of the batch one after another, in the model's order, whatever the
+   * tools' own concurrency verdicts say. Omitted means `true`.
+   */
+  parallelToolCalls?: boolean;
 }
 
 export interface ToolBatchResult {
@@ -450,13 +456,17 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
   // it groups calls by each one's isConcurrencySafe verdict
   // (groupToolCallsByConcurrency in toolConcurrency.ts), so a batch mixing
   // safe and unsafe calls still serializes around the unsafe ones.
+  // A model whose profile says it cannot take parallel tool calls gets the
+  // plain sequential path for every non-computer batch.
   const strategy = hasComputerTool
     ? 'computer-sequential'
-    : !allRunCommand
-      ? 'concurrency-grouped'
-      : allCommandsConcurrencySafe
-        ? 'command-parallel'
-        : 'command-sequential';
+    : params.parallelToolCalls === false
+      ? 'command-sequential'
+      : !allRunCommand
+        ? 'concurrency-grouped'
+        : allCommandsConcurrencySafe
+          ? 'command-parallel'
+          : 'command-sequential';
   logger.info('Tool batch started', { toolCount: collectedToolCalls.length, strategy });
 
   let results: PromiseSettledResult<ToolExecResult>[];
