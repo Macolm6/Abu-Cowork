@@ -100,8 +100,24 @@ function serializeForAnthropic(turns: PreparedTurn[]): Anthropic.MessageParam[] 
       // Assistant turn
       const content: Anthropic.ContentBlockParam[] = [];
 
-      if (turn.thinking) {
-        content.push({ type: 'thinking', thinking: turn.thinking } as Anthropic.ContentBlockParam);
+      // Thinking-type blocks lead the assistant content. A redacted block is
+      // opaque and goes back verbatim; a readable block is only accepted
+      // together with the signature the API issued for it. Thinking text that
+      // carries no signature came from another model family or from a record
+      // written before signatures were kept — it is replayed as plain text so
+      // the model still sees that reasoning, and the API never sees an
+      // unsigned thinking block.
+      for (const data of turn.redactedThinking ?? []) {
+        content.push({ type: 'redacted_thinking', data } as Anthropic.ContentBlockParam);
+      }
+      if (turn.thinkingSignature) {
+        content.push({
+          type: 'thinking',
+          thinking: turn.thinking ?? '',
+          signature: turn.thinkingSignature,
+        } as Anthropic.ContentBlockParam);
+      } else if (turn.thinking) {
+        content.push({ type: 'text', text: turn.thinking });
       }
       if (turn.text) {
         content.push({ type: 'text', text: turn.text });
@@ -330,6 +346,7 @@ export class ClaudeAdapter implements LLMAdapter {
     let currentToolName = '';
     let currentToolInput = '';
     let currentThinking = '';
+    let currentThinkingSignature = '';
     let isInThinkingBlock = false;
 
     /**
@@ -410,6 +427,10 @@ export class ClaudeAdapter implements LLMAdapter {
             } else if (event.content_block.type === 'thinking') {
               isInThinkingBlock = true;
               currentThinking = '';
+              currentThinkingSignature = '';
+            } else if (event.content_block.type === 'redacted_thinking') {
+              // The whole payload arrives on the start event; no deltas follow.
+              onEvent({ type: 'redacted_thinking', data: event.content_block.data });
             }
             break;
 
@@ -420,6 +441,8 @@ export class ClaudeAdapter implements LLMAdapter {
               currentToolInput += event.delta.partial_json;
             } else if (event.delta.type === 'thinking_delta') {
               currentThinking += (event.delta as { thinking: string }).thinking;
+            } else if (event.delta.type === 'signature_delta') {
+              currentThinkingSignature += (event.delta as { signature: string }).signature;
             }
             break;
 
@@ -449,10 +472,18 @@ export class ClaudeAdapter implements LLMAdapter {
               currentToolId = '';
               currentToolInput = '';
             }
-            if (isInThinkingBlock && currentThinking) {
-              onEvent({ type: 'thinking', thinking: currentThinking });
+            if (isInThinkingBlock) {
+              if (currentThinking) {
+                onEvent({ type: 'thinking', thinking: currentThinking });
+              }
+              // The signature stands on its own: a block whose text the API
+              // withheld still has to be replayed with it in a tool loop.
+              if (currentThinkingSignature) {
+                onEvent({ type: 'thinking_signature', signature: currentThinkingSignature });
+              }
               isInThinkingBlock = false;
               currentThinking = '';
+              currentThinkingSignature = '';
             }
             break;
 
