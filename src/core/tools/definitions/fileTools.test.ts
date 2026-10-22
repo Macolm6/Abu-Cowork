@@ -1122,6 +1122,16 @@ describe('file read outcome record', () => {
     expect(result.slice(fileReadOutcome.bodyStart).split('\n')[0]).toBe(lines[199]);
   });
 
+  it('records a notice for a range past the end', async () => {
+    vi.mocked(stat).mockResolvedValue({ isFile: true, size: 14 } as never);
+    vi.mocked(readTextFile).mockResolvedValue('one\ntwo\nthree');
+
+    await readFileTool.execute({ path: '/docs/notes.txt', offset: 3, limit: 10 }, { reportMetadata });
+
+    expect(reportMetadata).toHaveBeenCalledTimes(1);
+    expect(reportMetadata).toHaveBeenCalledWith({ fileReadOutcome: { kind: 'notice' } });
+  });
+
   it('records a notice for a file too large to read at once', async () => {
     vi.mocked(stat).mockResolvedValue({ isFile: true, size: 256 * 1024 + 1 } as never);
     vi.mocked(readTextFile).mockResolvedValue('a\nb');

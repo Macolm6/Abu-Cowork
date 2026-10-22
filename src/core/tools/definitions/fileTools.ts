@@ -226,7 +226,9 @@ export const readFileTool: ToolDefinition = {
         const numLines = sliced.length;
         const header = `[File: ${filePath} | ${formatFileSize(fileSize)} | Lines ${startLine}-${startLine + numLines - 1} of ${totalLines} total]`;
         context?.reportMetadata?.({
-          fileReadOutcome: { kind: 'text', startLine: startLine + 1, lineCount: numLines, totalLines, bodyStart: header.length + 1 },
+          fileReadOutcome: numLines === 0
+            ? { kind: 'notice' }
+            : { kind: 'text', startLine: startLine + 1, lineCount: numLines, totalLines, bodyStart: header.length + 1 },
         });
         return `${header}\n${sliced.join('\n')}`;
       }
