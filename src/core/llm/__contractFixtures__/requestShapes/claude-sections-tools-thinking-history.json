@@ -17,8 +17,8 @@
         "role": "assistant",
         "content": [
           {
-            "type": "thinking",
-            "thinking": "The user wants the config file."
+            "type": "text",
+            "text": "The user wants the config file."
           },
           {
             "type": "text",

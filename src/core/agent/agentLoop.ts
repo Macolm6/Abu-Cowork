@@ -2529,6 +2529,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               chatDelta.appendThinking(conversationId, collectedThinking, assistantMsgId);
               break;
 
+            case 'thinking_signature':
+              chatDelta.setThinkingSignature(conversationId, event.signature, assistantMsgId);
+              break;
+
+            case 'redacted_thinking':
+              chatDelta.appendRedactedThinking(conversationId, event.data, assistantMsgId);
+              break;
+
             case 'tool_use': {
               // Flush any buffered streaming tokens before processing tool calls
               chatDelta.flushTokens(conversationId);
