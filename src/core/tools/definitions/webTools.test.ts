@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { httpFetchTool } from './webTools';
 import { getTauriFetch } from '../../llm/tauriFetch';
+import { CHARS_OMITTED_LINE } from '../../context/truncation';
+import type { HttpFetchOutcome } from '../../../types';
 
 // The blocking tests cover the pre-flight guards in httpFetchTool.execute that
 // run BEFORE any network call; they need no mock — the guards short-circuit
@@ -93,5 +95,104 @@ describe('httpFetchTool pre-flight guards — acceptance (mocked fetch, no real 
     expect(result).toContain('FETCH_STUB_REACHED');
     expect(result).not.toContain('cloud metadata');
     expect(result).not.toContain('blocked');
+  });
+});
+
+describe('http fetch outcome record', () => {
+  const url = 'https://example.com/data';
+
+  function respondWith(body: string, status = 200, statusText = 'OK'): void {
+    const fetchStub = vi.fn().mockResolvedValue(new Response(body, {
+      status,
+      statusText,
+      headers: { 'content-type': 'text/plain' },
+    }));
+    vi.mocked(getTauriFetch).mockResolvedValue(fetchStub);
+  }
+
+  /** The one `httpFetchOutcome` reported to `reportMetadata`. */
+  function outcomeOf(reportMetadata: ReturnType<typeof vi.fn>): HttpFetchOutcome {
+    expect(reportMetadata).toHaveBeenCalledTimes(1);
+    return (reportMetadata.mock.calls[0][0] as { httpFetchOutcome: HttpFetchOutcome }).httpFetchOutcome;
+  }
+
+  afterEach(() => {
+    vi.mocked(getTauriFetch).mockReset();
+  });
+
+  it('records the status and the body position', async () => {
+    respondWith('hello\nworld');
+    const reportMetadata = vi.fn();
+
+    const result = await httpFetchTool.execute({ url }, { reportMetadata }) as string;
+
+    expect(reportMetadata).toHaveBeenCalledWith({
+      httpFetchOutcome: { status: 200, statusText: 'OK', body: [13, 24], truncated: false },
+    });
+    expect(result.slice(13, 24)).toBe('hello\nworld');
+  });
+
+  it('bounds the body before recording it', async () => {
+    respondWith('x'.repeat(60000));
+    const reportMetadata = vi.fn();
+
+    const result = await httpFetchTool.execute({ url }, { reportMetadata }) as string;
+
+    const outcome = outcomeOf(reportMetadata);
+    expect(outcome.truncated).toBe(true);
+    expect(result.length).toBeLessThanOrEqual(3500);
+    expect(outcome.body[1]).toBe(result.length);
+    expect(result.slice(...outcome.body).split('\n').some((line) => CHARS_OMITTED_LINE.test(line))).toBe(true);
+  });
+
+  it('shrinks the body under context pressure', async () => {
+    respondWith('x'.repeat(60000));
+
+    const result = await httpFetchTool.execute(
+      { url },
+      { reportMetadata: vi.fn(), contextUsagePercent: 90 },
+    ) as string;
+
+    expect(result.length).toBeLessThanOrEqual(1500);
+  });
+
+  it('keeps a short body whole', async () => {
+    respondWith('hello');
+    const reportMetadata = vi.fn();
+
+    const result = await httpFetchTool.execute({ url }, { reportMetadata });
+
+    expect(outcomeOf(reportMetadata).truncated).toBe(false);
+    expect(result).toBe('HTTP 200 OK\n\nhello');
+  });
+
+  it('records a non-2xx status', async () => {
+    respondWith('missing', 404, 'Not Found');
+    const reportMetadata = vi.fn();
+
+    await httpFetchTool.execute({ url }, { reportMetadata });
+
+    expect(outcomeOf(reportMetadata).status).toBe(404);
+  });
+
+  it('records an empty status text', async () => {
+    respondWith('missing', 404, '');
+    const reportMetadata = vi.fn();
+
+    await httpFetchTool.execute({ url }, { reportMetadata });
+
+    const outcome = outcomeOf(reportMetadata);
+    expect(outcome.statusText).toBe('');
+    expect(outcome.body[0]).toBe('HTTP 404 '.length + 2);
+  });
+
+  it('records nothing when the request throws', async () => {
+    vi.mocked(getTauriFetch).mockResolvedValue(vi.fn().mockRejectedValue(new Error('offline')));
+    const reportMetadata = vi.fn();
+
+    const result = await httpFetchTool.execute({ url }, { reportMetadata });
+
+    expect(result).toContain('offline');
+    expect(reportMetadata).not.toHaveBeenCalled();
   });
 });

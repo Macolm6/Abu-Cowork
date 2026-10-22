@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { charsOmittedMarker, linesOmittedMarker, truncateToolResult } from '@/core/context/truncation';
+import { charsOmittedMarker, linesOmittedMarker, scaledTruncationRule, truncateText, truncateToolResult } from '@/core/context/truncation';
 import { DURABLE_RESULT_OMITTED_NOTE } from '@/core/session/durableToolResultContent';
 import { COMMAND_OUTPUT_CUT_NOTE, foldToolResult, toResultRows } from './toolResultFold';
 
@@ -8,7 +8,7 @@ const lines = (n: number) => Array.from({ length: n }, (_, i) => `line ${i + 1}`
 
 describe('toResultRows', () => {
   it('turns the line-omission marker and its blank padding into one note row', () => {
-    const rows = toResultRows(truncateToolResult('run_command', lines(5000)));
+    const rows = toResultRows(truncateText(lines(5000), scaledTruncationRule('run_command')));
     expect(rows.filter((row) => row.kind === 'note')).toEqual([{ kind: 'note', note: 'linesNotRead', count: 4820 }]);
     expect(rows.filter((row) => row.kind === 'text')).toHaveLength(180);
   });
@@ -62,7 +62,7 @@ describe('foldToolResult', () => {
   });
 
   it('counts only the lines Abu read, without the note', () => {
-    expect(foldToolResult(truncateToolResult('run_command', lines(5000))).hidden).toEqual({ unit: 'lines', count: 180 });
+    expect(foldToolResult(truncateText(lines(5000), scaledTruncationRule('run_command'))).hidden).toEqual({ unit: 'lines', count: 180 });
   });
 
   it('keeps a note that ends the result in the folded tail', () => {

@@ -28,6 +28,7 @@ import { fuzzyFindAndReplace } from '../../skill/fuzzyPatch';
 import { computeFileChange, MAX_COMPARABLE_TEXT_BYTES, type FileChange } from '@/core/files/fileChange';
 import type { ToolFileAccess } from '@/core/tools/fileOperation';
 import { Minimatch } from 'minimatch';
+import { isToolResultError } from '@/core/agent/toolResultErrors';
 
 /** What a path held before a write, as far as the reported file change needs it. */
 type TextBefore =
@@ -106,6 +107,11 @@ export const readFileTool: ToolDefinition = {
     const ext = getFileExtension(filePath);
     const offset = typeof input.offset === 'number' ? Math.max(0, Math.floor(input.offset)) : undefined;
     const limit = typeof input.limit === 'number' ? Math.max(1, Math.floor(input.limit)) : undefined;
+    // Extracted document text is recorded as a document; an error text is not.
+    const documentText = (text: string): string => {
+      if (!isToolResultError(text)) context?.reportMetadata?.({ fileReadOutcome: { kind: 'document' } });
+      return text;
+    };
 
     try {
       // --- Image files: return as vision content ---
@@ -140,7 +146,7 @@ export const readFileTool: ToolDefinition = {
         if (context?.files) {
           const output = await context.files.runProcessor(filePath, isWindows() ? 'python' : 'python3',
             ['-c', PDFPLUMBER_SCRIPT, null]);
-          return output.code === 0 ? output.stdout : `Error reading PDF file: ${output.stderr}`;
+          return documentText(output.code === 0 ? output.stdout : `Error reading PDF file: ${output.stderr}`);
         }
         // Strategy 1: pdftotext (macOS/Linux — fast, native)
         if (!isWindows()) {
@@ -151,7 +157,7 @@ export const readFileTool: ToolDefinition = {
               timeout: 30,
             }, context, { commandIdPrefix: 'read-pdf' });
             if (output.code === 0 && output.stdout.trim()) {
-              return output.stdout;
+              return documentText(output.stdout);
             }
           } catch (err) {
             if (isTaskCommandAbortedError(err)) return 'Error reading file: PDF extraction was aborted.';
@@ -168,7 +174,7 @@ export const readFileTool: ToolDefinition = {
             timeout: 30,
           }, context, { commandIdPrefix: 'read-pdf' });
           if (output.code === 0 && output.stdout.trim()) {
-            return output.stdout;
+            return documentText(output.stdout);
           }
         } catch (err) {
           if (isTaskCommandAbortedError(err)) return 'Error reading file: PDF extraction was aborted.';
@@ -183,13 +189,13 @@ export const readFileTool: ToolDefinition = {
 
       // --- Office documents: extract text via Python ---
       if (OFFICE_EXTENSIONS.has(ext)) {
-        return await extractOfficeText(filePath, ext, context);
+        return documentText(await extractOfficeText(filePath, ext, context));
       }
 
       // --- Archives: list contents ---
       if (ARCHIVE_EXTENSIONS.has(ext) || filePath.endsWith('.tar.gz')) {
         const archiveExt = filePath.endsWith('.tar.gz') ? '.tar.gz' : ext;
-        return await listArchiveContents(filePath, archiveExt, context);
+        return documentText(await listArchiveContents(filePath, archiveExt, context));
       }
 
       // --- Text files: read as UTF-8 with size gating and pagination ---
@@ -202,6 +208,7 @@ export const readFileTool: ToolDefinition = {
         // Still read a small portion to count total lines via a fast heuristic
         const fullContent = await io.readTextFile(filePath);
         const totalLines = fullContent.split('\n').length;
+        context?.reportMetadata?.({ fileReadOutcome: { kind: 'notice' } });
         return `File is too large to read at once (${formatFileSize(fileSize)}, ${totalLines} lines). ` +
           `Use offset and limit parameters to read specific portions, or use search_files to find relevant content.\n` +
           `Example: read_file(path, offset=0, limit=${DEFAULT_LINE_LIMIT}) to read the first ${DEFAULT_LINE_LIMIT} lines.`;
@@ -218,9 +225,15 @@ export const readFileTool: ToolDefinition = {
         const sliced = allLines.slice(startLine, startLine + lineCount);
         const numLines = sliced.length;
         const header = `[File: ${filePath} | ${formatFileSize(fileSize)} | Lines ${startLine}-${startLine + numLines - 1} of ${totalLines} total]`;
+        context?.reportMetadata?.({
+          fileReadOutcome: { kind: 'text', startLine: startLine + 1, lineCount: numLines, totalLines, bodyStart: header.length + 1 },
+        });
         return `${header}\n${sliced.join('\n')}`;
       }
 
+      context?.reportMetadata?.({
+        fileReadOutcome: { kind: 'text', startLine: 1, lineCount: totalLines, totalLines, bodyStart: 0 },
+      });
       return content;
     } catch (err) {
       return `Error reading file: ${err instanceof Error ? err.message : String(err)}`;

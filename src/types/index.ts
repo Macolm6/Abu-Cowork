@@ -862,6 +862,12 @@ export interface ToolExecutionContext {
    */
   abortSignal?: AbortSignal;
   /**
+   * Context window usage (0-100) of the run that called this tool. Set only by
+   * `executeAnyTool` and `executeLocalTool`; tools that bound their own output
+   * scale it with `scaledTruncationRule`.
+   */
+  contextUsagePercent?: number;
+  /**
    * Local execution-only metadata channel. Functions are deliberately omitted
    * from reverse-RPC serialization; Electron's sidecar-local run_command and
    * the in-process loop both report through this callback.
