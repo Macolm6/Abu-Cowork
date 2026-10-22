@@ -199,6 +199,24 @@ describe('buildShareBundle', () => {
       expect(bundle.stats.redactionCount).toBe(2);
     });
 
+    it('redacts a key inside the content of a very long file the agent wrote', async () => {
+      const content = `${'row,value\n'.repeat(20_000)}API_KEY=${KEY}\n`;
+      const conv = makeConv([{
+        id: 'm1',
+        role: 'assistant',
+        content: 'written',
+        timestamp: 1,
+        toolCalls: [{ id: 't1', name: 'write_file', input: { path: 'data.csv', content }, result: 'ok' }],
+      }]);
+
+      const bundle = await buildShareBundle(conv);
+      const written = bundle.messages[0].toolCalls?.[0].input.content as string;
+
+      expect(written).not.toContain('sk-ant-abc');
+      expect(written.endsWith('API_KEY=[REDACTED:anthropic-key]\n')).toBe(true);
+      expect(bundle.stats.redactionCount).toBe(1);
+    });
+
     describe('a step snapshot cut through a key or a path', () => {
       function stepWithResult(result: string): ExecutionStep {
         return {
