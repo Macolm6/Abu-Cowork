@@ -788,8 +788,6 @@ const zhCN: TranslationDict = {
     output: '输出',
     done: '完成',
     running: '执行中...',
-    showMore: '查看更多',
-    collapse: '收起',
     cancelled: '[已取消]',
     runInBackground: '在后台执行 {command}',
     readBackgroundCommandOutput: '查看后台命令的输出 {command}',

@@ -787,8 +787,6 @@ const enUS: TranslationDict = {
     output: 'Output',
     done: 'Done',
     running: 'Running...',
-    showMore: 'Show more',
-    collapse: 'Collapse',
     cancelled: '[Cancelled]',
     runInBackground: 'Run {command} in background',
     readBackgroundCommandOutput: 'Read background command output {command}',

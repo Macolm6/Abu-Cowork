@@ -284,7 +284,9 @@ const SEGMENT = { track: fillOf(SEGMENT_TRACK), selected: fillOf(SEGMENT_SELECTE
 
 describe('design tokens — completeness', () => {
   it('overrides every semantic light token in dark', () => {
-    const semantic = [...blocks.root.keys()].filter((k) => !k.startsWith('--ds-palette-') && !k.startsWith('--ds-font-'));
+    // Palette primitives, fonts and the scroll fade are the same in every appearance.
+    const semantic = [...blocks.root.keys()].filter((k) => !k.startsWith('--ds-palette-')
+      && !k.startsWith('--ds-font-') && k !== '--ds-scroll-fade-start');
     const missing = semantic.filter((k) => !blocks.dark.has(k));
     expect(missing).toEqual([]);
   });

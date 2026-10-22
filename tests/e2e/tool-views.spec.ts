@@ -267,10 +267,7 @@ async function runTurn(page: Page): Promise<void> {
   await expect(page.getByRole('button', { name: /^用时/ }).last()).toBeVisible({ timeout: REPLY_TIMEOUT });
 }
 
-/**
- * Show every step of the turn: unfold the work process, its group of steps,
- * and the steps the group keeps behind 「查看更多」.
- */
+/** Show every step of the turn: unfold the work process and its group of steps. */
 async function showSteps(page: Page): Promise<void> {
   const work = page.getByRole('button', { name: /^(用时|你在 .* 后停止了)/ }).first();
   if ((await work.count()) > 0 && (await work.getAttribute('aria-expanded')) === 'false') await work.click();
@@ -278,8 +275,6 @@ async function showSteps(page: Page): Promise<void> {
   const group = page.getByRole('button', { name: /^(修改了|执行了|调用了|读取了|已停止$)/ }).first();
   await expect(group).toBeVisible();
   if ((await group.getAttribute('aria-expanded')) === 'false') await group.click();
-  const more = page.getByRole('button', { name: '查看更多', exact: true });
-  if (await more.isVisible()) await more.click();
 }
 
 /**
@@ -308,6 +303,9 @@ async function openView(page: Page, title: string, kind: StepViewKind): Promise<
   const button = stepTitle(page, title);
   const row = stepRow(page, title);
   await expect(button).toBeVisible();
+  // The step list scrolls inside its own box: bring the step into its view first.
+  await waitUntilAtRest(row);
+  await button.scrollIntoViewIfNeeded();
   await waitUntilAtRest(row);
   if ((await button.getAttribute('aria-expanded')) === 'false') await button.click();
   await expect(button).toHaveAttribute('aria-expanded', 'true');
@@ -517,6 +515,75 @@ test.describe('story 1, a command that has not ended', () => {
     await expect(view.getByText('没有输出', { exact: true })).toHaveCount(0);
     await expect(view.locator('[data-tool-result]')).toHaveCount(0);
     await expect(row.locator('[data-exit-code]')).toHaveCount(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The step list of a long turn
+// ---------------------------------------------------------------------------
+
+const QUICK_COMMANDS = Array.from({ length: 9 }, (_, index) => `printf 'step ${index + 1}\\n'`);
+
+/** A command that runs until the test writes the file gate-`gate` into the project folder. */
+function gateCommand(workspace: string, gate: number): string {
+  return `G=${gate}; until [ -f '${path.join(workspace, `gate-${gate}`)}' ]; do sleep 0.1; done`;
+}
+
+/** How far the list's scroll position is from its end, in pixels. */
+function distanceFromEnd(list: Locator): Promise<number> {
+  return list.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+}
+
+test.describe('the step list', () => {
+  test.describe.configure({ timeout: 300_000 });
+  test.afterEach(endSession);
+
+  test('a long turn scrolls inside its step list', async () => {
+    const page = await launchInProject((workspace) => [
+      ...QUICK_COMMANDS.map((command, index) => commandCall(`call-quick-${index + 1}`, command)),
+      ...[1, 2, 3].map((gate) => commandCall(`call-gate-${gate}`, gateCommand(workspace, gate))),
+      finalReply(),
+    ]);
+    const workspace = session!.workspace;
+    const gateStep = (gate: number) => stepTitle(page, commandTitle(gateCommand(workspace, gate)));
+    const openGate = (gate: number) => fs.writeFileSync(path.join(workspace, `gate-${gate}`), '');
+    await send(page);
+
+    // Ten steps, the last one running: every step is in the list and no button hides any.
+    await expect(gateStep(1)).toBeAttached({ timeout: REPLY_TIMEOUT });
+    const list = page.locator('[data-step-list]').filter({ has: gateStep(1) });
+    for (const command of QUICK_COMMANDS) await expect(list.getByRole('button', { name: commandTitle(command), exact: true })).toBeAttached();
+    await expect(page.getByRole('button', { name: '查看更多', exact: true })).toHaveCount(0);
+
+    // A new step while the reader is at the end: the list stays at its end.
+    openGate(1);
+    await expect(list.locator(gateStep(2))).toBeAttached({ timeout: REPLY_TIMEOUT });
+    await expect.poll(() => list.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+    await expect.poll(() => distanceFromEnd(list)).toBeLessThanOrEqual(1);
+
+    // The reader scrolls up; the next step leaves the scroll position where it is.
+    const readerTop = await list.evaluate(async (element) => {
+      await new Promise((resolve) => {
+        element.addEventListener('scroll', resolve, { once: true });
+        element.scrollTop -= 120;
+      });
+      return element.scrollTop;
+    });
+    // Steps lie beyond both ends now: both ends fade.
+    await expect(list).toHaveClass(/\bmask-t-from-\(--ds-scroll-fade-start\)/);
+    await expect(list).toHaveClass(/\bmask-b-from-\(--ds-scroll-fade-start\)/);
+    expect(await list.evaluate((element) => getComputedStyle(element).maskImage)).toContain('linear-gradient');
+    const heightBefore = await list.evaluate((element) => element.scrollHeight);
+    openGate(2);
+    await expect(list.locator(gateStep(3))).toBeAttached({ timeout: REPLY_TIMEOUT });
+    await expect.poll(() => list.evaluate((element) => element.scrollHeight)).toBeGreaterThan(heightBefore);
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    expect(await list.evaluate((element) => element.scrollTop)).toBe(readerTop);
+    await expect(page.getByRole('button', { name: '查看更多', exact: true })).toHaveCount(0);
+    await shot(page, '08-step-list-scrolled', list);
+
+    openGate(3);
+    await expect(page.getByText(FINAL_TEXT)).toBeVisible({ timeout: REPLY_TIMEOUT });
   });
 });
 

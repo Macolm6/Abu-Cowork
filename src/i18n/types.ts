@@ -987,8 +987,6 @@ export interface TranslationDict {
     output: string;
     done: string;
     running: string;
-    showMore: string;
-    collapse: string;
     /** Shown in tool-call detail when the task was aborted mid-execution */
     cancelled: string;
     /** Tool-row labels of background commands; {command} is the command text, or its id */

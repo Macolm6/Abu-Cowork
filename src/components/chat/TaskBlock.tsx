@@ -25,6 +25,7 @@ import DetailBlockView from './DetailBlockView';
 import { blockFullText } from './toolResultTexts';
 import { StepToolView } from './toolViews/StepToolView';
 import { hasToolView, type ToolViewRecord } from './toolViews/toolViewRecords';
+import { useStepListScroll } from './useStepListScroll';
 
 type StepGlyph = ComponentProps<typeof Icon>['icon'];
 
@@ -352,15 +353,18 @@ interface TaskBlockProps {
   toolViewRecords?: ReadonlyMap<string, ToolViewRecord>;
 }
 
+type DisplayMode = 'collapsed' | 'expanded';
+
+// The step list's scroll area: at most 400px or half the window, with 24px
+// fades at the ends that have more steps beyond them.
+const STEP_LIST = 'max-h-[min(400px,50vh)] overflow-y-auto';
+const STEP_LIST_FADE_TOP = 'mask-t-from-(--ds-scroll-fade-start)';
+const STEP_LIST_FADE_BOTTOM = 'mask-b-from-(--ds-scroll-fade-start)';
+
 /**
  * TaskBlock component - Cowork-style workflow display with timeline
  * Supports both legacy WorkflowStep[] and new ExecutionStep[]
  */
-// Number of steps shown in preview mode
-const PREVIEW_LIMIT = 3;
-
-type DisplayMode = 'collapsed' | 'preview' | 'expanded';
-
 export default function TaskBlock({ steps, executionSteps, isActive, isStopped = false, onRetry, fileChanges, toolResults, backgroundCommands, toolViewRecords }: TaskBlockProps) {
   const { t, locale } = useI18n();
 
@@ -375,11 +379,11 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
     return isStopped ? converted.map(asStoppedStep) : converted;
   }, [steps, executionSteps, locale, backgroundCommands, isStopped]);
 
-  // Lazy initializer: when the block mounts during a live execution, start in 'preview'
+  // Lazy initializer: when the block mounts during a live execution, start in 'expanded'
   // so the body (with running thinking content / inline tool steps) is visible without
   // requiring the user to click. The auto-collapse useEffect below handles the
   // active→inactive transition to tuck everything away after the loop ends.
-  const [displayMode, setDisplayMode] = useState<DisplayMode>(() => isActive ? 'preview' : 'collapsed');
+  const [displayMode, setDisplayMode] = useState<DisplayMode>(() => isActive ? 'expanded' : 'collapsed');
 
   // Auto-collapse when execution finishes (isActive: true → false)
   const prevIsActiveRef = useRef(isActive);
@@ -415,26 +419,11 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
   // that never showed (also react-hooks/refs forbids it).
   const [timelineEverOpened, setTimelineEverOpened] = useState(isOpen);
   if (isOpen && !timelineEverOpened) setTimelineEverOpened(true);
-  const needsTruncation = unifiedSteps.length > PREVIEW_LIMIT;
-  const visibleSteps = (displayMode === 'preview' && needsTruncation)
-    ? unifiedSteps.slice(0, PREVIEW_LIMIT)
-    : unifiedSteps;
+  const stepListRef = useRef<HTMLDivElement>(null);
+  const { edges, onScroll } = useStepListScroll(stepListRef, isOpen, isActive);
 
   const handleHeaderClick = () => {
-    if ((allCompleted || isStopped) && !hasError) {
-      // Completed: toggle between collapsed and fully expanded (skip preview)
-      setDisplayMode(displayMode === 'collapsed' ? 'expanded' : 'collapsed');
-    } else {
-      setDisplayMode(displayMode === 'collapsed' ? 'preview' : 'collapsed');
-    }
-  };
-
-  const handleShowMore = () => {
-    setDisplayMode('expanded');
-  };
-
-  const handleCollapse = () => {
-    setDisplayMode('preview');
+    setDisplayMode(displayMode === 'collapsed' ? 'expanded' : 'collapsed');
   };
 
   if (unifiedSteps.length === 0) return null;
@@ -465,7 +454,7 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
           open/closed classes roll it up/down on later toggles — including the
           auto-collapse when the answer starts streaming — while the content
           stays mounted (inert + hidden from a11y when closed). */}
-      {timelineEverOpened && visibleSteps.length > 0 && (
+      {timelineEverOpened && (
         <div
           inert={!isOpen || undefined}
           aria-hidden={!isOpen || undefined}
@@ -475,13 +464,22 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
             'block-expand-enter',
           )}
         >
+        <div
+          ref={stepListRef}
+          data-step-list
+          onScroll={onScroll}
+          className={cn(
+            STEP_LIST,
+            edges.canScrollUp && STEP_LIST_FADE_TOP,
+            edges.canScrollDown && STEP_LIST_FADE_BOTTOM,
+          )}
+        >
         <div className="flow-timeline pl-1">
-          {visibleSteps.map((step, index) => {
-            const isLastVisible = index === visibleSteps.length - 1;
-            // Show connector if not the last visible step, or if there are trailing nodes
+          {unifiedSteps.map((step, index) => {
+            const isLast = index === unifiedSteps.length - 1;
+            // Show connector if not the last step, or if there are trailing nodes
             const hasTrailingNodes = allCompleted || isStopped || isActive || hasError;
-            const isFullyExpanded = displayMode === 'expanded' || !needsTruncation;
-            const showConnector = !isLastVisible || (isFullyExpanded && hasTrailingNodes);
+            const showConnector = !isLast || hasTrailingNodes;
             // For a thinking step, signal whether execution has moved on to a
             // tool step after it — used to auto-collapse the reasoning panel.
             const hasLaterToolStep = unifiedSteps
@@ -504,20 +502,8 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
             );
           })}
 
-          {/* Show more / Collapse toggle */}
-          {needsTruncation && (
-            <div className="flex items-start gap-3">
-              <div className="w-3.5 shrink-0" />
-              <div className="flex-1 min-w-0 pb-2">
-                <Button variant="plain" size="sm" onClick={displayMode === 'preview' ? handleShowMore : handleCollapse}>
-                  {displayMode === 'preview' ? t.task.showMore : t.task.collapse}
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {/* Done node — only in fully expanded or no truncation needed */}
-          {allCompleted && !isStopped && (displayMode === 'expanded' || !needsTruncation) && (
+          {/* Done node */}
+          {allCompleted && !isStopped && (
             <div className="flex items-start gap-3">
               <StepIconSlot>
                 <StatusIcon tone="success" size="sm" />
@@ -529,7 +515,7 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
           )}
 
           {/* User-stopped node — distinct from successful completion. */}
-          {isStopped && (displayMode === 'expanded' || !needsTruncation) && (
+          {isStopped && (
             <div className="flex items-start gap-3">
               <StepIconSlot>
                 <Icon icon={AppIcons.stopped} size="sm" className="text-label-tertiary" />
@@ -541,7 +527,7 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
           )}
 
           {/* Error node */}
-          {hasError && !isActive && (displayMode === 'expanded' || !needsTruncation) && (
+          {hasError && !isActive && (
             <div className="flex items-start gap-3">
               <StepIconSlot>
                 <StatusIcon tone="danger" size="sm" />
@@ -574,6 +560,7 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
               </div>
             </div>
           )}
+        </div>
         </div>
         </div>
       )}

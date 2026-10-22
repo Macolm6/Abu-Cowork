@@ -1014,3 +1014,54 @@ describe('TaskBlock — tool views', () => {
     expect(within(view).getByText('这段对话里没有这一步的完整结果')).toBeInTheDocument();
   });
 });
+
+describe('TaskBlock — the step list', () => {
+  beforeEach(() => {
+    initLanguage('zh-CN');
+  });
+  afterEach(() => {
+    cleanup();
+    initLanguage('system');
+  });
+
+  const steps = (count: number, overrides: Partial<ExecutionStep> = {}) =>
+    Array.from({ length: count }, (_, index) => execCommandStep(`s${index + 1}`, `Step ${index + 1}`, overrides));
+  const header = (container: HTMLElement) => container.querySelector<HTMLElement>('.task-block > button')!;
+
+  it('lists every step without a show-more button', () => {
+    const { container } = render(<TaskBlock executionSteps={steps(10, { status: 'completed' })} isActive={false} />);
+    fireEvent.click(header(container));
+    for (let index = 1; index <= 10; index++) expect(screen.getByText(`Step ${index}`)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '查看更多' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '收起' })).toBeNull();
+  });
+
+  it('opens a running turn with every step', () => {
+    const { container } = render(<TaskBlock executionSteps={steps(5)} isActive />);
+    expect(header(container)).toHaveAttribute('aria-expanded', 'true');
+    for (let index = 1; index <= 5; index++) expect(screen.getByText(`Step ${index}`)).toBeInTheDocument();
+  });
+
+  it('puts the steps and the end node in one scrolling list', () => {
+    const { container } = render(<TaskBlock executionSteps={steps(2, { status: 'completed' })} isActive={false} />);
+    fireEvent.click(header(container));
+    const list = container.querySelector<HTMLElement>('[data-step-list]')!;
+    expect(list).toHaveClass('overflow-y-auto', 'max-h-[min(400px,50vh)]');
+    expect(within(list).getByText('Step 1')).toBeInTheDocument();
+    expect(within(list).getByText(getI18n().task.done)).toBeInTheDocument();
+  });
+
+  it('folds on the header and opens again on the header', () => {
+    const failed = [...steps(4, { status: 'completed' }), execCommandStep('s5', 'Step 5', { status: 'error' })];
+    const { container } = render(<TaskBlock executionSteps={failed} isActive={false} />);
+    const timeline = () => container.querySelector('.block-expand')!;
+
+    fireEvent.click(header(container));
+    expect(timeline()).toHaveClass('block-expand-open');
+    fireEvent.click(header(container));
+    expect(timeline()).toHaveClass('block-expand-closed');
+    fireEvent.click(header(container));
+    expect(timeline()).toHaveClass('block-expand-open');
+    for (let index = 1; index <= 5; index++) expect(screen.getByText(`Step ${index}`)).toBeInTheDocument();
+  });
+});
