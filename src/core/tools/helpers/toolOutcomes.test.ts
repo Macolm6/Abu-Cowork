@@ -13,10 +13,13 @@ describe('toolOutcomes', () => {
       expect(parseCommandOutcome({ exitCode: 0 })).toEqual({ exitCode: 0 });
     });
 
+    it('accepts a negative exit code', () => {
+      expect(parseCommandOutcome({ exitCode: -1, stderr: [8, 51] })).toEqual({ exitCode: -1, stderr: [8, 51] });
+    });
+
     it.each([
       ['a missing exit code', { stdout: [0, 1] }],
       ['a fractional exit code', { exitCode: 1.5 }],
-      ['a negative exit code', { exitCode: -1 }],
       ['a string exit code', { exitCode: '1' }],
       ['a reversed range', { exitCode: 0, stdout: [20, 8] }],
       ['a negative range start', { exitCode: 0, stdout: [-1, 2] }],

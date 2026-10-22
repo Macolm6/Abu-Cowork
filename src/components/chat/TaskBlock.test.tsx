@@ -737,6 +737,12 @@ describe('TaskBlock — tool views', () => {
     expect(unrecorded.container.querySelector('[data-exit-code]')).toBeNull();
   });
 
+  it('shows the exit code -1 of a killed or timed out command', () => {
+    const step = commandStep({ toolInput: { command: 'sleep 60' }, toolResult: 'exit code: -1' });
+    const { container } = renderOpen([step], { toolViewRecords: commandRecord({ exitCode: -1 }) });
+    expect(container.querySelector('[data-exit-code="-1"]')).toHaveTextContent('退出码 -1');
+  });
+
   it('shows no exit code for a background start', () => {
     const { container } = renderOpen(
       [commandStep({ toolInput: { command: 'npm run dev', background: true }, toolResult: 'started' })],

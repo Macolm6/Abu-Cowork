@@ -4019,10 +4019,12 @@ describe('sanitizeImportedMessage — same completion inference as disk load', (
         { id: 'tc3', name: 'http_fetch', input: {}, httpFetchOutcome: { status: 200, statusText: 'OK', body: [5, 2], truncated: false } },
         { id: 'tc4', name: 'read_file', input: {}, fileReadOutcome: { kind: 'document' } },
         { id: 'tc5', name: 'http_fetch', input: {}, httpFetchOutcome: { status: 200, statusText: 'OK', body: [2, 5], truncated: true } },
+        { id: 'tc6', name: 'run_command', input: {}, commandOutcome: { exitCode: -1, stderr: [8, 51] } },
       ],
     } as never);
 
     expect(sanitized.toolCalls?.[0].commandOutcome).toEqual({ exitCode: 1, stdout: [8, 10] });
+    expect(sanitized.toolCalls?.[5].commandOutcome).toEqual({ exitCode: -1, stderr: [8, 51] });
     expect(sanitized.toolCalls?.[1]).not.toHaveProperty('commandOutcome');
     expect(sanitized.toolCalls?.[2]).not.toHaveProperty('httpFetchOutcome');
     expect(sanitized.toolCalls?.[3].fileReadOutcome).toEqual({ kind: 'document' });

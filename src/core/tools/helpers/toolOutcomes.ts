@@ -23,8 +23,10 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 /** A `commandOutcome` value from another process or from disk; undefined when it is not one. */
 export function parseCommandOutcome(value: unknown): CommandOutcome | undefined {
   const record = asRecord(value);
-  if (!record || !isCount(record.exitCode)) return undefined;
+  if (!record) return undefined;
   const { exitCode, background, stdout, stderr } = record;
+  // The command host reports -1 for a timeout, a signal, a spawn failure and an unavailable host.
+  if (typeof exitCode !== 'number' || !Number.isInteger(exitCode)) return undefined;
   if (background !== undefined && background !== true) return undefined;
   if (stdout !== undefined && !isRange(stdout)) return undefined;
   if (stderr !== undefined && !isRange(stderr)) return undefined;

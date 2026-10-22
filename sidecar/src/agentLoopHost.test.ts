@@ -1613,6 +1613,18 @@ describe('agentLoopHost', () => {
       expect(reportMetadata).toHaveBeenCalledWith({ commandOutcome: { exitCode: 2, stdout: [8, 12] } });
     });
 
+    it('replays the exit code -1 of a killed or timed out command', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      mockSendRequest({ toolInvokeResult: { result: 'exit code: -1', metadata: { commandOutcome: { exitCode: -1 } } } });
+      const reportMetadata = vi.fn();
+
+      await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('run_command', { command: 'sleep 60' }, undefined, undefined, { reportMetadata }),
+      );
+
+      expect(reportMetadata).toHaveBeenCalledWith({ commandOutcome: { exitCode: -1 } });
+    });
+
     it.each([
       ['a non-numeric exit code', { exitCode: 'x' }],
       ['a reversed output range', { exitCode: 0, stdout: [12, 8] }],
