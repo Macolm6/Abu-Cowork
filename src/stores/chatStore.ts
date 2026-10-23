@@ -80,6 +80,7 @@ import {
   type LoadedMessageSanitizerText,
 } from '../core/session/loadedMessageSanitizer';
 import { clearBrowserToolTrackers } from '../core/observability/browserSignals';
+import { forgetConversationFileReads } from '../core/tools/fileReadRecords';
 import { sanitizeGoalState, type GoalState } from '../core/goal/goalTypes';
 
 enableMapSet();
@@ -1292,6 +1293,9 @@ export const useChatStore = create<ChatStore>()(
         // core/observability/browserSignals.ts would otherwise accumulate one
         // dead entry per deleted conversation forever in a long-lived session.
         clearBrowserToolTrackers(id);
+        // What its agents read: a subagent nested in the sidecar's loop has no
+        // run end in this process, so its records go with the conversation.
+        forgetConversationFileReads(id);
         // Workspace subagent tabs are conversation-owned. Close them before
         // clearing their ephemeral batches so the active view lease is
         // released synchronously and no clickable dead tab survives deletion.

@@ -775,6 +775,17 @@ export interface ToolExecutionContext {
    * every tab, "current tab" and takeover record on `{conversationId, runKey}`).
    */
   agentRunId?: string;
+  /**
+   * The subagent run whose file reads this call counts toward
+   * (`core/tools/fileReadRecords.ts`), when `agentRunId` is left out.
+   *
+   * The shell's main-loop session folds a sidecar-supplied `agentRunId` away,
+   * since run identity decides whose browser tabs a call may use; a subagent
+   * nested inside the sidecar's loop still reads and writes on that runId, so
+   * the shell carries its id here. It grants nothing: it only picks which
+   * reader's records `write_file` compares against.
+   */
+  fileReadRunId?: string;
   /** Shell-owned originating dispatch; never accepted from model/wire input. */
   teamApprovalDispatch?: { id: string; fingerprint: string };
   /** Tool call ID — injected by toolExecutor; lets a tool locate itself and key per-call state (e.g. run_agent_batch progress) */

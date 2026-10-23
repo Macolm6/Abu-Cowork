@@ -433,6 +433,18 @@ describe('chatStore', () => {
       );
     });
 
+    it('drops what the deleted conversation\'s agents read, nested subagent runs included', async () => {
+      const { recordFileVersion, recordedFileVersion } = await import('../core/tools/fileReadRecords');
+      const id = useChatStore.getState().createConversation();
+      await recordFileVersion('/w/a.txt', 'main', { conversationId: id });
+      await recordFileVersion('/w/a.txt', 'nested', { conversationId: id, agentRunId: 'sar-n' });
+
+      useChatStore.getState().deleteConversation(id);
+
+      expect(await recordedFileVersion('/w/a.txt', { conversationId: id })).toBeUndefined();
+      expect(await recordedFileVersion('/w/a.txt', { conversationId: id, agentRunId: 'sar-n' })).toBeUndefined();
+    });
+
     it('clears the deleted conversation draft', () => {
       const id = useChatStore.getState().createConversation();
       const draftKey = getComposerDraftKey(id);

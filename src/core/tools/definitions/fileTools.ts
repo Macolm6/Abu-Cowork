@@ -29,6 +29,18 @@ import { computeFileChange, MAX_COMPARABLE_TEXT_BYTES, type FileChange } from '@
 import type { ToolFileAccess } from '@/core/tools/fileOperation';
 import { Minimatch } from 'minimatch';
 import { isToolResultError } from '@/core/agent/toolResultErrors';
+import { recordFileVersion, recordedFileVersion } from '@/core/tools/fileReadRecords';
+import { sha256Hex } from '@/core/session/turnUndoRecord';
+
+/** The version `fileReadRecords` keeps for a file on disk: the SHA-256 of its bytes. */
+async function fileVersionOf(path: string, files?: Pick<ToolFileAccess, 'readFile'>): Promise<string> {
+  return sha256Hex(new Uint8Array(await (files ? files.readFile(path) : readBinFile(path))));
+}
+
+/** The version of a file just written with `text`: the tools write it as UTF-8, byte for byte. */
+export function writtenVersionOf(text: string): Promise<string> {
+  return sha256Hex(new TextEncoder().encode(text));
+}
 
 /** What a path held before a write, as far as the reported file change needs it. */
 type TextBefore =
@@ -102,18 +114,37 @@ export const readFileTool: ToolDefinition = {
     required: ['path'],
   },
   execute: async (input, context) => {
-    const io = context?.files ?? { readFile: readBinFile, readTextFile, stat };
+    const io = context?.files ?? { readFile: readBinFile, readTextFile, stat, exists };
     const filePath = input.path as string;
     const ext = getFileExtension(filePath);
     const offset = typeof input.offset === 'number' ? Math.max(0, Math.floor(input.offset)) : undefined;
     const limit = typeof input.limit === 'number' ? Math.max(1, Math.floor(input.limit)) : undefined;
+    // A read that showed the model any of the file records the whole file's
+    // version, so write_file may overwrite it (fileReadRecords.ts). The
+    // version is taken before the content is read and again after it.
+    let versionBefore: string | undefined;
+    const recordRead = async (): Promise<void> => {
+      const versionAfter = await fileVersionOf(filePath, io);
+      // The file changed while it was read, so no version names what the
+      // model saw: nothing is recorded, and an overwrite needs another read.
+      if (versionAfter !== versionBefore) return;
+      await recordFileVersion(filePath, versionAfter, context);
+    };
     // Extracted document text is recorded as a document; an error text is not.
-    const documentText = (text: string): string => {
-      if (!isToolResultError(text)) context?.reportMetadata?.({ fileReadOutcome: { kind: 'document' } });
+    const documentText = async (text: string): Promise<string> => {
+      if (!isToolResultError(text)) {
+        context?.reportMetadata?.({ fileReadOutcome: { kind: 'document' } });
+        await recordRead();
+      }
       return text;
     };
 
     try {
+      if (!(await io.exists(filePath))) {
+        await recordFileVersion(filePath, null, context);
+        return `Error reading file: File not found: ${filePath}`;
+      }
+
       // --- Image files: return as vision content ---
       if (IMAGE_EXTENSIONS.has(ext)) {
         const mediaType = IMAGE_MEDIA_TYPES[ext] || 'image/png';
@@ -134,6 +165,7 @@ export const readFileTool: ToolDefinition = {
           : await resizeImageIfNeeded(bytes, 1280, context);
         const sizeKB = Math.round(bytes.length / 1024);
         const resizeNote = resized ? ' (auto-resized to 1280px width)' : '';
+        await recordFileVersion(filePath, await sha256Hex(bytes), context);
 
         return [
           { type: 'text', text: `Image: ${filePath} (${sizeKB}KB, ${mediaType})${resizeNote}` },
@@ -141,15 +173,18 @@ export const readFileTool: ToolDefinition = {
         ] as ToolResultContent[];
       }
 
+      versionBefore = await fileVersionOf(filePath, io);
+
       // --- PDF files: extract text ---
       if (ext === '.pdf') {
         if (context?.files) {
           const output = await context.files.runProcessor(filePath, isWindows() ? 'python' : 'python3',
             ['-c', PDFPLUMBER_SCRIPT, null]);
-          return documentText(output.code === 0 ? output.stdout : `Error reading PDF file: ${output.stderr}`);
+          return await documentText(output.code === 0 ? output.stdout : `Error reading PDF file: ${output.stderr}`);
         }
         // Strategy 1: pdftotext (macOS/Linux — fast, native)
         if (!isWindows()) {
+          let extracted: string | undefined;
           try {
             const output = await invokeTaskCommand<CommandOutput>('run_argv_command', {
               program: 'pdftotext',
@@ -157,15 +192,17 @@ export const readFileTool: ToolDefinition = {
               timeout: 30,
             }, context, { commandIdPrefix: 'read-pdf' });
             if (output.code === 0 && output.stdout.trim()) {
-              return documentText(output.stdout);
+              extracted = output.stdout;
             }
           } catch (err) {
             if (isTaskCommandAbortedError(err)) return 'Error reading file: PDF extraction was aborted.';
             /* fall through to Python */
           }
+          if (extracted !== undefined) return await documentText(extracted);
         }
 
         // Strategy 2: Python pdfplumber (cross-platform)
+        let extracted: string | undefined;
         try {
           const pyBin = isWindows() ? 'python' : 'python3';
           const output = await invokeTaskCommand<CommandOutput>('run_argv_command', {
@@ -174,12 +211,13 @@ export const readFileTool: ToolDefinition = {
             timeout: 30,
           }, context, { commandIdPrefix: 'read-pdf' });
           if (output.code === 0 && output.stdout.trim()) {
-            return documentText(output.stdout);
+            extracted = output.stdout;
           }
         } catch (err) {
           if (isTaskCommandAbortedError(err)) return 'Error reading file: PDF extraction was aborted.';
           /* fall through to hint */
         }
+        if (extracted !== undefined) return await documentText(extracted);
 
         // Strategy 3: User hint
         return isWindows()
@@ -189,13 +227,13 @@ export const readFileTool: ToolDefinition = {
 
       // --- Office documents: extract text via Python ---
       if (OFFICE_EXTENSIONS.has(ext)) {
-        return documentText(await extractOfficeText(filePath, ext, context));
+        return await documentText(await extractOfficeText(filePath, ext, context));
       }
 
       // --- Archives: list contents ---
       if (ARCHIVE_EXTENSIONS.has(ext) || filePath.endsWith('.tar.gz')) {
         const archiveExt = filePath.endsWith('.tar.gz') ? '.tar.gz' : ext;
-        return documentText(await listArchiveContents(filePath, archiveExt, context));
+        return await documentText(await listArchiveContents(filePath, archiveExt, context));
       }
 
       // --- Text files: read as UTF-8 with size gating and pagination ---
@@ -230,12 +268,14 @@ export const readFileTool: ToolDefinition = {
             ? { kind: 'notice' }
             : { kind: 'text', startLine: startLine + 1, lineCount: numLines, totalLines, bodyStart: header.length + 1 },
         });
+        if (numLines > 0) await recordRead();
         return `${header}\n${sliced.join('\n')}`;
       }
 
       context?.reportMetadata?.({
         fileReadOutcome: { kind: 'text', startLine: 1, lineCount: totalLines, totalLines, bodyStart: 0 },
       });
+      await recordRead();
       return content;
     } catch (err) {
       return `Error reading file: ${err instanceof Error ? err.message : String(err)}`;
@@ -273,7 +313,7 @@ function ensureHtmlCharset(content: string): string {
 
 export const writeFileTool: ToolDefinition = {
   name: TOOL_NAMES.WRITE_FILE,
-  description: 'Write content to a file. Creates the file if it does not exist; overwrites if it does. Use only for creating new files — partial edits to existing files must use edit_file (full overwrite will lose sections not explicitly changed). Supports plain text only; cannot create binary files (.docx/.xlsx etc.).',
+  description: 'Write content to a file. Creates the file if it does not exist; overwrites if it does. Use only for creating new files — partial edits to existing files must use edit_file (full overwrite will lose sections not explicitly changed). Overwriting an existing file is refused until you have read its current content with read_file. Supports plain text only; cannot create binary files (.docx/.xlsx etc.).',
   inputSchema: {
     type: 'object',
     properties: {
@@ -301,6 +341,14 @@ export const writeFileTool: ToolDefinition = {
     }
 
     try {
+      // Overwriting needs a read of the version on disk now: otherwise the
+      // write would drop what the user or another agent changed meanwhile.
+      if (await (context?.files ? context.files.exists(path) : exists(path))) {
+        const recorded = await recordedFileVersion(path, context);
+        if (recorded === undefined || recorded !== await fileVersionOf(path, context?.files)) {
+          return format(getI18n().toolResult.file.errWriteNeedsRead, { path });
+        }
+      }
       await (context?.files ? context.files.ensureParentDir(path) : ensureParentDir(path));
       // Add UTF-8 BOM for CSV files so Excel opens them with correct encoding
       let finalContent = content;
@@ -319,6 +367,7 @@ export const writeFileTool: ToolDefinition = {
         files: context?.files,
       });
       await (context?.files ? context.files.writeTextFile(path, finalContent) : writeTextFile(path, finalContent));
+      await recordFileVersion(path, await writtenVersionOf(finalContent), context);
       const fileChange = fileChangeAfterWrite(path, before, finalContent);
       if (fileChange) context?.reportMetadata?.({ fileChange });
       // Lazily bind a managed default workspace only for a shell-confirmed
@@ -424,6 +473,7 @@ export const editFileTool: ToolDefinition = {
             files: context?.files,
           });
           await (context?.files ? context.files.writeTextFile(path, fuzzy.newContent) : writeTextFile(path, fuzzy.newContent));
+          await recordFileVersion(path, await writtenVersionOf(fuzzy.newContent), context);
           context?.reportMetadata?.({
             fileChange: computeFileChange({ path, before: content, after: fuzzy.newContent }),
           });
@@ -476,6 +526,7 @@ export const editFileTool: ToolDefinition = {
       // search), silently corrupting any content containing a literal `$`.
       const updated = content.replace(oldContent, () => newContent);
       await (context?.files ? context.files.writeTextFile(path, updated) : writeTextFile(path, updated));
+      await recordFileVersion(path, await writtenVersionOf(updated), context);
       context?.reportMetadata?.({
         fileChange: computeFileChange({ path, before: content, after: updated }),
       });
