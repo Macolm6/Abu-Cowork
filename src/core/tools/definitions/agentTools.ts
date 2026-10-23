@@ -12,8 +12,9 @@ import {
 } from '../../agent/delegateProgressRecorder';
 import { getExecutionPort } from '../../agent/ports/executionPort';
 import { snapshotExecutionSteps } from '../../agent/executionSnapshot';
-import type { ToolDefinition, Conversation, SubagentDefinition, SkillSource, SubagentStopReason } from '../../../types';
+import type { ToolDefinition, Conversation, Skill, SubagentDefinition, SkillSource, SubagentStopReason } from '../../../types';
 import { skillLoader, parseSkillFile } from '../../skill/loader';
+import { renderSkillInstructions } from '../../skill/activeSkillInstructions';
 import { agentRegistry, parseAgentFile, getBuiltinAgentNames } from '../../agent/registry';
 import { parseAvatarValue } from '@/core/team/avatarPresets';
 import { resolveSubagentToolNames } from '../../agent/subagentToolRoster';
@@ -76,7 +77,7 @@ export function clearSkillHooksByLoop(loopId: string): void {
  */
 export const useSkillTool: ToolDefinition = {
   name: TOOL_NAMES.USE_SKILL,
-  description: 'Load a skill to assist with the current task. The skill instructions are injected into the system prompt for this turn (automatically released when the task ends). Use when the user request matches a skill\'s TRIGGER condition. Returns a load confirmation.',
+  description: 'Load a skill to assist with the current task. Returns the skill\'s instructions; follow them for the rest of this task. Use when the user request matches a skill\'s TRIGGER condition.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -112,8 +113,6 @@ export const useSkillTool: ToolDefinition = {
       toggleSkillEnabled(skillName);
     }
 
-    // Dedup: if already active in this conversation, short-circuit to prevent
-    // wasted tool calls. Skill instructions are already in the system prompt.
     const state = useChatStore.getState();
     // Tool execution context owns the activation. A scheduled/IM/sidecar run
     // may execute while an unrelated desktop tab is active; borrowing the
@@ -124,17 +123,14 @@ export const useSkillTool: ToolDefinition = {
     const activeId = contextConversationId && state.conversations[contextConversationId]
       ? contextConversationId
       : (toolExecContext === undefined ? state.activeConversationId : undefined);
-    if (activeId) {
-      const existing = state.conversations[activeId]?.activeSkills;
-      if (existing?.includes(skillName)) {
-        const t = getI18n().toolResult.agent;
-        return format(t.skillAlreadyActive, { skillName });
-      }
-    }
+    // A repeated call returns the instructions again (the model may have lost
+    // them to context compaction) without activating the skill's hooks twice.
+    const alreadyActive = activeId
+      ? state.conversations[activeId]?.activeSkills?.includes(skillName) === true
+      : false;
 
-    // Store the skill activation and arguments — the agentLoop will pick this up
-    // and inject it into the system prompt via orchestrator
-
+    // Record the activation: the loop reads it for tool exposure, and the
+    // arguments are substituted into the instructions returned below.
     if (activeId) {
       useChatStore.setState((draft: { conversations: Record<string, Conversation> }) => {
         const conv = draft.conversations[activeId];
@@ -153,7 +149,7 @@ export const useSkillTool: ToolDefinition = {
     }
 
     // Activate skill-scoped hooks
-    if (skill.hooks) {
+    if (skill.hooks && !alreadyActive) {
       const { activateSkillHooks } = await import('../../skill/skillHooks');
       const cleanup = activateSkillHooks(skill, toolExecContext);
       skillHookCleanups.add({
@@ -164,9 +160,11 @@ export const useSkillTool: ToolDefinition = {
     }
 
     // Also load chain skills if defined
+    const chainedSkills: Skill[] = [];
     if (skill.chain) {
       for (const chainedName of skill.chain) {
         const chainedSkill = skillLoader.getSkill(chainedName);
+        if (chainedSkill) chainedSkills.push(chainedSkill);
         if (chainedSkill && activeId) {
           useChatStore.setState((draft: { conversations: Record<string, Conversation> }) => {
             const conv = draft.conversations[activeId];
@@ -186,8 +184,15 @@ export const useSkillTool: ToolDefinition = {
     if (context) {
       result += format(t.skillContextLine, { context });
     }
-    result += t.skillInjected;
-    return result;
+    result += t.skillInstructionsFollow;
+    const instructionConversationId = activeId ?? '';
+    const instructions = [
+      await renderSkillInstructions(skill, context ?? '', instructionConversationId),
+    ];
+    for (const chainedSkill of chainedSkills) {
+      instructions.push(await renderSkillInstructions(chainedSkill, '', instructionConversationId));
+    }
+    return `${result}\n\n${instructions.join('\n\n')}`;
   },
   isConcurrencySafe: false,
 };

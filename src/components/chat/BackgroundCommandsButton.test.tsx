@@ -103,7 +103,18 @@ async function flush(ms = 0) {
   });
 }
 
+// Opening the list reads its rows again; the stand-in answers that read with the rows the store
+// holds and leaves every other command to the test's own implementation.
+function answerListReads() {
+  const answer = invokeMock.getMockImplementation();
+  invokeMock.mockImplementation(async (command, args) => {
+    if (command === 'background_command_list') return useBackgroundCommandStore.getState().rows.c1 ?? [];
+    return answer?.(command, args);
+  });
+}
+
 async function openList(name: string | RegExp) {
+  answerListReads();
   fireEvent.click(screen.getByRole('button', { name }));
   await flush();
   return screen.getByRole('dialog');
@@ -420,5 +431,91 @@ describe('BackgroundCommandsButton', () => {
     expect(terminals.instances).toHaveLength(1);
     expect(terminals.instances[0].writes).toEqual([burst]);
     expect(terminals.instances[0].options).toMatchObject({ disableStdin: true, fontSize: 13 });
+  });
+
+  describe('reading the list on open', () => {
+    function listReads() {
+      return invokeMock.mock.calls.filter(([command]) => command === 'background_command_list');
+    }
+
+    it('reads the rows again when the list opens', async () => {
+      setRows([row('dev')]);
+      render(<BackgroundCommandsButton conversationId="c1" />);
+      // The main process knows a newer state than the store holds.
+      invokeMock.mockImplementation(async (command) => {
+        if (command !== 'background_command_list') throw new Error(`unexpected ${command}`);
+        return [row('dev', { status: 'completed', exitCode: 0, finishedAt: START + 5_000 })];
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: '1 background command running' }));
+      await flush();
+
+      const list = screen.getByRole('dialog');
+      expect(listReads()).toEqual([['background_command_list', { conversationId: 'c1' }]]);
+      expect(within(list).getByText('Completed')).toBeInTheDocument();
+      expect(within(list).queryByText('Couldn\'t load the latest status')).not.toBeInTheDocument();
+    });
+
+    it('keeps the last list under a retry line when the read fails, until a retry succeeds', async () => {
+      setRows([row('dev')]);
+      render(<BackgroundCommandsButton conversationId="c1" />);
+      let answer: () => Promise<unknown> = async () => { throw new Error('main process gone'); };
+      invokeMock.mockImplementation(async (command) => {
+        if (command !== 'background_command_list') throw new Error(`unexpected ${command}`);
+        return answer();
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: '1 background command running' }));
+      await flush();
+
+      const list = screen.getByRole('dialog');
+      const failure = within(list).getByRole('status');
+      expect(failure).toHaveTextContent('Couldn\'t load the latest status');
+      const retry = within(failure).getByRole('button', { name: 'Retry' });
+      // The last list stays below the failure line.
+      expect(within(list).getByText('npm run dev')).toBeInTheDocument();
+      expect(within(list).getByText('Running')).toBeInTheDocument();
+      const text = list.textContent ?? '';
+      expect(text.indexOf('Couldn\'t load the latest status')).toBeLessThan(text.indexOf('npm run dev'));
+
+      // A retry that fails keeps the line.
+      fireEvent.click(retry);
+      await flush();
+      expect(listReads()).toHaveLength(2);
+      expect(within(list).getByText('Couldn\'t load the latest status')).toBeInTheDocument();
+
+      answer = async () => [row('dev', { status: 'stopped', finishedAt: START + 9_000 })];
+      fireEvent.click(within(list).getByRole('button', { name: 'Retry' }));
+      await flush();
+      expect(listReads()).toHaveLength(3);
+      expect(within(list).queryByText('Couldn\'t load the latest status')).not.toBeInTheDocument();
+      expect(within(list).queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+      expect(within(list).getByText('Stopped')).toBeInTheDocument();
+    });
+
+    it('reads once while a retry is in flight', async () => {
+      setRows([row('dev')]);
+      render(<BackgroundCommandsButton conversationId="c1" />);
+      let finishRead: (rows: BackgroundCommandRow[]) => void = () => undefined;
+      let reads = 0;
+      invokeMock.mockImplementation(async (command) => {
+        if (command !== 'background_command_list') throw new Error(`unexpected ${command}`);
+        reads += 1;
+        if (reads === 1) throw new Error('main process gone');
+        return new Promise<BackgroundCommandRow[]>((resolve) => { finishRead = resolve; });
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: '1 background command running' }));
+      await flush();
+      const list = screen.getByRole('dialog');
+      fireEvent.click(within(list).getByRole('button', { name: 'Retry' }));
+      fireEvent.click(within(list).getByRole('button', { name: 'Retry' }));
+      await flush();
+      expect(reads).toBe(2);
+
+      await act(async () => { finishRead([row('dev')]); });
+      await flush();
+      expect(within(list).queryByText('Couldn\'t load the latest status')).not.toBeInTheDocument();
+    });
   });
 });

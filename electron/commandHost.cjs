@@ -603,6 +603,11 @@ function requireBackgroundCommands() {
   return backgroundCommands;
 }
 
+/** Background commands still running across every conversation. */
+function runningBackgroundCommandCount() {
+  return requireBackgroundCommands().runningCount();
+}
+
 // ── Console output decoding ──
 
 /**
@@ -1274,6 +1279,7 @@ module.exports = {
   COMMAND_MISS,
   teardownCommandHost,
   installBackgroundCommands,
+  runningBackgroundCommandCount,
   legacyConsoleEncoding,
   // exported for the verify harness + potential reuse
   generateSeatbeltProfile,

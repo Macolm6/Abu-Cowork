@@ -180,6 +180,8 @@ export interface TranslationDict {
     deleteUnreadableWithBackgroundCommandsMessage: string;
     /** Singular of `deleteUnreadableWithBackgroundCommandsMessage`, for exactly one command. */
     deleteUnreadableWithBackgroundCommandsMessageOne: string;
+    /** The notice when the background commands could not be counted or stopped: the conversation stays. */
+    deleteConversationFailed: string;
     importSession: string;
     renameConversation: string;
     moreActions: string;
@@ -840,6 +842,9 @@ export interface TranslationDict {
       durationMinutes: string;
       /** {h}, {m} */
       durationHours: string;
+      /** The list's top line when opening it could not read the commands; the last list stays below. */
+      loadFailed: string;
+      retry: string;
     };
     // /compact slash command toasts
     compactCommand: {
@@ -4895,16 +4900,14 @@ export interface TranslationDict {
     // use_skill / delegate_to_agent / save_agent / request_workspace
     agent: {
       // use_skill
-      /** Skill already active in this conversation. {skillName} */
-      skillAlreadyActive: string;
       /** use_skill / skill_view: the organization's skill blacklist names this skill, so it cannot be used. {skillName} */
       skillBlockedByPolicy: string;
       /** Skill loaded. {name}, {description} */
       skillLoaded: string;
       /** Context line appended after skillLoaded. {context} */
       skillContextLine: string;
-      /** Line appended after skillLoaded (and optional context). */
-      skillInjected: string;
+      /** Line appended after skillLoaded (and optional context); the skill instructions follow it. */
+      skillInstructionsFollow: string;
       // delegate_to_agent
       /** Error: agent not found. {agentName}, {available}, {presetList} */
       errAgentNotFound: string;

@@ -7,6 +7,9 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { createLogger } from '@/core/logging/logger';
+
+const logger = createLogger('backgroundCommands');
 
 export const BACKGROUND_COMMANDS_CHANGED_EVENT = 'background-commands://changed';
 
@@ -56,7 +59,11 @@ export function startBackgroundCommandSync(): () => void {
   let unlisten: (() => void) | null = null;
   void listen<{ conversationId: string }>(BACKGROUND_COMMANDS_CHANGED_EVENT, (event) => {
     if (stopped) return;
-    void useBackgroundCommandStore.getState().refresh(event.payload.conversationId);
+    const { conversationId } = event.payload;
+    void useBackgroundCommandStore.getState().refresh(conversationId).catch((error: unknown) => {
+      // The rows held so far stay, with no notice; opening the list reads again and offers a retry.
+      logger.warn('Failed to refresh background commands after a change', { conversationId, error: String(error) });
+    });
   }).then((fn) => {
     if (stopped) fn();
     else unlisten = fn;

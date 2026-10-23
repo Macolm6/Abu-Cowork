@@ -39,8 +39,6 @@ import { createEventRouter } from './eventRouter';
 import type { RouteResult, IMContext } from './orchestrator';
 import type { PromptSection } from '../llm/promptSections';
 import { sectionsToString, mergeSections, orderSectionsForCaching } from '../llm/promptSections';
-import { skillLoader } from '../skill/loader';
-import { substituteVariables } from '../skill/preprocessor';
 import { joinPath } from '../../utils/pathUtils';
 import { matchesToolName, parseToolPatterns } from '../skill/toolFilter';
 import { notifyTaskCompleted, notifyTaskError } from '../../utils/notifications';
@@ -130,7 +128,7 @@ import { rehydrateForSend, type ImageBase64Cache } from '../llm/imageRehydration
 import { TOOL_NAMES, isDisplayHiddenStepBackedTool } from '../tools/toolNames';
 import { adaptComputerToolForTier } from '../tools/definitions/computerToolText';
 import { isWindows } from '../../utils/platform';
-import { prefetchTools } from '../tools/toolPrefetch';
+import { prefetchTools, type PrefetchContext } from '../tools/toolPrefetch';
 import {
   classifyTools,
   buildDeferredToolsSummary,
@@ -376,9 +374,9 @@ export function skillBlockedTools(
  * (read_skill_file, its own tools) would otherwise wait for the next turn.
  */
 export function prefetchSkills(
-  routedSkill: import('../../types').Skill | undefined,
-  activeSkills: import('../../types').Skill[],
-): import('../../types').Skill[] {
+  routedSkill: PrefetchContext['activeSkills'][number] | undefined,
+  activeSkills: PrefetchContext['activeSkills'],
+): PrefetchContext['activeSkills'] {
   if (!routedSkill || activeSkills.some((skill) => skill.name === routedSkill.name)) return activeSkills;
   return [routedSkill, ...activeSkills];
 }
@@ -388,7 +386,7 @@ export function resolveTools(
   route: RouteResult,
   hasBuiltinWebSearch: boolean,
   blockedTools?: string[],
-  prefetchContext?: { userInput: string; computerUseEnabled: boolean; activeSkills: import('../../types').Skill[]; turnCount: number; hasGoal?: boolean },
+  prefetchContext?: PrefetchContext,
   allowedTools?: string[],
   conversationId?: string,
   allowedToolsAreExactSnapshot = false,
@@ -555,40 +553,6 @@ export function buildVolatileContextTail(parts: {
     sanitizeTailBody(body.join('\n\n')),
     '</runtime-context>',
   ].join('\n');
-}
-
-/** Load active skill contents for dynamic system prompt injection, with variable substitution */
-async function loadActiveSkillContent(
-  activeSkills: string[] | undefined,
-  activeSkillArgs?: Record<string, string>,
-  conversationId?: string,
-): Promise<string> {
-  if (!activeSkills || activeSkills.length === 0) return '';
-  const skillContents: string[] = [];
-  for (const name of activeSkills) {
-    const s = skillLoader.getSkill(name);
-    if (!s) continue;
-    const args = activeSkillArgs?.[name] ?? '';
-    const processed = substituteVariables(s.content, args, s.skillDir, conversationId ?? '');
-    let block = `### ${s.name}\n${processed}`;
-
-    // SK-5: List supporting files for progressive disclosure
-    const supportingFiles = await skillLoader.listSupportingFiles(name);
-    if (supportingFiles.length > 0) {
-      block += '\n\n**Available reference files** (use `read_skill_file` tool to load when needed):\n';
-      block += supportingFiles.map(f => {
-        if (f.startsWith('scripts/') || f.startsWith('scripts\\')) {
-          const absPath = joinPath(s.skillDir, f);
-          return `- ${f} (path: ${absPath})`;
-        }
-        return `- ${f}`;
-      }).join('\n');
-    }
-
-    skillContents.push(block);
-  }
-  if (skillContents.length === 0) return '';
-  return `## Active Skill Instructions\n${skillContents.join('\n\n')}`;
 }
 
 /**
@@ -1295,7 +1259,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   toolContext.modelCapabilitySource = entryAgentCapabilities.capabilitySource;
   toolContext.modelId = effectiveModelId;
 
-  // `systemPromptSections` (active skills are injected dynamically per-turn)
+  // `systemPromptSections` (including the skills already active at entry)
   // was already resolved above, together with `route`, via
   // entryOrchestration.ts's precomputeOrchestration — see that module's
   // "Reordering note" for why the capability-prompt's `entryModelDeclared`
@@ -1942,9 +1906,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       });
       // Build prefetch context for conditional tool loading
       const conv = getConversationReader().getConversation(conversationId);
-      const activeSkillObjects = (conv?.activeSkills ?? [])
-        .map(name => skillLoader.getSkill(name))
-        .filter((s): s is NonNullable<typeof s> => s != null);
+      const activeSkillObjects = getConversationReader().getActiveSkills(conversationId);
       const prefetchCtx = {
         userInput: userMessage,
         computerUseEnabled: freshSettings.computerUseEnabled ?? false,
@@ -2010,11 +1972,6 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // 摘要取工具说明的首句，延后加载的工具同样按电脑操控档位换成对应版本
       const deferredToolsSummary = buildDeferredToolsSummary(
         deferredTools.map((tool) => adaptComputerToolForTier(tool, toolContext.computerUseTier, isWindows())),
-      );
-      const activeSkillContent = await loadActiveSkillContent(
-        conv?.activeSkills,
-        conv?.activeSkillArgs,
-        conversationId,
       );
 
       // Get current messages for this conversation
@@ -2101,13 +2058,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       // Build effective system prompt: static cached sections + dynamic sections.
       // Cacheability here follows CHANGE FREQUENCY, verified per builder:
-      // - mcp-capabilities / active-skills / deferred-tools are EVENT-DRIVEN —
-      //   pure derivations of the tool list / activated skill set (no clocks,
-      //   no randomness, no per-turn interpolation; loadActiveSkillContent only
-      //   substitutes per-activation $ARGUMENTS and session-stable variables).
-      //   They change when a server connects or a skill toggles, and a one-off
-      //   prefix rebuild at that point is exactly how prompt caching should
-      //   behave — so they are cacheable.
+      // - mcp-capabilities / deferred-tools are EVENT-DRIVEN — pure
+      //   derivations of the tool list (no clocks, no randomness, no per-turn
+      //   interpolation). They change when a server connects or a skill
+      //   changes the tool exposure, and a one-off prefix rebuild at that point
+      //   is exactly how prompt caching should behave — so they are cacheable.
       // - PER-TURN state (todos, relevant memories, compression hint) must not
       //   live in the system prompt at all: the system message precedes the
       //   whole history in every provider's serialization, so one changed byte
@@ -2119,9 +2074,6 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const dynamicSections: PromptSection[] = [];
       if (dynamicCapabilities) {
         dynamicSections.push({ name: 'mcp-capabilities', text: dynamicCapabilities, cacheable: true });
-      }
-      if (activeSkillContent) {
-        dynamicSections.push({ name: 'active-skills', text: activeSkillContent, cacheable: true });
       }
       if (deferredToolsSummary) {
         dynamicSections.push({ name: 'deferred-tools', text: deferredToolsSummary, cacheable: true });

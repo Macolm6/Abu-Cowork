@@ -509,9 +509,13 @@ describe('conversationRunMirror', () => {
 
     it('deactivateSkills clears activeSkills (one of the 5 read facts)', () => {
       const conv = makeConversation({ activeSkills: ['skill-a'] });
-      const mirror = createConversationRunMirror('conv-1', { conversation: conv });
+      const mirror = createConversationRunMirror('conv-1', {
+        conversation: conv,
+        activeSkillInfo: [{ name: 'skill-a', blockedTools: ['computer'] }],
+      });
       mirror.applyChatDeltaWrite('deactivateSkills', ['conv-1']);
       expect(mirror.reader.getConversation('conv-1')?.activeSkills).toEqual([]);
+      expect(mirror.reader.getActiveSkills('conv-1')).toEqual([]);
     });
 
     it('setConversationModel updates both conversation.model and indexEntry.model', () => {
@@ -610,6 +614,32 @@ describe('conversationRunMirror', () => {
       mirror.applyConvPatch({ title: 'new' });
       expect(mirror.reader.getConversation('conv-1')?.title).toBe('new');
       expect(mirror.reader.getConversation('conv-1')?.activeSkills).toEqual(['a']); // untouched
+    });
+
+    it('serves the shell-resolved active skills: seeded at run start, replaced by a patch', () => {
+      const mirror = createConversationRunMirror('conv-1', {
+        conversation: makeConversation({ activeSkills: ['docx'] }),
+        activeSkillInfo: [{ name: 'docx', blockedTools: ['computer'] }],
+      });
+      expect(mirror.reader.getActiveSkills('conv-1')).toEqual([{ name: 'docx', blockedTools: ['computer'] }]);
+      expect(mirror.reader.getActiveSkills('conv-2')).toEqual([]);
+
+      mirror.applyConvPatch({
+        activeSkills: ['docx', 'Abu-Browser'],
+        activeSkillInfo: [{ name: 'docx', blockedTools: ['computer'] }, { name: 'Abu-Browser' }],
+      });
+      expect(mirror.reader.getActiveSkills('conv-1')).toEqual([
+        { name: 'docx', blockedTools: ['computer'] },
+        { name: 'Abu-Browser' },
+      ]);
+
+      mirror.applyConvPatch({ title: 'unrelated' });
+      expect(mirror.reader.getActiveSkills('conv-1')).toHaveLength(2);
+    });
+
+    it('has no active skills when the seed carries none', () => {
+      const mirror = createConversationRunMirror('conv-1', { conversation: makeConversation() });
+      expect(mirror.reader.getActiveSkills('conv-1')).toEqual([]);
     });
 
     it('workspacePath patch to null is applied (not treated as absent)', () => {
