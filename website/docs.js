@@ -59,6 +59,8 @@
     const match = VERSION_HEADING.exec(text);
     return match ? [Number(match[2]), Number(match[3]), Number(match[4])] : null;
   }
+  // The changelogs split by language at v0.31.0; the English entries before it are written in both languages.
+  const OLDEST_SHOWN = [0, 31, 0];
   function isReleased(numbers, latest) {
     for (let i = 0; i < 3; i += 1) {
       if (numbers[i] !== latest[i]) return numbers[i] < latest[i];
@@ -139,7 +141,7 @@
     for (const token of tokens) {
       if (token.type === 'heading' && token.depth <= 2) {
         const numbers = token.depth === 2 ? versionNumbers(token.text) : null;
-        keep = numbers !== null && isReleased(numbers, latest);
+        keep = numbers !== null && isReleased(numbers, latest) && isReleased(OLDEST_SHOWN, numbers);
       }
       if (keep) shown.push(token);
     }
