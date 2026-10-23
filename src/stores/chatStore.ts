@@ -66,6 +66,7 @@ import { normalizeUpstreamErrorDetails } from '../core/llm/adapter';
 import { redactFailureText } from '../core/diagnostic/scrub';
 import { parseFileChange } from '../core/files/fileChangeBudget';
 import { parseBackgroundCommandRef } from '../core/tools/helpers/backgroundCommandRef';
+import { parseCommandOutcome, parseFileReadOutcome, parseHttpFetchOutcome } from '../core/tools/helpers/toolOutcomes';
 import {
   ACTIVE_RUN_STATES,
   RUN_FAILURE_STATES,
@@ -162,14 +163,23 @@ export function sanitizeImportedMessage(msg: Message, answeredLoopIds?: Readonly
         sandboxRecoveryAction: _sandboxRecoveryAction,
         fileChange: untrustedFileChange,
         backgroundCommand: untrustedBackgroundCommand,
+        commandOutcome: untrustedCommandOutcome,
+        fileReadOutcome: untrustedFileReadOutcome,
+        httpFetchOutcome: untrustedHttpFetchOutcome,
         ...safeToolCall
       } = tc;
       const fileChange = parseFileChange(untrustedFileChange);
       const backgroundCommand = parseBackgroundCommandRef(untrustedBackgroundCommand);
+      const commandOutcome = parseCommandOutcome(untrustedCommandOutcome);
+      const fileReadOutcome = parseFileReadOutcome(untrustedFileReadOutcome);
+      const httpFetchOutcome = parseHttpFetchOutcome(untrustedHttpFetchOutcome);
       return {
         ...safeToolCall,
         ...(fileChange ? { fileChange } : {}),
         ...(backgroundCommand ? { backgroundCommand } : {}),
+        ...(commandOutcome ? { commandOutcome } : {}),
+        ...(fileReadOutcome ? { fileReadOutcome } : {}),
+        ...(httpFetchOutcome ? { httpFetchOutcome } : {}),
         isExecuting: false,
       };
     }),
@@ -1631,6 +1641,9 @@ export const useChatStore = create<ChatStore>()(
               if (metadata?.computerStep) tc.computerStep = metadata.computerStep;
               if (metadata?.fileChange) tc.fileChange = metadata.fileChange;
               if (metadata?.backgroundCommand) tc.backgroundCommand = metadata.backgroundCommand;
+              if (metadata?.commandOutcome) tc.commandOutcome = metadata.commandOutcome;
+              if (metadata?.fileReadOutcome) tc.fileReadOutcome = metadata.fileReadOutcome;
+              if (metadata?.httpFetchOutcome) tc.httpFetchOutcome = metadata.httpFetchOutcome;
               if (
                 metadata?.subagentStopReason
                 && !(tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed' && metadata.subagentStopReason === 'completed')
@@ -1698,6 +1711,9 @@ export const useChatStore = create<ChatStore>()(
           if (metadata.computerStep) tc.computerStep = metadata.computerStep;
           if (metadata.fileChange) tc.fileChange = metadata.fileChange;
           if (metadata.backgroundCommand) tc.backgroundCommand = metadata.backgroundCommand;
+          if (metadata.commandOutcome) tc.commandOutcome = metadata.commandOutcome;
+          if (metadata.fileReadOutcome) tc.fileReadOutcome = metadata.fileReadOutcome;
+          if (metadata.httpFetchOutcome) tc.httpFetchOutcome = metadata.httpFetchOutcome;
           if (
             metadata.subagentStopReason
             && !(tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed' && metadata.subagentStopReason === 'completed')

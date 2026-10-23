@@ -1,15 +1,19 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import TaskBlock, { convertExecutionStep, generateSummary, type UnifiedStep } from './TaskBlock';
 import { ThinkingStatusLine } from './ThinkingStatusLine';
-import { getI18n, getLocale, format } from '@/i18n';
+import { getI18n, getLocale, format, initLanguage } from '@/i18n';
 import { snapshotExecutionSteps, snapshotToExecutionSteps } from '@/core/agent/executionSnapshot';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import { usePreviewStore } from '@/stores/previewStore';
-import type { ExecutionStep } from '@/types/execution';
+import { getToolLabel } from '@/utils/toolLabels';
+import type { DetailBlock, ExecutionStep } from '@/types/execution';
+import type { WorkflowStep } from '@/utils/workflowExtractor';
 import type { FileChange } from '@/types/fileChange';
+import type { ToolViewRecord } from './toolViews/toolViewRecords';
 
 function thinkingStep(duration?: number): UnifiedStep {
   return { id: 't1', type: 'thinking', label: '思考中...', status: 'completed', duration } as UnifiedStep;
@@ -597,26 +601,29 @@ describe('convertExecutionStep label (persisted snapshots keep their label)', ()
   });
 });
 
+function commandStep(overrides: Partial<ExecutionStep> = {}): ExecutionStep {
+  return {
+    id: 'step-1', executionId: '', toolCallId: 'call-1', type: 'command', label: 'Ran a command', status: 'completed',
+    toolName: 'run_command', toolInput: {}, source: 'agent',
+    detailBlocks: [{
+      id: 'step-1-result', stepId: 'step-1', type: 'result', label: 'Result', labelKey: 'result',
+      content: 'line 1', isTruncated: true, fullContentLength: 500, isExpanded: true,
+    }],
+    ...overrides,
+  };
+}
+
 describe('TaskBlock — whole tool results', () => {
   const t = getI18n();
   afterEach(() => cleanup());
 
-  function commandStep(overrides: Partial<ExecutionStep> = {}): ExecutionStep {
-    return {
-      id: 'step-1', executionId: '', toolCallId: 'call-1', type: 'command', label: 'Ran a command', status: 'completed',
-      toolName: 'run_command', toolInput: {}, source: 'agent',
-      detailBlocks: [{
-        id: 'step-1-result', stepId: 'step-1', type: 'result', label: 'Result', labelKey: 'result',
-        content: 'line 1', isTruncated: true, fullContentLength: 500, isExpanded: true,
-      }],
-      ...overrides,
-    };
-  }
+  // A tool without a view of its own shows its result block in the step.
+  const infoStep = (overrides: Partial<ExecutionStep> = {}) => commandStep({ type: 'tool', toolName: 'get_system_info', ...overrides });
   const sixty = Array.from({ length: 60 }, (_, i) => `line ${i + 1}`).join('\n');
   const showAll = () => screen.queryByRole('button', { name: format(t.chat.toolResultShowAllLines, { count: 60 }) });
 
   it('hands each step the whole result stored under its tool call id', () => {
-    render(<TaskBlock executionSteps={[commandStep()]} isActive={false} toolResults={new Map([['call-1', sixty]])} />);
+    render(<TaskBlock executionSteps={[infoStep()]} isActive={false} toolResults={new Map([['call-1', sixty]])} />);
     fireEvent.click(screen.getAllByRole('button')[0]);
 
     fireEvent.click(showAll()!);
@@ -624,16 +631,16 @@ describe('TaskBlock — whole tool results', () => {
   });
 
   it('switches from the partial block to the whole result once it arrives', () => {
-    const { rerender } = render(<TaskBlock executionSteps={[commandStep()]} isActive toolResults={new Map()} />);
+    const { rerender } = render(<TaskBlock executionSteps={[infoStep()]} isActive toolResults={new Map()} />);
     expect(screen.getByText(t.chat.toolResultFullUnavailable)).toBeInTheDocument();
 
-    rerender(<TaskBlock executionSteps={[commandStep()]} isActive toolResults={new Map([['call-1', sixty]])} />);
+    rerender(<TaskBlock executionSteps={[infoStep()]} isActive toolResults={new Map([['call-1', sixty]])} />);
     expect(showAll()).not.toBeNull();
     expect(screen.queryByText(t.chat.toolResultFullUnavailable)).toBeNull();
   });
 
   it('keeps the nested steps of an expert as they were', () => {
-    const child = commandStep({ id: 'child', toolCallId: 'call-child' });
+    const child = infoStep({ id: 'child', toolCallId: 'call-child' });
     const delegate = commandStep({
       id: 'd', toolCallId: 'call-d', type: 'delegate', toolName: 'delegate_to_agent', detailBlocks: [], childSteps: [child],
     });
@@ -642,5 +649,425 @@ describe('TaskBlock — whole tool results', () => {
     expect(screen.getByText('line 1')).toBeInTheDocument();
     expect(showAll()).toBeNull();
     expect(screen.queryByText(t.chat.toolResultFullUnavailable)).toBeNull();
+  });
+});
+
+describe('TaskBlock — tool views', () => {
+  beforeEach(() => {
+    initLanguage('zh-CN');
+  });
+  afterEach(() => cleanup());
+
+  const VIEW_STEPS: Array<[string, Record<string, unknown>]> = [
+    ['run_command', { command: 'npm test' }],
+    ['read_file', { path: '/w/notes.md' }],
+    ['search_files', { pattern: 'TODO', path: '/w' }],
+    ['find_files', { pattern: '*.ts', path: '/w' }],
+    ['list_directory', { path: '/w' }],
+    ['http_fetch', { url: 'https://example.com/docs/api' }],
+    ['web_search', { query: 'vitest' }],
+  ];
+  const labelOf = (toolName: string, input: Record<string, unknown>) => getToolLabel(toolName, input, 'zh-CN').label;
+  const npmTest = { command: 'npm test' };
+  const pageUrl = 'https://example.com/docs/api';
+
+  function renderOpen(
+    steps: ExecutionStep[],
+    props: { toolViewRecords?: Map<string, ToolViewRecord>; toolResults?: Map<string, string> } = {},
+  ) {
+    const view = render(<TaskBlock executionSteps={steps} isActive={false} {...props} />, { wrapper: DesignSystemProvider });
+    fireEvent.click(screen.getAllByRole('button')[0]);
+    return view;
+  }
+  const commandRecord = (commandOutcome: ToolViewRecord['commandOutcome']) =>
+    new Map<string, ToolViewRecord>([['call-1', { input: npmTest, commandOutcome }]]);
+  const fetchStep = () => commandStep({ type: 'tool', toolName: 'http_fetch', toolInput: { url: pageUrl }, toolResult: 'HTTP 404' });
+  const fetchRecord = (status: number) => new Map<string, ToolViewRecord>([
+    ['call-1', { input: { url: pageUrl }, httpFetchOutcome: { status, statusText: 'x', body: [0, 0], truncated: false } }],
+  ]);
+
+  it.each(VIEW_STEPS)('makes the title of a %s step an expandable button', (toolName, input) => {
+    const { container } = renderOpen([commandStep({ toolName, toolInput: input })]);
+    const title = screen.getByRole('button', { name: labelOf(toolName, input) });
+    expect(title).toHaveAttribute('aria-expanded', 'false');
+    expect(container.querySelector('[data-step-view]')).toBeNull();
+
+    fireEvent.click(title);
+    expect(title).toHaveAttribute('aria-expanded', 'true');
+    expect(container.querySelector('[data-step-view]')).not.toBeNull();
+
+    fireEvent.click(title);
+    expect(container.querySelector('[data-step-view]')).toBeNull();
+  });
+
+  it('folds every open view when the timeline closes', () => {
+    const { container } = renderOpen([commandStep({ toolInput: npmTest })]);
+    fireEvent.click(screen.getByRole('button', { name: labelOf('run_command', npmTest) }));
+    expect(container.querySelector('[data-step-view]')).not.toBeNull();
+
+    const header = container.querySelector('.task-block > button')!;
+    fireEvent.click(header);
+    expect(container.querySelector('[data-step-view]')).toBeNull();
+
+    fireEvent.click(header);
+    expect(container.querySelector('[data-step-view]')).toBeNull();
+  });
+
+  it('drops the script and result chips for these steps and keeps them for other tools', () => {
+    renderOpen([commandStep({ toolInput: { command: 'ls' }, toolResult: 'ok', detailBlocks: [] })]);
+    expect(screen.queryByRole('button', { name: '脚本' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '结果' })).toBeNull();
+    cleanup();
+
+    renderOpen([commandStep({ type: 'tool', toolName: 'get_system_info', toolResult: 'ok', detailBlocks: [] })]);
+    expect(screen.getByRole('button', { name: '结果' })).toBeInTheDocument();
+  });
+
+  it('shows the exit code only when it is not zero', () => {
+    const step = commandStep({ toolInput: npmTest, toolResult: 'FAIL' });
+    const failed = renderOpen([step], { toolViewRecords: commandRecord({ exitCode: 1 }) });
+    expect(failed.container.querySelector('[data-exit-code="1"]')).toHaveTextContent('退出码 1');
+    cleanup();
+
+    const passed = renderOpen([step], { toolViewRecords: commandRecord({ exitCode: 0 }) });
+    expect(passed.container.querySelector('[data-exit-code]')).toBeNull();
+    cleanup();
+
+    const unrecorded = renderOpen([step]);
+    expect(unrecorded.container.querySelector('[data-exit-code]')).toBeNull();
+  });
+
+  it('shows the exit code -1 of a killed or timed out command', () => {
+    const step = commandStep({ toolInput: { command: 'sleep 60' }, toolResult: 'exit code: -1' });
+    const { container } = renderOpen([step], { toolViewRecords: commandRecord({ exitCode: -1 }) });
+    expect(container.querySelector('[data-exit-code="-1"]')).toHaveTextContent('退出码 -1');
+  });
+
+  it('shows no exit code for a background start', () => {
+    const { container } = renderOpen(
+      [commandStep({ toolInput: { command: 'npm run dev', background: true }, toolResult: 'started' })],
+      { toolViewRecords: commandRecord({ exitCode: 0, background: true }) },
+    );
+    expect(container.querySelector('[data-exit-code]')).toBeNull();
+  });
+
+  it('shows the http status only outside 2xx', () => {
+    const missing = renderOpen([fetchStep()], { toolViewRecords: fetchRecord(404) });
+    expect(missing.container.querySelector('[data-http-status="404"]')).toHaveTextContent('404');
+    cleanup();
+
+    const found = renderOpen([fetchStep()], { toolViewRecords: fetchRecord(200) });
+    expect(found.container.querySelector('[data-http-status]')).toBeNull();
+  });
+
+  it('names a page fetch by its address and links it beside the title button', () => {
+    const { container } = renderOpen([fetchStep()]);
+    const title = screen.getByRole('button', { name: '读取网页 example.com/docs/api' });
+    const link = container.querySelector(`a[href="${pageUrl}"]`);
+    expect(link).not.toBeNull();
+    expect(title.contains(link)).toBe(false);
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+
+  it('says stopped on a cancelled step', () => {
+    // UnifiedStep carries the cancelled status; ExecutionStep's type does not name it.
+    renderOpen([commandStep({ toolInput: npmTest, status: 'cancelled' as never })]);
+    expect(screen.getByRole('status', { name: '已停止' })).toHaveTextContent('已停止');
+    expect(screen.queryByText('[已取消]')).toBeNull();
+  });
+
+  describe('in a stopped turn', () => {
+    const scriptBlock: DetailBlock = {
+      id: 'step-1-script', stepId: 'step-1', type: 'script', label: 'Script', labelKey: 'script',
+      content: 'sleep 30', isTruncated: false, isExpanded: true,
+    };
+    function renderStopped(steps: ExecutionStep[]) {
+      const view = render(<TaskBlock executionSteps={steps} isActive={false} isStopped />, { wrapper: DesignSystemProvider });
+      fireEvent.click(screen.getAllByRole('button')[0]);
+      return view;
+    }
+    const sleep = { command: 'sleep 30' };
+
+    it.each([
+      ['running', [scriptBlock]],
+      ['pending', []],
+      ['error', [scriptBlock]],
+    ] as const)('says stopped on a %s step that holds no result and no error, and shows only its command', (status, blocks) => {
+      const { container } = renderStopped([commandStep({ status, toolInput: sleep, detailBlocks: [...blocks] })]);
+      expect(screen.getByRole('status', { name: '已停止' })).toHaveTextContent('已停止');
+      expect(screen.queryByText('执行出错')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: labelOf('run_command', sleep) }));
+      const view = container.querySelector<HTMLElement>('[data-step-view="command"]')!;
+      expect(view).toHaveTextContent('sleep 30');
+      expect(view.querySelector('[data-tool-result]')).toBeNull();
+      expect(within(view).queryByText('运行中…')).toBeNull();
+    });
+
+    it.each(['AbortError: Aborted', 'Error: AbortError: Aborted'])('says stopped on a step whose only error is the abort of Stop (%s)', (content) => {
+      const { container } = renderStopped([commandStep({
+        status: 'error', toolInput: sleep,
+        detailBlocks: [scriptBlock, { ...scriptBlock, id: 'step-1-error', type: 'error', label: 'Error', labelKey: 'error', content }],
+      })]);
+      expect(screen.getByRole('status', { name: '已停止' })).toBeInTheDocument();
+      expect(screen.queryByText('执行出错')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: labelOf('run_command', sleep) }));
+      const view = container.querySelector<HTMLElement>('[data-step-view="command"]')!;
+      expect(view).toHaveTextContent('sleep 30');
+      expect(view).not.toHaveTextContent('AbortError');
+    });
+
+    it('says stopped on a saved step whose call holds the abort of Stop', () => {
+      const legacy: WorkflowStep = {
+        id: 'call-1', type: 'command', label: labelOf('run_command', sleep), status: 'error', timestamp: 0,
+        toolName: 'run_command', toolInput: sleep, toolResult: 'Error: AbortError: Aborted',
+      };
+      render(<TaskBlock steps={[legacy]} isActive={false} isStopped />, { wrapper: DesignSystemProvider });
+      fireEvent.click(screen.getAllByRole('button')[0]);
+      expect(screen.getByRole('status', { name: '已停止' })).toBeInTheDocument();
+    });
+
+    it('keeps a step that failed with an error as failed', () => {
+      renderStopped([commandStep({
+        status: 'error', toolInput: sleep,
+        detailBlocks: [{ ...scriptBlock, id: 'step-1-error', type: 'error', label: 'Error', labelKey: 'error', content: 'boom' }],
+      })]);
+      expect(screen.queryByRole('status', { name: '已停止' })).toBeNull();
+      expect(screen.getByText('执行出错')).toBeInTheDocument();
+    });
+
+    it('keeps a finished step as finished', () => {
+      renderStopped([commandStep({ toolInput: sleep })]);
+      expect(screen.queryByRole('status', { name: '已停止' })).toBeNull();
+    });
+
+    it.each(['[已取消]', '[Cancelled]'])('says stopped on a saved step whose call Stop marked %s', (result) => {
+      const legacy: WorkflowStep = {
+        id: 'call-1', type: 'command', label: labelOf('run_command', sleep), status: 'completed', timestamp: 0,
+        toolName: 'run_command', toolInput: sleep, toolResult: result,
+      };
+      const { container } = render(<TaskBlock steps={[legacy]} isActive={false} isStopped />, { wrapper: DesignSystemProvider });
+      fireEvent.click(screen.getAllByRole('button')[0]);
+      expect(screen.getByRole('status', { name: '已停止' })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: labelOf('run_command', sleep) }));
+      const view = container.querySelector<HTMLElement>('[data-step-view="command"]')!;
+      expect(view).toHaveTextContent('sleep 30');
+      expect(view.querySelector('[data-tool-result]')).toBeNull();
+    });
+
+    it('keeps a saved step that a hook blocked as it was', () => {
+      const legacy: WorkflowStep = {
+        id: 'call-1', type: 'command', label: labelOf('run_command', sleep), status: 'completed', timestamp: 0,
+        toolName: 'run_command', toolInput: sleep, toolResult: '[被 hook 拦截]',
+      };
+      render(<TaskBlock steps={[legacy]} isActive={false} isStopped />, { wrapper: DesignSystemProvider });
+      fireEvent.click(screen.getAllByRole('button')[0]);
+      expect(screen.queryByRole('status', { name: '已停止' })).toBeNull();
+    });
+
+    it('leaves a running step running while the turn is not stopped', () => {
+      renderOpen([commandStep({ status: 'running', toolInput: sleep, detailBlocks: [scriptBlock] })]);
+      expect(screen.queryByRole('status', { name: '已停止' })).toBeNull();
+    });
+  });
+
+  it('keeps an image read as it is', () => {
+    const input = { path: '/w/shot.png' };
+    const { container } = renderOpen([commandStep({
+      type: 'file-read', toolName: 'read_file', toolInput: input,
+      detailBlocks: [{
+        id: 'step-1-image', stepId: 'step-1', type: 'image', label: 'Image', content: '',
+        isTruncated: false, isExpanded: true, imageData: { mediaType: 'image/png', base64: 'iVBORw0KGgo=' },
+      }],
+    })]);
+    const label = labelOf('read_file', input);
+    expect(screen.queryByRole('button', { name: label })).toBeNull();
+    expect(screen.getByText(label)).not.toHaveAttribute('aria-expanded');
+    expect(container.querySelector('img')).not.toBeNull();
+  });
+
+  it("gives an expert's nested step the view without a record", () => {
+    const child = commandStep({
+      id: 'child', toolCallId: 'call-child', toolInput: npmTest,
+      detailBlocks: [{
+        id: 'child-result', stepId: 'child', type: 'result', label: 'Result', labelKey: 'result',
+        content: 'hello\nworld', isTruncated: false, isExpanded: true,
+      }],
+    });
+    const delegate = commandStep({
+      id: 'd', toolCallId: 'call-d', type: 'delegate', toolName: 'delegate_to_agent', toolInput: { task: 'run the tests' },
+      detailBlocks: [], childSteps: [child],
+    });
+    const { container } = renderOpen([delegate], {
+      toolViewRecords: new Map([['call-child', { input: npmTest, commandOutcome: { exitCode: 2 } }]]),
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: labelOf('run_command', npmTest) }));
+    const view = container.querySelector<HTMLElement>('[data-step-view="command"]')!;
+    expect(within(view).getByText('输出')).toBeInTheDocument();
+    expect(view).toHaveTextContent('hello');
+    expect(view).toHaveTextContent('world');
+    expect(container.querySelector('[data-exit-code]')).toBeNull();
+    expect(container.querySelector('[data-line-numbers]')).toBeNull();
+  });
+
+  it('says the command ended under a non-zero exit', () => {
+    renderOpen([commandStep({ toolInput: npmTest, toolResult: 'FAIL' })], { toolViewRecords: commandRecord({ exitCode: 1 }) });
+    expect(screen.getByText('命令已结束：npm test')).toBeInTheDocument();
+  });
+
+  it.each([
+    ['read_file', 'file-read', { path: '/w/missing.md' }, 'Error reading file: ENOENT: no such file'],
+    ['http_fetch', 'tool', { url: pageUrl }, 'Error making HTTP request: fetch failed'],
+  ])('shows the failure text of a %s step that holds an error block, with the title colour of its status', (toolName, type, input, failure) => {
+    const step = commandStep({
+      type: type as ExecutionStep['type'], toolName, toolInput: input, status: 'completed',
+      detailBlocks: [{
+        id: 'step-1-error', stepId: 'step-1', type: 'error', label: 'Error', labelKey: 'error',
+        content: failure, isTruncated: false, isExpanded: true,
+      }],
+    });
+    const { container } = renderOpen([step], { toolResults: new Map([['call-1', failure]]) });
+    const title = screen.getByRole('button', { name: labelOf(toolName, input) });
+    fireEvent.click(title);
+    const failureText = container.querySelector<HTMLElement>('[data-step-view] [data-tool-result]')!;
+    expect(failureText).toHaveTextContent(failure);
+    expect(failureText).toHaveClass('text-danger');
+    const titleLine = title.closest('.pb-3')!.firstElementChild!;
+    expect(titleLine).not.toHaveClass('text-danger');
+    expect(titleLine).toHaveClass('text-label-tertiary');
+  });
+
+  it('shows the failure text of an error block saved in a snapshot, without the whole results', () => {
+    const failure = 'Error reading file: ENOENT: no such file';
+    const input = { path: '/w/missing.md' };
+    const step = commandStep({
+      type: 'file-read', toolName: 'read_file', toolInput: input, toolResult: undefined, label: labelOf('read_file', input),
+      detailBlocks: [{
+        id: 'step-1-error', stepId: 'step-1', type: 'error', label: 'Error', labelKey: 'error',
+        content: failure, isTruncated: false, isExpanded: true,
+      }],
+    });
+    const { container } = renderOpen(snapshotToExecutionSteps(snapshotExecutionSteps([step])), {
+      toolViewRecords: new Map([['call-1', { input }]]),
+    });
+    fireEvent.click(screen.getByRole('button', { name: labelOf('read_file', input) }));
+    const failureText = container.querySelector<HTMLElement>('[data-step-view] [data-tool-result]')!;
+    expect(failureText).toHaveTextContent(failure);
+    expect(failureText).toHaveClass('text-danger');
+  });
+
+  describe('a successful read of a file whose text starts with Error', () => {
+    const text = 'Error: line 1\nline 2';
+    const input = { path: '/w/error.log' };
+    const readStep = () => commandStep({
+      type: 'file-read', toolName: 'read_file', toolInput: input, status: 'completed', toolResult: text,
+      detailBlocks: [{
+        id: 'step-1-error', stepId: 'step-1', type: 'error', label: 'Error', labelKey: 'error',
+        content: text, isTruncated: false, isExpanded: true,
+      }],
+    });
+
+    it('opens the numbered view when the call has a read record', () => {
+      const { container } = renderOpen([readStep()], {
+        toolResults: new Map([['call-1', text]]),
+        toolViewRecords: new Map([['call-1', {
+          input, fileReadOutcome: { kind: 'text', startLine: 1, lineCount: 2, totalLines: 2, bodyStart: 0 },
+        }]]),
+      });
+      fireEvent.click(screen.getByRole('button', { name: labelOf('read_file', input) }));
+      const view = container.querySelector<HTMLElement>('[data-step-view]')!;
+      expect(view.querySelector('[data-line-numbers]')).toHaveTextContent('1 2');
+      expect(view).toHaveTextContent('Error: line 1');
+      expect(view.querySelector('.text-danger')).toBeNull();
+    });
+
+    it('opens the failure view when the call has no record', () => {
+      const { container } = renderOpen([readStep()], {
+        toolResults: new Map([['call-1', text]]),
+        toolViewRecords: new Map([['call-1', { input }]]),
+      });
+      fireEvent.click(screen.getByRole('button', { name: labelOf('read_file', input) }));
+      const view = container.querySelector<HTMLElement>('[data-step-view]')!;
+      expect(view.querySelector('[data-line-numbers]')).toBeNull();
+      expect(view.querySelector('[data-tool-result]')).toHaveClass('text-danger');
+    });
+  });
+
+  it('lists every result of a web search whose list block kept only the start of the result', () => {
+    const results = Array.from({ length: 8 }, (_, i) => ({
+      title: `Result ${i + 1}`, url: `https://example.com/article-${i + 1}`, snippet: `Snippet ${i + 1}`, source: 'example.com',
+    }));
+    const whole = `<!--SEARCH_JSON:${JSON.stringify(results)}-->\n\nResults`;
+    const input = { query: 'vitest' };
+    const step = commandStep({
+      type: 'tool', toolName: 'web_search', toolInput: input,
+      detailBlocks: [{
+        id: 'step-1-result', stepId: 'step-1', type: 'list', label: 'Result', labelKey: 'result',
+        content: whole.slice(0, 300), isTruncated: true, fullContentLength: whole.length, isExpanded: false,
+      }],
+    });
+    const { container } = renderOpen([step], { toolResults: new Map([['call-1', whole]]) });
+    fireEvent.click(screen.getByRole('button', { name: labelOf('web_search', input) }));
+    const view = container.querySelector<HTMLElement>('[data-step-view="web-search"]')!;
+    expect(view.querySelectorAll('a[target="_blank"]')).toHaveLength(8);
+  });
+
+  it('says the whole result is not in the conversation under the view', () => {
+    const { container } = renderOpen([commandStep({ toolInput: npmTest })], { toolResults: new Map() });
+    fireEvent.click(screen.getByRole('button', { name: labelOf('run_command', npmTest) }));
+    const view = container.querySelector<HTMLElement>('[data-step-view]')!;
+    expect(within(view).getByText('这段对话里没有这一步的完整结果')).toBeInTheDocument();
+  });
+});
+
+describe('TaskBlock — the step list', () => {
+  beforeEach(() => {
+    initLanguage('zh-CN');
+  });
+  afterEach(() => {
+    cleanup();
+    initLanguage('system');
+  });
+
+  const steps = (count: number, overrides: Partial<ExecutionStep> = {}) =>
+    Array.from({ length: count }, (_, index) => execCommandStep(`s${index + 1}`, `Step ${index + 1}`, overrides));
+  const header = (container: HTMLElement) => container.querySelector<HTMLElement>('.task-block > button')!;
+
+  it('lists every step without a show-more button', () => {
+    const { container } = render(<TaskBlock executionSteps={steps(10, { status: 'completed' })} isActive={false} />);
+    fireEvent.click(header(container));
+    for (let index = 1; index <= 10; index++) expect(screen.getByText(`Step ${index}`)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '查看更多' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '收起' })).toBeNull();
+  });
+
+  it('opens a running turn with every step', () => {
+    const { container } = render(<TaskBlock executionSteps={steps(5)} isActive />);
+    expect(header(container)).toHaveAttribute('aria-expanded', 'true');
+    for (let index = 1; index <= 5; index++) expect(screen.getByText(`Step ${index}`)).toBeInTheDocument();
+  });
+
+  it('puts the steps and the end node in one scrolling list', () => {
+    const { container } = render(<TaskBlock executionSteps={steps(2, { status: 'completed' })} isActive={false} />);
+    fireEvent.click(header(container));
+    const list = container.querySelector<HTMLElement>('[data-step-list]')!;
+    expect(list).toHaveClass('overflow-y-auto', 'max-h-[min(240px,50vh)]');
+    expect(within(list).getByText('Step 1')).toBeInTheDocument();
+    expect(within(list).getByText(getI18n().task.done)).toBeInTheDocument();
+  });
+
+  it('folds on the header and opens again on the header', () => {
+    const failed = [...steps(4, { status: 'completed' }), execCommandStep('s5', 'Step 5', { status: 'error' })];
+    const { container } = render(<TaskBlock executionSteps={failed} isActive={false} />);
+    const timeline = () => container.querySelector('.block-expand')!;
+
+    fireEvent.click(header(container));
+    expect(timeline()).toHaveClass('block-expand-open');
+    fireEvent.click(header(container));
+    expect(timeline()).toHaveClass('block-expand-closed');
+    fireEvent.click(header(container));
+    expect(timeline()).toHaveClass('block-expand-open');
+    for (let index = 1; index <= 5; index++) expect(screen.getByText(`Step ${index}`)).toBeInTheDocument();
   });
 });

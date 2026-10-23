@@ -247,6 +247,27 @@ describe('workflowExtractor', () => {
       expect(msg).toContain('...');
     });
 
+    it('says the command ended when the exit code is not zero', () => {
+      const result = 'stdout:\nx\n\nexit code: 1';
+      expect(generateCompletionMessage('run_command', { command: 'npm test' }, result, 'zh', undefined, { exitCode: 1 }))
+        .toBe('命令已结束：npm test');
+      expect(generateCompletionMessage('run_command', { command: 'npm test' }, result, 'en', undefined, { exitCode: 1 }))
+        .toBe('Command ended: npm test');
+    });
+
+    it('keeps the success wording for exit code zero and without a record', () => {
+      const result = 'stdout:\nx\n\nexit code: 0';
+      expect(generateCompletionMessage('run_command', { command: 'npm test' }, result, 'zh', undefined, { exitCode: 0 }))
+        .toBe('命令执行成功：npm test');
+      expect(generateCompletionMessage('run_command', { command: 'npm test' }, result, 'zh'))
+        .toBe('命令执行成功：npm test');
+    });
+
+    it('says the command failed when it never ran', () => {
+      expect(generateCompletionMessage('run_command', { command: 'npm test' }, 'Error executing command: spawn failed', 'zh'))
+        .toBe('执行失败');
+    });
+
     it('generates search completion with match count', () => {
       const msg = generateCompletionMessage('grep', {}, 'match1\nmatch2\nmatch3', 'zh');
       expect(msg).toContain('3');

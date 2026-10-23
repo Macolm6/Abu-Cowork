@@ -16,6 +16,7 @@
 import type { Message, StreamEvent, UpstreamErrorDetails } from '@/types';
 import type { ChatOptions, LLMAdapter, AdapterKind } from '@/core/llm/adapter';
 import { formatLlmTerminalError, LLMError, normalizeUpstreamErrorDetails } from '@/core/llm/adapter';
+import type { CapabilityRejectionClass } from '@/core/llm/capabilityRejection';
 import { createAdapterForKind } from '@/core/llm/createAdapter';
 import { createEventCoalescer } from './eventCoalescer';
 import { RpcError } from './protocol';
@@ -106,6 +107,7 @@ function errorDataFor(err: unknown): {
   statusCode?: number;
   upstream?: UpstreamErrorDetails;
   contextLimit?: number;
+  capabilityRejection?: CapabilityRejectionClass;
   message: string;
 } {
   if (err instanceof LLMError) {
@@ -118,6 +120,7 @@ function errorDataFor(err: unknown): {
       statusCode: err.statusCode,
       upstream,
       contextLimit: err.contextLimit,
+      capabilityRejection: err.capabilityRejection,
       message: formatLlmTerminalError(err),
     };
   }

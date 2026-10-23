@@ -1,0 +1,38 @@
+{
+  "url": "https://gateway.example.com/v1/chat/completions",
+  "body": {
+    "model": "my-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "What is in this picture?[The user attached 1 image(s), but the current model does not support image understanding, and the images cannot be viewed indirectly through tools such as read_file. Tell the user directly that the current model does not support image recognition, and suggest switching to a vision-capable model.]"
+      }
+    ],
+    "max_tokens": 8192,
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    },
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "read_file",
+          "description": "Read a file",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Path to file"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
+        }
+      }
+    ]
+  }
+}

@@ -61,6 +61,23 @@ describe('getToolLabel', () => {
       expect(getToolLabel('present_files', {}, 'zh-CN')).toEqual({ label: '交付了 0 个文件', detail: undefined });
     });
 
+    it('http_fetch names the page without the scheme, in both locales', () => {
+      const url = 'https://example.com/docs/api';
+      expect(getToolLabel('http_fetch', { url }, 'zh-CN')).toEqual({ label: '读取网页 example.com/docs/api', detail: url });
+      expect(getToolLabel('http_fetch', { url }, 'en-US')).toEqual({ label: 'Read page example.com/docs/api', detail: url });
+    });
+
+    it('http_fetch cuts a long address at 40 characters', () => {
+      const url = `https://example.com/${'a'.repeat(60)}`;
+      const { label } = getToolLabel('http_fetch', { url }, 'en-US');
+      expect(label.endsWith('…')).toBe(true);
+      expect(Array.from(label.slice('Read page '.length))).toHaveLength(41);
+    });
+
+    it('http_fetch without a url keeps the bare title', () => {
+      expect(getToolLabel('http_fetch', {}, 'zh-CN').label).toBe('读取网页');
+    });
+
     it('unknown tool falls back to Call/调用 in the right locale', () => {
       expect(getToolLabel('some_tool', {}, 'en-US').label).toBe('Call some_tool');
       expect(getToolLabel('some_tool', {}, 'zh-CN').label).toBe('调用 some_tool');

@@ -87,6 +87,9 @@
 
   --ds-font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", sans-serif;
   --ds-font-mono: "SF Mono", ui-monospace, "Cascadia Mono", Consolas, Menlo, "PingFang SC", "Microsoft YaHei UI", monospace;
+
+  /* Where the edge fade of a scrolling list starts: the last 24px toward the edge fade out. */
+  --ds-scroll-fade-start: calc(100% - 24px);
 }
 
 .dark {
