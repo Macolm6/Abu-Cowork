@@ -32,6 +32,7 @@ import abuAvatar from '@/assets/abu-avatar.png';
 import AgentAvatar from '@/components/common/AgentAvatar';
 import TeamAvatar from '@/components/team/TeamAvatar';
 import { isIntroductionMessage } from '@/core/team/expertContact';
+import { resumeTeamRunAfterRestart } from '@/core/team/resumeAfterRestart';
 
 // Regex to match [Attachment: `path`] patterns in user messages
 const ATTACHMENT_PATTERN = /\[Attachment:\s*`([^`]+)`\]/g;
@@ -410,6 +411,11 @@ export default function MessageBubble({
   // The application closed while this turn was running: what it produced is
   // kept, and the row offers to send the message again.
   const closedMidway = message.runState === 'interrupted' && message.runInterruptCause === 'app_exit';
+  // A team conversation continues from the interrupted row without cutting it
+  // (handleTeamResume), so the row keeps its state; the offer belongs only to
+  // the last request, and disappears once the continuation is sent.
+  const teamResumeOffered = closedMidway && Boolean(activeConv?.teamId)
+    && [...(activeConv?.messages ?? [])].reverse().find((m) => m.role === 'user' && !m.isSystem)?.id === message.id;
   // #549: an oversize turn can never succeed by retrying — the only way forward
   // is a fresh conversation, so the row swaps Retry for 「新建对话」.
   const isOversizeFailure = hasRunFailure && message.runErrorKind === 'payload_too_large';
@@ -497,6 +503,16 @@ export default function MessageBubble({
       redo,
       chatText: t.chat,
     });
+  };
+
+  // 「继续」 under a team message the app closed midway: the leader continues
+  // from what the conversation already holds, nothing is cut, and the run is
+  // the user's own send.
+  const handleTeamResume = async () => {
+    if (!activeConv || message.role !== 'user') return;
+    if (!ensureConversationModelUsable(activeConv, t.chat)) return;
+    announceChatTurnScrollIntent({ conversationId: activeConv.id, source: 'run-retry' });
+    await resumeTeamRunAfterRestart(activeConv.id);
   };
 
   const handleRegenerate = async () => {
@@ -729,15 +745,19 @@ export default function MessageBubble({
                   </InlineMessage>
                 </div>
               )}
-              {closedMidway && (
+              {closedMidway && (!activeConv?.teamId || teamResumeOffered) && (
                 <div className="max-w-2xl">
                   <InlineMessage
                     tone="info"
-                    action={!isConvRunning && (
+                    action={!isConvRunning && (activeConv?.teamId ? (
+                      <Button variant="secondary" size="sm" icon={AppIcons.continue} onClick={handleTeamResume}>
+                        {t.team.resumeAfterRestartAction}
+                      </Button>
+                    ) : (
                       <Button variant="secondary" size="sm" icon={AppIcons.retry} onClick={handleRunRetry}>
                         {t.chat.runResend}
                       </Button>
-                    )}
+                    ))}
                   >
                     {t.chat.runClosedMidway}
                   </InlineMessage>

@@ -19,60 +19,32 @@ function conversation(over: Partial<Conversation>): Conversation {
 describe('resumeTeamRunAfterRestart', () => {
   beforeEach(() => { initLanguage('zh-CN'); vi.clearAllMocks(); });
 
-  it('continues a team conversation with the original request and the interrupted turn', async () => {
+  it('continues a team conversation with the original request, as the user\'s own send', async () => {
     useChatStore.setState({ conversations: { c1: conversation({ teamId: 't1' }) } } as never);
-    await expect(resumeTeamRunAfterRestart('c1', 4)).resolves.toBe(true);
+    await expect(resumeTeamRunAfterRestart('c1')).resolves.toEqual({ reason: 'completed' });
     expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
-    const text = String(runAgentLoopDispatched.mock.calls[0][1]);
+    const [conversationId, text, options] = runAgentLoopDispatched.mock.calls[0] as [string, string, Record<string, unknown>];
+    expect(conversationId).toBe('c1');
     expect(text).toContain('出一版周报');
-    expect(text).toContain('4');
     expect(text).toContain('不要重做');
+    expect(options).toEqual({ initiatedBy: 'user' });
   });
 
-  it('tells the user when the restart could not be dispatched', async () => {
+  it('hands the dispatch result back unchanged', async () => {
     useChatStore.setState({ conversations: { c1: conversation({ teamId: 't1' }) } } as never);
     runAgentLoopDispatched.mockResolvedValueOnce({ reason: 'error', error: '模型未配置' } as never);
-    await expect(resumeTeamRunAfterRestart('c1', 3)).resolves.toBe(false);
-    const messages = useChatStore.getState().conversations.c1.messages;
-    const last = messages[messages.length - 1];
-    expect(last.isSystem).toBe(true);
-    expect(String(last.content)).toContain('模型未配置');
+    await expect(resumeTeamRunAfterRestart('c1')).resolves.toEqual({ reason: 'error', error: '模型未配置' });
   });
 
-  /**
-   * #549 — a system row is filtered out of the transcript unless it is marked
-   * a recovery notice, so without the flag this explanation was written and
-   * never shown.
-   */
-  it('#549: an unavailable sidecar on restart is explained in the conversation', async () => {
-    useChatStore.setState({ conversations: { c1: conversation({ teamId: 't1' }) } } as never);
-    runAgentLoopDispatched.mockResolvedValueOnce({
-      reason: 'error',
-      error: '后台服务没有启动成功，这条消息还没有发出。可点重试。',
-      messageTaken: true,
-      stopReason: 'sidecar_unavailable',
-    } as never);
-
-    await expect(resumeTeamRunAfterRestart('c1', 2)).resolves.toBe(false);
-
-    const messages = useChatStore.getState().conversations.c1.messages;
-    const last = messages[messages.length - 1];
-    expect(last.isSystem).toBe(true);
-    expect(last.isRecoveryNotice).toBe(true);
-    expect(String(last.content)).toContain('后台服务没有启动成功');
-  });
-
-  it('leaves plain, scheduled, trigger, IM and read-only conversations alone', async () => {
+  it('starts nothing for a plain, read-only, empty or missing conversation', async () => {
     useChatStore.setState({ conversations: {
       plain: conversation({ id: 'plain' }),
-      sched: conversation({ id: 'sched', teamId: 't1', scheduledTaskId: 'task' }),
-      trig: conversation({ id: 'trig', teamId: 't1', triggerId: 'tr' }),
-      im: conversation({ id: 'im', teamId: 't1', imChannelId: 'ch' }),
       ro: conversation({ id: 'ro', teamId: 't1', readOnly: true }),
       empty: conversation({ id: 'empty', teamId: 't1', messages: [] }),
+      systemOnly: conversation({ id: 'systemOnly', teamId: 't1', messages: [{ id: 's1', role: 'user', content: 'x', timestamp: 1, isSystem: true }] }),
     } } as never);
-    for (const id of ['plain', 'sched', 'trig', 'im', 'ro', 'empty', 'missing']) {
-      await expect(resumeTeamRunAfterRestart(id, 2)).resolves.toBe(false);
+    for (const id of ['plain', 'ro', 'empty', 'systemOnly', 'missing']) {
+      await expect(resumeTeamRunAfterRestart(id)).resolves.toBeNull();
     }
     expect(runAgentLoopDispatched).not.toHaveBeenCalled();
   });
