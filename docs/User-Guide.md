@@ -22,7 +22,7 @@ UI pages and controls are shown in **bold**. If an older screenshot or tutorial 
 
 ### 1. Install Abu
 
-Download the installer that matches your operating system and CPU architecture from the [Abu official website](https://myabu.cn/). See the [Installation Guide](Installation-Guide.md) for complete steps.
+Download the installer that matches your operating system and CPU architecture from the [Abu official website](https://abuwork.com/). See the [Installation Guide](Installation-Guide.md) for complete steps.
 
 Run only installers obtained through the download entry on the Abu official website. Official macOS packages are signed and notarized. The current Windows package may trigger SmartScreen, so verify its source and filename before continuing.
 

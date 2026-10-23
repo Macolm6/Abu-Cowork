@@ -76,7 +76,7 @@ test.describe.serial('Electron author page', () => {
     await expect(page.getByRole('button', { name: /小红书|Xiaohongshu/ })).toBeVisible();
     await expect(page.getByRole('button', { name: /^X$/ })).toBeVisible();
     await expect(page.getByRole('button', { name: /GitHub/ })).toBeVisible();
-    await expect(page.getByRole('button', { name: /myabu\.cn/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: /abuwork\.com/ })).toBeVisible();
     await expect(page.getByRole('button', { name: /^(免责声明|Disclaimer)$/ })).toBeVisible();
     await page.screenshot({ path: SHOT('page') });
 

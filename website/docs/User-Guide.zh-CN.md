@@ -22,7 +22,7 @@
 
 ### 1. 安装 Abu
 
-从 [阿布官网首页](https://myabu.cn/) 下载与你的系统和 CPU 架构匹配的安装包。完整步骤见 [安装指南](Installation-Guide.zh-CN.md)。
+从 [阿布官网首页](https://abuwork.com/) 下载与你的系统和 CPU 架构匹配的安装包。完整步骤见 [安装指南](Installation-Guide.zh-CN.md)。
 
 只运行通过阿布官网首页下载入口获取的安装包。macOS 官方包已经签名并公证；Windows 安装包当前可能触发 SmartScreen，请先核对下载来源和文件名。
 
