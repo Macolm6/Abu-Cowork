@@ -108,7 +108,7 @@ export default function AuthorSection() {
         <p className="text-ui">
           <span className="mr-2 text-label-tertiary">{t.author.website}</span>
           <Pressable onClick={() => void openLink(OFFICIAL_WEBSITE_URL)} className={TEXT_LINK}>
-            myabu.cn
+            abuwork.com
             <Icon icon={AppIcons.openExternal} size="sm" />
           </Pressable>
         </p>

@@ -537,6 +537,7 @@ jobs:
         shell: bash
         run: |
           cargo test --manifest-path electron/native-helper/Cargo.toml --bin tauri-transition-reader
+          cargo test --manifest-path electron/native-helper/Cargo.toml --test stdin_eof
 
       - name: Require all Windows gates
         if: ${{ always() && !cancelled() }}

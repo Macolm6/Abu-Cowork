@@ -152,7 +152,7 @@ test('installation paths start from the official website', () => {
 
   for (const file of files) {
     const source = read(file);
-    assert.ok(source.includes('https://myabu.cn/'), `${file} does not link to the official website`);
+    assert.ok(source.includes('https://abuwork.com/'), `${file} does not link to the official website`);
     assert.ok(
       !source.includes('https://github.com/PM-Shawn/Abu-Cowork/releases'),
       `${file} still routes installation through GitHub Releases`,

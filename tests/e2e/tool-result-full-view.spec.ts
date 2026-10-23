@@ -131,14 +131,23 @@ async function showSteps(page: Page): Promise<void> {
 }
 
 /**
- * Wait until `target` has stopped moving. Opening the work process or a group
- * of steps animates the boxes around the rows, and the conversation scrolls
- * along with it.
+ * Wait until `target` has stopped moving. Opening the work process, a group of
+ * steps or a step's view animates the boxes around it, and the conversation
+ * and the step list scroll along with it: no animation may hold an ancestor of
+ * `target`, and its box must keep its place and size across two frames.
  */
 async function waitUntilAtRest(target: Locator): Promise<void> {
-  await expect.poll(() => target.evaluate((element) => document.getAnimations()
-    .filter((animation) => (animation.effect as KeyframeEffect | null)?.target?.contains(element))
-    .length)).toBe(0);
+  await expect.poll(() => target.evaluate(async (element) => {
+    const animating = document.getAnimations()
+      .some((animation) => (animation.effect as KeyframeEffect | null)?.target?.contains(element));
+    const before = element.getBoundingClientRect();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const after = element.getBoundingClientRect();
+    return !animating
+      && before.top === after.top
+      && before.left === after.left
+      && before.height === after.height;
+  })).toBe(true);
 }
 
 /** The content column of the step whose label is `label`: the parent of the step's title line. */
@@ -148,9 +157,10 @@ function stepRow(page: Page, label: string): Locator {
 }
 
 /**
- * Open the step's result (or error) and return the area that shows it. A
- * command step opens its view from the title button of its row; the other
- * steps open their chip.
+ * Open the step's result (or error) and return the area that shows it, at rest:
+ * a press on its show-all button while the view still opens lands where the
+ * button was a moment before. A command step opens its view from the title button of its
+ * row; the other steps open their chip.
  */
 async function openBlock(row: Locator, name: '结果' | '错误'): Promise<Locator> {
   await waitUntilAtRest(row);
@@ -159,6 +169,7 @@ async function openBlock(row: Locator, name: '结果' | '错误'): Promise<Locat
   if ((await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click();
   const area = row.locator('[data-tool-result]');
   await expect(area).toBeVisible();
+  await waitUntilAtRest(area);
   return area;
 }
 
