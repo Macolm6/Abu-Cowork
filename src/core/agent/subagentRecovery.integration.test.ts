@@ -1846,4 +1846,40 @@ describe('subagent max_tokens recovery (integration)', () => {
       vi.mocked(scanMemoryFiles).mockResolvedValue([]);
     }
   });
+
+  describe('model family working notes', () => {
+    const done = () => emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]);
+
+    async function systemPromptFor(modelId: string): Promise<string> {
+      mockResolveAgentModel.mockReturnValue(modelId);
+      mockClaudeChat.mockImplementation(done());
+      await runSubagentLoop({ agent, task: 'task' });
+      return (mockClaudeChat.mock.calls[0][1] as { systemPrompt?: string }).systemPrompt ?? '';
+    }
+
+    it('appends the GPT family notes after the agent prompt and before the safety rules', async () => {
+      const systemPrompt = await systemPromptFor('gpt-5.6-sol');
+      expect(systemPrompt).toContain('## Working notes for this model');
+      expect(systemPrompt).toContain('apply_patch');
+      expect(systemPrompt.indexOf('sys')).toBeLessThan(systemPrompt.indexOf('## Working notes for this model'));
+      expect(systemPrompt.indexOf('## Working notes for this model')).toBeLessThan(systemPrompt.indexOf('## Safety Rules'));
+      // Only the notes: the family's planning text is the main loop's, never a subagent's.
+      expect(systemPrompt).not.toContain('Execution Rules');
+    });
+
+    it('appends the DeepSeek family notes for a deepseek model', async () => {
+      const systemPrompt = await systemPromptFor('deepseek-v4-pro');
+      expect(systemPrompt).toContain('Do not call get_system_info');
+      expect(systemPrompt).not.toContain('apply_patch');
+    });
+
+    it('adds nothing for a family without notes', async () => {
+      const systemPrompt = await systemPromptFor('qwen3-max');
+      expect(systemPrompt).not.toContain('## Working notes for this model');
+      expect(systemPrompt.indexOf('sys')).toBeLessThan(systemPrompt.indexOf('## Safety Rules'));
+    });
+  });
 });
