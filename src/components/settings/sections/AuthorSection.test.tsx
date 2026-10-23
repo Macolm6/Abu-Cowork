@@ -58,7 +58,7 @@ describe('AuthorSection', () => {
   it('links the product website from the footer', async () => {
     renderPage();
 
-    await userEvent.click(screen.getByRole('button', { name: /myabu\.cn/ }));
+    await userEvent.click(screen.getByRole('button', { name: /abuwork\.com/ }));
 
     expect(openUrl).toHaveBeenCalledWith(OFFICIAL_WEBSITE_URL);
   });

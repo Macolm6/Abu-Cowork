@@ -27,7 +27,7 @@
 //! src/ax.rs, macOS-only).
 
 use std::io::{BufRead, Write};
-use std::sync::{Arc, Mutex, OnceLock, RwLock, atomic::{AtomicBool, AtomicUsize, Ordering}, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, atomic::{AtomicUsize, Ordering}, mpsc};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(not(target_os = "windows"))]
@@ -1206,7 +1206,7 @@ fn handle(method: &str, params: &Value) -> Result<Value, HelperError> {
 
 const MAX_QUEUED_REQUEST_BYTES: usize = 64 * 1024 * 1024;
 
-fn read_requests(sender: mpsc::SyncSender<(WireRequest, usize)>, queued_bytes: Arc<AtomicUsize>, disconnected: Arc<AtomicBool>) {
+fn read_requests(sender: mpsc::SyncSender<(WireRequest, usize)>, queued_bytes: Arc<AtomicUsize>) {
     let stdin = std::io::stdin();
     let mut input = stdin.lock();
     loop {
@@ -1262,7 +1262,6 @@ fn read_requests(sender: mpsc::SyncSender<(WireRequest, usize)>, queued_bytes: A
         }
     }
     file_operation::cancel_all();
-    disconnected.store(true, Ordering::Release);
 }
 
 fn main() {
@@ -1275,14 +1274,13 @@ fn main() {
     let _ = started_at_ms();
     let (sender, receiver) = mpsc::sync_channel(32);
     let queued_bytes = Arc::new(AtomicUsize::new(0));
-    let disconnected = Arc::new(AtomicBool::new(false));
     let reader_bytes = Arc::clone(&queued_bytes);
-    let reader_disconnected = Arc::clone(&disconnected);
-    let reader = std::thread::spawn(move || read_requests(sender, reader_bytes, reader_disconnected));
+    let reader = std::thread::spawn(move || read_requests(sender, reader_bytes));
+    // Every request read before stdin closes is answered: the loop ends when
+    // the reader has dropped its sender and the queue is empty.
     while let Ok((wire, size)) = receiver.recv() {
         queued_bytes.fetch_sub(size, Ordering::AcqRel);
         file_operation::discard_cancelled();
-        if disconnected.load(Ordering::Acquire) { break; }
         if let Ok(mut active) = ACTIVE_REQUEST_CONTEXT.get_or_init(|| RwLock::new(None)).write() {
             *active = wire.context.clone();
         }
