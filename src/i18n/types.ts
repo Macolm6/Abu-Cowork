@@ -5356,6 +5356,8 @@ export interface TranslationDict {
       docCheckSameNameElsewhere: string;
       /** File locked by another agent. {path} */
       errFileLocked: string;
+      /** write_file refused to overwrite a file this agent has not read, or that changed since it read it. {path} */
+      errWriteNeedsRead: string;
       /** delete_file succeeded — moved to OS Trash. {path} */
       movedToTrash: string;
       /** delete_file failed — fail-closed, nothing was deleted. {error} */

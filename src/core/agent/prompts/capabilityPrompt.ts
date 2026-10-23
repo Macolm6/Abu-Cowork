@@ -120,7 +120,7 @@ ${visualOutput}
 **Editing an already-exported file**:
 - ⚠️ Once a file is written to disk, **partial edits must use edit_file** (provide old_content + new_content for an exact replacement)
 - ❌ Never use write_file to fully overwrite an existing multi-section document (report / long HTML / long code) — it loses content the user didn't ask to change
-- ✅ If you truly need to rebuild the whole file structure, first run_command to delete the original file, then write_file to create a new one
+- ✅ If you truly need to rewrite the whole file, first read_file to read its current content, then write_file
 
 **Style requirement (exported/write_file documents only)**: use a light/white background, no dark/black background — a standalone file has no host theme to follow. (This is the opposite of the inline visual path above, which is theme-aware by design because it renders inside Abu's chat.)
 

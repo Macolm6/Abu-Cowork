@@ -212,6 +212,11 @@ describe('executeLocalTool — read_file (text)', () => {
   beforeEach(() => {
     vi.mocked(readTextFile).mockReset();
     vi.mocked(stat).mockReset();
+    vi.mocked(exists).mockResolvedValue(true);
+  });
+
+  afterEach(() => {
+    vi.mocked(exists).mockResolvedValue(false);
   });
 
   it('runs locally and returns file content for a plain text file', async () => {
@@ -226,6 +231,11 @@ describe('executeLocalTool — read_file PDF/PPTX/archive escalation (P1-3d-4)',
   beforeEach(() => {
     vi.mocked(readTextFile).mockReset();
     vi.mocked(stat).mockReset();
+    vi.mocked(exists).mockResolvedValue(true);
+  });
+
+  afterEach(() => {
+    vi.mocked(exists).mockResolvedValue(false);
   });
 
   it.each([
