@@ -124,6 +124,7 @@ import { resolveImagePolicy } from '../llm/imagePolicy';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelDeclared } from '../llm/resolveModelDeclared';
 import { resolveModelProfile } from '../llm/modelProfile';
+import { recordCapabilityRejection, rejectedCapabilities } from '../llm/rejectionMemory';
 import { rehydrateForSend, type ImageBase64Cache } from '../llm/imageRehydration';
 import { TOOL_NAMES, isDisplayHiddenStepBackedTool } from '../tools/toolNames';
 import { adaptComputerToolForTier } from '../tools/definitions/computerToolText';
@@ -2025,6 +2026,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         modelId: effectiveModelId,
         provider: activeProvider,
         declared: modelDeclared,
+        overrides: rejectedCapabilities(activeProvider?.id, effectiveModelId),
       });
       // Image limits belong to the route, not to Abu: the same picture is fine
       // for DeepSeek and a 400 from Anthropic. Resolved from the model actually
@@ -2445,6 +2447,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         reasoningEffort: reasoningParams.reasoningEffort,
         supportsVision: modelCaps.vision,
         declaredCapabilities: modelDeclared,
+        // Capabilities this model rejected earlier in the session: the adapter
+        // may run in another process, so the loop's memory travels with the call.
+        capabilityOverrides: [...rejectedCapabilities(activeProvider?.id, effectiveModelId)],
         builtinWebSearch,
         // When the adapter's max_tokens auto-retry succeeds, persist the
         // discovered limit so the next request uses it pre-emptively.
@@ -2844,6 +2849,30 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             }
             throw retryErr2;
           }
+        } else if (retryErr instanceof LLMError && retryErr.capabilityRejection) {
+          // 服务说不认识请求里的某项能力：记进本会话的拒绝记忆，按关掉该项的档案重发同一请求一次。
+          // 同一个模型的同一类别只重试一次，第二次仍被拒绝就按普通错误报告。
+          const rejected = retryErr.capabilityRejection;
+          const firstRejection = recordCapabilityRejection(activeProvider?.id, effectiveModelId, rejected);
+          if (!firstRejection) throw retryErr;
+          logger.warn('Provider rejected a request capability; retrying once without it', {
+            capability: rejected,
+            modelId: effectiveModelId,
+            providerId: activeProvider?.id ?? 'unknown',
+          });
+          const rejectionBudgetResult = await buildProviderAttemptMessages(
+            preparedMessages,
+            contextWindowSize,
+            maxOutputTokens,
+          );
+          await adapter.chat(
+            rejectionBudgetResult.messages,
+            {
+              ...chatOptions,
+              capabilityOverrides: [...rejectedCapabilities(activeProvider?.id, effectiveModelId)],
+            },
+            eventHandler,
+          );
         } else {
           throw retryErr;
         }
