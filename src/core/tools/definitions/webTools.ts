@@ -3,6 +3,7 @@ import { getTauriFetch } from '../../llm/tauriFetch';
 import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
+import { scaledTruncationRule, truncateText } from '../../context/truncation';
 
 /**
  * Extract article content from raw HTML using Mozilla Readability.
@@ -161,7 +162,7 @@ export const httpFetchTool: ToolDefinition = {
     },
     required: ['url'],
   },
-  execute: async (input) => {
+  execute: async (input, context) => {
     const url = input.url as string;
     const method = ((input.method as string) || 'GET').toUpperCase();
     const headers = (input.headers as Record<string, string>) || {};
@@ -228,11 +229,28 @@ export const httpFetchTool: ToolDefinition = {
       let responseBody = await response.text();
       const contentType = response.headers.get('content-type') || '';
 
+      // Cut the body here, so the recorded body range points into the result.
+      const statusLine = `HTTP ${response.status} ${response.statusText}`;
+      const withStatus = (pageBody: string): string => {
+        const rule = scaledTruncationRule(TOOL_NAMES.HTTP_FETCH, context?.contextUsagePercent);
+        const bodyText = truncateText(pageBody, { ...rule, maxChars: rule.maxChars - statusLine.length - 2 });
+        const bodyStart = statusLine.length + 2;
+        context?.reportMetadata?.({
+          httpFetchOutcome: {
+            status: response.status,
+            statusText: response.statusText,
+            body: [bodyStart, bodyStart + bodyText.length],
+            truncated: bodyText !== pageBody,
+          },
+        });
+        return `${statusLine}\n\n${bodyText}`;
+      };
+
       // Article extraction for HTML responses
       if (extract === 'article' && contentType.includes('text/html')) {
         const article = await extractArticle(responseBody, url);
         if (article) {
-          return `HTTP ${response.status} ${response.statusText}\n\n${article}`;
+          return withStatus(article);
         }
         // Fallback to raw if extraction fails
       }
@@ -246,11 +264,7 @@ export const httpFetchTool: ToolDefinition = {
         }
       }
 
-      if (responseBody.length > MAX_RESPONSE_LENGTH) {
-        responseBody = responseBody.slice(0, MAX_RESPONSE_LENGTH) + `\n\n... [Truncated: response was ${responseBody.length} chars, showing first ${MAX_RESPONSE_LENGTH}]`;
-      }
-
-      return `HTTP ${response.status} ${response.statusText}\n\n${responseBody}`;
+      return withStatus(responseBody);
     } catch (err) {
       return `Error making HTTP request: ${err instanceof Error ? err.message : String(err)}`;
     }

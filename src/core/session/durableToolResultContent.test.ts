@@ -259,4 +259,29 @@ describe('durable tool-result storage budget', () => {
 
     expect(bounded).toEqual([reduced]);
   });
+
+  it('keeps the three outcome records of a call that is reduced', () => {
+    const call: ToolCall = {
+      id: 'call-outcomes',
+      name: 'run_command',
+      input: { command: 'npm test' },
+      result: 'Exit code: 1',
+      commandOutcome: { exitCode: 1, stdout: [8, 20], stderr: [30, 41] },
+      fileReadOutcome: { kind: 'text', startLine: 200, lineCount: 100, totalLines: 1500, bodyStart: 60 },
+      httpFetchOutcome: { status: 404, statusText: 'Not Found', body: [20, 90], truncated: false },
+      noticeCard: { type: 'skill-proposal', id: 'x'.repeat(200) } as ToolCall['noticeCard'],
+    };
+    const { noticeCard: _dropped, ...reduced } = call;
+    // The early size estimate counts every array index like an object key, so the
+    // budget leaves room for the six numbers of the three ranges.
+    const maxBytes = jsonBytes([reduced]) + 64;
+    expect(maxBytes).toBeLessThan(jsonBytes([call]));
+
+    const bounded = boundToolCallRichContent([call], { maxBytes })!;
+
+    expect(bounded).toEqual([reduced]);
+    expect(bounded[0].commandOutcome).toEqual(call.commandOutcome);
+    expect(bounded[0].fileReadOutcome).toEqual(call.fileReadOutcome);
+    expect(bounded[0].httpFetchOutcome).toEqual(call.httpFetchOutcome);
+  });
 });

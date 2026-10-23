@@ -122,6 +122,11 @@ describe('cn() — design-system tokens', () => {
   it('lets a heatmap step replace the empty-day fill', () => {
     expect(cn('bg-fill', 'bg-heat-2')).toBe('bg-heat-2');
   });
+
+  it('keeps the top and the bottom scroll fade together', () => {
+    const fades = 'mask-t-from-(--ds-scroll-fade-start) mask-b-from-(--ds-scroll-fade-start)';
+    expect(cn('max-h-[min(400px,50vh)] overflow-y-auto', fades)).toBe(`max-h-[min(400px,50vh)] overflow-y-auto ${fades}`);
+  });
 });
 
 // A ds button writes its hover and pressed classes `not-aria-disabled:hover:` / `:active:` (off

@@ -595,7 +595,10 @@ export async function executeLocalTool(
 
   let result: ToolResult;
   try {
-    result = await entry.tool.execute(input, context);
+    result = await entry.tool.execute(
+      input,
+      contextUsagePercent !== undefined ? { ...context, contextUsagePercent } : context,
+    );
   } catch (err) {
     if (err instanceof LocalToolUnsupportedError) throw err;
     // Parity with the reverse path: there, a thrown error is stringified by
