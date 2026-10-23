@@ -493,13 +493,6 @@ if (!app.requestSingleInstanceLock()) {
     // Fallback for a platform where the pre-ready resolution above failed;
     // idempotent, so it is a no-op on the normal path.
     configureRuntimeObservability(app);
-    // Voice input: only the main window's page may capture audio (and on macOS
-    // only after OS consent). Installed before any window can request media.
-    installMicrophonePermissions(session.defaultSession, {
-      platform: process.platform,
-      systemPreferences,
-      isTrustedMainWindowPage,
-    });
     // Quiet E2E launches: drop the Dock icon before any window exists so the
     // app never becomes frontmost (see windowShowPolicy.cjs).
     if (windowShowPolicy.hideDock && app.dock) {
@@ -585,6 +578,16 @@ if (!app.requestSingleInstanceLock()) {
         path: sidecarPathFor(app),
       });
     }
+    // Voice input: only the main window's page may capture audio (and on macOS
+    // only after OS consent). Installed before any window can request media.
+    // Touching session.defaultSession opens Chromium's state files under
+    // userData, which Windows then holds locked, so it waits until the legacy
+    // inspection and the Chromium state backup above have read them.
+    installMicrophonePermissions(session.defaultSession, {
+      platform: process.platform,
+      systemPreferences,
+      isTrustedMainWindowPage,
+    });
     createWindow(transitionWindow);
     app.on('activate', () => {
       // Dock-icon click / reactivation. Target the tracked MAIN window
