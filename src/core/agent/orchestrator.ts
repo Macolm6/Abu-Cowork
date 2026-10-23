@@ -219,7 +219,6 @@ export function routeInput(input: string): RouteResult {
  * - Base agent persona
  * - Workspace context (if set) or session output directory
  * - Skill content (if routed to a skill)
- * - Active skills content (injected via use_skill tool)
  * - Available skills list for discovery
  */
 /** IM headless context — passed from channelRouter to avoid UI interaction tools */
@@ -841,8 +840,9 @@ ${openingAppsGuidance(isWindows())}
     if (route.definition) await pushAgentPreloadedSkills(sections, route.definition);
   }
 
-  // NOTE: Active skills content (from use_skill tool) is now injected dynamically
-  // per-turn inside agentLoop via loadActiveSkillContent(), not here.
+  // NOTE: Active skill instructions are not built here. Skills already active
+  // at entry get their section in entryOrchestration.ts; a skill activated
+  // mid-run returns its instructions in the use_skill tool result.
 
   // List available skills for discovery
   // Apply context budget: max(16K chars, contextWindow × 2%)

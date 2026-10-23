@@ -16,6 +16,10 @@ describe('microCompactor', () => {
       expect(shouldMicroCompact('update_memory', 'x'.repeat(7000))).toBe(false);
     });
 
+    it('returns false for use_skill, whose result is the skill instructions', () => {
+      expect(shouldMicroCompact('use_skill', 'x'.repeat(40000))).toBe(false);
+    });
+
     it('returns false at exact threshold', () => {
       expect(shouldMicroCompact('read_file', 'x'.repeat(6000))).toBe(false);
     });

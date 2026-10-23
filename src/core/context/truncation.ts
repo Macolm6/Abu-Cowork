@@ -40,10 +40,13 @@ const TRUNCATION_RULES: Record<string, TruncationRule> = {
 const DEFAULT_RULE: TruncationRule = { headLines: 0, tailLines: 0, maxChars: 3500 };
 
 /**
- * Tools that cut their own output in `execute` (see `commandTools.ts` and
- * `webTools.ts`), so the positions they record stay valid in the result.
+ * Tools whose result is never cut here, at any context pressure. `run_command`
+ * and `http_fetch` cut their own output in `execute` (see `commandTools.ts`
+ * and `webTools.ts`), so the positions they record stay valid in the result.
+ * `use_skill` returns the skill's instructions: the model has to follow all
+ * of them, and a cut drops rules silently.
  */
-const SELF_BOUNDED_TOOLS = new Set<string>([TOOL_NAMES.RUN_COMMAND, TOOL_NAMES.HTTP_FETCH]);
+const UNTRUNCATED_TOOLS = new Set<string>([TOOL_NAMES.RUN_COMMAND, TOOL_NAMES.HTTP_FETCH, TOOL_NAMES.USE_SKILL]);
 
 /**
  * Per-tool overrides for MCP servers, matched on the tool suffix of a
@@ -142,7 +145,7 @@ export const CHARS_OMITTED_LINE = /^\[\.\.\. (\d+) characters omitted \.\.\.\]$/
  */
 export function truncateToolResult(toolName: string, result: string, contextUsagePercent?: number): string {
   if (!result) return result;
-  if (SELF_BOUNDED_TOOLS.has(toolName)) return result;
+  if (UNTRUNCATED_TOOLS.has(toolName)) return result;
 
   const rule = scaledTruncationRule(toolName, contextUsagePercent);
   if (rule.keep === 'end') {

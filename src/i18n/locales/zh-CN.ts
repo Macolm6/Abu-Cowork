@@ -3967,11 +3967,10 @@ const zhCN: TranslationDict = {
       fwUnknownAction: '未知操作: {action}',
     },
     agent: {
-      skillAlreadyActive: '技能 "{skillName}" 已在本对话激活，无需重复调用。直接根据已注入的技能指令继续工作。',
       skillBlockedByPolicy: '技能 "{skillName}" 已被所在组织的策略禁用，不能使用。不要换别的方式使用它（例如直接读取它的文件）；请告诉用户这个技能被组织策略禁用了。',
       skillLoaded: '已加载技能 "{name}": {description}',
       skillContextLine: '\n用户上下文: {context}',
-      skillInjected: '\n技能指令已注入本轮系统提示，任务结束后自动释放。',
+      skillInstructionsFollow: '\n请按照下面的技能指令完成任务：',
       errAgentNotFound: 'Error: 专家 "{agentName}" 未找到。可用专家: {available}。也可使用系统角色 type: {presetList}',
       errNotTeamMember: 'Error: "{agentName}" 不在本专家团名单里。只能委派给专家：{roster}',
       errDispatchCapReached: 'Error: 本次任务已达到派活上限（{max} 次）。不要再派活、也不要绕过：把已完成的产出汇总给用户，说明哪些步骤没做完、卡在哪里。',
