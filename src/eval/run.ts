@@ -228,7 +228,6 @@ async function runFileEdit() {
   // The real system prompt sections, built the same way the tool-selection
   // eval builds them; the workspace is the run's root folder, and the target
   // model's profile picks the family's prompt fragments.
-  const { resolveModelProfile } = await import('@/core/llm/modelProfile');
   const route = routeInput('');
   const familyPrompt = familyPromptEnabled();
   const profile = familyPrompt ? resolveModelProfile({ modelId: target.modelId, baseUrl }) : undefined;
