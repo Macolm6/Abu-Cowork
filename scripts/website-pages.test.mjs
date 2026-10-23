@@ -198,7 +198,8 @@ test('release notes live on the documentation page, the home page keeps version 
   assert.ok(viewer.includes("'changelog': { changelog: 'docs/release-notes.zh-CN.md', title: '更新日志' }"));
   assert.ok(viewer.includes("'changelog': { changelog: 'docs/release-notes.md', title: 'Release notes' }"));
   assert.ok(viewer.includes("const RELEASE_METADATA = 'https://abu-agent.oss-cn-beijing.aliyuncs.com/electron/latest-release.json';"));
-  assert.ok(viewer.includes('keep = numbers !== null && isReleased(numbers, latest);'), 'only released versions are shown');
+  assert.ok(viewer.includes('keep = numbers !== null && isReleased(numbers, latest) && isReleased(OLDEST_SHOWN, numbers);'), 'only released versions from v0.31.0 on are shown');
+  assert.ok(viewer.includes('const OLDEST_SHOWN = [0, 31, 0];'), 'both pages start at the version where the changelogs split by language');
   for (const source of [read('docs.zh-CN.html'), read('docs.html')]) {
     assert.ok(source.includes('<div class="wrap docs" id="docs">'));
     assert.ok(source.includes('class="docs-rail"') && source.includes('id="contents"'), 'the page has the contents column');
