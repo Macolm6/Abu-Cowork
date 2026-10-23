@@ -3,6 +3,9 @@ import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { normalizeSeparators, joinPath, getBaseName } from '@/utils/pathUtils';
 import { parseArgs } from '@/utils/argsParser';
 import { presentedFileNames, getToolLabel as getLocalizedToolLabel, type ToolLabelRecord } from '@/utils/toolLabels';
+import { format } from '@/i18n';
+import zhCN from '@/i18n/locales/zh-CN';
+import enUS from '@/i18n/locales/en-US';
 
 /**
  * Check if a tool result indicates a real tool execution error.
@@ -269,7 +272,8 @@ export function generateCompletionMessage(
   input: Record<string, unknown>,
   result: string,
   locale: string = 'zh',
-  _executionTime?: number
+  _executionTime?: number,
+  outcome?: { exitCode?: number },
 ): string {
   const isZh = locale.startsWith('zh');
   const path = (input.path || input.file_path || input.filePath) as string | undefined;
@@ -337,6 +341,9 @@ export function generateCompletionMessage(
       const shortCmd = cmd ? (cmd.length > 15 ? cmd.slice(0, 15) + '...' : cmd) : '';
       if (!isSuccess) {
         return isZh ? `执行失败` : `Command failed`;
+      }
+      if (outcome?.exitCode !== undefined && outcome.exitCode !== 0) {
+        return format((isZh ? zhCN : enUS).task.commandEnded, { command: shortCmd });
       }
       return isZh
         ? `命令执行成功${shortCmd ? `：${shortCmd}` : ''}`

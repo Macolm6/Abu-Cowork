@@ -28,7 +28,8 @@ import { getSkillsGuidance } from './prompts/skillsGuidance';
 import { buildResponseLanguageSection } from './prompts/responseLanguage';
 import { commandsFirstGuidance, openingAppsGuidance, structuredComputerUseGuidance } from './prompts/computerUseGuidance';
 import { BROWSER_NARRATION_RULES } from './browserNarrationRules';
-import { PRESENT_FILES_RULE_WHEN_OFFERED } from './prompts/presentFilesGuidance';
+import { SYSTEM_SETTINGS_TOOL_LINE } from './prompts/variants/default';
+import { resolvePromptVariant, type PromptVariantSource } from './prompts/variants';
 import type { PromptSection } from '../llm/promptSections';
 import type { TeamRouteContext } from '../team/leaderRoute';
 import { buildTeamRoleBlock, buildTeamAvailableAgentsText } from '../team/leaderRoute';
@@ -75,55 +76,7 @@ export function formatAvailableAgentTools(
   return `(Tools: ${formatDeclaredToolNames(allowed.values)}${exclusions})`;
 }
 
-// Planning instruction - AI must call report_plan for complex tasks, but simple questions can be answered directly
-const PLANNING_INSTRUCTION = `
-## Execution Rules (must follow)
-
-**After receiving a task, choose an execution approach based on the situation:**
-
-### Situation A: Can be answered without any tools (casual chat, knowledge Q&A, calculation, translation, writing, capability inquiries ("can you…?" / "do you support…?") etc.)
-→ Reply directly — no tools needed, no report_plan needed
-
-### Situation B: User requests an **actionable task** that matches a skill's TRIGGER condition
-→ First call use_skill to activate the matching skill
-→ Then complete the task following the skill's instructions (the skill defines its own workflow)
-
-### Situation C: Task matches a specific agent's expertise
-→ First call report_plan to list the steps
-→ Then call delegate_to_agent to delegate the task
-→ After receiving the result, summarize and present it to the user
-
-### Situation D: Task requires actions and you know exactly how to complete them (file operations, system operations, etc.)
-→ First call report_plan, then execute
-
-### Situation E: Task involves something you are unsure about (unfamiliar terms, information that needs research)
-→ First use web_search to learn about it, then call report_plan, then execute
-→ Do not plan before searching — planning without information leads to incorrect assumptions
-
-**Decision priority: B > C > D/E > A**
-When a skill's TRIGGER condition matches, prefer using the skill.
-When a task matches an agent's expertise, prefer delegating to that agent.
-
-### Tool selection principles (apply when executing Situation D/E)
-
-When performing operations, prefer efficient tools — avoid inefficient approaches:
-- Read file contents → read_file, not computer screenshots
-- List directory contents → list_directory, not computer screenshots of the desktop
-- Rename/move/copy files → run_command (mv/cp), not Finder GUI
-- Edit files → edit_file or write_file, not clicking in an editor via computer
-- Search for files → find_files or search_files, not computer screenshots
-- Fetch web information → web_search or http_fetch, not opening a browser and screenshotting
-- System settings → run_command (osascript/defaults), not screenshotting system settings
-- ${PRESENT_FILES_RULE_WHEN_OFFERED} Do not run macOS \`open\`, Windows \`start\`/\`Start-Process\`, or launch a system browser unless the user explicitly asks for an external/system browser
-- Use computer only when you must view the screen or interact with a GUI
-
-The last step of a multi-step task should be verification (e.g. list_directory to confirm file operations) — do not rely solely on execution output.
-
-### Interactive clarification (ask_user_question)
-When requirements are unclear or multiple equivalent paths exist, prefer ask_user_question to present the user with options rather than making assumptions. If there is a sensible default, use it directly. Dangerous operations still go through the permission confirmation mechanism — do not use this tool for those.
-`;
-
-/** Examples appended to PLANNING_INSTRUCTION on first turn only — saves ~400 tokens per subsequent turn */
+/** Examples appended to the planning text on first turn only — saves ~400 tokens per subsequent turn */
 const PLANNING_EXAMPLES = `
 ### Execution Examples
 
@@ -316,6 +269,7 @@ export async function buildSystemPrompt(
   imContext?: IMContext,
   turnCount?: number,
   toolContext?: ToolExecutionContext,
+  profile?: PromptVariantSource,
 ): Promise<string> {
   const sections = await buildSystemPromptSections(
     route,
@@ -324,6 +278,7 @@ export async function buildSystemPrompt(
     imContext,
     turnCount,
     toolContext,
+    profile,
   );
   return sectionsToString(sections);
 }
@@ -382,6 +337,10 @@ async function pushAgentPreloadedSkills(
  *
  * Volatile sections (current time, MCP capabilities, active skills) change every turn
  * and are sent without cache_control.
+ *
+ * `profile` is the model profile of the model this run talks to; its
+ * `harness.promptVariant` picks the family's prompt fragments
+ * (prompts/variants). Without a profile the default fragments are used.
  */
 export async function buildSystemPromptSections(
   route: RouteResult,
@@ -390,10 +349,19 @@ export async function buildSystemPromptSections(
   imContext?: IMContext,
   turnCount?: number,
   toolContext?: ToolExecutionContext,
+  profile?: PromptVariantSource,
 ): Promise<PromptSection[]> {
   const sections: PromptSection[] = [];
   const isSkillMode = route.type === 'skill' && route.skillContent;
   const isForkContext = isSkillMode && route.skill?.context === 'fork';
+  const variant = resolvePromptVariant(profile);
+  const personaText = variant.persona ?? basePrompt;
+  const identityText = variant.persona ?? DEFAULT_PERSONA;
+  // The family's notes sit right after the identity / planning block, inside
+  // the cacheable prefix; a family without notes adds no section.
+  const familyNotesSection: PromptSection | null = variant.familyNotes
+    ? { name: 'family-notes', text: '\n' + variant.familyNotes, cacheable: true }
+    : null;
 
   // Preprocess skill content if available
   let processedSkillContent = route.skillContent ?? '';
@@ -474,34 +442,37 @@ export async function buildSystemPromptSections(
     // Use agent-specific persona if skill.agent is set
     if (route.skill.agent) {
       const agentDef = agentRegistry.getAgent(route.skill.agent);
-      sections.push({ name: 'identity', text: '\n## Identity\n' + (agentDef?.systemPrompt || DEFAULT_PERSONA), cacheable: true });
+      sections.push({ name: 'identity', text: '\n## Identity\n' + (agentDef?.systemPrompt || identityText), cacheable: true });
       // Outside the prompt check on purpose — see pushAgentPreloadedSkills.
       await pushAgentPreloadedSkills(sections, agentDef, skillSectionPreloaded);
     } else {
-      sections.push({ name: 'identity', text: '\n## Identity\n' + DEFAULT_PERSONA, cacheable: true });
+      sections.push({ name: 'identity', text: '\n## Identity\n' + identityText, cacheable: true });
     }
-    // No PLANNING_INSTRUCTION — the skill defines its own workflow
+    if (familyNotesSection) sections.push(familyNotesSection);
+    // No planning text — the skill defines its own workflow
   } else if (isSkillMode) {
     // Inline mode (default): capability + soul + skill content
-    sections.push({ name: 'persona', text: basePrompt, cacheable: true });
+    sections.push({ name: 'persona', text: personaText, cacheable: true });
     sections.push({ name: 'soul', text: '\n## Your Personality\n' + soulText, cacheable: true });
     sections.push({ name: 'skill-content', text: '\n## Current Skill Instructions\n' + processedSkillContent, cacheable: true });
-    // No PLANNING_INSTRUCTION — skill already defines its own workflow
+    if (familyNotesSection) sections.push(familyNotesSection);
+    // No planning text — skill already defines its own workflow
   } else {
     // Normal mode: capability + soul + planning instruction
-    sections.push({ name: 'persona', text: basePrompt, cacheable: true });
+    sections.push({ name: 'persona', text: personaText, cacheable: true });
     // Team mode: the leader's Role section is the identity; Abu's own
     // personality would contradict it, so it is not injected.
     if (!route.team) sections.push({ name: 'soul', text: '\n## Your Personality\nThe following describes your personality traits and communication style. Express them naturally in all interactions.\n\n' + soulText, cacheable: true });
     // Append examples only on first turn to save ~400 tokens per subsequent turn
-    const planningText = (turnCount === 0 ? PLANNING_INSTRUCTION + PLANNING_EXAMPLES : PLANNING_INSTRUCTION)
+    const planningText = (turnCount === 0 ? variant.planning + PLANNING_EXAMPLES : variant.planning)
       .replace(
-        '- System settings → run_command (osascript/defaults), not screenshotting system settings',
+        SYSTEM_SETTINGS_TOOL_LINE,
         isWindows()
           ? '- System settings → run_command (PowerShell), not screenshotting system settings'
-          : '- System settings → run_command (osascript/defaults), not screenshotting system settings',
+          : SYSTEM_SETTINGS_TOOL_LINE,
       );
     sections.push({ name: 'planning', text: planningText, cacheable: true });
+    if (familyNotesSection) sections.push(familyNotesSection);
   }
 
   // A conversation started inside an app carries that app's context in every

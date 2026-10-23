@@ -4,7 +4,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useAccountStore } from '@/core/account/accountStore';
 import { startEnterpriseAccountLogin } from '@/core/enterprise/accountLogin';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
-import { IS_ENTERPRISE_BUILD } from '@/config/featureGates';
+import { IS_ENTERPRISE_BUILD, IS_PERSONAL_ACCOUNT_ENABLED } from '@/config/featureGates';
 import { useI18n, type LanguageSetting } from '@/i18n';
 import { Avatar } from '@/components/ds/avatar';
 import { Button } from '@/components/ds/button';
@@ -181,8 +181,11 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
                   onClick: handleCheck,
                   version: `v${APP_VERSION}`,
                 };
-  const signedIn = accountStatus === 'signed_in' && account !== null;
-  const expired = accountStatus === 'expired' && account !== null;
+  // With personal accounts off, no personal-account row shows, and there is a way in
+  // only where the organization sign-in remains.
+  const signedIn = IS_PERSONAL_ACCOUNT_ENABLED && accountStatus === 'signed_in' && account !== null;
+  const expired = IS_PERSONAL_ACCOUNT_ENABLED && accountStatus === 'expired' && account !== null;
+  const canSignIn = IS_PERSONAL_ACCOUNT_ENABLED || IS_ENTERPRISE_BUILD;
   const localLabel = userNickname || t.sidebar.defaultNickname;
   const enterpriseBinding = enterpriseMode.kind === 'enterprise' || enterpriseMode.kind === 'offline'
     ? enterpriseMode.binding
@@ -321,7 +324,7 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
             : <Spinner size="sm" labelSize="ui" label={updateRow.label} />}
         </MenuItem>
 
-        <MenuSeparator />
+        {(enterpriseSignedIn || signedIn || canSignIn) && <MenuSeparator />}
 
         {enterpriseSignedIn ? (
           <MenuItem icon={AppIcons.signOut} onSelect={() => void unbindEnterprise()}>
@@ -331,11 +334,16 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
           <MenuItem icon={AppIcons.signOut} onSelect={() => void signOut()}>
             {IS_ENTERPRISE_BUILD ? t.account.signOutPersonal : t.account.signOut}
           </MenuItem>
-        ) : (
+        ) : !IS_PERSONAL_ACCOUNT_ENABLED && IS_ENTERPRISE_BUILD ? (
+          // The organization sign-in is the only way in, so the row starts it directly.
+          <MenuItem icon={AppIcons.signIn} onSelect={() => openAfterClose(handleEnterpriseLogin)}>
+            {t.account.enterpriseLogin}
+          </MenuItem>
+        ) : canSignIn ? (
           <MenuItem icon={AppIcons.signIn} onSelect={() => openAfterClose(openAccountLogin)}>
             {expired ? t.account.retry : t.account.signIn}
           </MenuItem>
-        )}
+        ) : null}
       </div>
     </Menu>
   );

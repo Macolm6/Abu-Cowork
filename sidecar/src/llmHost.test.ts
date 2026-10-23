@@ -187,6 +187,19 @@ describe('llmHost', () => {
       });
     });
 
+    it('puts LLMError.capabilityRejection into the RPC error data', async () => {
+      openaiChat.mockRejectedValue(new LLMError('unsupported', 'invalid_request', {
+        statusCode: 400, capabilityRejection: 'max_tokens_field',
+      }));
+      const { sender } = makeSender();
+      const host = createLlmHost(sender);
+
+      await expect(host.handleChat(chatParams({ adapterKind: 'openai-compatible' }))).rejects.toMatchObject({
+        code: -32000,
+        data: { name: 'LLMError', code: 'invalid_request', capabilityRejection: 'max_tokens_field' },
+      });
+    });
+
     it('preserves bounded upstream error details in the legacy llm.chat RPC error', async () => {
       const upstream = {
         status: 403,

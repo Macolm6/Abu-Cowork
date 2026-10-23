@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { truncateToolResult } from './truncation';
+import { truncateToolResult, truncateText, scaledTruncationRule } from './truncation';
 
 describe('truncation', () => {
   // ── No truncation needed ──
@@ -71,7 +71,7 @@ describe('truncation', () => {
     it('truncates command output with head and tail', () => {
       // 400 lines × 80 chars = 32000 chars (exceeds maxChars=15000)
       const lines = Array.from({ length: 400 }, (_, i) => `Output line ${i + 1}: ${'y'.repeat(60)}`);
-      const result = truncateToolResult('run_command', lines.join('\n'));
+      const result = truncateText(lines.join('\n'), scaledTruncationRule('run_command'));
       expect(result).toContain('Output line 1:');
       expect(result).toContain('Output line 150:'); // headLines = 150
       expect(result).toContain('lines omitted');
@@ -251,5 +251,25 @@ describe('MCP tool results', () => {
     const roomy = truncateToolResult('abu-browser-bridge__snapshot', bigJson(40000), 10);
     const squeezed = truncateToolResult('abu-browser-bridge__snapshot', bigJson(40000), 95);
     expect(squeezed.length).toBeLessThan(roomy.length);
+  });
+});
+
+describe('tools that bound their own output', () => {
+  const longText = Array.from({ length: 400 }, (_, i) => `${String(i).padStart(4, '0')} ${'z'.repeat(95)}`).join('\n');
+
+  it('leaves run_command and http_fetch results to their tools', () => {
+    expect(truncateToolResult('run_command', longText, 90)).toBe(longText);
+    expect(truncateToolResult('http_fetch', longText, 90)).toBe(longText);
+  });
+
+  it('cuts one text the way truncateToolResult cuts a read_file result', () => {
+    const expected = truncateToolResult('read_file', longText, 60);
+    expect(expected).not.toBe(longText);
+    expect(truncateText(longText, scaledTruncationRule('read_file', 60))).toBe(expected);
+  });
+
+  it('scales the run_command rule under context pressure', () => {
+    expect(scaledTruncationRule('run_command', 90)).toEqual({ headLines: 37, tailLines: 7, maxChars: 3750 });
+    expect(scaledTruncationRule('run_command')).toEqual({ headLines: 150, tailLines: 30, maxChars: 15000 });
   });
 });

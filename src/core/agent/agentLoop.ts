@@ -122,6 +122,8 @@ import { resolveImagePolicy } from '../llm/imagePolicy';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelDeclared } from '../llm/resolveModelDeclared';
 import { resolveModelProfile } from '../llm/modelProfile';
+import { selectToolsForProfile } from '../tools/toolSelection';
+import { recordCapabilityRejection, rejectedCapabilities } from '../llm/rejectionMemory';
 import { rehydrateForSend, type ImageBase64Cache } from '../llm/imageRehydration';
 import { TOOL_NAMES, isDisplayHiddenStepBackedTool } from '../tools/toolNames';
 import { adaptComputerToolForTier } from '../tools/definitions/computerToolText';
@@ -1893,6 +1895,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // prompt and can't hallucinate tool calls. The adapter-level toolsGate rule
       // also strips tools from the request body as belt-and-suspenders.
       const noTools = modelDeclared?.supportsTools === false;
+      // The profile is the one record of how Abu talks to this model; the
+      // adapter resolves the same record from the same inputs for the wire.
+      // Resolved before the tools, which are chosen from it.
+      const modelProfile = resolveModelProfile({
+        modelId: effectiveModelId,
+        provider: activeProvider,
+        declared: modelDeclared,
+        overrides: rejectedCapabilities(activeProvider?.id, effectiveModelId),
+      });
       // Build prefetch context for conditional tool loading
       const conv = getConversationReader().getConversation(conversationId);
       const activeSkillObjects = getConversationReader().getActiveSkills(conversationId);
@@ -1928,12 +1939,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // tool_search is useful only when the host has an actual deferred catalog.
       // Hiding it when the catalog is empty prevents a weak model from spending
       // turns searching capabilities that are already loaded or policy-blocked.
-      const tools = (noTools
+      // One editing style per model (apply_patch or edit_file / write_file)
+      // and the family's own tool descriptions, both read from the profile.
+      const tools = selectToolsForProfile((noTools
         ? []
         : deferredTools.length === 0
           ? rawTools.filter(tool => tool.name !== TOOL_NAMES.TOOL_SEARCH)
           : rawTools
-      ).map((tool) => adaptComputerToolForTier(tool, toolContext.computerUseTier, isWindows()));
+      ).map((tool) => adaptComputerToolForTier(tool, toolContext.computerUseTier, isWindows())), modelProfile);
       options?.runtimeEvent?.('agent_tool_exposure', {
         conversationId,
         loopId,
@@ -1976,13 +1989,6 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // No-op when activeProvider has no declaredCapabilities (builtin providers).
       modelCaps = applyDeclaredCapabilities(modelCaps, modelDeclared);
       modelSupportsVision = modelCaps.vision;
-      // The profile is the one record of how Abu talks to this model; the
-      // adapter resolves the same record from the same inputs for the wire.
-      const modelProfile = resolveModelProfile({
-        modelId: effectiveModelId,
-        provider: activeProvider,
-        declared: modelDeclared,
-      });
       // Image limits belong to the route, not to Abu: the same picture is fine
       // for DeepSeek and a 400 from Anthropic. Resolved from the model actually
       // being called, alongside the rest of its capabilities.
@@ -2397,6 +2403,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         reasoningEffort: reasoningParams.reasoningEffort,
         supportsVision: modelCaps.vision,
         declaredCapabilities: modelDeclared,
+        // Capabilities this model rejected earlier in the session: the adapter
+        // may run in another process, so the loop's memory travels with the call.
+        capabilityOverrides: [...rejectedCapabilities(activeProvider?.id, effectiveModelId)],
         builtinWebSearch,
         // When the adapter's max_tokens auto-retry succeeds, persist the
         // discovered limit so the next request uses it pre-emptively.
@@ -2796,6 +2805,30 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             }
             throw retryErr2;
           }
+        } else if (retryErr instanceof LLMError && retryErr.capabilityRejection) {
+          // 服务说不认识请求里的某项能力：记进本会话的拒绝记忆，按关掉该项的档案重发同一请求一次。
+          // 同一个模型的同一类别只重试一次，第二次仍被拒绝就按普通错误报告。
+          const rejected = retryErr.capabilityRejection;
+          const firstRejection = recordCapabilityRejection(activeProvider?.id, effectiveModelId, rejected);
+          if (!firstRejection) throw retryErr;
+          logger.warn('Provider rejected a request capability; retrying once without it', {
+            capability: rejected,
+            modelId: effectiveModelId,
+            providerId: activeProvider?.id ?? 'unknown',
+          });
+          const rejectionBudgetResult = await buildProviderAttemptMessages(
+            preparedMessages,
+            contextWindowSize,
+            maxOutputTokens,
+          );
+          await adapter.chat(
+            rejectionBudgetResult.messages,
+            {
+              ...chatOptions,
+              capabilityOverrides: [...rejectedCapabilities(activeProvider?.id, effectiveModelId)],
+            },
+            eventHandler,
+          );
         } else {
           throw retryErr;
         }
@@ -2946,7 +2979,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             conversationId,
             options?.runPermissionCeiling?.source === 'scheduler',
           );
-          const freshTools = noTools ? [] : freshRawTools;
+          const freshTools = noTools ? [] : selectToolsForProfile(freshRawTools, modelProfile);
           const freshNames = new Set(freshTools.map(t => t.name));
           const added = freshTools.filter(t => !toolNames.has(t.name));
           const removed = tools.filter(t => !freshNames.has(t.name));

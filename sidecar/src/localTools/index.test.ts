@@ -34,6 +34,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readDir, readTextFile, writeTextFile, exists, stat } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { hasLocalTool, isLocalToolReadOnly, executeLocalTool } from './index';
+import { runCommandTool } from '@/core/tools/definitions/commandTools';
 
 const snapshotBeforeAiEditMock = vi.fn().mockResolvedValue(undefined);
 const captureTurnFileBeforeMock = vi.fn().mockResolvedValue(undefined);
@@ -450,6 +451,19 @@ describe('executeLocalTool — run_command (P1-3d-5 slice 2b)', () => {
     const result = await executeLocalTool('run_command', { command: 'ls' }, undefined, undefined);
 
     expect(result as string).toContain('Error executing command');
+  });
+
+  it('hands the context usage to the tool', async () => {
+    vi.mocked(invoke).mockResolvedValue({ code: 0, stdout: 'hello', stderr: '' });
+    const execute = vi.spyOn(runCommandTool, 'execute');
+
+    await executeLocalTool('run_command', { command: 'echo hello' }, { workspacePath: '/ws' }, 72);
+    await executeLocalTool('run_command', { command: 'echo hello' }, { workspacePath: '/ws' }, undefined);
+
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(execute.mock.calls[0][1]?.contextUsagePercent).toBe(72);
+    expect(execute.mock.calls[1][1]).not.toHaveProperty('contextUsagePercent');
+    execute.mockRestore();
   });
 });
 

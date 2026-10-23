@@ -7,7 +7,7 @@
 
 import { TOOL_NAMES } from '../tools/toolNames';
 
-interface TruncationRule {
+export interface TruncationRule {
   headLines: number;
   tailLines: number;
   maxChars: number;
@@ -40,11 +40,13 @@ const TRUNCATION_RULES: Record<string, TruncationRule> = {
 const DEFAULT_RULE: TruncationRule = { headLines: 0, tailLines: 0, maxChars: 3500 };
 
 /**
- * Tools whose result is never cut, at any context pressure. `use_skill`
- * returns the skill's instructions: the model has to follow all of them, and
- * a cut drops rules silently.
+ * Tools whose result is never cut here, at any context pressure. `run_command`
+ * and `http_fetch` cut their own output in `execute` (see `commandTools.ts`
+ * and `webTools.ts`), so the positions they record stay valid in the result.
+ * `use_skill` returns the skill's instructions: the model has to follow all
+ * of them, and a cut drops rules silently.
  */
-const UNTRUNCATED_TOOLS = new Set<string>([TOOL_NAMES.USE_SKILL]);
+const UNTRUNCATED_TOOLS = new Set<string>([TOOL_NAMES.RUN_COMMAND, TOOL_NAMES.HTTP_FETCH, TOOL_NAMES.USE_SKILL]);
 
 /**
  * Per-tool overrides for MCP servers, matched on the tool suffix of a
@@ -145,26 +147,36 @@ export function truncateToolResult(toolName: string, result: string, contextUsag
   if (!result) return result;
   if (UNTRUNCATED_TOOLS.has(toolName)) return result;
 
+  const rule = scaledTruncationRule(toolName, contextUsagePercent);
+  if (rule.keep === 'end') {
+    return result.length <= rule.maxChars ? result : keepHeaderAndEnd(result, rule.headLines, rule.maxChars);
+  }
+  return truncateText(result, rule);
+}
+
+/** The rule for a tool at the current context pressure: the scaling truncateToolResult applies today. */
+export function scaledTruncationRule(toolName: string, contextUsagePercent?: number): TruncationRule {
   const baseRule = resolveRule(toolName);
   const scale = getContextPressureScale(contextUsagePercent);
+  if (scale >= 1.0) return baseRule;
+  const maxChars = Math.max(1500, Math.floor(baseRule.maxChars * scale));
+  // A kept header stays whole; only the room for the end shrinks.
+  if (baseRule.keep === 'end') return { ...baseRule, maxChars };
+  return {
+    headLines: Math.max(20, Math.floor(baseRule.headLines * scale)),
+    tailLines: Math.max(5, Math.floor(baseRule.tailLines * scale)),
+    maxChars,
+  };
+}
 
-  // Apply context pressure scaling
-  const rule: TruncationRule = scale < 1.0
-    ? {
-      headLines: Math.max(20, Math.floor(baseRule.headLines * scale)),
-      tailLines: Math.max(5, Math.floor(baseRule.tailLines * scale)),
-      maxChars: Math.max(1500, Math.floor(baseRule.maxChars * scale)),
-    }
-    : baseRule;
-
+/** Head and tail lines, then head and tail characters: the cut truncateToolResult applies to one text. */
+export function truncateText(text: string, rule: TruncationRule): string {
   // If within char limit, no truncation needed
-  if (result.length <= rule.maxChars) return result;
-
-  if (baseRule.keep === 'end') return keepHeaderAndEnd(result, baseRule.headLines, rule.maxChars);
+  if (text.length <= rule.maxChars) return text;
 
   // Line-based truncation for tools with line rules
   if (rule.headLines > 0) {
-    const lines = result.split('\n');
+    const lines = text.split('\n');
     if (lines.length > rule.headLines + rule.tailLines + 1) {
       const head = lines.slice(0, rule.headLines);
       const tail = rule.tailLines > 0 ? lines.slice(-rule.tailLines) : [];
@@ -184,7 +196,7 @@ export function truncateToolResult(toolName: string, result: string, contextUsag
   }
 
   // Character-based truncation (default fallback)
-  return charTruncate(result, rule.maxChars);
+  return charTruncate(text, rule.maxChars);
 }
 
 /**

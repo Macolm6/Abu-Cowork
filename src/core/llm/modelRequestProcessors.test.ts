@@ -52,6 +52,33 @@ describe('modelRequestProcessors', () => {
       { modelId: 'x', requestHost: 'h', hasTools: false, caps: { supportedEfforts: ['low', 'medium'] } });
     expect(b.reasoning_effort).toBe('medium');
   });
+  it('reasoning-effort-gate: a rejected reasoning_effort drops the field alone, thinking_budget stays', () => {
+    const profile = resolveModelProfile({ modelId: 'x', requestHost: 'h', overrides: ['reasoning_effort'] });
+    const b = { reasoning_effort: 'high', thinking_budget: 2048 };
+    applyModelRequestProcessors(b, { profile, hasTools: false });
+    expect(b.reasoning_effort).toBeUndefined();
+    expect(b.thinking_budget).toBe(2048);
+  });
+  it('reasoning-support: a rejected thinking capability strips every reasoning parameter', () => {
+    const profile = resolveModelProfile({ modelId: 'x', requestHost: 'h', overrides: ['thinking'] });
+    const b = { reasoning_effort: 'high', thinking_budget: 2048 };
+    applyModelRequestProcessors(b, { profile, hasTools: false });
+    expect(b.reasoning_effort).toBeUndefined();
+    expect(b.thinking_budget).toBeUndefined();
+  });
+  it('parallel-tool-calls: a rejected parallel_tool_calls field is no longer written', () => {
+    const rejected = resolveModelProfile({
+      modelId: 'x', requestHost: 'h', declared: { parallelToolCalls: false }, overrides: ['parallel_tool_calls'],
+    });
+    const b: Record<string, unknown> = { tools: [{}] };
+    applyModelRequestProcessors(b, { profile: rejected, hasTools: true });
+    expect(b.parallel_tool_calls).toBeUndefined();
+
+    const accepted = resolveModelProfile({ modelId: 'x', requestHost: 'h', declared: { parallelToolCalls: false } });
+    const c: Record<string, unknown> = { tools: [{}] };
+    applyModelRequestProcessors(c, { profile: accepted, hasTools: true });
+    expect(c.parallel_tool_calls).toBe(false);
+  });
   it('no caps + non-openai host: leaves body untouched', () => {
     const b = run({ reasoning_effort: 'medium', tools: [{}] },
       { modelId: 'llama3', requestHost: 'localhost', hasTools: true, caps: undefined });

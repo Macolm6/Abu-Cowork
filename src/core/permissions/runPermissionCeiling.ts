@@ -37,6 +37,7 @@ export const SAFE_TOOL_ALLOWLIST: readonly string[] = [
   ...READ_ONLY_TOOL_ALLOWLIST,
   TOOL_NAMES.WRITE_FILE,
   TOOL_NAMES.EDIT_FILE,
+  TOOL_NAMES.APPLY_PATCH,
   TOOL_NAMES.DELETE_FILE,
   // IM safe_tools may deliver a file it generated inside the run scope.
   // Registry maps this tool's path as a read so the roster does not become an

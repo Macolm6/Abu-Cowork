@@ -75,6 +75,7 @@ import { buildActiveSkillsSection } from '../skill/activeSkillInstructions';
 import { resolvePreloadedSkills } from './prompts/preloadedSkills';
 import { resolveEntryModel } from './resolveEntryModel';
 import { resolveAgentModelCapabilities } from '../llm/modelCapabilities';
+import { resolveModelProfile } from '../llm/modelProfile';
 import { getCapabilityPrompt } from './prompts/capabilityPrompt';
 import type { SettingsState } from '@/stores/settingsStore';
 
@@ -146,6 +147,13 @@ export async function precomputeOrchestration(
     providerSource: provider?.source,
     declared: entryModelDeclared,
   }).computerUseTier;
+  // The same record the loop resolves for the wire; here it picks the
+  // family's prompt fragments.
+  const entryProfile = resolveModelProfile({
+    modelId: effectiveModelId,
+    provider,
+    declared: entryModelDeclared,
+  });
 
   const systemPromptSections = await buildSystemPromptSections(
     route,
@@ -154,6 +162,7 @@ export async function precomputeOrchestration(
     imContext,
     0,
     { ...toolContext, abortSignal, computerUseTier },
+    entryProfile,
   );
 
   // Skills already active when the run starts (a project's default skills)

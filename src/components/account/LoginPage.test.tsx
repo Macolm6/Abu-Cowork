@@ -4,6 +4,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { initLanguage } from '@/i18n';
 import LoginPage from './LoginPage';
 
+// These cases cover the personal sign-in, which ships once personal accounts are on; LoginPage.personalGate.test.tsx covers the gate off.
+vi.mock('@/config/featureGates', () => ({
+  IS_ENTERPRISE_BUILD: false,
+  IS_PERSONAL_ACCOUNT_ENABLED: true,
+}));
+
 describe('LoginPage', () => {
   beforeEach(() => initLanguage('zh-CN'));
 
