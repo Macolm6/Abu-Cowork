@@ -120,6 +120,7 @@ function baseParams(overrides: Record<string, unknown> = {}) {
     options: {},
     orchestration: { route: { type: 'chat', cleanInput: 'hello' }, systemPromptSections: [] },
     conversationSnapshot: baseConversation(conversationId),
+    activeSkillInfoSnapshot: [],
     settingsSnapshot: { activeModel: { providerId: 'p', modelId: 'm' } },
     resolvedCreds: { apiKey: 'sk-test', baseUrl: undefined, forceOpenAiCompatible: false },
     toolList: [{ name: 'read_file', description: 'd', inputSchema: { type: 'object', properties: {} } }],
@@ -365,6 +366,8 @@ describe('agentLoopHost', () => {
       ['orchestration.route not an object', { ...baseParams(), orchestration: { route: null, systemPromptSections: [] } }],
       ['orchestration.systemPromptSections not an array', { ...baseParams(), orchestration: { route: {}, systemPromptSections: 'x' } }],
       ['conversationSnapshot missing id', { ...baseParams(), conversationSnapshot: {} }],
+      ['activeSkillInfoSnapshot missing', { ...baseParams(), activeSkillInfoSnapshot: undefined }],
+      ['activeSkillInfoSnapshot entry without a name', { ...baseParams(), activeSkillInfoSnapshot: [{ blockedTools: ['computer'] }] }],
       ['settingsSnapshot not an object', { ...baseParams(), settingsSnapshot: null }],
       ['resolvedCreds not an object', { ...baseParams(), resolvedCreds: null }],
       ['toolList not an array', { ...baseParams(), toolList: 'nope' }],
@@ -904,6 +907,40 @@ describe('agentLoopHost', () => {
       handleStateConvPatch({ runId: 'patch-me', patch: { workspacePath: '/patched' } });
       await runPromise;
       expect(readWorkspacePath).toBe('/patched');
+    });
+
+    it('serves the shell-resolved active skills to the loop: seeded by agent.run, replaced by state.convPatch', async () => {
+      const seen: Array<readonly { name: string; blockedTools?: string[] }[]> = [];
+      const params = reliableParams({
+        runId: 'skills-run',
+        conversationId: 'conv-skills-run',
+        activeSkillInfoSnapshot: [{ name: 'docx', blockedTools: ['computer'] }],
+      });
+      const started = new Promise<void>((resolveStarted) => {
+        runAgentLoopMock.mockImplementationOnce(async () => {
+          const ctx = getCurrentAgentRunContext();
+          seen.push(ctx.conversationReader.getActiveSkills('conv-skills-run'));
+          resolveStarted();
+          await new Promise((r) => setTimeout(r, 0));
+          seen.push(ctx.conversationReader.getActiveSkills('conv-skills-run'));
+          return { reason: 'completed' };
+        });
+      });
+      handleAgentStart(params);
+      const runPromise = handleAgentRun(params);
+      await started;
+      handleStateConvPatch({
+        runId: 'skills-run',
+        patch: {
+          activeSkills: ['docx', 'Abu-Browser'],
+          activeSkillInfo: [{ name: 'docx', blockedTools: ['computer'] }, { name: 'Abu-Browser' }],
+        },
+      });
+      await runPromise;
+      expect(seen).toEqual([
+        [{ name: 'docx', blockedTools: ['computer'] }],
+        [{ name: 'docx', blockedTools: ['computer'] }, { name: 'Abu-Browser' }],
+      ]);
     });
 
     it('handleStateExecPatch is a silent no-op for malformed/unknown params', () => {

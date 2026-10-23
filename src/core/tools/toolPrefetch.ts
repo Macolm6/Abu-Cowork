@@ -6,7 +6,6 @@
  * only when keyword matching or settings indicate they're needed.
  */
 
-import type { Skill } from '../../types';
 import { TOOL_NAMES } from './toolNames';
 import { isWindows } from '../../utils/platform';
 
@@ -202,7 +201,8 @@ const PREFETCH_RULES: ReadonlyArray<{
 export interface PrefetchContext {
   userInput: string;
   computerUseEnabled: boolean;
-  activeSkills: Skill[];
+  /** Plain per-skill facts, so a sidecar-run loop can supply them without the skill index. */
+  activeSkills: readonly { name: string; blockedTools?: string[] }[];
   turnCount: number;
   /** The conversation carries a goal (any phase) — keep manage_goal loaded. */
   hasGoal?: boolean;

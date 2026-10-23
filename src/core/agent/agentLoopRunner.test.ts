@@ -282,6 +282,13 @@ const precomputeOrchestrationMock = vi.fn().mockResolvedValue({
   route: { type: 'general', name: 'general', cleanInput: 'hi' },
   systemPromptSections: [],
 });
+// The skill index lives in the shell; here every active name resolves, with a
+// blocked tool derived from the name so the resolved copy is recognisable.
+vi.mock('../skill/activeSkillInstructions', () => ({
+  resolveActiveSkillInfo: (names: readonly string[] | undefined) =>
+    (names ?? []).map((name) => ({ name, blockedTools: [`blocked-by-${name}`] })),
+}));
+
 vi.mock('./entryOrchestration', () => ({
   precomputeOrchestration: (...a: unknown[]) => precomputeOrchestrationMock(...a),
 }));
@@ -2361,7 +2368,7 @@ describe('agentLoopRunner', () => {
   });
 
   describe('convPatch push emitter (diffing)', () => {
-    it('pushes every diffed field the first time a conversation is observed (goal as null when absent)', async () => {
+    it('pushes every diffed field, and the resolved active skills, the first time a conversation is observed (goal as null when absent)', async () => {
       const { registerRunSession } = await importFresh();
       registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
 
@@ -2373,7 +2380,40 @@ describe('agentLoopRunner', () => {
 
       expect(notifySidecar).toHaveBeenCalledWith('state.convPatch', {
         runId: 'run-1',
-        patch: { workspacePath: '/a', title: 'T1', activeSkills: ['s1'], model: { providerId: 'p', modelId: 'm' }, goal: null },
+        patch: {
+          workspacePath: '/a',
+          title: 'T1',
+          activeSkills: ['s1'],
+          activeSkillInfo: [{ name: 's1', blockedTools: ['blocked-by-s1'] }],
+          model: { providerId: 'p', modelId: 'm' },
+          goal: null,
+        },
+      });
+    });
+
+    it('pushes the resolved active skills together with a change of the active skill names', async () => {
+      const { registerRunSession } = await importFresh();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+
+      chatState = {
+        conversations: { 'conv-1': { workspacePath: '/a', title: 'T1', activeSkills: [] } },
+        conversationIndex: { 'conv-1': { model: { providerId: 'p', modelId: 'm' } } },
+      };
+      capturedChatCb?.();
+      vi.mocked(notifySidecar).mockClear();
+
+      chatState = {
+        conversations: { 'conv-1': { workspacePath: '/a', title: 'T1', activeSkills: ['docx'] } },
+        conversationIndex: { 'conv-1': { model: { providerId: 'p', modelId: 'm' } } },
+      };
+      capturedChatCb?.();
+
+      expect(notifySidecar).toHaveBeenCalledWith('state.convPatch', {
+        runId: 'run-1',
+        patch: {
+          activeSkills: ['docx'],
+          activeSkillInfo: [{ name: 'docx', blockedTools: ['blocked-by-docx'] }],
+        },
       });
     });
 
@@ -7340,6 +7380,18 @@ describe('agentLoopRunner', () => {
         expect(traceRuntimeEventMock).toHaveBeenCalledWith('renderer.agent_params_build_completed', expect.objectContaining({
           ledgerWatermarkBytes: 4096,
         }));
+      });
+
+      it('sends the conversation\'s active skills resolved against the shell skill index', async () => {
+        getConversationMock.mockReturnValue({
+          id: 'conv-1', title: 't', status: 'idle', messages: LONG_HISTORY, activeSkills: ['docx'],
+        });
+        const { runAgentLoopDispatched } = await importFresh();
+
+        await runAgentLoopDispatched('conv-1', 'hello');
+
+        const start = agentStartRequestMock.mock.calls[0][0] as unknown as { activeSkillInfoSnapshot: unknown };
+        expect(start.activeSkillInfoSnapshot).toEqual([{ name: 'docx', blockedTools: ['blocked-by-docx'] }]);
       });
 
       it('takes the history point after the routed user row has been persisted', async () => {
