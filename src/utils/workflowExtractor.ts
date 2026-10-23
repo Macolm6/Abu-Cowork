@@ -44,12 +44,6 @@ export interface WorkflowStep {
   toolResult?: string;
 }
 
-// Skill info passed from message
-export interface SkillInfo {
-  name: string;
-  description?: string;
-}
-
 // Tool name to step type mapping
 const FILE_READ_TOOLS: string[] = [TOOL_NAMES.READ_FILE, 'read', 'get_file_contents'];
 export const FILE_WRITE_TOOLS: string[] = [TOOL_NAMES.WRITE_FILE, TOOL_NAMES.EDIT_FILE, 'write', 'edit'];
@@ -159,26 +153,10 @@ export function extractWorkflowSteps(
   toolCalls: ToolCall[],
   thinking?: string,
   agentStatus?: AgentStatus,
-  skillInfo?: SkillInfo,
   thinkingDuration?: number
 ): WorkflowStep[] {
   const steps: WorkflowStep[] = [];
   const now = Date.now();
-
-  // Add skill step first if a skill was triggered
-  if (skillInfo) {
-    const hasCompletedTools = toolCalls.some((tc) => tc.result !== undefined);
-    const isExecuting = toolCalls.some((tc) => tc.isExecuting);
-
-    steps.push({
-      id: 'skill',
-      type: 'skill',
-      label: `使用 /${skillInfo.name} 技能`,
-      detail: skillInfo.description,
-      status: hasCompletedTools ? 'completed' : isExecuting ? 'running' : 'pending',
-      timestamp: now - 2000,
-    });
-  }
 
   // Add thinking step if exists
   if (thinking) {
@@ -207,9 +185,8 @@ export function extractWorkflowSteps(
 
   // Add steps from tool calls
   for (const tc of toolCalls) {
-    // Skip use_skill tool - we already show skill at the top
+    // A use_skill call is the skill step, named by the skill it loads
     if (tc.name === TOOL_NAMES.USE_SKILL) {
-      // Extract skill name and add as a skill step
       const skillName = tc.input.skill_name as string | undefined;
       if (skillName) {
         let status: WorkflowStep['status'];

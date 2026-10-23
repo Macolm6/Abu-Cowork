@@ -39,7 +39,7 @@ describe('workflowExtractor', () => {
     });
 
     it('thinking content with duration → completed', () => {
-      const steps = extractWorkflowSteps([], '推理完成的内容', undefined, undefined, 5);
+      const steps = extractWorkflowSteps([], '推理完成的内容', undefined, 5);
       expect(steps).toHaveLength(1);
       expect(steps[0].type).toBe('thinking');
       expect(steps[0].status).toBe('completed');
@@ -163,16 +163,6 @@ describe('workflowExtractor', () => {
       expect(steps[0].status).toBe('pending');
     });
 
-    it('adds skill step when skillInfo provided', () => {
-      const steps = extractWorkflowSteps(
-        [{ id: 'tc1', name: 'read_file', input: {}, result: 'ok' }],
-        undefined, undefined,
-        { name: 'translate', description: '翻译技能' }
-      );
-      expect(steps[0].type).toBe('skill');
-      expect(steps[0].label).toContain('translate');
-    });
-
     it('handles use_skill tool calls', () => {
       const toolCalls: ToolCall[] = [{
         id: 'tc1', name: 'use_skill',
@@ -185,7 +175,7 @@ describe('workflowExtractor', () => {
     });
 
     it('includes thinkingDuration on thinking step', () => {
-      const steps = extractWorkflowSteps([], 'thinking...', undefined, undefined, 5.2);
+      const steps = extractWorkflowSteps([], 'thinking...', undefined, 5.2);
       expect(steps[0].duration).toBe(5.2);
     });
 
