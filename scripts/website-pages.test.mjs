@@ -134,7 +134,7 @@ test('community section carries the WeChat QR code and five channels', () => {
     // Each channel shows its account name; the names stay in their original form in both languages.
     assert.deepEqual(
       [...source.matchAll(/<span class="channel-account">([^<]+)<\/span>/g)].map((match) => match[1]),
-      ['Shawn的AI产品小记', 'Shawn的产品笔记', '@pmshawn_x', 'PM-Shawn/Abu-Cowork', 'Abu'],
+      ['Shawn的AI产品小记', 'Shawn的AI产品小记', '@pmshawn_x', 'PM-Shawn/Abu-Cowork', 'Abu'],
     );
     assert.equal(count(source, '<span class="channel-desc">'), 5);
   }
@@ -153,8 +153,8 @@ test('community pages offer the group, GitHub and the channels to follow', () =>
   const discord = 'https://discord.gg/eY3zH3XGqE';
   const repo = 'https://github.com/PM-Shawn/Abu-Cowork';
   for (const [file, cells, accounts] of [
-    ['community.zh-CN.html', ['Star', '提 Issue', '提交代码', '报告安全问题'], ['Shawn的AI产品小记', 'Shawn的产品笔记', '@pmshawn_x', 'Abu']],
-    ['community.html', ['Star', 'Issues', 'Pull requests', 'Security'], ['Shawn的AI产品小记', 'Shawn的产品笔记', '@pmshawn_x', 'Abu']],
+    ['community.zh-CN.html', ['Star', '提 Issue', '提交代码', '报告安全问题'], ['Shawn的AI产品小记', 'Shawn的AI产品小记', '@pmshawn_x', 'Abu']],
+    ['community.html', ['Star', 'Issues', 'Pull requests', 'Security'], ['Shawn的AI产品小记', 'Shawn的AI产品小记', '@pmshawn_x', 'Abu']],
   ]) {
     const source = read(file);
     for (const id of ['main-content', 'group', 'github', 'follow', 'stars']) {
