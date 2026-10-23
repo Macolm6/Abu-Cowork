@@ -12,14 +12,16 @@
  * Design doc §1 fact 5 enumerates the loop's actual read surface via
  * `ConversationReader`: messages by id (including reading back its OWN
  * just-written message — the "flush-then-read" hazard), `workspacePath`,
- * `activeSkills`, `title`, `indexEntry.model`, `getThinkingStartTime()`.
+ * `activeSkills`, `title`, `indexEntry.model`, `getThinkingStartTime()`,
+ * plus `contextCache` (the ephemeral compression summary the loop reuses on
+ * every later iteration of the run) and the turn message's `usage` (read
+ * back for the per-turn `replaceMessageById` persistence).
  * Only the WRITE methods that touch these facts get a real, faithful apply
  * below (mirroring `chatStore.ts`'s own action bodies side by side — same
  * `msgId ?? "last message"` targeting semantics `findTargetMessage`/
  * `FALLBACK_LAST` implement in-process). Every OTHER `ChatDelta` method
- * (`flushTokens`/`updateMessageUsage`/`setExecutionStepsSnapshot`/
- * `setPlannedStepsSnapshot`/`setCurrentUsage`/`setRetryInfo`/
- * `setContextUsage`/`setContextCache`/`clearContextCache`/
+ * (`flushTokens`/`setExecutionStepsSnapshot`/`setPlannedStepsSnapshot`/
+ * `setCurrentUsage`/`setRetryInfo`/`setContextUsage`/
  * `setIsCompressing`/`setPendingProposalSignal`/`removeActiveAgent`) is a
  * documented no-op HERE — the frame itself still always travels to the
  * shell (`portFrameSenders.ts`'s `send()` unconditionally pushes), so the
@@ -292,7 +294,27 @@ export function createConversationRunMirror(
         if (idx !== -1) {
           conversation.messages = conversation.messages.slice(0, idx);
           conversation.updatedAt = Date.now();
+          conversation.contextCache = undefined;
         }
+        break;
+      }
+      case 'updateMessageUsage': {
+        // The loop reads the turn's message back right after this write and
+        // persists it via `replaceMessageById` — the row must carry `usage`.
+        const [, usage, msgId] = args as [string, { inputTokens: number; outputTokens: number }, string | undefined];
+        const target = findTarget(msgId);
+        if (target) target.usage = { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens };
+        break;
+      }
+      case 'setContextCache': {
+        // Read back on the NEXT loop iteration to reuse the summary instead
+        // of issuing the summarisation call again.
+        const [, cache] = args as [string, NonNullable<Conversation['contextCache']>];
+        conversation.contextCache = cache;
+        break;
+      }
+      case 'clearContextCache': {
+        conversation.contextCache = undefined;
         break;
       }
       case 'appendToolCallContext': {
