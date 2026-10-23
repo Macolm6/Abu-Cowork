@@ -50,14 +50,81 @@ describe('generateSummary — thinking-only block', () => {
   it('shows "思考了 N 秒" when the thinking step has a duration', () => {
     expect(generateSummary([thinkingStep(5)], t, locale, false)).toBe(format(t.task.thoughtFor, { seconds: 5 }));
   });
-  it('falls back to "思考过程" when no duration (settled block)', () => {
-    expect(generateSummary([thinkingStep(undefined)], t, locale, false)).toBe(t.chat.thinkingProcess);
+  it('names the phase alone when no duration was saved (settled block)', () => {
+    expect(generateSummary([thinkingStep(undefined)], t, locale, false)).toBe(t.task.thinkingDone);
   });
   it('says "思考中" while live — continuing the placeholder dots row it replaces', () => {
-    expect(generateSummary([thinkingStep(undefined)], t, locale, true)).toBe(t.chat.thinking);
+    expect(generateSummary([{ ...thinkingStep(undefined), status: 'running' }], t, locale, true)).toBe(t.chat.thinking);
   });
   it('uses the stopped terminal instead of completed action summaries', () => {
     expect(generateSummary([thinkingStep(5)], t, locale, false, true)).toBe(t.task.stopped);
+  });
+});
+
+function workStep(id: string, type: UnifiedStep['type'], status: UnifiedStep['status'], toolName: string): UnifiedStep {
+  return { id, type, label: `${toolName} ${id}`, status, toolName } as UnifiedStep;
+}
+
+// The header names the kind of work and the rows name the specifics, so a
+// header never repeats a row's own label.
+describe('generateSummary — live block names what is happening now', () => {
+  const t = getI18n();
+  const locale = getLocale();
+
+  it('names the kind of work of the latest running step', () => {
+    expect(generateSummary([
+      workStep('s1', 'file-read', 'completed', 'read_file'),
+      workStep('s2', 'command', 'running', 'run_command'),
+    ], t, locale, true)).toBe(t.task.nowRunningCommand);
+    expect(generateSummary([
+      workStep('s1', 'command', 'running', 'run_command'),
+      workStep('s2', 'file-read', 'running', 'read_file'),
+    ], t, locale, true)).toBe(t.task.nowReadingFile);
+    expect(generateSummary([workStep('s1', 'file-write', 'running', 'edit_file')], t, locale, true)).toBe(t.task.nowModifyingFile);
+    expect(generateSummary([workStep('s1', 'file-create', 'running', 'write_file')], t, locale, true)).toBe(t.task.nowCreatingFile);
+    expect(generateSummary([workStep('s1', 'search', 'running', 'search_files')], t, locale, true)).toBe(t.task.nowSearching);
+    expect(generateSummary([workStep('s1', 'delegate', 'running', 'delegate_to_agent')], t, locale, true)).toBe(t.task.nowDelegating);
+    expect(generateSummary([workStep('s1', 'mcp', 'running', 'server__tool')], t, locale, true)).toBe(t.task.nowCallingTool);
+    expect(generateSummary([workStep('s1', 'tool', 'running', 'present_files')], t, locale, true)).toBe(t.task.nowPresentingFiles);
+    expect(generateSummary([workStep('s1', 'tool', 'running', 'ask_user_question')], t, locale, true)).toBe(t.userQuestion.waitingForAnswer);
+  });
+
+  it('names a running skill by its kind, apart from the row that names the skill', () => {
+    const steps = [workStep('s1', 'skill', 'running', 'use_skill')];
+    expect(generateSummary(steps, t, locale, true)).toBe(t.task.nowUsingSkill);
+    expect(generateSummary(steps, t, locale, true)).not.toBe(steps[0].label);
+  });
+
+  it('says "思考中" between steps, when nothing is running', () => {
+    expect(generateSummary([workStep('s1', 'file-read', 'completed', 'read_file')], t, locale, true)).toBe(t.chat.thinking);
+    expect(generateSummary([workStep('s1', 'file-read', 'pending', 'read_file')], t, locale, true)).toBe(t.chat.thinking);
+  });
+});
+
+describe('generateSummary — settled block counts a skill as one kind of work', () => {
+  const t = getI18n();
+  const locale = getLocale();
+  const separator = locale.startsWith('zh') ? '，' : ', ';
+
+  it('lists the skill with the other kinds of work, each counted', () => {
+    const summary = generateSummary([
+      workStep('s1', 'skill', 'completed', 'use_skill'),
+      workStep('s2', 'file-read', 'completed', 'read_file'),
+      workStep('s3', 'file-read', 'completed', 'read_file'),
+      workStep('s4', 'command', 'completed', 'run_command'),
+    ], t, locale, false);
+    expect(summary).toBe([t.task.usedSkill, format(t.task.readFiles, { count: 2 }), t.task.executedCommand].join(separator));
+  });
+
+  it('counts two skills and never repeats a skill row\'s label', () => {
+    const steps = [workStep('s1', 'skill', 'completed', 'use_skill'), workStep('s2', 'skill', 'completed', 'use_skill')];
+    const summary = generateSummary(steps, t, locale, false);
+    expect(summary).toBe(format(t.task.usedSkills, { count: 2 }));
+    expect(summary).not.toContain(steps[0].label);
+  });
+
+  it('keeps the thinking duration out of a block that also did work', () => {
+    expect(generateSummary([thinkingStep(5), workStep('s1', 'file-read', 'completed', 'read_file')], t, locale, false)).toBe(t.task.readFile);
   });
 });
 
@@ -138,21 +205,26 @@ describe('TaskBlock — thinking pane running → completed', () => {
   afterEach(() => cleanup());
 
   const t = getI18n();
+  // The row's label is the toggle once thinking is done.
   const findThinkingToggle = (container: HTMLElement) =>
     Array.from(container.querySelectorAll('button')).find((b) =>
       b.textContent?.includes(t.chat.thinkingProcess),
     );
-  // The button's own animated slot (button → .pb-2 → slot). `closest` would
-  // walk past it up to the timeline wrapper, which is also a .block-expand.
-  const toggleSlot = (toggle: HTMLElement) => toggle.parentElement!.parentElement!;
+  const stepRows = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll('.flow-timeline > .flex.items-start'));
 
-  it('keeps the streamed content mounted and animates the toggle button in', () => {
+  it('keeps the streamed content mounted and turns the row label into the toggle', () => {
     const { container, rerender } = render(
       <TaskBlock executionSteps={[execThinkingStep()]} isActive />,
     );
-    // Running: pane content present, no toggle button yet.
-    expect(container.textContent).toContain('reasoning tokens streaming in');
+    // Running: the header says 思考中, the row is named 思考过程 as plain text,
+    // the pane content is present, and no running row follows the steps.
+    const header = () => container.querySelector('.task-block > button')!;
+    expect(header().textContent).toContain(t.chat.thinking.replace(/[…]$/, ''));
+    expect(container.textContent).toContain(t.chat.thinkingProcess);
     expect(findThinkingToggle(container)).toBeUndefined();
+    expect(container.textContent).toContain('reasoning tokens streaming in');
+    expect(stepRows(container)).toHaveLength(1);
 
     rerender(
       <TaskBlock
@@ -160,17 +232,17 @@ describe('TaskBlock — thinking pane running → completed', () => {
         isActive={false}
       />,
     );
-    // Completed: the content pre is still mounted, inside an OPEN panel
-    // (thinkingExpanded persists across the transition)…
+    // Completed: the header carries the duration, the content pre is still
+    // mounted inside an OPEN panel (thinkingExpanded persists across the
+    // transition), and the row label is now the toggle.
+    expect(header().textContent).toBe(format(t.task.thoughtFor, { seconds: 3 }));
     const pre = container.querySelector('pre');
     expect(pre?.textContent).toContain('reasoning tokens streaming in');
     expect(pre!.closest('.block-expand')!.classList.contains('block-expand-open')).toBe(true);
-    // …and the toggle button grows in through an animated slot instead of
-    // landing its height in one frame.
     const toggle = findThinkingToggle(container);
     expect(toggle).toBeDefined();
-    expect(toggleSlot(toggle!).classList.contains('block-expand')).toBe(true);
-    expect(toggleSlot(toggle!).classList.contains('block-expand-enter')).toBe(true);
+    expect(toggle!.getAttribute('aria-expanded')).toBe('true');
+    expect(header().textContent).not.toContain(t.chat.thinkingProcess);
   });
 
   it('keeps long live thinking inside the max-h-48 scroll pane and follows its internal bottom', () => {
@@ -194,7 +266,7 @@ describe('TaskBlock — thinking pane running → completed', () => {
     expect(pane!.scrollTop).toBe(480);
   });
 
-  it('collapse via the toggle rolls the panel up (closed + inert), not unmounted; history mounts render the button statically', () => {
+  it('collapse via the row label rolls the panel up (closed + inert), not unmounted', () => {
     const { container } = render(
       <TaskBlock
         executionSteps={[execThinkingStep({ status: 'completed', duration: 3 })]}
@@ -204,12 +276,10 @@ describe('TaskBlock — thinking pane running → completed', () => {
     // Fresh settled mount: the timeline only mounts when the user opens the
     // summary header, so expand it first.
     fireEvent.click(container.querySelector('button')!);
-    // Toggle button present but NOT inside an enter-animated slot (history
-    // remounts must not animate), panel starts collapsed.
+    // The row label is the toggle; the panel starts collapsed.
     const toggle = findThinkingToggle(container);
     expect(toggle).toBeDefined();
-    expect(toggleSlot(toggle!).classList.contains('block-expand')).toBe(true);
-    expect(toggleSlot(toggle!).classList.contains('block-expand-enter')).toBe(false);
+    expect(toggle!.getAttribute('aria-expanded')).toBe('false');
     const panel = container.querySelector('pre')!.closest('.block-expand')!;
     expect(panel.classList.contains('block-expand-closed')).toBe(true);
     expect(panel.hasAttribute('inert')).toBe(true);
@@ -265,6 +335,9 @@ describe('TaskBlock — one spinner per block', () => {
       expect(row.querySelector('svg.lucide-loader-circle')).not.toBeNull();
       expect(row.querySelector('[data-ds-spinner]')).toBeNull();
     }
+    // No running row follows the steps: the header already says what runs.
+    expect(document.querySelectorAll('.flow-timeline svg.lucide-loader-circle')).toHaveLength(2);
+    expect(document.querySelectorAll('.flow-timeline > .flex.items-start')).toHaveLength(2);
   });
 
   it('starts its header text in the same column as the rows it replaces', () => {

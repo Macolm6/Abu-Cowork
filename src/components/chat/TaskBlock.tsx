@@ -157,76 +157,86 @@ export function generateSummary(
   isStopped = false,
 ): string {
   if (isStopped) return t.task.stopped;
-  const actions: string[] = [];
+  // The header names the kind of work; the rows below name the specifics, so
+  // the two never read the same. A live block is titled by what is happening
+  // now; a settled block by the kinds of work it did, counted.
+  if (isActive) return currentActivityLabel(steps, t);
+
   const separator = locale.startsWith('zh') ? '，' : ', ';
-
-  const skillStep = steps.find((s) => s.type === 'skill');
-  if (skillStep) {
-    actions.push(skillStep.label);
-  }
-
-  let readCount = 0;
-  let writeCount = 0;
-  let createCount = 0;
-  let commandCount = 0;
-  let otherCount = 0;
-  let presentedCount = 0;
-
+  const counts = { skill: 0, presented: 0, create: 0, modify: 0, read: 0, command: 0, other: 0 };
   for (const step of steps) {
-    if (step.type === 'thinking' || step.type === 'skill') continue;
-    if (step.toolName === TOOL_NAMES.PRESENT_FILES) presentedCount++;
-    else if (step.type === 'file-read') readCount++;
-    else if (step.type === 'file-write') writeCount++;
-    else if (step.type === 'file-create') createCount++;
-    else if (step.type === 'command') commandCount++;
-    else otherCount++;
+    if (step.type === 'thinking') continue;
+    if (step.type === 'skill') counts.skill++;
+    else if (step.toolName === TOOL_NAMES.PRESENT_FILES) counts.presented++;
+    else if (step.type === 'file-read') counts.read++;
+    else if (step.type === 'file-write') counts.modify++;
+    else if (step.type === 'file-create') counts.create++;
+    else if (step.type === 'command') counts.command++;
+    else counts.other++;
   }
 
-  // Thinking is its own standalone block now — the collapsed header is the only
-  // line, so surface the duration ("思考了 N 秒") at a glance. While the block
-  // is still live the label must be "思考中", CONTINUING the placeholder dots
-  // row it replaces mid-stream (same words, same spot — the trailing …/... is
-  // stripped by the active header before its animated dots); "思考过程" is only
-  // for settled blocks whose duration got lost (old persisted history).
-  const thinkingStep = steps.find((s) => s.type === 'thinking');
-  const onlyThinking = thinkingStep && readCount + writeCount + createCount + commandCount + otherCount + presentedCount === 0 && !skillStep;
-  if (onlyThinking) {
-    actions.push(
-      thinkingStep.duration != null
-        ? format(t.task.thoughtFor, { seconds: thinkingStep.duration })
-        : isActive ? t.chat.thinking : t.chat.thinkingProcess,
-    );
+  const actions: string[] = [];
+  if (counts.skill > 0) {
+    actions.push(counts.skill === 1 ? t.task.usedSkill : format(t.task.usedSkills, { count: counts.skill }));
   }
-
-  if (skillStep) {
-    const toolCount = readCount + writeCount + createCount + commandCount + otherCount + presentedCount;
-    if (toolCount > 0) {
-      actions.push(format(t.task.executedOperations, { count: toolCount }));
-    }
-  } else {
-    if (presentedCount > 0) {
-      actions.push(t.task.presentedFiles);
-    }
-    if (createCount > 0) {
-      actions.push(createCount === 1 ? t.task.createdFile : format(t.task.createdFiles, { count: createCount }));
-    }
-    if (writeCount > 0) {
-      actions.push(writeCount === 1 ? t.task.modifiedFile : format(t.task.modifiedFiles, { count: writeCount }));
-    }
-    if (readCount > 0) {
-      actions.push(readCount === 1 ? t.task.readFile : format(t.task.readFiles, { count: readCount }));
-    }
-    if (commandCount > 0) {
-      actions.push(commandCount === 1 ? t.task.executedCommand : format(t.task.executedCommands, { count: commandCount }));
-    }
-    if (otherCount > 0) {
-      actions.push(otherCount === 1 ? t.task.calledTool : format(t.task.calledTools, { count: otherCount }));
-    }
+  if (counts.presented > 0) {
+    actions.push(t.task.presentedFiles);
   }
-
+  if (counts.create > 0) {
+    actions.push(counts.create === 1 ? t.task.createdFile : format(t.task.createdFiles, { count: counts.create }));
+  }
+  if (counts.modify > 0) {
+    actions.push(counts.modify === 1 ? t.task.modifiedFile : format(t.task.modifiedFiles, { count: counts.modify }));
+  }
+  if (counts.read > 0) {
+    actions.push(counts.read === 1 ? t.task.readFile : format(t.task.readFiles, { count: counts.read }));
+  }
+  if (counts.command > 0) {
+    actions.push(counts.command === 1 ? t.task.executedCommand : format(t.task.executedCommands, { count: counts.command }));
+  }
+  if (counts.other > 0) {
+    actions.push(counts.other === 1 ? t.task.calledTool : format(t.task.calledTools, { count: counts.other }));
+  }
   if (actions.length > 0) return actions.join(separator);
-  // Fallback: show "处理中..." only when actively running, otherwise show completed text
-  return isActive ? t.task.processing : t.task.completed;
+
+  // Only thinking: the settled header carries the duration ("思考了 N 秒"); a
+  // saved block whose duration was lost is named by the phase alone.
+  const thinkingStep = steps.find((s) => s.type === 'thinking');
+  if (thinkingStep) {
+    return thinkingStep.duration != null
+      ? format(t.task.thoughtFor, { seconds: thinkingStep.duration })
+      : t.task.thinkingDone;
+  }
+  return t.task.completed;
+}
+
+// What a live block is doing now: the latest running step's kind of work, or
+// thinking between steps. The thinking label keeps the words of the placeholder
+// dots row the header replaces mid-stream (the active header strips its
+// trailing …/... before its animated dots).
+function currentActivityLabel(steps: UnifiedStep[], t: TranslationDict): string {
+  const running = [...steps].reverse().find((s) => s.status === 'running');
+  if (!running || running.type === 'thinking') return t.chat.thinking;
+  if (running.toolName === TOOL_NAMES.ASK_USER_QUESTION) return t.userQuestion.waitingForAnswer;
+  if (running.toolName === TOOL_NAMES.PRESENT_FILES) return t.task.nowPresentingFiles;
+  switch (running.type) {
+    case 'file-read':
+      return t.task.nowReadingFile;
+    case 'file-write':
+      return t.task.nowModifyingFile;
+    case 'file-create':
+      return t.task.nowCreatingFile;
+    case 'command':
+      return t.task.nowRunningCommand;
+    case 'search':
+      return t.task.nowSearching;
+    case 'skill':
+      return t.task.nowUsingSkill;
+    case 'delegate':
+      return t.task.nowDelegating;
+    default:
+      return t.task.nowCallingTool;
+  }
 }
 
 // Recompute the tool-call label against the current locale so it follows the
@@ -478,7 +488,7 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
               {unifiedSteps.map((step, index) => {
                 const isLast = index === unifiedSteps.length - 1;
                 // Show connector if not the last step, or if there are trailing nodes
-                const hasTrailingNodes = allCompleted || isStopped || isActive || hasError;
+                const hasTrailingNodes = allCompleted || isStopped || hasError;
                 const showConnector = !isLast || hasTrailingNodes;
                 // For a thinking step, signal whether execution has moved on to a
                 // tool step after it — used to auto-collapse the reasoning panel.
@@ -546,20 +556,6 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
                   </div>
                 </div>
               )}
-
-              {/* Running node: still icon, the header holds the block's spinner */}
-              {isActive && (
-                <div className="flex items-start gap-3">
-                  <StepIconSlot>
-                    <Icon icon={AppIcons.loading} size="sm" className="text-label-tertiary" />
-                  </StepIconSlot>
-                  <div className="flex-1 min-w-0 pb-2">
-                    <div className="text-ui text-label-tertiary">
-                      {t.task.running}
-                    </div>
-                  </div>
-                </div>
-              )}
             </div>
           </div>
         </div>
@@ -619,18 +615,14 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t,
   const exitCode = toolViewRecord?.commandOutcome?.exitCode;
   const httpStatus = toolViewRecord?.httpFetchOutcome?.status;
 
-  // Generate step label - for thinking steps, show duration; for waiting ask_user_question, show waiting text
+  // Generate step label - a thinking step is the row of the reasoning text, so
+  // it is named by what it holds (the header names the phase and duration);
+  // for waiting ask_user_question, show waiting text
   const stepLabel = useMemo(() => {
     if (isWaitingForAnswer) return t.userQuestion.waitingForAnswer;
-    if (isThinking) {
-      // Thinking steps carry a baked '思考中...' label; localize at render time
-      // (mirrors the tool-label render-time approach) so it follows UI locale.
-      return (isCompleted && step.duration)
-        ? format(t.task.thoughtFor, { seconds: step.duration })
-        : t.chat.thinking;
-    }
+    if (isThinking) return t.chat.thinkingProcess;
     return step.label;
-  }, [step, isThinking, isCompleted, isWaitingForAnswer, t]);
+  }, [step, isThinking, isWaitingForAnswer, t]);
 
   // Generate completion message if we have tool info
   const completionMsg = useMemo(() => {
@@ -654,17 +646,9 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t,
     }
     prevThinkingRunning.current = isRunning;
   }, [isThinking, isRunning]);
-  // Latches true once this step's thinking pane has rendered in its streaming
-  // state (set-state-during-render derived-state pattern). The completed-state
-  // toggle button animates open only when it replaces the live pane (running →
-  // completed swap in this mounted component); history/remount renders show it
-  // statically.
-  const [thinkingRanLive, setThinkingRanLive] = useState(false);
-  if (isThinking && isRunning && !thinkingRanLive) setThinkingRanLive(true);
-
   // Once thinking is done and execution has moved on to a tool step, auto-collapse
   // the reasoning so attention shifts to the running work. Fires once; the user can
-  // still manually re-expand via the "思考过程" toggle without it snapping shut again.
+  // still manually re-expand from the row's label without it snapping shut again.
   const didAutoCollapseThinking = useRef(false);
   useEffect(() => {
     if (isThinking && isCompleted && hasLaterToolStep && !didAutoCollapseThinking.current) {
@@ -712,42 +696,19 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t,
   };
 
   // Render thinking content — inline (with cursor) while still streaming reasoning,
-  // collapsible once the thinking phase is done (preserves expanded state from streaming).
+  // folded from the row's label once the thinking phase is done (preserves
+  // expanded state from streaming).
   const renderThinkingDetail = () => {
     if (!isThinking || !step.detail) return null;
     if (!isRunning && !isCompleted) return null;
     const panelOpen = isRunning || thinkingExpanded;
     return (
-      // Running and completed share ONE skeleton (toggle-button slot above a
-      // block-expand panel) so the running → completed swap mutates classes on
-      // mounted nodes instead of replacing the subtree — the old two-structure
-      // version landed a ~24px height change in one frame (below
-      // SmoothHeight's 40px threshold), a small residual hop. Now the button
-      // slot grows in via block-expand-enter and the panel — kept mounted —
-      // rolls up/down over the shared 280ms transition on later toggles,
-      // including the auto-collapse when execution moves on to a tool step.
+      // Running and completed share ONE panel so the running → completed swap
+      // mutates classes on mounted nodes instead of replacing the subtree; the
+      // panel — kept mounted — rolls up/down over the shared 280ms transition
+      // on later toggles, including the auto-collapse when execution moves on
+      // to a tool step.
       <div className="mt-1">
-        {isCompleted && (
-          <div
-            className={cn(
-              'block-expand block-expand-open',
-              thinkingRanLive && 'block-expand-enter',
-            )}
-          >
-            {/* pb-2 (the button→panel gap) sits inside the animated slot so it
-                grows in with the button instead of jumping in separately. */}
-            <div className="pb-2">
-              <Pressable
-                onClick={() => setThinkingExpanded(!thinkingExpanded)}
-                aria-expanded={thinkingExpanded}
-                className={DETAIL_CHIP}
-              >
-                <Icon icon={thinkingExpanded ? AppIcons.expand : AppIcons.disclose} size="sm" />
-                {t.chat.thinkingProcess}
-              </Pressable>
-            </div>
-          </div>
-        )}
         {/* block-expand-enter while running: the pane can first mount inside
             an ALREADY open timeline (a later turn's thinking starting after
             tool steps), where the timeline-level mount animation won't fire —
@@ -848,7 +809,15 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t,
                 : 'text-label-tertiary'
           )}
         >
-          {!showsToolView ? (
+          {isThinking && isCompleted && step.detail ? (
+            <Pressable
+              onClick={() => setThinkingExpanded((open) => !open)}
+              aria-expanded={thinkingExpanded}
+              className={STEP_TITLE_BUTTON}
+            >
+              {stepLabel}
+            </Pressable>
+          ) : !showsToolView ? (
             fileChange ? <StepFileLabel label={stepLabel} fileChange={fileChange} t={t} /> : stepLabel
           ) : typeof fetchUrl === 'string' ? (
             <StepUrlLabel label={stepLabel} url={fetchUrl} expanded={viewExpanded} onToggle={() => setViewExpanded((open) => !open)} />
