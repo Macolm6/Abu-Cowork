@@ -1249,6 +1249,33 @@ describe('agentLoopHost', () => {
       );
     });
 
+    it('turns apply_patch typed as a shell command into an apply_patch call while the patch tool is offered', async () => {
+      // run_command is a local tool here; the rewrite happens before local dispatch.
+      hasLocalToolMock.mockImplementation((name: string) => name === 'run_command');
+      const patch = '*** Begin Patch\n*** Update File: a.txt\n@@\n-a\n+b\n*** End Patch';
+
+      await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool(
+          'run_command',
+          { command: `apply_patch <<'EOF'\n${patch}\nEOF` },
+          undefined,
+          undefined,
+          {
+            conversationId: 'conv-wire',
+            offeredToolNames: ['run_command', 'apply_patch'],
+            abortSignal: new AbortController().signal,
+          },
+        ),
+      );
+
+      expect(executeLocalToolMock).not.toHaveBeenCalled();
+      expect(sendRequestMock).not.toHaveBeenCalledWith('approval.check', expect.anything());
+      expect(sendRequestMock).toHaveBeenCalledWith(
+        'tool.invoke',
+        expect.objectContaining({ toolName: 'apply_patch', input: { input: patch } }),
+      );
+    });
+
     it('sends the offered tool names over the wire as a plain string array', async () => {
       hasLocalToolMock.mockReturnValue(false);
 

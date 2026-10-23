@@ -186,6 +186,8 @@ async function runFileEdit() {
   const { resolveEvalFamily } = await import('./modelFamily');
   const { registerBuiltinTools } = await import('@/core/tools/builtins');
   const { toolRegistry } = await import('@/core/tools/registry');
+  const { selectToolsForProfile } = await import('@/core/tools/toolSelection');
+  const { resolveModelProfile } = await import('@/core/llm/modelProfile');
   const { buildSystemPromptSections, routeInput } = await import('@/core/agent/orchestrator');
   const { sectionsToString } = await import('@/core/llm/promptSections');
 
@@ -203,11 +205,13 @@ async function runFileEdit() {
   const family = resolveEvalFamily(target.modelId);
 
   registerBuiltinTools();
-  const tools = FILE_EDIT_TOOL_NAMES.map((name) => {
+  // The same selection the agent loop makes: one editing style per model
+  // (apply_patch or edit_file / write_file) and the family's descriptions.
+  const tools = selectToolsForProfile(FILE_EDIT_TOOL_NAMES.map((name) => {
     const tool = toolRegistry.get(name);
     if (!tool) throw new Error(`Tool "${name}" is not registered`);
     return tool;
-  });
+  }), resolveModelProfile({ modelId: target.modelId }));
 
   // The real system prompt sections, built the same way the tool-selection
   // eval builds them; the workspace is the run's root folder.
@@ -238,7 +242,7 @@ async function runFileEdit() {
     runId,
     target,
     family,
-    toolNames: [...FILE_EDIT_TOOL_NAMES],
+    toolNames: tools.map((tool) => tool.name),
     maxTurns,
   });
   printFileEditReport(report);

@@ -87,6 +87,23 @@ Important: prefer a dedicated tool when one is available:
 
 This tool is suitable for: moving/copying/renaming files (mv/cp), package management (npm/pip/brew), build and test (npm run/cargo build), Git operations, running Python scripts (automatically uses the built-in runtime). Set background=true for long-running services.`;
   },
+  descriptionByFamily: {
+    get gpt() {
+      const plat = getPlatform();
+      const shell = getShell();
+      return `Execute a shell command on the user's computer (current platform: ${plat}, shell: ${shell}).
+
+Prefer a dedicated tool when one is offered:
+- Read a file → read_file
+- List a directory → list_directory
+- Search file contents → search_files
+- Find files → find_files
+- HTTP requests → http_fetch
+- Edit or create a file → apply_patch when it is offered, otherwise edit_file / write_file. Never write a file with cat, echo, printf, heredocs, shell redirection or a Python script.
+
+Use it for: moving/copying/renaming files (mv/cp), package management (npm/pip/brew), build and test (npm run/cargo build), Git operations, running Python scripts (the built-in runtime is used automatically). Set background=true for long-running services. Quote arguments carefully: backticks and $() in the command still execute.`;
+    },
+  },
   inputSchema: {
     type: 'object',
     properties: {

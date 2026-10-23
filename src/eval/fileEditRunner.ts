@@ -30,17 +30,22 @@ import type {
   FileEditToolCallRecord,
 } from './types';
 
-/** Tools the model is offered in this eval — the file tool set, nothing that runs a shell. */
+/**
+ * Tools the model is offered in this eval — the file tool set, nothing that
+ * runs a shell. Both editing styles are listed; `selectToolsForProfile`
+ * keeps the one the model's profile names.
+ */
 export const FILE_EDIT_TOOL_NAMES: readonly string[] = [
   TOOL_NAMES.READ_FILE,
   TOOL_NAMES.WRITE_FILE,
   TOOL_NAMES.EDIT_FILE,
+  TOOL_NAMES.APPLY_PATCH,
   TOOL_NAMES.LIST_DIRECTORY,
   TOOL_NAMES.SEARCH_FILES,
   TOOL_NAMES.FIND_FILES,
 ];
 
-const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set([TOOL_NAMES.WRITE_FILE, TOOL_NAMES.EDIT_FILE]);
+const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set([TOOL_NAMES.WRITE_FILE, TOOL_NAMES.EDIT_FILE, TOOL_NAMES.APPLY_PATCH]);
 
 export const DEFAULT_MAX_TURNS = 12;
 

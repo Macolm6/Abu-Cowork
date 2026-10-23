@@ -10,6 +10,8 @@ export const TOOL_NAMES = {
   READ_FILE: 'read_file',
   WRITE_FILE: 'write_file',
   EDIT_FILE: 'edit_file',
+  /** V4A patch editing (`*** Begin Patch` … `*** End Patch`), offered to models trained on it. */
+  APPLY_PATCH: 'apply_patch',
   LIST_DIRECTORY: 'list_directory',
   SEARCH_FILES: 'search_files',
   FIND_FILES: 'find_files',

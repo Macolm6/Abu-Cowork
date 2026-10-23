@@ -71,6 +71,7 @@ import { parseCommandOutcome, parseFileReadOutcome, parseHttpFetchOutcome } from
 import { enqueueUserInputWithId } from '@/core/agent/userInputQueue';
 import { applyPlanModeState } from '@/core/agent/planMode';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
+import { rewriteShellApplyPatch } from '@/core/tools/applyPatchCommand';
 import { toolResultToString } from '@/core/tools/toolResultToString';
 import { setSettingsReader } from '@/core/agent/ports/settingsReader';
 import { LedgerWatermarkError } from '@/core/session/ledgerReader';
@@ -598,7 +599,16 @@ export function createReverseToolInvoker(
 
   return {
     getAllTools: () => toFullTools(cache),
-    executeAnyTool: async (name, input, _onConfirm, _onFilePerm, context, contextUsagePercent) => {
+    executeAnyTool: async (requestedName, requestedInput, _onConfirm, _onFilePerm, context, contextUsagePercent) => {
+      // `apply_patch <<'EOF' … EOF` typed as a shell command becomes an
+      // apply_patch call while the patch tool is offered; run_command runs
+      // locally here, so the rewrite happens before the local dispatch below
+      // (see applyPatchCommand.ts).
+      const { name, input } = rewriteShellApplyPatch(
+        requestedName,
+        requestedInput,
+        context as Pick<ToolExecutionContext, 'offeredToolNames'> | undefined,
+      );
       // P1-3d-1 (docs/2026-07-21-phase1-p3d-tool-migration-design.md §1) —
       // local dispatch: a hit in the sidecar's local tool registry runs
       // execute() in-process, skipping the tool.invoke round-trip entirely.

@@ -5,6 +5,7 @@ import { toolRegistry } from './registry';
 
 // --- File tools ---
 import { readFileTool, writeFileTool, editFileTool, deleteFileTool, listDirectoryTool, searchFilesTool, findFilesTool, checkOpenDocumentTool } from './definitions/fileTools';
+import { applyPatchTool } from './definitions/patchTools';
 
 // --- Command tools ---
 import { runCommandTool } from './definitions/commandTools';
@@ -76,6 +77,9 @@ export function registerBuiltinTools(): void {
   toolRegistry.register(readFileTool);
   toolRegistry.register(writeFileTool);
   toolRegistry.register(editFileTool);
+  // Registered beside edit_file; selectToolsForProfile offers one of the two
+  // editing styles per model (apply_patch for the gpt family).
+  toolRegistry.register(applyPatchTool);
   toolRegistry.register(deleteFileTool);
   toolRegistry.register(listDirectoryTool);
   toolRegistry.register(runCommandTool);
