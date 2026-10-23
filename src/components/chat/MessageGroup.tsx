@@ -696,14 +696,11 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
 
   const thinkingDuration = assistantMsgs.find((m) => m.thinkingDuration)?.thinkingDuration;
 
-  // Get skill info from user message (if skill was triggered)
-  const skillInfo = userMsg?.skill;
-
   // Extract workflow steps from all tool calls (legacy fallback)
   // Only pass the active conversation's agent status to the currently streaming
   // group — prevents another running conversation from injecting a phantom
   // thinking step into completed groups.
-  const workflowSteps = extractWorkflowSteps(legacyWorkflowToolCalls, thinkingContent, isStreaming ? agentStatus : undefined, skillInfo, thinkingDuration);
+  const workflowSteps = extractWorkflowSteps(legacyWorkflowToolCalls, thinkingContent, isStreaming ? agentStatus : undefined, thinkingDuration);
 
   // Extract file outputs for attachments — deliverables semantics: only show
   // what the AI actually produced this turn. extractFileOutputs (deliverables
