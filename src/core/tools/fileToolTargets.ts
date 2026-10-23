@@ -5,6 +5,7 @@ import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { decodeUploadFiles } from '@/core/permissions/browserUploadFiles';
 import { uploadsFile } from '@/core/permissions/browserToolPolicy';
 import { parsePresentedFilesInput } from '@/core/tools/definitions/presentTools';
+import { parsePatchOperations, type ResolvedPatchOperation } from '@/core/tools/definitions/patchTools';
 import { freezeToolInput, requiresHostFileOperations } from '@/core/tools/operationAuthorization';
 import type { FileAccessPurpose, FileOperationPlan, FileOperationTarget } from '@/core/tools/fileOperation';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
@@ -27,7 +28,8 @@ export function requiresHostFileExecution(name: string): boolean {
 
 export function hasToolFileTargets(name: string): boolean {
   return singlePurposes[name] !== undefined || uploadsFile(name)
-    || name === TOOL_NAMES.PRESENT_FILES || name === TOOL_NAMES.PROCESS_IMAGE || name === TOOL_NAMES.GENERATE_IMAGE;
+    || name === TOOL_NAMES.PRESENT_FILES || name === TOOL_NAMES.PROCESS_IMAGE || name === TOOL_NAMES.GENERATE_IMAGE
+    || name === TOOL_NAMES.APPLY_PATCH;
 }
 
 /** Resolve every declared target before an approval or tool body can await. */
@@ -39,7 +41,8 @@ export async function planToolFiles(
   const single = singlePurposes[name];
   const upload = uploadsFile(name);
   if (!single && !upload && name !== TOOL_NAMES.PRESENT_FILES
-    && name !== TOOL_NAMES.PROCESS_IMAGE && name !== TOOL_NAMES.GENERATE_IMAGE) return null;
+    && name !== TOOL_NAMES.PROCESS_IMAGE && name !== TOOL_NAMES.GENERATE_IMAGE
+    && name !== TOOL_NAMES.APPLY_PATCH) return null;
 
   const workspacePath = context?.workspacePath ?? useWorkspaceStore.getState().currentPath;
   const generatedName = name === TOOL_NAMES.GENERATE_IMAGE ? `abu-image-${Date.now()}.png` : '';
@@ -85,6 +88,25 @@ export async function planToolFiles(
       const files = paths.map(path => ({ path: target(path, 'read', false) ?? path }));
       input.files = typeof original.files === 'string' ? JSON.stringify(files) : files;
     }
+  } else if (name === TOOL_NAMES.APPLY_PATCH) {
+    // Every section of the patch is a target; the tool reads the resolved
+    // paths back from `operations`, in the order the patch names them. A
+    // patch the parser rejects declares no target and the tool reports it.
+    const parsed = parsePatchOperations(typeof input.input === 'string' ? input.input : '');
+    if ('operations' in parsed) {
+      input.operations = parsed.operations.map((op): ResolvedPatchOperation => {
+        if (op.type === 'add') return { type: op.type, path: target(op.path, 'write') ?? op.path };
+        if (op.type === 'delete') {
+          const path = target(op.path, 'delete', false) ?? op.path;
+          target(op.path, 'read', false);
+          return { type: op.type, path };
+        }
+        const moveTo = op.moveTo !== undefined && op.moveTo.trim() !== '' ? op.moveTo : undefined;
+        const path = target(op.path, moveTo ? 'delete' : 'write', !moveTo) ?? op.path;
+        target(op.path, 'read', !moveTo);
+        return { type: op.type, path, ...(moveTo ? { moveTo: target(moveTo, 'write') ?? moveTo } : {}) };
+      });
+    }
   }
 
   return Object.freeze({ input: freezeToolInput(input), targets: Object.freeze(targets), homePath, workspacePath });
@@ -111,6 +133,12 @@ export function resolveToolFileInput(
     resolved.output_path = resolve(input.output_path);
   } else if (name === TOOL_NAMES.GENERATE_IMAGE) {
     resolved.save_path = resolve(input.save_path);
+  } else if (name === TOOL_NAMES.APPLY_PATCH) {
+    if (Array.isArray(input.operations)) {
+      resolved.operations = (input.operations as ResolvedPatchOperation[]).map((op) => ({
+        ...op, path: resolve(op.path), ...(op.moveTo !== undefined ? { moveTo: resolve(op.moveTo) } : {}),
+      }));
+    }
   } else if (typeof input.path === 'string') {
     resolved.path = resolve(input.path);
   }

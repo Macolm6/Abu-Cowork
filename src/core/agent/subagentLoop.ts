@@ -43,6 +43,9 @@ import { adapterKindFor, usageProtocolFor } from '../llm/adapterKind';
 import { promptTokensOf } from '../llm/usageAccounting';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelProfile } from '../llm/modelProfile';
+import { familyNotesFor } from './prompts/variants';
+import { selectToolsForProfile } from '../tools/toolSelection';
+import { repairToolCallsForProfile } from './toolArgumentRepair';
 import { getCapsPort, type CapsPort } from './ports/capsPort';
 import { getWorkspaceReader, type WorkspaceReader } from './ports/workspaceReader';
 import { enforceContextBudget, trimOldScreenshots } from '../context/contextManager';
@@ -823,6 +826,12 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       }
     }
 
+    // The model family's working notes (prompts/variants), the one family
+    // fragment a subagent gets: its persona and workflow are the agent's own.
+    // Appended before the safety block so the rules stay last.
+    const familyNotes = familyNotesFor(startupProfile);
+    if (familyNotes) systemPrompt += '\n' + familyNotes;
+
     // Safety boundary for subagents. The prompt-injection bullet enumerates the
     // same delimiter the orchestrator's safety anchor does: this loop is the
     // PRIMARY consumer of `skills:` (subagentRunner and entryOrchestration both
@@ -846,13 +855,15 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     if (Array.isArray(agent.disallowedTools) && agent.disallowedTools.length > 0) {
       warnPatternsWithoutKnownTool(agent.name, 'disallowedTools', agent.disallowedTools, allTools);
     }
-    const tools = resolveSubagentToolRoster(
+    // One editing style per model and the family's tool descriptions, from
+    // the profile of the model this subagent runs on.
+    const tools = selectToolsForProfile(resolveSubagentToolRoster(
       allTools,
       agent,
       options.allowedTools,
       options.blockedTools,
       runStanding,
-    ).map((tool) => adaptComputerToolForTier(tool, agentCapabilities.computerUseTier, isWindows()));
+    ).map((tool) => adaptComputerToolForTier(tool, agentCapabilities.computerUseTier, isWindows())), startupProfile);
     // The resolver always strips orchestration tools from sub-agents to prevent recursive
     // fan-out (a sub-agent spawning its own batch → unbounded blow-up, since there
     // is no depth/total-agent cap). Multi-agent orchestration is a main-agent-only
@@ -1487,9 +1498,12 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             return { id: tc.id, result };
           }
         };
+      // 按工具的 inputSchema 修复写错形状的参数（档案打开该护栏时）；修不好的
+      // 原样交给工具，由工具把错误返回给模型
+      const dispatchToolCalls = repairToolCallsForProfile(collectedToolCalls, tools, startupProfile, logger);
       const toolResults = startupProfile.capabilities.parallelToolCalls
-        ? await Promise.allSettled(collectedToolCalls.map(runToolCall))
-        : await settleSequentially(collectedToolCalls, runToolCall);
+        ? await Promise.allSettled(dispatchToolCalls.map(runToolCall))
+        : await settleSequentially(dispatchToolCalls, runToolCall);
 
       // Build tool result entries
       const toolResultEntries = toolResults.map((r, i) => {

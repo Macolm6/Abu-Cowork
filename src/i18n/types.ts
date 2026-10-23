@@ -992,14 +992,30 @@ export interface TranslationDict {
     output: string;
     done: string;
     running: string;
-    showMore: string;
-    collapse: string;
     /** Shown in tool-call detail when the task was aborted mid-execution */
     cancelled: string;
     /** Tool-row labels of background commands; {command} is the command text, or its id */
     runInBackground: string;
     readBackgroundCommandOutput: string;
     stopBackgroundCommand: string;
+    /** Tool views: command, file read, search, directory and web page results */
+    exitCode: string;
+    commandEnded: string;
+    errorOutput: string;
+    noOutput: string;
+    outputPending: string;
+    readAllLines: string;
+    readLineRange: string;
+    searchSummary: string;
+    searchCapped: string;
+    searchNoMatches: string;
+    searchGroupCount: string;
+    foundFiles: string;
+    directoryEntries: string;
+    directoryEmpty: string;
+    webBodyTruncated: string;
+    /** Tool-row label of http_fetch; {url} is the address without its scheme */
+    fetchPage: string;
   };
 
   // Notice menubar summaries (noticeMenubarStore.ts)
@@ -5335,6 +5351,31 @@ export interface TranslationDict {
       trashFailed: string;
       /** delete_file hard-refused a catastrophic target (filesystem root / home dir) — fail-closed, nothing was deleted. {path} */
       deleteRefusedCatastrophic: string;
+    };
+    // apply_patch
+    patch: {
+      /** First line of a successful result; one line per file section follows. */
+      applied: string;
+      /** " (+{added} −{deleted})" appended to an updated or moved file's line. */
+      counts: string;
+      /** {path}, {counts} */
+      updatedLine: string;
+      /** {path}, {lines} */
+      addedLine: string;
+      /** {path} — the file went to the Trash. */
+      deletedLine: string;
+      /** {from}, {to}, {counts} */
+      movedLine: string;
+      /** The patch envelope could not be parsed. {error} */
+      errParse: string;
+      /** An Update or Delete section names a file that is not there. {path} */
+      errFileNotFound: string;
+      /** An Add section (or a Move destination) names a file that already exists. {path} */
+      errAddExists: string;
+      /** A hunk's context does not match the file. {path}, {error} */
+      errContext: string;
+      /** Writing failed after the patch applied in memory. {error} */
+      errApply: string;
     };
     // send_file (IM outbound media)
     im: {

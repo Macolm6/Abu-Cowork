@@ -144,6 +144,125 @@ describe('buildShareBundle', () => {
     expect(conv.messages[0].toolCalls?.[0].backgroundCommand?.command).toContain('sk-ant-abc');
   });
 
+  it('drops the outcome records of a call whose result text was redacted', async () => {
+    const secretResult = 'Exit code: 1\nstdout:\nKEY=sk-ant-abcdefghijklmnopqrstuvwxyz123456\n';
+    const conv = makeConv([
+      {
+        id: 'm1',
+        role: 'assistant',
+        content: 'ran',
+        timestamp: 1,
+        toolCalls: [
+          {
+            id: 't1',
+            name: 'run_command',
+            input: { command: 'cat .env' },
+            result: secretResult,
+            commandOutcome: { exitCode: 1, stdout: [21, 63] },
+          },
+          {
+            id: 't2',
+            name: 'read_file',
+            input: { path: '/w/.env' },
+            result: secretResult,
+            fileReadOutcome: { kind: 'text', startLine: 1, lineCount: 3, totalLines: 3, bodyStart: 0 },
+          },
+          {
+            id: 't3',
+            name: 'http_fetch',
+            input: { url: 'http://127.0.0.1/env' },
+            result: secretResult,
+            httpFetchOutcome: { status: 200, statusText: 'OK', body: [21, 63], truncated: false },
+          },
+        ],
+      },
+    ]);
+
+    const bundle = await buildShareBundle(conv);
+    const calls = bundle.messages[0].toolCalls ?? [];
+
+    expect(calls[0].result).toContain('[REDACTED:anthropic-key]');
+    expect(calls[0]).not.toHaveProperty('commandOutcome');
+    expect(calls[1]).not.toHaveProperty('fileReadOutcome');
+    expect(calls[2]).not.toHaveProperty('httpFetchOutcome');
+    expect(conv.messages[0].toolCalls?.[0].commandOutcome).toEqual({ exitCode: 1, stdout: [21, 63] });
+  });
+
+  it('keeps the outcome records when nothing was redacted', async () => {
+    const commandOutcome = { exitCode: 0, stdout: [21, 27] as [number, number] };
+    const fileReadOutcome = { kind: 'text' as const, startLine: 1, lineCount: 1, totalLines: 1, bodyStart: 0 };
+    const httpFetchOutcome = { status: 404, statusText: 'Not Found', body: [20, 25] as [number, number], truncated: false };
+    const conv = makeConv([
+      {
+        id: 'm1',
+        role: 'assistant',
+        content: 'ran',
+        timestamp: 1,
+        toolCalls: [
+          { id: 't1', name: 'run_command', input: { command: 'echo hello' }, result: 'Exit code: 0\nstdout:\nhello\n', commandOutcome },
+          { id: 't2', name: 'read_file', input: { path: '/w/a.txt' }, result: 'hello', fileReadOutcome },
+          { id: 't3', name: 'http_fetch', input: { url: 'http://127.0.0.1/x' }, result: 'HTTP 404 Not Found\n\nhello', httpFetchOutcome },
+        ],
+      },
+    ]);
+
+    const bundle = await buildShareBundle(conv);
+    const calls = bundle.messages[0].toolCalls ?? [];
+
+    expect(calls[0].commandOutcome).toEqual(commandOutcome);
+    expect(calls[1].fileReadOutcome).toEqual(fileReadOutcome);
+    expect(calls[2].httpFetchOutcome).toEqual(httpFetchOutcome);
+  });
+
+  describe('a result over the offload threshold', () => {
+    // The stored result keeps only a preview; the whole text the views read is in toolCallsForContext.
+    const preview = 'Exit code: 0\nstdout:\n' + 'a'.repeat(200);
+    const commandOutcome = { exitCode: 0, stdout: [21, 9021] as [number, number] };
+
+    function offloadedConv(wholeText: string): Conversation {
+      return makeConv([
+        {
+          id: 'm1',
+          role: 'assistant',
+          content: 'ran',
+          timestamp: 1,
+          toolCalls: [
+            { id: 't1', name: 'run_command', input: { command: 'cat .env' }, result: preview, commandOutcome },
+          ],
+        },
+        {
+          id: 'm2',
+          role: 'assistant',
+          content: 'done',
+          timestamp: 2,
+          toolCallsForContext: [
+            { id: 't1', name: 'run_command', input: { command: 'cat .env' }, result: wholeText },
+          ],
+        },
+      ]);
+    }
+
+    it('drops the outcome records when the secret sits after the preview', async () => {
+      const wholeText = 'Exit code: 0\nstdout:\n' + 'a'.repeat(4000)
+        + 'KEY=sk-ant-abcdefghijklmnopqrstuvwxyz123456\n' + 'b'.repeat(5000);
+      expect(wholeText.length).toBeGreaterThan(8192);
+
+      const bundle = await buildShareBundle(offloadedConv(wholeText));
+
+      expect(bundle.messages[0].toolCalls?.[0].result).toBe(preview);
+      expect(bundle.messages[1].toolCallsForContext?.[0].result).toContain('[REDACTED:anthropic-key]');
+      expect(bundle.messages[0].toolCalls?.[0]).not.toHaveProperty('commandOutcome');
+    });
+
+    it('keeps the outcome records when neither text was redacted', async () => {
+      const wholeText = 'Exit code: 0\nstdout:\n' + 'a'.repeat(9000);
+
+      const bundle = await buildShareBundle(offloadedConv(wholeText));
+
+      expect(bundle.messages[0].toolCalls?.[0].commandOutcome).toEqual(commandOutcome);
+    });
+  });
+
   describe('fields without a rule of their own', () => {
     const KEY = 'sk-ant-abcdefghijklmnopqrstuvwxyz123456';
 

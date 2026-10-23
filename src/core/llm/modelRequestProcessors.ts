@@ -86,6 +86,14 @@ const reasoningEffortWithTools: ModelRequestProcessor = {
   apply: (b) => { delete b.reasoning_effort; delete (b as { reasoning?: unknown }).reasoning; },
 };
 
+/** The endpoint rejected `reasoning_effort` itself (rejection memory): the field alone is dropped. */
+const reasoningEffortGate: ModelRequestProcessor = {
+  name: 'reasoning-effort-gate',
+  priority: 15,
+  matches: (_b, ctx) => !ctx.profile.wire.sendReasoningEffort,
+  apply: (b) => { delete b.reasoning_effort; },
+};
+
 /** The user declared the endpoint cannot reason: no reasoning parameter leaves. */
 const reasoningSupport: ModelRequestProcessor = {
   name: 'reasoning-support',
@@ -355,16 +363,22 @@ const toolResultName: ModelRequestProcessor = {
   },
 };
 
-/** Tell the endpoint not to return several tool calls in one turn when the profile says the model cannot take them. */
+/**
+ * Tell the endpoint not to return several tool calls in one turn when the
+ * profile says the model cannot take them. Silent when the endpoint rejected
+ * the field itself (rejection memory): the local serial execution stays.
+ */
 const parallelToolCalls: ModelRequestProcessor = {
   name: 'parallel-tool-calls',
   priority: 55,
-  matches: (_body, ctx) => ctx.hasTools && !ctx.profile.capabilities.parallelToolCalls,
+  matches: (_body, ctx) =>
+    ctx.hasTools && !ctx.profile.capabilities.parallelToolCalls && ctx.profile.wire.sendParallelToolCalls,
   apply: (body) => { body.parallel_tool_calls = false; },
 };
 
 const PROCESSORS: ModelRequestProcessor[] = [
   reasoningEffortWithTools,
+  reasoningEffortGate,
   reasoningSupport,
   toolsGate,
   maxTokensField,

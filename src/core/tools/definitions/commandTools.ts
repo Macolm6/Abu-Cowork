@@ -1,4 +1,4 @@
-import type { ToolDefinition } from '../../../types';
+import type { CommandOutcome, ToolDefinition } from '../../../types';
 import { getPlatform, getShell, isWindows } from '../../../utils/platform';
 import { resolveCommandPython } from '../../../utils/pythonRuntime';
 import { isSandboxEnabled, isNetworkIsolationEnabled } from '../../sandbox/config';
@@ -17,6 +17,34 @@ import { isReadOnlyCommand } from '../readOnlyDetector';
 import { TOOL_NAMES } from '../toolNames';
 import { format, getI18n } from '../../../i18n';
 import { hasElectronCommandHost } from '../../../utils/electronHost';
+import { scaledTruncationRule, truncateText, type TruncationRule } from '../../context/truncation';
+
+const PART_SEPARATOR = '\n\n';
+const STDOUT_HEADING = 'stdout:\n';
+const STDERR_HEADING = 'stderr:\n';
+
+/**
+ * Cut each output stream on its own, so the joined result fits `rule` and the
+ * recorded positions point into the text the model receives. When both
+ * streams have text, stderr gets at most half of the budget and stdout the rest.
+ */
+function boundCommandOutput(stdout: string, stderr: string, rule: TruncationRule): { stdout: string; stderr: string } {
+  if (stdout && stderr) {
+    const boundedStderr = truncateText(stderr, {
+      headLines: Math.floor(rule.headLines / 2),
+      tailLines: Math.floor(rule.tailLines / 2),
+      maxChars: Math.floor(rule.maxChars / 2),
+    });
+    return {
+      stdout: truncateText(stdout, { ...rule, maxChars: rule.maxChars - boundedStderr.length }),
+      stderr: boundedStderr,
+    };
+  }
+  return {
+    stdout: stdout ? truncateText(stdout, rule) : '',
+    stderr: stderr ? truncateText(stderr, rule) : '',
+  };
+}
 
 /**
  * Global-workspace fallback for direct invocations that carry no context.
@@ -58,6 +86,23 @@ Important: prefer a dedicated tool when one is available:
 - Edit a file → edit_file
 
 This tool is suitable for: moving/copying/renaming files (mv/cp), package management (npm/pip/brew), build and test (npm run/cargo build), Git operations, running Python scripts (automatically uses the built-in runtime). Set background=true for long-running services.`;
+  },
+  descriptionByFamily: {
+    get gpt() {
+      const plat = getPlatform();
+      const shell = getShell();
+      return `Execute a shell command on the user's computer (current platform: ${plat}, shell: ${shell}).
+
+Prefer a dedicated tool when one is offered:
+- Read a file → read_file
+- List a directory → list_directory
+- Search file contents → search_files
+- Find files → find_files
+- HTTP requests → http_fetch
+- Edit or create a file → apply_patch when it is offered, otherwise edit_file / write_file. Never write a file with cat, echo, printf, heredocs, shell redirection or a Python script.
+
+Use it for: moving/copying/renaming files (mv/cp), package management (npm/pip/brew), build and test (npm run/cargo build), Git operations, running Python scripts (the built-in runtime is used automatically). Set background=true for long-running services. Quote arguments carefully: backticks and $() in the command still execute.`;
+    },
   },
   inputSchema: {
     type: 'object',
@@ -164,22 +209,36 @@ This tool is suitable for: moving/copying/renaming files (mv/cp), package manage
         showSandboxBlockedToast(resolvedCommand);
       }
 
+      const { stdout, stderr } = boundCommandOutput(
+        output.stdout.trim(),
+        output.stderr.trim(),
+        scaledTruncationRule(TOOL_NAMES.RUN_COMMAND, context?.contextUsagePercent),
+      );
+      const commandOutcome: CommandOutcome = { exitCode: output.code };
       const parts: string[] = [];
+      // Where the next part starts in the joined result.
+      const nextStart = (): number => (parts.length === 0 ? 0 : parts.join(PART_SEPARATOR).length + PART_SEPARATOR.length);
       if (appAutomationRecovery) {
         parts.push(formatAppAutomationRecovery(appAutomationRecovery));
       }
-      if (output.stdout.trim()) {
-        parts.push(`stdout:\n${output.stdout.trim()}`);
+      if (stdout) {
+        const start = nextStart() + STDOUT_HEADING.length;
+        parts.push(`${STDOUT_HEADING}${stdout}`);
+        commandOutcome.stdout = [start, start + stdout.length];
       }
-      if (output.stderr.trim()) {
-        parts.push(`stderr:\n${output.stderr.trim()}`);
+      if (stderr) {
+        const start = nextStart() + STDERR_HEADING.length;
+        parts.push(`${STDERR_HEADING}${stderr}`);
+        commandOutcome.stderr = [start, start + stderr.length];
       }
       parts.push(`exit code: ${output.code}`);
       if (output.backgroundCommandId && output.running === true) {
+        commandOutcome.background = true;
         parts.push(`Background command id: ${output.backgroundCommandId} (still running). Use background_command_output to read later output, stop_background_command to stop it.`);
       }
 
-      return parts.join('\n\n');
+      context?.reportMetadata?.({ commandOutcome });
+      return parts.join(PART_SEPARATOR);
     } catch (err) {
       if (isTaskCommandAbortedError(err)) {
         return 'Error executing command: command was aborted before it started';

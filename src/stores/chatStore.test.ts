@@ -3258,6 +3258,25 @@ describe('chatStore', () => {
       expect(getToolCall(reported)?.backgroundCommand).toEqual({ command: 'node worker.js' });
     });
 
+    it('keeps the three outcome records on updateToolCall and checkpointToolCallMetadata', () => {
+      const commandOutcome = { exitCode: 1, stdout: [8, 20] as [number, number] };
+      const commandConv = seedToolCall('run_command');
+      useChatStore.getState().updateToolCall(
+        commandConv, 'msg-1', 'tc-1', 'Exit code: 1', undefined, false, undefined, { commandOutcome },
+      );
+      expect(getToolCall(commandConv)?.commandOutcome).toEqual(commandOutcome);
+
+      const fileReadOutcome = { kind: 'text' as const, startLine: 1, lineCount: 3, totalLines: 3, bodyStart: 0 };
+      const readConv = seedToolCall('read_file');
+      useChatStore.getState().checkpointToolCallMetadata(readConv, 'msg-1', 'tc-1', { fileReadOutcome });
+      expect(getToolCall(readConv)?.fileReadOutcome).toEqual(fileReadOutcome);
+
+      const httpFetchOutcome = { status: 404, statusText: 'Not Found', body: [20, 90] as [number, number], truncated: false };
+      const fetchConv = seedToolCall('http_fetch');
+      useChatStore.getState().checkpointToolCallMetadata(fetchConv, 'msg-1', 'tc-1', { httpFetchOutcome });
+      expect(getToolCall(fetchConv)?.httpFetchOutcome).toEqual(httpFetchOutcome);
+    });
+
     it('accepts trusted AppleScript recovery metadata only for run_command', () => {
       const convId = seedToolCall('run_command');
       const result = [
@@ -3976,6 +3995,30 @@ describe('sanitizeImportedMessage — same completion inference as disk load', (
 
     expect(sanitized.toolCalls?.[0].backgroundCommand).toEqual({ command: 'npm run dev' });
     expect(sanitized.toolCalls?.[1]).not.toHaveProperty('backgroundCommand');
+  });
+
+  it('keeps a valid outcome record from disk and drops a malformed one', () => {
+    const sanitized = sanitizeImportedMessage({
+      id: 'a-outcomes',
+      role: 'assistant',
+      content: '',
+      timestamp: 1,
+      toolCalls: [
+        { id: 'tc1', name: 'run_command', input: {}, commandOutcome: { exitCode: 1, stdout: [8, 10] } },
+        { id: 'tc2', name: 'run_command', input: {}, commandOutcome: { exitCode: 'x' } },
+        { id: 'tc3', name: 'http_fetch', input: {}, httpFetchOutcome: { status: 200, statusText: 'OK', body: [5, 2], truncated: false } },
+        { id: 'tc4', name: 'read_file', input: {}, fileReadOutcome: { kind: 'document' } },
+        { id: 'tc5', name: 'http_fetch', input: {}, httpFetchOutcome: { status: 200, statusText: 'OK', body: [2, 5], truncated: true } },
+        { id: 'tc6', name: 'run_command', input: {}, commandOutcome: { exitCode: -1, stderr: [8, 51] } },
+      ],
+    } as never);
+
+    expect(sanitized.toolCalls?.[0].commandOutcome).toEqual({ exitCode: 1, stdout: [8, 10] });
+    expect(sanitized.toolCalls?.[5].commandOutcome).toEqual({ exitCode: -1, stderr: [8, 51] });
+    expect(sanitized.toolCalls?.[1]).not.toHaveProperty('commandOutcome');
+    expect(sanitized.toolCalls?.[2]).not.toHaveProperty('httpFetchOutcome');
+    expect(sanitized.toolCalls?.[3].fileReadOutcome).toEqual({ kind: 'document' });
+    expect(sanitized.toolCalls?.[4].httpFetchOutcome).toEqual({ status: 200, statusText: 'OK', body: [2, 5], truncated: true });
   });
 
   it('sanitizes a legacy imported JSON runError', () => {

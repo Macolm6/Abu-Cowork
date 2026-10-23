@@ -15,6 +15,7 @@ import PlanStepsCard from './PlanStepsCard';
 import ShowWidgetCard from './ShowWidgetCard';
 import TaskBlock from './TaskBlock';
 import { collectToolResultTexts } from './toolResultTexts';
+import { collectToolViewRecords } from './toolViews/toolViewRecords';
 import McpAppBlock from './McpAppBlock';
 import { resolveToolCallAppUi } from '@/core/mcp/appHost';
 import SmoothHeight from './SmoothHeight';
@@ -629,6 +630,8 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
   }, [allToolCalls]);
   // Each step's whole result as Abu read it, saved with the conversation.
   const toolResults = useMemo(() => collectToolResultTexts(messages), [messages]);
+  // Input and outcome records of this turn's own tool calls, for the steps' views.
+  const toolViewRecords = useMemo(() => collectToolViewRecords(allToolCalls), [allToolCalls]);
   const legacyWorkflowToolCalls = useMemo<ToolCall[]>(() => {
     const seenBatchKeys = new Set<string>();
     return assistantMsgs.flatMap((message) => (message.toolCalls || []).filter((toolCall) => {
@@ -1201,6 +1204,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
             fileChanges={fileChanges}
             toolResults={toolResults}
             backgroundCommands={backgroundCommands}
+            toolViewRecords={toolViewRecords}
           />
         ) : hasLegacySteps && (
           <TaskBlock
@@ -1210,6 +1214,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
             onRetry={onRetry}
             fileChanges={fileChanges}
             backgroundCommands={backgroundCommands}
+            toolViewRecords={toolViewRecords}
           />
         )}
         {segSettledUQCards.map((tc) => (

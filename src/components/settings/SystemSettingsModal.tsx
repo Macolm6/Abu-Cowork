@@ -16,7 +16,7 @@ import EnterpriseSection from './sections/EnterpriseSection';
 import LabsSection from './sections/LabsSection';
 import PetSection from './sections/PetSection';
 import VoiceInputSection from './sections/VoiceInputSection';
-import { IS_ENTERPRISE_BUILD } from '@/config/featureGates';
+import { IS_ENTERPRISE_BUILD, IS_PERSONAL_ACCOUNT_ENABLED } from '@/config/featureGates';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_PET } from '@/core/labs/registry';
 
@@ -45,7 +45,11 @@ export default function SystemSettingsView() {
   const navGroups: NavEntry[][] = [
     // ① 账号与系统 / 应用设置 — identity is the first conventional destination
     [
-      { id: 'account', label: t.account.title, icon: AppIcons.account },
+      // With personal accounts off, an OSS build has nothing on the Account page, so the
+      // page is left out; an enterprise build fills it from the enterprise slot.
+      ...(IS_PERSONAL_ACCOUNT_ENABLED || IS_ENTERPRISE_BUILD
+        ? [{ id: 'account' as const, label: t.account.title, icon: AppIcons.account }]
+        : []),
       { id: 'general', label: t.settings.general, icon: AppIcons.preferences },
       { id: 'capabilities', label: t.settings.capabilityOverview, icon: AppIcons.capabilities },
       { id: 'voice-input', label: t.voiceInput.title, icon: AppIcons.microphone },
