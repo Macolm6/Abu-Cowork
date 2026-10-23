@@ -1075,3 +1075,101 @@ describe('file change reporting', () => {
     });
   });
 });
+
+describe('file read outcome record', () => {
+  const reportMetadata = vi.fn();
+
+  function setDiskDefaults() {
+    vi.mocked(stat).mockReset().mockResolvedValue({ isFile: true, size: 0 } as never);
+    vi.mocked(readTextFile).mockReset().mockResolvedValue('');
+    vi.mocked(invoke).mockReset();
+  }
+
+  beforeEach(() => {
+    reportMetadata.mockReset();
+    setDiskDefaults();
+  });
+
+  afterEach(setDiskDefaults);
+
+  it('records a whole text read from line one', async () => {
+    vi.mocked(stat).mockResolvedValue({ isFile: true, size: 14 } as never);
+    vi.mocked(readTextFile).mockResolvedValue('one\ntwo\nthree');
+
+    await readFileTool.execute({ path: '/docs/notes.txt' }, { reportMetadata });
+
+    expect(reportMetadata).toHaveBeenCalledWith({
+      fileReadOutcome: { kind: 'text', startLine: 1, lineCount: 3, totalLines: 3, bodyStart: 0 },
+    });
+  });
+
+  it('records a ranged read with the header length', async () => {
+    const lines = Array.from({ length: 1500 }, (_, i) => `line ${i}`);
+    vi.mocked(stat).mockResolvedValue({ isFile: true, size: 12000 } as never);
+    vi.mocked(readTextFile).mockResolvedValue(lines.join('\n'));
+
+    const result = await readFileTool.execute(
+      { path: '/docs/long.txt', offset: 199, limit: 100 },
+      { reportMetadata },
+    ) as string;
+
+    expect(reportMetadata).toHaveBeenCalledTimes(1);
+    const { fileReadOutcome } = reportMetadata.mock.calls[0][0] as {
+      fileReadOutcome: { kind: 'text'; startLine: number; lineCount: number; totalLines: number; bodyStart: number };
+    };
+    expect(fileReadOutcome).toMatchObject({ kind: 'text', startLine: 200, lineCount: 100, totalLines: 1500 });
+    expect(fileReadOutcome.bodyStart).toBe(result.indexOf('\n') + 1);
+    expect(result.slice(fileReadOutcome.bodyStart).split('\n')[0]).toBe(lines[199]);
+  });
+
+  it('records a notice for a range past the end', async () => {
+    vi.mocked(stat).mockResolvedValue({ isFile: true, size: 14 } as never);
+    vi.mocked(readTextFile).mockResolvedValue('one\ntwo\nthree');
+
+    await readFileTool.execute({ path: '/docs/notes.txt', offset: 3, limit: 10 }, { reportMetadata });
+
+    expect(reportMetadata).toHaveBeenCalledTimes(1);
+    expect(reportMetadata).toHaveBeenCalledWith({ fileReadOutcome: { kind: 'notice' } });
+  });
+
+  it('records a notice for a file too large to read at once', async () => {
+    vi.mocked(stat).mockResolvedValue({ isFile: true, size: 256 * 1024 + 1 } as never);
+    vi.mocked(readTextFile).mockResolvedValue('a\nb');
+
+    await readFileTool.execute({ path: '/docs/huge.log' }, { reportMetadata });
+
+    expect(reportMetadata).toHaveBeenCalledWith({ fileReadOutcome: { kind: 'notice' } });
+  });
+
+  it('records a document for extracted PDF text', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ code: 0, stdout: 'page text', stderr: '' });
+
+    const result = await readFileTool.execute({ path: '/docs/report.pdf' }, { reportMetadata });
+
+    expect(result).toBe('page text');
+    expect(reportMetadata).toHaveBeenCalledWith({ fileReadOutcome: { kind: 'document' } });
+  });
+
+  it('records nothing for a PDF whose extraction failed', async () => {
+    vi.mocked(invoke).mockResolvedValue({ code: 1, stdout: '', stderr: 'broken' });
+
+    await readFileTool.execute({ path: '/docs/report.pdf' }, { reportMetadata });
+
+    expect(reportMetadata).not.toHaveBeenCalled();
+  });
+
+  it('records nothing for an image', async () => {
+    await readFileTool.execute({ path: '/tmp/图片.png' }, { reportMetadata });
+
+    expect(reportMetadata).not.toHaveBeenCalled();
+  });
+
+  it('records nothing when the read throws', async () => {
+    vi.mocked(readTextFile).mockRejectedValue(new Error('EACCES: permission denied'));
+
+    const result = await readFileTool.execute({ path: '/docs/notes.txt' }, { reportMetadata });
+
+    expect(result).toContain('EACCES');
+    expect(reportMetadata).not.toHaveBeenCalled();
+  });
+});

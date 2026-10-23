@@ -365,6 +365,9 @@ function essentialToolCall(toolCall: ToolCall): ToolCall {
   if (toolCall.batchTerminalSummary !== undefined) result.batchTerminalSummary = toolCall.batchTerminalSummary;
   if (toolCall.fileChange !== undefined) result.fileChange = fileChangeWithoutHunks(toolCall.fileChange);
   if (toolCall.backgroundCommand !== undefined) result.backgroundCommand = toolCall.backgroundCommand;
+  if (toolCall.commandOutcome !== undefined) result.commandOutcome = toolCall.commandOutcome;
+  if (toolCall.fileReadOutcome !== undefined) result.fileReadOutcome = toolCall.fileReadOutcome;
+  if (toolCall.httpFetchOutcome !== undefined) result.httpFetchOutcome = toolCall.httpFetchOutcome;
   return result;
 }
 

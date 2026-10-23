@@ -437,7 +437,7 @@ describe('SubagentTab', () => {
     expect(screen.getByText('Some rich content for this step was omitted to keep memory bounded.')).toBeInTheDocument();
   });
 
-  it('renders stopped running steps with explicit cancelled semantics', () => {
+  it('says stopped on the running steps of a stopped run', () => {
     const store = useBatchProgressStore.getState();
     store.initBatch(identity, ['Worker']);
     store.startTaskStep(identity, 0, {
@@ -449,8 +449,9 @@ describe('SubagentTab', () => {
 
     render(<SubagentTab identity={identity} taskIndex={0} title="Worker A" />);
 
-    expect(screen.getByText('Stopped')).toBeInTheDocument();
-    expect(screen.getByRole('status', { name: '[Cancelled]' })).toHaveTextContent('[Cancelled]');
+    expect(screen.getAllByText('Stopped')).toHaveLength(2);
+    expect(screen.getByRole('status', { name: 'Stopped' })).toHaveTextContent('Stopped');
+    expect(screen.queryByText('[Cancelled]')).toBeNull();
   });
 
   it('shows the restart/unavailable fallback when the live batch entry is gone', () => {

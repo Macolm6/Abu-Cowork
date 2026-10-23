@@ -10,6 +10,7 @@ import { StatusIcon } from '@/components/ds/status-icon';
 import { useI18n, format, type TranslationDict } from '@/i18n';
 import { getDetailBlockLabel } from '@/utils/toolLabels';
 import { foldToolResult, type ToolResultRow } from '@/utils/toolResultFold';
+import { FoldedRows } from '@/components/chat/toolViews/FoldedRows';
 import type { DetailBlock } from '@/types/execution';
 import { useChatStore } from '@/stores/chatStore';
 import { useImageLightboxStore } from '@/stores/imageLightboxStore';
@@ -54,8 +55,17 @@ function noteText(row: Extract<ToolResultRow, { kind: 'note' }>, t: TranslationD
   return format(template, { count: row.count ?? 0 });
 }
 
+/** A note row of a result on a line of its own. */
+export function ResultNote({ row, t }: { row: Extract<ToolResultRow, { kind: 'note' }>; t: TranslationDict }) {
+  return (
+    <div data-tool-result-note className="my-1 text-caption text-label-tertiary">
+      {noteText(row, t)}
+    </div>
+  );
+}
+
 /** Result rows: runs of the result's own lines in one `<pre>` each, a note on a line of its own. */
-function ResultRows({ rows, t }: { rows: ToolResultRow[]; t: TranslationDict }) {
+export function ResultRows({ rows, t }: { rows: readonly ToolResultRow[]; t: TranslationDict }) {
   const groups: ({ kind: 'text'; lines: string[] } | Extract<ToolResultRow, { kind: 'note' }>)[] = [];
   for (const row of rows) {
     const last = groups.at(-1);
@@ -68,9 +78,7 @@ function ResultRows({ rows, t }: { rows: ToolResultRow[]; t: TranslationDict }) 
       {groups.map((group, index) => (group.kind === 'text' ? (
         <pre key={index} className="m-0 whitespace-pre-wrap break-all font-code text-mono">{group.lines.join('\n')}</pre>
       ) : (
-        <div key={index} data-tool-result-note className="my-1 text-caption text-label-tertiary">
-          {noteText(group, t)}
-        </div>
+        <ResultNote key={index} row={group} t={t} />
       )))}
     </>
   );
@@ -80,26 +88,12 @@ function ResultRows({ rows, t }: { rows: ToolResultRow[]; t: TranslationDict }) 
 function WholeResult({ text, isError }: { text: string; isError: boolean }) {
   const { t } = useI18n();
   const fold = useMemo(() => foldToolResult(text), [text]);
-  const [showAll, setShowAll] = useState(false);
-  const folded = fold.hidden !== null && !showAll;
   return (
-    <div
-      data-tool-result
-      className={cn('max-h-[300px] overflow-y-auto px-3 py-2', isError ? 'text-danger' : 'text-label')}
-    >
-      <ResultRows rows={folded ? fold.head : fold.rows} t={t} />
-      {folded && fold.hidden && (
-        <div className="py-1">
-          <Button variant="plain" size="sm" onClick={() => setShowAll(true)}>
-            {format(
-              fold.hidden.unit === 'lines' ? t.chat.toolResultShowAllLines : t.chat.toolResultShowAllChars,
-              { count: fold.hidden.count },
-            )}
-          </Button>
-        </div>
-      )}
-      {folded && <ResultRows rows={fold.tail} t={t} />}
-    </div>
+    <FoldedRows
+      fold={fold}
+      renderRows={(rows) => <ResultRows rows={rows} t={t} />}
+      className={isError ? 'text-danger' : 'text-label'}
+    />
   );
 }
 

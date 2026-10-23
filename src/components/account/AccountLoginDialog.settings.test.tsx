@@ -37,6 +37,12 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { passSettleInterval } from '@/test/dsWindows';
 import AccountLoginDialog from './AccountLoginDialog';
 
+// These cases cover the personal sign-in, which ships once personal accounts are on.
+vi.mock('@/config/featureGates', () => ({
+  IS_ENTERPRISE_BUILD: false,
+  IS_PERSONAL_ACCOUNT_ENABLED: true,
+}));
+
 // The sign-in window with the real settings store and the real settings window around it.
 // The settings pages are replaced by the one button the account page has for signing in.
 vi.mock('@/components/settings/SystemSettingsModal', async () => {

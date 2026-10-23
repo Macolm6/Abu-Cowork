@@ -1,0 +1,840 @@
+{
+  "metadata": {
+    "timestamp": "2026-10-22T15:21:14.763Z",
+    "runId": "ab-family",
+    "target": {
+      "providerId": "deepseek",
+      "modelId": "deepseek-v4-pro",
+      "label": "deepseek:deepseek-v4-pro:family"
+    },
+    "family": "deepseek",
+    "dataset": "file-edit",
+    "totalCases": 22,
+    "toolNames": [
+      "read_file",
+      "write_file",
+      "edit_file",
+      "list_directory",
+      "search_files",
+      "find_files"
+    ],
+    "maxTurns": 12
+  },
+  "summary": {
+    "passRate": 1,
+    "passCount": 22,
+    "failCount": 0,
+    "errorCount": 0,
+    "textOnlyEndTurnCount": 0,
+    "avgToolCalls": 2.272727272727273,
+    "avgWriteToolCalls": 1.0909090909090908,
+    "avgTurns": 3.090909090909091,
+    "avgLatencyMs": 5415.909090909091,
+    "totalTokens": {
+      "input": 288577,
+      "output": 7888
+    },
+    "byCategory": {
+      "single-replace": {
+        "pass": 3,
+        "total": 3
+      },
+      "multi-replace": {
+        "pass": 3,
+        "total": 3
+      },
+      "create": {
+        "pass": 3,
+        "total": 3
+      },
+      "delete-fragment": {
+        "pass": 3,
+        "total": 3
+      },
+      "special-chars": {
+        "pass": 5,
+        "total": 5
+      },
+      "multi-file": {
+        "pass": 2,
+        "total": 2
+      },
+      "read-then-edit": {
+        "pass": 3,
+        "total": 3
+      }
+    },
+    "byDifficulty": {
+      "easy": {
+        "pass": 5,
+        "total": 5
+      },
+      "medium": {
+        "pass": 13,
+        "total": 13
+      },
+      "hard": {
+        "pass": 4,
+        "total": 4
+      }
+    }
+  },
+  "results": [
+    {
+      "caseId": "single-replace-01",
+      "target": {
+        "providerId": "deepseek",
+        "modelId": "deepseek-v4-pro",
+        "label": "deepseek:deepseek-v4-pro:family"
+      },
+      "passed": true,
+      "toolCalls": [
+        {
+          "name": "read_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/single-replace-01/config.json",
+          "isError": false
+        },
+        {
+          "name": "edit_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/single-replace-01/config.json",
+          "isError": false
+        }
+      ],
+      "toolCallCount": 2,
+      "writeToolCallCount": 1,
+      "textOnlyEndTurn": false,
+      "turns": 3,
+      "tokenUsage": {
+        "input": 12525,
+        "output": 284
+      },
+      "latencyMs": 6221,
+      "mismatches": [],
+      "extraFiles": [],
+      "finalText": "Done. The port is now `8080`."
+    },
+    {
+      "caseId": "single-replace-02",
+      "target": {
+        "providerId": "deepseek",
+        "modelId": "deepseek-v4-pro",
+        "label": "deepseek:deepseek-v4-pro:family"
+      },
+      "passed": true,
+      "toolCalls": [
+        {
+          "name": "read_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/single-replace-02/README.md",
+          "isError": false
+        },
+        {
+          "name": "edit_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/single-replace-02/README.md",
+          "isError": false
+        }
+      ],
+      "toolCallCount": 2,
+      "writeToolCallCount": 1,
+      "textOnlyEndTurn": false,
+      "turns": 3,
+      "tokenUsage": {
+        "input": 12527,
+        "output": 295
+      },
+      "latencyMs": 4656,
+      "mismatches": [],
+      "extraFiles": [],
+      "finalText": "改好了，一级标题现在是「阿布使用手册」，其余内容没动。"
+    },
+    {
+      "caseId": "single-replace-03",
+      "target": {
+        "providerId": "deepseek",
+        "modelId": "deepseek-v4-pro",
+        "label": "deepseek:deepseek-v4-pro:family"
+      },
+      "passed": true,
+      "toolCalls": [
+        {
+          "name": "read_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/single-replace-03/service.ts",
+          "isError": false
+        },
+        {
+          "name": "edit_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/single-replace-03/service.ts",
+          "isError": false
+        }
+      ],
+      "toolCallCount": 2,
+      "writeToolCallCount": 1,
+      "textOnlyEndTurn": false,
+      "turns": 3,
+      "tokenUsage": {
+        "input": 12712,
+        "output": 351
+      },
+      "latencyMs": 5572,
+      "mismatches": [],
+      "extraFiles": [],
+      "finalText": "Done. `fetchUser` 里的超时时间已改为 15000，`fetchOrders` 里的 5000 保持不变。"
+    },
+    {
+      "caseId": "multi-replace-01",
+      "target": {
+        "providerId": "deepseek",
+        "modelId": "deepseek-v4-pro",
+        "label": "deepseek:deepseek-v4-pro:family"
+      },
+      "passed": true,
+      "toolCalls": [
+        {
+          "name": "search_files",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/multi-replace-01",
+          "isError": false
+        },
+        {
+          "name": "read_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/multi-replace-01/profile.ts",
+          "isError": false
+        },
+        {
+          "name": "edit_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/multi-replace-01/profile.ts",
+          "isError": false
+        },
+        {
+          "name": "search_files",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/multi-replace-01",
+          "isError": false
+        }
+      ],
+      "toolCallCount": 4,
+      "writeToolCallCount": 1,
+      "textOnlyEndTurn": false,
+      "turns": 5,
+      "tokenUsage": {
+        "input": 22483,
+        "output": 713
+      },
+      "latencyMs": 9663,
+      "mismatches": [],
+      "extraFiles": [],
+      "finalText": "已完成。`profile.ts` 里的 3 处 `userName` 全部改为 `displayName`，确认已无残留。"
+    },
+    {
+      "caseId": "multi-replace-02",
+      "target": {
+        "providerId": "deepseek",
+        "modelId": "deepseek-v4-pro",
+        "label": "deepseek:deepseek-v4-pro:family"
+      },
+      "passed": true,
+      "toolCalls": [
+        {
+          "name": "read_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/multi-replace-02/links.txt",
+          "isError": false
+        },
+        {
+          "name": "write_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/multi-replace-02/links.txt",
+          "isError": false
+        }
+      ],
+      "toolCallCount": 2,
+      "writeToolCallCount": 1,
+      "textOnlyEndTurn": false,
+      "turns": 3,
+      "tokenUsage": {
+        "input": 12529,
+        "output": 507
+      },
+      "latencyMs": 7235,
+      "mismatches": [],
+      "extraFiles": [],
+      "finalText": "Done. All 4 `http://` links in links.txt are now `https://`."
+    },
+    {
+      "caseId": "multi-replace-03",
+      "target": {
+        "providerId": "deepseek",
+        "modelId": "deepseek-v4-pro",
+        "label": "deepseek:deepseek-v4-pro:family"
+      },
+      "passed": true,
+      "toolCalls": [
+        {
+          "name": "read_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/multi-replace-03/report.py",
+          "isError": false
+        },
+        {
+          "name": "edit_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/multi-replace-03/report.py",
+          "isError": false
+        }
+      ],
+      "toolCallCount": 2,
+      "writeToolCallCount": 1,
+      "textOnlyEndTurn": false,
+      "turns": 3,
+      "tokenUsage": {
+        "input": 12789,
+        "output": 391
+      },
+      "latencyMs": 5227,
+      "mismatches": [],
+      "extraFiles": [],
+      "finalText": "Done. 已把 `build_report` 和 `send_report` 的 `retries` 默认值从 3 改成 5，顶部注释也改为「重试 5 次」。"
+    },
+    {
+      "caseId": "create-01",
+      "target": {
+        "providerId": "deepseek",
+        "modelId": "deepseek-v4-pro",
+        "label": "deepseek:deepseek-v4-pro:family"
+      },
+      "passed": true,
+      "toolCalls": [
+        {
+          "name": "write_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/create-01/hello.txt",
+          "isError": false
+        }
+      ],
+      "toolCallCount": 1,
+      "writeToolCallCount": 1,
+      "textOnlyEndTurn": false,
+      "turns": 2,
+      "tokenUsage": {
+        "input": 8195,
+        "output": 155
+      },
+      "latencyMs": 2565,
+      "mismatches": [],
+      "extraFiles": [],
+      "finalText": "已创建 hello.txt，内容为「你好，世界」。"
+    },
+    {
+      "caseId": "create-02",
+      "target": {
+        "providerId": "deepseek",
+        "modelId": "deepseek-v4-pro",
+        "label": "deepseek:deepseek-v4-pro:family"
+      },
+      "passed": true,
+      "toolCalls": [
+        {
+          "name": "write_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/create-02/.gitignore",
+          "isError": false
+        }
+      ],
+      "toolCallCount": 1,
+      "writeToolCallCount": 1,
+      "textOnlyEndTurn": false,
+      "turns": 2,
+      "tokenUsage": {
+        "input": 8223,
+        "output": 207
+      },
+      "latencyMs": 3353,
+      "mismatches": [],
+      "extraFiles": [],
+      "finalText": "Done. Created `.gitignore` with the three entries, one per line."
+    },
+    {
+      "caseId": "create-03",
+      "target": {
+        "providerId": "deepseek",
+        "modelId": "deepseek-v4-pro",
+        "label": "deepseek:deepseek-v4-pro:family"
+      },
+      "passed": true,
+      "toolCalls": [
+        {
+          "name": "write_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/create-03/notes/today.md",
+          "isError": false
+        }
+      ],
+      "toolCallCount": 1,
+      "writeToolCallCount": 1,
+      "textOnlyEndTurn": false,
+      "turns": 2,
+      "tokenUsage": {
+        "input": 8248,
+        "output": 215
+      },
+      "latencyMs": 3717,
+      "mismatches": [],
+      "extraFiles": [],
+      "finalText": "Done. Created `notes/today.md` with the title, blank line, and task line as requested."
+    },
+    {
+      "caseId": "delete-fragment-01",
+      "target": {
+        "providerId": "deepseek",
+        "modelId": "deepseek-v4-pro",
+        "label": "deepseek:deepseek-v4-pro:family"
+      },
+      "passed": true,
+      "toolCalls": [
+        {
+          "name": "read_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/delete-fragment-01/app.js",
+          "isError": false
+        },
+        {
+          "name": "edit_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/delete-fragment-01/app.js",
+          "isError": false
+        }
+      ],
+      "toolCallCount": 2,
+      "writeToolCallCount": 1,
+      "textOnlyEndTurn": false,
+      "turns": 3,
+      "tokenUsage": {
+        "input": 12567,
+        "output": 272
+      },
+      "latencyMs": 4215,
+      "mismatches": [],
+      "extraFiles": [],
+      "finalText": "Done — removed the three commented-out legacy lines."
+    },
+    {
+      "caseId": "delete-fragment-02",
+      "target": {
+        "providerId": "deepseek",
+        "modelId": "deepseek-v4-pro",
+        "label": "deepseek:deepseek-v4-pro:family"
+      },
+      "passed": true,
+      "toolCalls": [
+        {
+          "name": "read_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/delete-fragment-02/todo.md",
+          "isError": false
+        },
+        {
+          "name": "edit_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/delete-fragment-02/todo.md",
+          "isError": false
+        }
+      ],
+      "toolCallCount": 2,
+      "writeToolCallCount": 1,
+      "textOnlyEndTurn": false,
+      "turns": 3,
+      "tokenUsage": {
+        "input": 12545,
+        "output": 312
+      },
+      "latencyMs": 4438,
+      "mismatches": [],
+      "extraFiles": [],
+      "finalText": "已删掉「买牛奶」那一项。现在清单剩下：写周报、预约牙医、回复邮件。"
+    },
+    {
+      "caseId": "delete-fragment-03",
+      "target": {
+        "providerId": "deepseek",
+        "modelId": "deepseek-v4-pro",
+        "label": "deepseek:deepseek-v4-pro:family"
+      },
+      "passed": true,
+      "toolCalls": [
+        {
+          "name": "read_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/delete-fragment-03/tools.py",
+          "isError": false
+        },
+        {
+          "name": "edit_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/delete-fragment-03/tools.py",
+          "isError": false
+        },
+        {
+          "name": "read_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/delete-fragment-03/tools.py",
+          "isError": false
+        }
+      ],
+      "toolCallCount": 3,
+      "writeToolCallCount": 1,
+      "textOnlyEndTurn": false,
+      "turns": 4,
+      "tokenUsage": {
+        "input": 17146,
+        "output": 395
+      },
+      "latencyMs": 5972,
+      "mismatches": [],
+      "extraFiles": [],
+      "finalText": "Done. `legacy_sum` 已删除，`add` 和 `multiply` 保留。"
+    },
+    {
+      "caseId": "special-chars-01",
+      "target": {
+        "providerId": "deepseek",
+        "modelId": "deepseek-v4-pro",
+        "label": "deepseek:deepseek-v4-pro:family"
+      },
+      "passed": true,
+      "toolCalls": [
+        {
+          "name": "read_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/special-chars-01/deploy.sh",
+          "isError": false
+        },
+        {
+          "name": "edit_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/special-chars-01/deploy.sh",
+          "isError": false
+        }
+      ],
+      "toolCallCount": 2,
+      "writeToolCallCount": 1,
+      "textOnlyEndTurn": false,
+      "turns": 3,
+      "tokenUsage": {
+        "input": 12589,
+        "output": 301
+      },
+      "latencyMs": 4575,
+      "mismatches": [],
+      "extraFiles": [],
+      "finalText": "Done. `TARGET_DIR` 已从 `$HOME/apps/old` 改为 `$HOME/apps/new`。"
+    },
+    {
+      "caseId": "special-chars-02",
+      "target": {
+        "providerId": "deepseek",
+        "modelId": "deepseek-v4-pro",
+        "label": "deepseek:deepseek-v4-pro:family"
+      },
+      "passed": true,
+      "toolCalls": [
+        {
+          "name": "read_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/special-chars-02/validate.js",
+          "isError": false
+        },
+        {
+          "name": "edit_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/special-chars-02/validate.js",
+          "isError": false
+        }
+      ],
+      "toolCallCount": 2,
+      "writeToolCallCount": 1,
+      "textOnlyEndTurn": false,
+      "turns": 3,
+      "tokenUsage": {
+        "input": 12633,
+        "output": 301
+      },
+      "latencyMs": 5040,
+      "mismatches": [],
+      "extraFiles": [],
+      "finalText": "Done. `PHONE_RE` 现在是 `/^1\\d{11}$/`，其他部分保持不变。"
+    },
+    {
+      "caseId": "special-chars-03",
+      "target": {
+        "providerId": "deepseek",
+        "modelId": "deepseek-v4-pro",
+        "label": "deepseek:deepseek-v4-pro:family"
+      },
+      "passed": true,
+      "toolCalls": [
+        {
+          "name": "read_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/special-chars-03/公告.txt",
+          "isError": false
+        },
+        {
+          "name": "edit_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/special-chars-03/公告.txt",
+          "isError": false
+        }
+      ],
+      "toolCallCount": 2,
+      "writeToolCallCount": 1,
+      "textOnlyEndTurn": false,
+      "turns": 3,
+      "tokenUsage": {
+        "input": 12544,
+        "output": 284
+      },
+      "latencyMs": 4492,
+      "mismatches": [],
+      "extraFiles": [],
+      "finalText": "改好了，「周五下午三点」已经改成「周四上午十点」。"
+    },
+    {
+      "caseId": "special-chars-04",
+      "target": {
+        "providerId": "deepseek",
+        "modelId": "deepseek-v4-pro",
+        "label": "deepseek:deepseek-v4-pro:family"
+      },
+      "passed": true,
+      "toolCalls": [
+        {
+          "name": "read_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/special-chars-04/Makefile",
+          "isError": false
+        },
+        {
+          "name": "edit_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/special-chars-04/Makefile",
+          "isError": false
+        },
+        {
+          "name": "read_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/special-chars-04/Makefile",
+          "isError": false
+        }
+      ],
+      "toolCallCount": 3,
+      "writeToolCallCount": 1,
+      "textOnlyEndTurn": false,
+      "turns": 4,
+      "tokenUsage": {
+        "input": 17145,
+        "output": 437
+      },
+      "latencyMs": 6937,
+      "mismatches": [],
+      "extraFiles": [],
+      "finalText": "Done. `build` 目标的命令已改为 `go build -o bin/app ./cmd/app`，命令行保持制表符缩进。"
+    },
+    {
+      "caseId": "special-chars-05",
+      "target": {
+        "providerId": "deepseek",
+        "modelId": "deepseek-v4-pro",
+        "label": "deepseek:deepseek-v4-pro:family"
+      },
+      "passed": true,
+      "toolCalls": [
+        {
+          "name": "read_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/special-chars-05/price.js",
+          "isError": false
+        },
+        {
+          "name": "edit_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/special-chars-05/price.js",
+          "isError": false
+        },
+        {
+          "name": "read_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/special-chars-05/price.js",
+          "isError": false
+        }
+      ],
+      "toolCallCount": 3,
+      "writeToolCallCount": 1,
+      "textOnlyEndTurn": false,
+      "turns": 4,
+      "tokenUsage": {
+        "input": 17377,
+        "output": 438
+      },
+      "latencyMs": 7394,
+      "mismatches": [],
+      "extraFiles": [],
+      "finalText": "Done. 前缀已改为 `$`，替换串改为 `'$1，'`（中文逗号），其余未动。"
+    },
+    {
+      "caseId": "multi-file-01",
+      "target": {
+        "providerId": "deepseek",
+        "modelId": "deepseek-v4-pro",
+        "label": "deepseek:deepseek-v4-pro:family"
+      },
+      "passed": true,
+      "toolCalls": [
+        {
+          "name": "read_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/multi-file-01/package.json",
+          "isError": false
+        },
+        {
+          "name": "read_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/multi-file-01/CHANGELOG.md",
+          "isError": false
+        },
+        {
+          "name": "edit_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/multi-file-01/package.json",
+          "isError": false
+        },
+        {
+          "name": "edit_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/multi-file-01/CHANGELOG.md",
+          "isError": false
+        }
+      ],
+      "toolCallCount": 4,
+      "writeToolCallCount": 2,
+      "textOnlyEndTurn": false,
+      "turns": 3,
+      "tokenUsage": {
+        "input": 13133,
+        "output": 604
+      },
+      "latencyMs": 6693,
+      "mismatches": [],
+      "extraFiles": [],
+      "finalText": "完成。两个文件都已更新：\n\n- package.json：version 从 1.2.0 改为 1.3.0\n- CHANGELOG.md：顶部新增「## 1.3.0」一节，内容为「- 支持导出 PDF」，原有 1.2.0 内容保留在后面"
+    },
+    {
+      "caseId": "multi-file-02",
+      "target": {
+        "providerId": "deepseek",
+        "modelId": "deepseek-v4-pro",
+        "label": "deepseek:deepseek-v4-pro:family"
+      },
+      "passed": true,
+      "toolCalls": [
+        {
+          "name": "read_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/multi-file-02/utils.py",
+          "isError": false
+        },
+        {
+          "name": "read_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/multi-file-02/main.py",
+          "isError": false
+        },
+        {
+          "name": "edit_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/multi-file-02/utils.py",
+          "isError": false
+        },
+        {
+          "name": "edit_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/multi-file-02/main.py",
+          "isError": false
+        }
+      ],
+      "toolCallCount": 4,
+      "writeToolCallCount": 2,
+      "textOnlyEndTurn": false,
+      "turns": 3,
+      "tokenUsage": {
+        "input": 12975,
+        "output": 512
+      },
+      "latencyMs": 5362,
+      "mismatches": [],
+      "extraFiles": [],
+      "finalText": "Done. Renamed `calc_total` to `calculate_total` in `utils.py`, and updated both the import and the call in `main.py`."
+    },
+    {
+      "caseId": "read-then-edit-01",
+      "target": {
+        "providerId": "deepseek",
+        "modelId": "deepseek-v4-pro",
+        "label": "deepseek:deepseek-v4-pro:family"
+      },
+      "passed": true,
+      "toolCalls": [
+        {
+          "name": "read_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/read-then-edit-01/settings.yaml",
+          "isError": false
+        },
+        {
+          "name": "edit_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/read-then-edit-01/settings.yaml",
+          "isError": false
+        }
+      ],
+      "toolCallCount": 2,
+      "writeToolCallCount": 1,
+      "textOnlyEndTurn": false,
+      "turns": 3,
+      "tokenUsage": {
+        "input": 12531,
+        "output": 303
+      },
+      "latencyMs": 5192,
+      "mismatches": [],
+      "extraFiles": [],
+      "finalText": "Done. timeout 从 30 改成了 60。"
+    },
+    {
+      "caseId": "read-then-edit-02",
+      "target": {
+        "providerId": "deepseek",
+        "modelId": "deepseek-v4-pro",
+        "label": "deepseek:deepseek-v4-pro:family"
+      },
+      "passed": true,
+      "toolCalls": [
+        {
+          "name": "read_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/read-then-edit-02/query.ts",
+          "isError": false
+        },
+        {
+          "name": "edit_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/read-then-edit-02/query.ts",
+          "isError": false
+        }
+      ],
+      "toolCallCount": 2,
+      "writeToolCallCount": 1,
+      "textOnlyEndTurn": false,
+      "turns": 3,
+      "tokenUsage": {
+        "input": 12623,
+        "output": 301
+      },
+      "latencyMs": 4445,
+      "mismatches": [],
+      "extraFiles": [],
+      "finalText": "Done. Changed `DEFAULT_LIMIT` from 20 to 100 and removed the TODO comment."
+    },
+    {
+      "caseId": "read-then-edit-03",
+      "target": {
+        "providerId": "deepseek",
+        "modelId": "deepseek-v4-pro",
+        "label": "deepseek:deepseek-v4-pro:family"
+      },
+      "passed": true,
+      "toolCalls": [
+        {
+          "name": "read_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/read-then-edit-03/stock.csv",
+          "isError": false
+        },
+        {
+          "name": "edit_file",
+          "path": "/Users/shawn/Documents/Abu/.claude/worktrees/sad-nobel-86894e/Abu-opensource-worktrees/prompt-variants/.agent/eval-workspace/ab-family/read-then-edit-03/stock.csv",
+          "isError": false
+        }
+      ],
+      "toolCallCount": 2,
+      "writeToolCallCount": 1,
+      "textOnlyEndTurn": false,
+      "turns": 3,
+      "tokenUsage": {
+        "input": 12538,
+        "output": 310
+      },
+      "latencyMs": 6186,
+      "mismatches": [],
+      "extraFiles": [],
+      "finalText": "已把「键盘」的数量从 3 改成 5。"
+    }
+  ]
+}
