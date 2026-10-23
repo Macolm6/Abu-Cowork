@@ -971,8 +971,21 @@ export interface TranslationDict {
     calledTool: string;
     calledTools: string;
     presentedFiles: string;
-    executedOperations: string;
+    usedSkill: string;
+    usedSkills: string;
     thoughtFor: string;
+    /** Settled header of a thinking-only block whose duration was not saved */
+    thinkingDone: string;
+    /** Live header of a block: the kind of work its latest running step does */
+    nowReadingFile: string;
+    nowModifyingFile: string;
+    nowCreatingFile: string;
+    nowRunningCommand: string;
+    nowSearching: string;
+    nowUsingSkill: string;
+    nowDelegating: string;
+    nowPresentingFiles: string;
+    nowCallingTool: string;
     executedIn: string;
     result: string;
     retryAction: string;
