@@ -102,6 +102,12 @@ import { getI18n, getLocale, format } from '../../i18n';
 import { clearSkillHooksByLoop } from '../tools/builtins';
 import { agentToolPolicyForRoute, resolveAgentToolNames } from './agentToolPolicy';
 import { executeToolBatch } from './toolExecutor';
+import { repairToolCallsForProfile } from './toolArgumentRepair';
+import {
+  createTextOnlyEndTurnNudge,
+  TEXT_ONLY_END_TURN_NUDGE_LIMIT,
+  TEXT_ONLY_END_TURN_NUDGE_MESSAGE,
+} from './textOnlyEndTurnNudge';
 import { startConversationTrace, endConversationTrace, startGeneration } from '../observability/langfuse';
 import { calculateTurnCost } from '../llm/costTracker';
 import { formatPlannedStepsForPrompt } from './plannedStepsPrompt';
@@ -118,6 +124,8 @@ import { resolveImagePolicy } from '../llm/imagePolicy';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelDeclared } from '../llm/resolveModelDeclared';
 import { resolveModelProfile } from '../llm/modelProfile';
+import { selectToolsForProfile } from '../tools/toolSelection';
+import { recordCapabilityRejection, rejectedCapabilities } from '../llm/rejectionMemory';
 import { rehydrateForSend, type ImageBase64Cache } from '../llm/imageRehydration';
 import { TOOL_NAMES, isDisplayHiddenStepBackedTool } from '../tools/toolNames';
 import { adaptComputerToolForTier } from '../tools/definitions/computerToolText';
@@ -1731,6 +1739,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   let maxOutputTokensRecoveryCount = 0;
   const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
   const malformedToolCallGuard = createMalformedToolCallGuard();
+  // 只说不做的续推：计数随本次运行重置，开关按每轮的模型档案读取
+  const textOnlyEndTurnNudge = createTextOnlyEndTurnNudge();
   // 本地服务商每次运行开始问一次实际加载的长度（LM Studio 可以随时换长度重新加载，
   // Ollama 只报告已加载的模型）；用户填了「上下文长度」就不问
   let runProbedContextWindow: number | undefined;
@@ -1921,6 +1931,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // prompt and can't hallucinate tool calls. The adapter-level toolsGate rule
       // also strips tools from the request body as belt-and-suspenders.
       const noTools = modelDeclared?.supportsTools === false;
+      // The profile is the one record of how Abu talks to this model; the
+      // adapter resolves the same record from the same inputs for the wire.
+      // Resolved before the tools, which are chosen from it.
+      const modelProfile = resolveModelProfile({
+        modelId: effectiveModelId,
+        provider: activeProvider,
+        declared: modelDeclared,
+        overrides: rejectedCapabilities(activeProvider?.id, effectiveModelId),
+      });
       // Build prefetch context for conditional tool loading
       const conv = getConversationReader().getConversation(conversationId);
       const activeSkillObjects = (conv?.activeSkills ?? [])
@@ -1958,12 +1977,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // tool_search is useful only when the host has an actual deferred catalog.
       // Hiding it when the catalog is empty prevents a weak model from spending
       // turns searching capabilities that are already loaded or policy-blocked.
-      const tools = (noTools
+      // One editing style per model (apply_patch or edit_file / write_file)
+      // and the family's own tool descriptions, both read from the profile.
+      const tools = selectToolsForProfile((noTools
         ? []
         : deferredTools.length === 0
           ? rawTools.filter(tool => tool.name !== TOOL_NAMES.TOOL_SEARCH)
           : rawTools
-      ).map((tool) => adaptComputerToolForTier(tool, toolContext.computerUseTier, isWindows()));
+      ).map((tool) => adaptComputerToolForTier(tool, toolContext.computerUseTier, isWindows())), modelProfile);
       options?.runtimeEvent?.('agent_tool_exposure', {
         conversationId,
         loopId,
@@ -2011,13 +2032,6 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // No-op when activeProvider has no declaredCapabilities (builtin providers).
       modelCaps = applyDeclaredCapabilities(modelCaps, modelDeclared);
       modelSupportsVision = modelCaps.vision;
-      // The profile is the one record of how Abu talks to this model; the
-      // adapter resolves the same record from the same inputs for the wire.
-      const modelProfile = resolveModelProfile({
-        modelId: effectiveModelId,
-        provider: activeProvider,
-        declared: modelDeclared,
-      });
       // Image limits belong to the route, not to Abu: the same picture is fine
       // for DeepSeek and a 400 from Anthropic. Resolved from the model actually
       // being called, alongside the rest of its capabilities.
@@ -2437,6 +2451,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         reasoningEffort: reasoningParams.reasoningEffort,
         supportsVision: modelCaps.vision,
         declaredCapabilities: modelDeclared,
+        // Capabilities this model rejected earlier in the session: the adapter
+        // may run in another process, so the loop's memory travels with the call.
+        capabilityOverrides: [...rejectedCapabilities(activeProvider?.id, effectiveModelId)],
         builtinWebSearch,
         // When the adapter's max_tokens auto-retry succeeds, persist the
         // discovered limit so the next request uses it pre-emptively.
@@ -2836,6 +2853,30 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             }
             throw retryErr2;
           }
+        } else if (retryErr instanceof LLMError && retryErr.capabilityRejection) {
+          // 服务说不认识请求里的某项能力：记进本会话的拒绝记忆，按关掉该项的档案重发同一请求一次。
+          // 同一个模型的同一类别只重试一次，第二次仍被拒绝就按普通错误报告。
+          const rejected = retryErr.capabilityRejection;
+          const firstRejection = recordCapabilityRejection(activeProvider?.id, effectiveModelId, rejected);
+          if (!firstRejection) throw retryErr;
+          logger.warn('Provider rejected a request capability; retrying once without it', {
+            capability: rejected,
+            modelId: effectiveModelId,
+            providerId: activeProvider?.id ?? 'unknown',
+          });
+          const rejectionBudgetResult = await buildProviderAttemptMessages(
+            preparedMessages,
+            contextWindowSize,
+            maxOutputTokens,
+          );
+          await adapter.chat(
+            rejectionBudgetResult.messages,
+            {
+              ...chatOptions,
+              capabilityOverrides: [...rejectedCapabilities(activeProvider?.id, effectiveModelId)],
+            },
+            eventHandler,
+          );
         } else {
           throw retryErr;
         }
@@ -2898,8 +2939,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           });
         }).catch(() => {});
 
+        // 按工具的 inputSchema 修复写错形状的参数（档案打开该护栏时）；修不好的
+        // 原样交给工具，由工具把错误返回给模型
+        const dispatchToolCalls = repairToolCallsForProfile(collectedToolCalls, tools, modelProfile, logger);
         const batchResult = await executeToolBatch({
-          collectedToolCalls,
+          collectedToolCalls: dispatchToolCalls,
           toolCallToStepId,
           conversationId,
           assistantMsgId,
@@ -2983,7 +3027,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             conversationId,
             options?.runPermissionCeiling?.source === 'scheduler',
           );
-          const freshTools = noTools ? [] : freshRawTools;
+          const freshTools = noTools ? [] : selectToolsForProfile(freshRawTools, modelProfile);
           const freshNames = new Set(freshTools.map(t => t.name));
           const added = freshTools.filter(t => !toolNames.has(t.name));
           const removed = tools.filter(t => !freshNames.has(t.name));
@@ -3100,6 +3144,54 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         }
       } else {
         consecutiveNoProgress = 0;
+      }
+
+      // 只说不做的续推：做过操作的运行以纯文字的 end_turn 结束，且文字没有向用户
+      // 提问时，注入一条续写消息再跑一轮（每次运行最多两次，档案打开该护栏时才生效）
+      if (
+        !continueLoop
+        && !awaitingUserRecovery
+        && !malformedToolCallGaveUp
+        && !maxTokensRecoveryExhausted
+        && !noProgressAborted
+        && !abortController.signal.aborted
+      ) {
+        chatDelta.flushTokens(conversationId, assistantMsgId);
+        const turnContent = getConversationReader().getConversation(conversationId)
+          ?.messages.find((m) => m.id === assistantMsgId)?.content ?? '';
+        const turnText = typeof turnContent === 'string'
+          ? turnContent
+          : turnContent.map((block) => (block.type === 'text' ? block.text : '')).join('');
+        const nudge = textOnlyEndTurnNudge.observeTurn({
+          enabled: modelProfile.harness.guards.textOnlyEndTurnNudge,
+          stopReason: lastStopReason,
+          toolCalls: collectedToolCalls,
+          text: turnText,
+        });
+        if (nudge) {
+          logger.info('Text-only end_turn nudge', {
+            attempt: textOnlyEndTurnNudge.count,
+            limit: TEXT_ONLY_END_TURN_NUDGE_LIMIT,
+          });
+          chatDelta.setMessageStreamingFlag(conversationId, assistantMsgId, false);
+          chatDelta.addMessage(conversationId, {
+            id: generateId(),
+            role: 'user' as const,
+            content: TEXT_ONLY_END_TURN_NUDGE_MESSAGE,
+            timestamp: Date.now(),
+            loopId,
+            isSystem: true as const,
+          });
+          continueLoop = true;
+        }
+      } else {
+        // 本轮要继续或者已经按别的原因结束：只记录这一轮有没有操作，供后面的轮次判断
+        textOnlyEndTurnNudge.observeTurn({
+          enabled: false,
+          stopReason: lastStopReason,
+          toolCalls: collectedToolCalls,
+          text: '',
+        });
       }
 
       // Internal wake-ups (for example background-agent results) still belong

@@ -20,6 +20,8 @@ import { getAuthorizedPathsReader } from '../../agent/ports/authorizedPathsReade
 import { isSandboxEnabled, isNetworkIsolationEnabled } from '../../sandbox/config';
 import { showSandboxBlockedToast } from '../../sandbox/recovery';
 import { isWindows } from '../../../utils/platform';
+import { LINES_OMITTED_LINE } from '../../context/truncation';
+import type { CommandOutcome } from '../../../types';
 
 vi.mock('../../../utils/platform', () => ({
   initPlatform: vi.fn(),
@@ -551,5 +553,184 @@ describe('runCommandTool', () => {
     expect(typeof result).toBe('string');
     expect(result as string).toContain('Error executing command');
     expect(invoke).not.toHaveBeenCalledWith('run_shell_command', expect.anything());
+  });
+
+  describe('command outcome record', () => {
+    /** The one `commandOutcome` reported to `reportMetadata`. */
+    function outcomeOf(reportMetadata: ReturnType<typeof vi.fn>): CommandOutcome {
+      const records = reportMetadata.mock.calls
+        .map(([metadata]) => (metadata as { commandOutcome?: CommandOutcome }).commandOutcome)
+        .filter((outcome): outcome is CommandOutcome => outcome !== undefined);
+      expect(records).toHaveLength(1);
+      return records[0];
+    }
+
+    /** Lines `${prefix} 1` … `${prefix} n`, each padded so the text is over the character budget. */
+    function numberedLines(prefix: string, count: number): string {
+      return Array.from({ length: count }, (_, i) => `${prefix} ${i + 1} ${'.'.repeat(40)} ${prefix} ${i + 1}`).join('\n');
+    }
+
+    it('records the exit code and both sections', async () => {
+      vi.mocked(invoke).mockResolvedValue({ code: 2, stdout: ' out\n', stderr: 'warn ' });
+      const reportMetadata = vi.fn();
+
+      const result = await runCommandTool.execute({ command: 'ls' }, { reportMetadata }) as string;
+
+      expect(reportMetadata).toHaveBeenCalledTimes(1);
+      expect(reportMetadata).toHaveBeenCalledWith({
+        commandOutcome: { exitCode: 2, stdout: [8, 11], stderr: [21, 25] },
+      });
+      expect(result.slice(8, 11)).toBe('out');
+      expect(result.slice(21, 25)).toBe('warn');
+    });
+
+    it('records only the section that has text', async () => {
+      const output = { code: 0, stdout: 'line one\nline two\n', stderr: '' };
+      vi.mocked(invoke).mockResolvedValue(output);
+      const reportMetadata = vi.fn();
+
+      const result = await runCommandTool.execute({ command: 'ls' }, { reportMetadata }) as string;
+
+      const outcome = outcomeOf(reportMetadata);
+      expect(outcome).not.toHaveProperty('stderr');
+      expect(result.slice(...outcome.stdout!)).toBe(output.stdout.trim());
+    });
+
+    it('records an exit code without sections for a silent command', async () => {
+      const reportMetadata = vi.fn();
+
+      await runCommandTool.execute({ command: 'true' }, { reportMetadata });
+
+      expect(reportMetadata).toHaveBeenCalledWith({ commandOutcome: { exitCode: 0 } });
+    });
+
+    it('records the sections by position when stdout itself contains a stderr heading', async () => {
+      vi.mocked(invoke).mockResolvedValue({ code: 0, stdout: 'a\n\nstderr:\nb', stderr: 'c' });
+      const reportMetadata = vi.fn();
+
+      const result = await runCommandTool.execute({ command: 'ls' }, { reportMetadata }) as string;
+
+      const outcome = outcomeOf(reportMetadata);
+      expect(result.slice(...outcome.stdout!)).toBe('a\n\nstderr:\nb');
+      expect(result.slice(...outcome.stderr!)).toBe('c');
+    });
+
+    it('counts the app automation recovery notice before the sections', async () => {
+      const output = {
+        code: 126,
+        stdout: '',
+        stderr: [
+          '[sandbox-blocked] command execution blocked by sandbox policy (exec)',
+          'zsh: operation not permitted: /usr/bin/osascript',
+        ].join('\n'),
+      };
+      vi.mocked(invoke).mockResolvedValue(output);
+      const reportMetadata = vi.fn();
+
+      const result = await runCommandTool.execute(
+        { command: `tool=osascript; "$tool" -e 'return 1'` },
+        { reportMetadata },
+      ) as string;
+
+      expect(reportMetadata).toHaveBeenCalledTimes(2);
+      expect(reportMetadata).toHaveBeenCalledWith({
+        sandboxRecovery: { kind: 'app-automation', targetApp: undefined },
+      });
+      const outcome = outcomeOf(reportMetadata);
+      expect(outcome.stderr![0]).toBeGreaterThan(0);
+      expect(result.slice(...outcome.stderr!)).toBe(output.stderr.trim());
+    });
+
+    it('marks a background start', async () => {
+      vi.mocked(invoke).mockResolvedValue({
+        code: 0,
+        stdout: 'listening on 3000',
+        stderr: '',
+        backgroundCommandId: 'bg-0123abcd',
+        running: true,
+      });
+      const reportMetadata = vi.fn();
+
+      await runCommandTool.execute(
+        { command: 'npm run dev', background: true },
+        { workspacePath: '/ws', conversationId: 'c1', reportMetadata },
+      );
+
+      const outcome = outcomeOf(reportMetadata);
+      expect(outcome.background).toBe(true);
+      expect(outcome.exitCode).toBe(0);
+    });
+
+    it('records nothing when the command host rejects', async () => {
+      vi.mocked(invoke).mockRejectedValue(new Error('spawn failed'));
+      const reportMetadata = vi.fn();
+
+      await runCommandTool.execute({ command: 'ls' }, { reportMetadata });
+
+      expect(reportMetadata).not.toHaveBeenCalled();
+    });
+
+    it('records nothing when the preflight blocks the command', async () => {
+      const reportMetadata = vi.fn();
+
+      await runCommandTool.execute(
+        { command: `osascript -e 'tell application "Notes" to make new note'` },
+        { reportMetadata },
+      );
+
+      expect(reportMetadata).toHaveBeenCalledTimes(1);
+      expect(reportMetadata.mock.calls[0][0]).not.toHaveProperty('commandOutcome');
+    });
+
+    it('bounds each section before joining and records the bounded positions', async () => {
+      vi.mocked(invoke).mockResolvedValue({ code: 1, stdout: numberedLines('out', 400), stderr: numberedLines('err', 400) });
+      const reportMetadata = vi.fn();
+
+      const result = await runCommandTool.execute({ command: 'ls' }, { reportMetadata }) as string;
+
+      const outcome = outcomeOf(reportMetadata);
+      const stdout = result.slice(...outcome.stdout!);
+      const stderr = result.slice(...outcome.stderr!);
+      expect(result.split('\n').filter((line) => LINES_OMITTED_LINE.test(line))).toHaveLength(2);
+      expect(stdout.split('\n').filter((line) => LINES_OMITTED_LINE.test(line))).toHaveLength(1);
+      expect(stderr.split('\n').filter((line) => LINES_OMITTED_LINE.test(line))).toHaveLength(1);
+      expect(stdout.startsWith('out 1 ')).toBe(true);
+      expect(stdout.endsWith(' out 400')).toBe(true);
+      expect(stderr.startsWith('err 1 ')).toBe(true);
+      expect(stderr.endsWith(' err 400')).toBe(true);
+      expect(stdout.length + stderr.length).toBeLessThanOrEqual(15000);
+    });
+
+    it('gives stderr at most half of the budget', async () => {
+      vi.mocked(invoke).mockResolvedValue({ code: 1, stdout: numberedLines('out', 2000), stderr: 'e1\ne2' });
+      const reportMetadata = vi.fn();
+
+      const result = await runCommandTool.execute({ command: 'ls' }, { reportMetadata }) as string;
+
+      const outcome = outcomeOf(reportMetadata);
+      expect(result.slice(...outcome.stderr!)).toBe('e1\ne2');
+      expect(result.slice(...outcome.stdout!).length).toBeLessThanOrEqual(15000 - 5);
+    });
+
+    it('shrinks the sections under context pressure', async () => {
+      vi.mocked(invoke).mockResolvedValue({ code: 1, stdout: numberedLines('out', 400), stderr: numberedLines('err', 400) });
+      const reportMetadata = vi.fn();
+
+      const result = await runCommandTool.execute(
+        { command: 'ls' },
+        { reportMetadata, contextUsagePercent: 90 },
+      ) as string;
+
+      const outcome = outcomeOf(reportMetadata);
+      expect(result.slice(...outcome.stdout!).length + result.slice(...outcome.stderr!).length).toBeLessThanOrEqual(3750);
+    });
+
+    it('keeps a short output whole', async () => {
+      vi.mocked(invoke).mockResolvedValue({ code: 0, stdout: 'a\nb', stderr: 'c' });
+
+      const result = await runCommandTool.execute({ command: 'ls' }, { reportMetadata: vi.fn() });
+
+      expect(result).toBe('stdout:\na\nb\n\nstderr:\nc\n\nexit code: 0');
+    });
   });
 });

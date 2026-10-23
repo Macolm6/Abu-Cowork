@@ -1,6 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { LLMAdapter, ChatOptions, ToolChoice } from './adapter';
 import { LLMError, classifyError, buildToolParseError } from './adapter';
+import { resolveModelProfile } from './modelProfile';
+import { rejectedCapabilities } from './rejectionMemory';
 import type { Message, StreamEvent, TokenUsage, ToolDefinition } from '../../types';
 import { getTauriFetch } from './tauriFetch';
 import { normalizeMessages } from './messageNormalizer';
@@ -149,8 +151,8 @@ function serializeForAnthropic(turns: PreparedTurn[]): Anthropic.MessageParam[] 
 }
 
 /** Convert messages through normalize → serialize pipeline */
-function convertMessages(messages: Message[]): Anthropic.MessageParam[] {
-  const turns = normalizeMessages(messages);
+function convertMessages(messages: Message[], supportsVision: boolean): Anthropic.MessageParam[] {
+  const turns = normalizeMessages(messages, { supportsVision });
   return serializeForAnthropic(turns);
 }
 
@@ -223,7 +225,20 @@ export class ClaudeAdapter implements LLMAdapter {
     }
     const client = new Anthropic(clientOptions as ConstructorParameters<typeof Anthropic>[0]);
 
-    const convertedMessages = convertMessages(messages);
+    // Capabilities this model rejected in the session (this process's memory
+    // plus the caller's copy) switch their fields off in the profile.
+    const overrides = new Set([
+      ...rejectedCapabilities(options.accounting?.providerInstanceId, options.model),
+      ...(options.capabilityOverrides ?? []),
+    ]);
+    const profile = resolveModelProfile({
+      modelId: options.model,
+      declared: options.declaredCapabilities,
+      baseUrl: options.baseUrl,
+      overrides,
+    });
+
+    const convertedMessages = convertMessages(messages, !overrides.has('image_block'));
     addIncrementalCacheBreakpoint(convertedMessages);
     // The volatile context tail goes AFTER the breakpoint: the cached prefix
     // ends at the last stored message, and this per-turn block is the only
@@ -306,8 +321,10 @@ export class ClaudeAdapter implements LLMAdapter {
       (params.tools[params.tools.length - 1] as unknown as Record<string, unknown>).cache_control = { type: 'ephemeral' };
     }
 
-    // Extended thinking — auto-enabled when model supports 'anthropic' thinking protocol
-    if (options.enableThinking) {
+    // Extended thinking — auto-enabled when model supports 'anthropic' thinking
+    // protocol. Withheld once the endpoint rejected the thinking field
+    // (profile.wire.stripReasoningParams through the rejection memory).
+    if (options.enableThinking && !profile.wire.stripReasoningParams) {
       // Anthropic API requires temperature=1 when extended thinking is enabled
       params.temperature = 1;
       (params as unknown as Record<string, unknown>).thinking = {

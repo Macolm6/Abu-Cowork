@@ -1779,6 +1779,126 @@ describe('服务说内容太长后按真实上限恢复', () => {
   });
 });
 
+describe('请求被接口拒绝后按关掉该能力的档案重发一次', () => {
+  async function setup() {
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const adapters = await import('../llm/selectChatAdapter');
+    const { LLMError } = await import('../llm/adapter');
+    const { resetRejectionMemory, rejectedCapabilities } = await import('../llm/rejectionMemory');
+    resetRejectionMemory();
+    const settings = useSettingsStore.getState();
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: [...p.models.filter((m) => m.id !== 'llama3.2'), { id: 'llama3.2', label: 'llama3.2' }] }
+          : p),
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 0; });
+    const chat = vi.fn().mockImplementation(
+      async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+        onEvent({ type: 'text', text: 'ok' });
+        onEvent({ type: 'done', stopReason: 'end_turn' });
+      },
+    );
+    const selectAdapter = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat });
+    const rejection = () => new LLMError(
+      "Unsupported parameter: 'reasoning_effort' is not supported with this model.",
+      'invalid_request',
+      { statusCode: 400, capabilityRejection: 'reasoning_effort' },
+    );
+    const overridesOf = (call: number) =>
+      (chat.mock.calls[call][1] as { capabilityOverrides?: string[] }).capabilityOverrides ?? [];
+    const restore = () => {
+      selectAdapter.mockRestore();
+      resetRejectionMemory();
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+      vi.unstubAllGlobals();
+    };
+    return { useChatStore, chat, rejection, overridesOf, rejectedCapabilities, restore };
+  }
+
+  it('第一次被拒绝：记进拒绝记忆，带着该类别重发同一请求，这一轮正常结束', async () => {
+    const { useChatStore, chat, rejection, overridesOf, rejectedCapabilities, restore } = await setup();
+    chat.mockRejectedValueOnce(rejection());
+    try {
+      const conversationId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(conversationId, 'hello');
+
+      expect(result.reason).toBe('completed');
+      expect(chat).toHaveBeenCalledTimes(2);
+      expect(overridesOf(0)).toEqual([]);
+      expect(overridesOf(1)).toEqual(['reasoning_effort']);
+      expect([...rejectedCapabilities('ollama', 'llama3.2')]).toEqual(['reasoning_effort']);
+      expect(useChatStore.getState().conversations[conversationId].messages.at(-1)?.content).toBe('ok');
+    } finally {
+      restore();
+    }
+  });
+
+  it('重发仍被同一类别拒绝：按普通错误报告，不再重试', async () => {
+    const { useChatStore, chat, rejection, overridesOf, restore } = await setup();
+    chat.mockRejectedValueOnce(rejection()).mockRejectedValueOnce(rejection());
+    try {
+      const conversationId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(conversationId, 'hello');
+
+      expect(result.reason).toBe('error');
+      expect(chat).toHaveBeenCalledTimes(2);
+      expect(overridesOf(1)).toEqual(['reasoning_effort']);
+      expect(useChatStore.getState().conversations[conversationId].status).toBe('error');
+    } finally {
+      restore();
+    }
+  });
+
+  it('同一模型之后的运行从第一次请求起就带着记忆里的类别', async () => {
+    const { useChatStore, chat, rejection, overridesOf, restore } = await setup();
+    chat.mockRejectedValueOnce(rejection());
+    try {
+      const first = useChatStore.getState().createConversation();
+      expect((await runAgentLoop(first, 'hello')).reason).toBe('completed');
+
+      const second = useChatStore.getState().createConversation();
+      expect((await runAgentLoop(second, 'hello')).reason).toBe('completed');
+      expect(chat).toHaveBeenCalledTimes(3);
+      expect(overridesOf(2)).toEqual(['reasoning_effort']);
+    } finally {
+      restore();
+    }
+  });
+
+  it('第二次运行里又被同一类别拒绝：直接报错，只请求一次', async () => {
+    const { useChatStore, chat, rejection, restore } = await setup();
+    chat.mockRejectedValueOnce(rejection());
+    try {
+      const first = useChatStore.getState().createConversation();
+      expect((await runAgentLoop(first, 'hello')).reason).toBe('completed');
+
+      chat.mockRejectedValueOnce(rejection());
+      const second = useChatStore.getState().createConversation();
+      expect((await runAgentLoop(second, 'hello')).reason).toBe('error');
+      expect(chat).toHaveBeenCalledTimes(3);
+    } finally {
+      restore();
+    }
+  });
+
+  it('不带类别的 400 走原有路径，不重试', async () => {
+    const { useChatStore, chat, restore } = await setup();
+    const { LLMError } = await import('../llm/adapter');
+    chat.mockRejectedValueOnce(new LLMError('bad request', 'invalid_request', { statusCode: 400 }));
+    try {
+      const conversationId = useChatStore.getState().createConversation();
+      expect((await runAgentLoop(conversationId, 'hello')).reason).toBe('error');
+      expect(chat).toHaveBeenCalledTimes(1);
+    } finally {
+      restore();
+    }
+  });
+});
+
 describe('runAgentLoop pinned-model availability guard', () => {
   async function setup(mutate: (p: import('../../types/provider').ProviderInstance) => import('../../types/provider').ProviderInstance | null) {
     const { useChatStore } = await import('../../stores/chatStore');
@@ -2049,6 +2169,137 @@ describe('本地服务的请求选项与首次回答超时', () => {
       expect(ended).toBe('completed');
       expect(chat).toHaveBeenCalledTimes(2);
       expect((chat.mock.calls[0][1] as RequestOptions).localServer).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe('runAgentLoop 模型档案的两条护栏', () => {
+  beforeAll(async () => {
+    await import('./subagentRunner');
+  });
+
+  // 工具参数修复按模型族默认值生效：deepseek 族打开，claude 族关闭
+  async function setup(modelId: string) {
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const adapters = await import('../llm/selectChatAdapter');
+    const { getToolInvoker, setToolInvoker } = await import('./ports/toolInvoker');
+    const originalInvoker = getToolInvoker();
+    const settings = useSettingsStore.getState();
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: [...p.models.filter((m) => m.id !== modelId), { id: modelId, label: modelId }] }
+          : p),
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 0; });
+    const emit = (events: StreamEvent[]) => async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+      events.forEach(onEvent);
+    };
+    const chat = vi.fn();
+    const selectAdapter = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat });
+    const tools: ToolDefinition[] = [{
+      name: 'read_file',
+      description: 'read',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'path' },
+          limit: { type: 'integer', description: 'limit' },
+        },
+        required: ['path'],
+      },
+      execute: async () => 'ok',
+    }];
+    const executeAnyTool = vi.fn(async () => '# Source');
+    setToolInvoker({ getAllTools: () => tools, toolResultToString: String, executeAnyTool });
+    const conversationId = useChatStore.getState().createConversation();
+    const restore = () => {
+      selectAdapter.mockRestore();
+      setToolInvoker(originalInvoker);
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+      vi.unstubAllGlobals();
+    };
+    const messagesOf = () => useChatStore.getState().conversations[conversationId].messages;
+    return { conversationId, chat, emit, executeAnyTool, messagesOf, restore };
+  }
+
+  const readWithStringLimit: StreamEvent[] = [
+    { type: 'tool_use', id: 'read-1', name: 'read_file', input: { path: '/ws/a.md', limit: '20' } },
+    { type: 'done', stopReason: 'tool_use' },
+  ];
+  const textOnly = (text: string): StreamEvent[] => [{ type: 'text', text }, { type: 'done', stopReason: 'end_turn' }];
+
+  it('档案打开参数修复时，数字文字在交给工具前转成数字', async () => {
+    const { conversationId, chat, emit, executeAnyTool, restore } = await setup('deepseek-chat');
+    chat.mockImplementationOnce(emit(readWithStringLimit)).mockImplementation(emit(textOnly('Read it.')));
+    try {
+      const result = await runAgentLoop(conversationId, 'read the file');
+      expect(result.reason).toBe('completed');
+      expect(executeAnyTool).toHaveBeenCalledOnce();
+      expect(executeAnyTool.mock.calls[0][1]).toEqual({ path: '/ws/a.md', limit: 20 });
+    } finally {
+      restore();
+    }
+  });
+
+  it('档案关闭参数修复时，参数原样交给工具', async () => {
+    const { conversationId, chat, emit, executeAnyTool, restore } = await setup('claude-sonnet-4-5');
+    chat.mockImplementationOnce(emit(readWithStringLimit)).mockImplementation(emit(textOnly('Read it.')));
+    try {
+      const result = await runAgentLoop(conversationId, 'read the file');
+      expect(result.reason).toBe('completed');
+      expect(executeAnyTool.mock.calls[0][1]).toEqual({ path: '/ws/a.md', limit: '20' });
+    } finally {
+      restore();
+    }
+  });
+
+  // 续推护栏首批没有型号打开，这里把档案里的开关临时打开来验证机制
+  async function withNudgeOpened<T>(run: () => Promise<T>): Promise<T> {
+    const profiles = await import('../llm/modelProfile');
+    const original = profiles.resolveModelProfile;
+    const spy = vi.spyOn(profiles, 'resolveModelProfile').mockImplementation((input) => {
+      const profile = original(input);
+      return { ...profile, harness: { ...profile.harness, guards: { ...profile.harness.guards, textOnlyEndTurnNudge: true } } };
+    });
+    try {
+      return await run();
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it('档案打开续推时，做过操作后只说不做的一轮最多被续推两次，之后照常结束', async () => {
+    const { TEXT_ONLY_END_TURN_NUDGE_MESSAGE } = await import('./textOnlyEndTurnNudge');
+    const { conversationId, chat, emit, messagesOf, restore } = await setup('deepseek-chat');
+    chat.mockImplementationOnce(emit(readWithStringLimit)).mockImplementation(emit(textOnly('Next I will edit the file.')));
+    try {
+      const result = await withNudgeOpened(() => runAgentLoop(conversationId, 'edit the file'));
+      expect(result.reason).toBe('completed');
+      // 一轮操作 + 三轮纯文字：第一、二轮纯文字各被续推一次，第三轮结束
+      expect(chat).toHaveBeenCalledTimes(4);
+      const nudges = messagesOf().filter((m) => m.role === 'user' && m.isSystem && m.content === TEXT_ONLY_END_TURN_NUDGE_MESSAGE);
+      expect(nudges).toHaveLength(2);
+      // 续写消息在第三次请求里交给了模型
+      const thirdRequest = chat.mock.calls[2][0] as Array<{ role: string; content: unknown }>;
+      expect(thirdRequest.filter((m) => m.role === 'user' && m.content === TEXT_ONLY_END_TURN_NUDGE_MESSAGE)).toHaveLength(1);
+    } finally {
+      restore();
+    }
+  });
+
+  it('档案关闭续推时（首批所有型号），只说不做的一轮照常结束', async () => {
+    const { conversationId, chat, emit, messagesOf, restore } = await setup('deepseek-chat');
+    chat.mockImplementationOnce(emit(readWithStringLimit)).mockImplementation(emit(textOnly('Next I will edit the file.')));
+    try {
+      const result = await runAgentLoop(conversationId, 'edit the file');
+      expect(result.reason).toBe('completed');
+      expect(chat).toHaveBeenCalledTimes(2);
+      expect(messagesOf().some((m) => m.role === 'user' && m.isSystem)).toBe(false);
     } finally {
       restore();
     }

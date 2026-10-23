@@ -10,24 +10,22 @@ import {
   getAnchorScrollCorrection,
   isAtBottomFromGeometry,
   isChapterRailAtBottom,
-  reclaimTurnSpacerSurplus,
-  reconcileTurnScrollAnchor,
+  resolveTurnAnchorLayout,
   selectLatestUserAnchor,
+  settleTurnScrollAnchor,
   shouldFollowOutput,
 } from './turnScrollAnchor';
 
-const BASE_CONTENT_HEIGHT = 1_000;
-
-function arm(overrides: Partial<Parameters<typeof armTurnScrollAnchor>[0]> = {}) {
+function arm() {
   return armTurnScrollAnchor({
     conversationId: 'conversation-1',
     messageId: 'user-1',
-    anchorTop: 420,
     targetTop: 20,
-    distanceToBottom: 0,
-    contentHeight: BASE_CONTENT_HEIGHT,
-    ...overrides,
   });
+}
+
+function held(minContentHeight = 900) {
+  return settleTurnScrollAnchor(arm(), { minContentHeight, fillerHeight: 200 });
 }
 
 describe('turn scroll anchor invariants', () => {
@@ -38,130 +36,87 @@ describe('turn scroll anchor invariants', () => {
     expect(getAnchorScrollCorrection(20, 17)).toBe(-3);
   });
 
-  it('allocates exactly the missing scroll range without a physical measurement reserve', () => {
-    expect(arm()).toMatchObject({
+  it('arms with no hold until geometry has been read', () => {
+    expect(arm()).toEqual({
+      conversationId: 'conversation-1',
+      messageId: 'user-1',
       phase: 'armed',
       targetTop: 20,
-      initialScrollDelta: 400,
-      initialSpacerHeight: 400,
-      spacerHeight: 400,
-      baselineContentHeight: BASE_CONTENT_HEIGHT,
-    });
-    expect(arm({ distanceToBottom: 75 })).toMatchObject({
-      initialScrollDelta: 400,
-      initialSpacerHeight: 325,
+      minContentHeight: 0,
     });
   });
 
-  it('absorbs active-tail growth into the footer spacer with zero net list-height change', () => {
-    const initial = arm();
-    const afterGrowth = reconcileTurnScrollAnchor(initial, {
-      contentHeight: 1_120,
-      anchorPresent: true,
-    });
-
-    expect(afterGrowth.anchor).toMatchObject({ phase: 'armed', spacerHeight: 280 });
-    expect(afterGrowth.contentHeight + afterGrowth.spacerHeight).toBe(1_400);
-    expect(afterGrowth.handoff).toBe('none');
+  it('holds exactly the content height that makes the anchor position reachable', () => {
+    // Anchor 420px below the viewport top at scrollTop 300: the anchor scroll
+    // position is 700, so the content (starting at scroll offset 0) must reach
+    // 700 + 600 = 1300. No reserve on top.
+    expect(resolveTurnAnchorLayout({
+      targetTop: 20,
+      anchorTop: 420,
+      contentTop: -300,
+      scrollTop: 300,
+      clientHeight: 600,
+    })).toEqual({ minContentHeight: 1_300, scrollCorrection: 400 });
   });
 
-  it('risk B — counteracts SmoothHeight growth and shrink without spacer oscillation', () => {
-    let anchor = arm();
-    let spacerHeight = anchor.spacerHeight;
-
-    for (const contentHeight of [1_120, 1_080, 1_160, 1_040, 1_200]) {
-      const result = reconcileTurnScrollAnchor(anchor, {
-        contentHeight,
-        anchorPresent: true,
-      });
-      anchor = result.anchor;
-      spacerHeight = result.spacerHeight;
-      expect(contentHeight + spacerHeight).toBe(1_400);
-      expect(anchor.phase).toBe('armed');
+  it('derives the hold from geometry alone, so a repeated read never accumulates', () => {
+    // Once the viewport is at the anchor position, every later read yields the
+    // same hold whatever the list below the anchor did meanwhile.
+    for (let index = 0; index < 5; index += 1) {
+      expect(resolveTurnAnchorLayout({
+        targetTop: 20,
+        anchorTop: 20,
+        contentTop: -700,
+        scrollTop: 700,
+        clientHeight: 600,
+      })).toEqual({ minContentHeight: 1_300, scrollCorrection: 0 });
     }
-    expect(spacerHeight).toBe(anchor.spacerHeight);
   });
 
-  it('risk C — requests a same-layout-pass bottom handoff when the spacer exhausts', () => {
-    const result = reconcileTurnScrollAnchor(arm(), {
-      contentHeight: 1_400,
-      anchorPresent: true,
-    });
-
-    expect(result.anchor).toMatchObject({ phase: 'exhausted', spacerHeight: 0 });
-    expect(result.handoff).toBe('sync-bottom');
-    expect(shouldFollowOutput(result.anchor)).toBe('auto');
+  it('accounts for content that starts below the scroll origin and rounds the hold up', () => {
+    expect(resolveTurnAnchorLayout({
+      targetTop: 20,
+      anchorTop: 120.4,
+      contentTop: 10,
+      scrollTop: 0,
+      clientHeight: 500,
+    })).toEqual({ minContentHeight: 591, scrollCorrection: 100.4 });
   });
 
-  it('risk G — reclaims a bottom surplus into the spacer without moving the viewport', () => {
-    // Cold-start arm settlement: the spacer's scroll range materializes
-    // asynchronously (react-virtuoso applies its list height on its own
-    // cycle), and native scroll anchoring can leave surplus range below the
-    // pinned anchor. Every surplus pixel is a spacer pixel that corresponds to
-    // no missing range — reconciliation must return it.
-    const initial = arm();
-    const reclaim = reclaimTurnSpacerSurplus(initial, 26);
-
-    expect(reclaim.reclaimed).toBe(26);
-    expect(reclaim.spacerHeight).toBe(374);
-    expect(reclaim.anchor).toMatchObject({
-      phase: 'armed',
-      spacerHeight: 374,
-      initialSpacerHeight: 374,
-    });
-
-    // The reduction is durable: later tail growth reconciles against the
-    // reduced ledger instead of reinstating the reclaimed pixels.
-    const afterGrowth = reconcileTurnScrollAnchor(reclaim.anchor, {
-      contentHeight: 1_100,
-      anchorPresent: true,
-    });
-    expect(afterGrowth.spacerHeight).toBe(274);
+  it('never asks for a negative scroll position or hold', () => {
+    expect(resolveTurnAnchorLayout({
+      targetTop: 20,
+      anchorTop: 5,
+      contentTop: 0,
+      scrollTop: 0,
+      clientHeight: 0,
+    })).toEqual({ minContentHeight: 0, scrollCorrection: -15 });
   });
 
-  it('risk G — ignores sub-tolerance surplus and never reclaims below zero', () => {
-    const initial = arm();
-    expect(reclaimTurnSpacerSurplus(initial, ANCHOR_TOLERANCE_PX).reclaimed).toBe(0);
-    expect(reclaimTurnSpacerSurplus(initial, ANCHOR_TOLERANCE_PX).anchor).toBe(initial);
-
-    const capped = reclaimTurnSpacerSurplus(initial, 500);
-    expect(capped.reclaimed).toBe(400);
-    expect(capped.spacerHeight).toBe(0);
-    expect(capped.anchor.phase).toBe('exhausted');
+  it('stays armed while the filler still covers part of the hold', () => {
+    expect(held(900)).toMatchObject({ phase: 'armed', minContentHeight: 900 });
+    expect(shouldFollowOutput(held())).toBe(false);
   });
 
-  it('risk G — an exhausted anchor has no spacer to reclaim', () => {
-    const exhausted = reconcileTurnScrollAnchor(arm(), {
-      contentHeight: 1_400,
-      anchorPresent: true,
-    }).anchor;
-    const reclaim = reclaimTurnSpacerSurplus(exhausted, 26);
-    expect(reclaim.reclaimed).toBe(0);
-    expect(reclaim.anchor).toBe(exhausted);
+  it('hands over to bottom-follow once the list alone fills the hold', () => {
+    const exhausted = settleTurnScrollAnchor(held(), { minContentHeight: 900, fillerHeight: 0 });
+
+    expect(exhausted).toMatchObject({ phase: 'exhausted', minContentHeight: 0 });
+    expect(shouldFollowOutput(exhausted)).toBe('auto');
   });
 
-  it('risk C — an unmounted anchor also requests a synchronous handoff', () => {
-    expect(reconcileTurnScrollAnchor(arm(), {
-      contentHeight: BASE_CONTENT_HEIGHT,
-      anchorPresent: false,
-    }).handoff).toBe('sync-bottom');
-  });
-
-  it('risk E — never follows content after explicit upward intent and preserves the frozen spacer', () => {
-    const anchor = arm();
-    const exit = exitTurnScrollAnchor(anchor, 'user-scroll-intent');
-
-    expect(exit).toEqual({
+  it('risk E — never follows content after explicit upward intent and preserves the frozen hold', () => {
+    expect(exitTurnScrollAnchor(held(), 'user-scroll-intent')).toEqual({
       anchor: null,
-      spacerHeight: 400,
+      minContentHeight: 900,
       pinned: false,
     });
   });
 
-  it('risk E — clears spacer and restores pinned bottom state for an explicit latest jump', () => {
-    expect(exitTurnScrollAnchor(arm(), 'explicit-latest')).toEqual({
+  it('risk E — releases the hold and restores pinned bottom state for an explicit latest jump', () => {
+    expect(exitTurnScrollAnchor(held(), 'explicit-latest')).toEqual({
       anchor: null,
-      spacerHeight: 0,
+      minContentHeight: 0,
       pinned: true,
     });
   });
@@ -173,9 +128,9 @@ describe('turn scroll anchor invariants', () => {
     ['search-jump', false],
     ['chapter-jump', false],
   ] as const)('resets anchor state for %s', (reason, pinned) => {
-    expect(exitTurnScrollAnchor(arm(), reason)).toEqual({
+    expect(exitTurnScrollAnchor(held(), reason)).toEqual({
       anchor: null,
-      spacerHeight: 0,
+      minContentHeight: 0,
       pinned,
     });
   });

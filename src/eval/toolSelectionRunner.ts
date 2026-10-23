@@ -16,6 +16,7 @@ import { registerBuiltinTools } from '@/core/tools/builtins';
 import { getAllTools } from '@/core/tools/registry';
 import { buildSystemPromptSections, routeInput } from '@/core/agent/orchestrator';
 import { sectionsToString } from '@/core/llm/promptSections';
+import { resolveModelProfile } from '@/core/llm/modelProfile';
 import type { LLMAdapter } from '@/core/llm/adapter';
 import type { Message, StreamEvent, ToolDefinition } from '@/types';
 
@@ -29,6 +30,8 @@ export interface RunOptions {
   filter?: string[];
   /** Filter to specific category */
   category?: string;
+  /** false: build the prompt with the default fragments instead of the target family's (A/B runs). */
+  familyPrompt?: boolean;
 }
 
 function convertTools(tools: ToolDefinition[]): Anthropic.Tool[] {
@@ -84,10 +87,14 @@ export async function runToolSelectionEval(
   // Ensure tools are registered
   registerBuiltinTools();
 
-  // Build system prompt — use imContext to bypass Tauri-dependent code
+  // Build system prompt — use imContext to bypass Tauri-dependent code. The
+  // target model's profile picks the family's prompt fragments, as in the app.
   const route = routeInput('');
   const evalImContext = { platform: 'eval', workspacePath: '/eval/workspace' };
-  const sections = await buildSystemPromptSections(route, '', 'eval-session', evalImContext, 0);
+  const profile = options.familyPrompt === false
+    ? undefined
+    : resolveModelProfile({ modelId: target.modelId, baseUrl: options.baseUrl });
+  const sections = await buildSystemPromptSections(route, '', 'eval-session', evalImContext, 0, undefined, profile);
   const systemPrompt = sectionsToString(sections);
 
   // Get tool definitions for LLM — the real production toolset (Labs-gated
@@ -237,6 +244,8 @@ export interface AdapterRunOptions {
   baseUrl: string;
   filter?: string[];
   category?: string;
+  /** false: build the prompt with the default fragments instead of the target family's (A/B runs). */
+  familyPrompt?: boolean;
 }
 
 /**
@@ -255,7 +264,10 @@ export async function runToolSelectionEvalWithAdapter(
 
   const route = routeInput('');
   const evalImContext = { platform: 'eval', workspacePath: '/eval/workspace' };
-  const sections = await buildSystemPromptSections(route, '', 'eval-session', evalImContext, 0);
+  const profile = options.familyPrompt === false
+    ? undefined
+    : resolveModelProfile({ modelId: target.modelId, baseUrl: options.baseUrl });
+  const sections = await buildSystemPromptSections(route, '', 'eval-session', evalImContext, 0, undefined, profile);
   const systemPrompt = sectionsToString(sections);
   const tools = getAllTools();
 

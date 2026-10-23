@@ -3,16 +3,18 @@ import { cn } from '@/lib/utils';
 import { Button } from '@/components/ds/button';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
+import { Link } from '@/components/ds/link';
 import { Pressable } from '@/components/ds/pressable';
 import { Spinner } from '@/components/ds/spinner';
 import { StatusIcon } from '@/components/ds/status-icon';
 import { Tag } from '@/components/ds/tag';
 import { useI18n, format, type TranslationDict } from '@/i18n';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
+import { NOT_RUN_TOOL_RESULTS, TOOL_RESULT_HOOK_BLOCKED_MARKER } from '@/core/agent/toolResultMarkers';
 import type { WorkflowStep, StepType } from '@/utils/workflowExtractor';
 import type { ExecutionStep, DetailBlock, StepType as ExecStepType, BatchTaskRef } from '@/types/execution';
 import { generateCompletionMessage } from '@/utils/workflowExtractor';
-import { getToolLabel } from '@/utils/toolLabels';
+import { getToolLabel, shortUrl } from '@/utils/toolLabels';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { getBaseName } from '@/utils/pathUtils';
@@ -21,6 +23,9 @@ import type { BackgroundCommandRef } from '@/types';
 import { DiffLines, type DiffFold } from '@/components/diff/DiffLines';
 import DetailBlockView from './DetailBlockView';
 import { blockFullText } from './toolResultTexts';
+import { StepToolView } from './toolViews/StepToolView';
+import { hasToolView, type ToolViewRecord } from './toolViews/toolViewRecords';
+import { useStepListScroll } from './useStepListScroll';
 
 type StepGlyph = ComponentProps<typeof Icon>['icon'];
 
@@ -29,6 +34,35 @@ const DETAIL_CHIP = 'inline-flex h-5 items-center gap-1 rounded-control bg-fill 
 
 // A step's diff shows its first five and last four rows until the reader asks for all.
 const STEP_DIFF_FOLD: DiffFold = { head: 5, tail: 4 };
+
+// The title of a step that opens its tool's view.
+const STEP_TITLE_BUTTON = 'inline rounded-control text-left transition-colors duration-fast hover:text-label';
+
+/**
+ * What a step's view reads: its whole result, or the part the conversation
+ * kept. A step that holds an error block failed, whatever its status, and its
+ * view reads that block. A call that failed records no outcome, so a step with
+ * a record and no error status succeeded, and an error block there is a result
+ * whose text starts with "Error".
+ */
+function stepViewText(
+  step: UnifiedStep,
+  toolResults: ReadonlyMap<string, string> | undefined,
+  record: ToolViewRecord | undefined,
+): { text: string; fullUnavailable: boolean; failed: boolean } {
+  const errorBlock = step.detailBlocks?.find((b) => b.type === 'error');
+  const recordedSuccess = step.status !== 'error'
+    && (record?.commandOutcome ?? record?.fileReadOutcome ?? record?.httpFetchOutcome) !== undefined;
+  const failed = !recordedSuccess && (errorBlock !== undefined || step.status === 'error');
+  const block = errorBlock ?? step.detailBlocks?.find((b) => b.type === (failed ? 'error' : 'result') || b.type === 'list');
+  const full = block ? blockFullText(block, step, toolResults, true) : undefined;
+  let view: { text: string; fullUnavailable: boolean; failed: boolean };
+  if (typeof full === 'string') view = { text: full, fullUnavailable: false, failed };
+  else if (full === null) view = { text: block!.content, fullUnavailable: true, failed };
+  else view = { text: block?.content ?? step.toolResult ?? '', fullUnavailable: false, failed };
+  if (failed && view.text.startsWith('Error: ')) view.text = view.text.slice('Error: '.length);
+  return view;
+}
 
 // Unified step type for rendering
 export type UnifiedStep = {
@@ -268,6 +302,34 @@ export function convertExecutionStep(
   };
 }
 
+/** What Stop writes on a call that was still running, in either locale. */
+const STOPPED_RESULTS: ReadonlySet<string> = new Set(
+  [...NOT_RUN_TOOL_RESULTS].filter((result) => result !== TOOL_RESULT_HOOK_BLOCKED_MARKER),
+);
+
+/** The error toolExecutor records for a call that Stop's abort signal ended. */
+const ABORTED_BY_STOP = 'AbortError: Aborted';
+
+const isAbortedByStop = (text: string) => text.replace(/^Error: /, '') === ABORTED_BY_STOP;
+
+/**
+ * A step of a stopped turn that did not end on its own: still running, never
+ * started, failed with no text kept but the abort of Stop, or holding the
+ * result Stop writes on a call that was still running.
+ */
+function asStoppedStep(step: UnifiedStep): UnifiedStep {
+  const kept = [
+    ...(step.detailBlocks ?? []).filter((b) => b.type === 'result' || b.type === 'error').map((b) => b.content),
+    ...(step.toolResult !== undefined ? [step.toolResult] : []),
+  ];
+  const endedByStop = step.status === 'running'
+    || step.status === 'pending'
+    || (step.status === 'error' && kept.every(isAbortedByStop))
+    || (step.toolResult !== undefined && STOPPED_RESULTS.has(step.toolResult));
+  const childSteps = step.childSteps?.map(asStoppedStep);
+  return { ...step, status: endedByStop ? 'cancelled' : step.status, childSteps };
+}
+
 /** run_agent_batch children are per-member records for the member tab; the
  *  batch card (BatchProgress) is their in-chat view, so they are not nested inline. */
 // eslint-disable-next-line react-refresh/only-export-components
@@ -287,36 +349,41 @@ interface TaskBlockProps {
   toolResults?: ReadonlyMap<string, string>;
   /** The command each background-command tool call acted on, by tool call id. */
   backgroundCommands?: ReadonlyMap<string, BackgroundCommandRef>;
+  /** Input and outcome records of this turn's own tool calls, by tool call id. */
+  toolViewRecords?: ReadonlyMap<string, ToolViewRecord>;
 }
+
+type DisplayMode = 'collapsed' | 'expanded';
+
+// The step list's scroll area: at most 240px or half the window, with 24px
+// fades at the ends that have more steps beyond them.
+const STEP_LIST = 'max-h-[min(240px,50vh)] overflow-y-auto';
+const STEP_LIST_FADE_TOP = 'mask-t-from-(--ds-scroll-fade-start)';
+const STEP_LIST_FADE_BOTTOM = 'mask-b-from-(--ds-scroll-fade-start)';
 
 /**
  * TaskBlock component - Cowork-style workflow display with timeline
  * Supports both legacy WorkflowStep[] and new ExecutionStep[]
  */
-// Number of steps shown in preview mode
-const PREVIEW_LIMIT = 3;
-
-type DisplayMode = 'collapsed' | 'preview' | 'expanded';
-
-export default function TaskBlock({ steps, executionSteps, isActive, isStopped = false, onRetry, fileChanges, toolResults, backgroundCommands }: TaskBlockProps) {
+export default function TaskBlock({ steps, executionSteps, isActive, isStopped = false, onRetry, fileChanges, toolResults, backgroundCommands, toolViewRecords }: TaskBlockProps) {
   const { t, locale } = useI18n();
 
   // Convert to unified steps
   const unifiedSteps = useMemo(() => {
+    let converted: UnifiedStep[] = [];
     if (executionSteps && executionSteps.length > 0) {
-      return executionSteps.map((s) => convertExecutionStep(s, locale, backgroundCommands));
+      converted = executionSteps.map((s) => convertExecutionStep(s, locale, backgroundCommands));
+    } else if (steps && steps.length > 0) {
+      converted = steps.map((s) => convertWorkflowStep(s, locale, backgroundCommands));
     }
-    if (steps && steps.length > 0) {
-      return steps.map((s) => convertWorkflowStep(s, locale, backgroundCommands));
-    }
-    return [];
-  }, [steps, executionSteps, locale, backgroundCommands]);
+    return isStopped ? converted.map(asStoppedStep) : converted;
+  }, [steps, executionSteps, locale, backgroundCommands, isStopped]);
 
-  // Lazy initializer: when the block mounts during a live execution, start in 'preview'
+  // Lazy initializer: when the block mounts during a live execution, start in 'expanded'
   // so the body (with running thinking content / inline tool steps) is visible without
   // requiring the user to click. The auto-collapse useEffect below handles the
   // active→inactive transition to tuck everything away after the loop ends.
-  const [displayMode, setDisplayMode] = useState<DisplayMode>(() => isActive ? 'preview' : 'collapsed');
+  const [displayMode, setDisplayMode] = useState<DisplayMode>(() => isActive ? 'expanded' : 'collapsed');
 
   // Auto-collapse when execution finishes (isActive: true → false)
   const prevIsActiveRef = useRef(isActive);
@@ -352,26 +419,11 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
   // that never showed (also react-hooks/refs forbids it).
   const [timelineEverOpened, setTimelineEverOpened] = useState(isOpen);
   if (isOpen && !timelineEverOpened) setTimelineEverOpened(true);
-  const needsTruncation = unifiedSteps.length > PREVIEW_LIMIT;
-  const visibleSteps = (displayMode === 'preview' && needsTruncation)
-    ? unifiedSteps.slice(0, PREVIEW_LIMIT)
-    : unifiedSteps;
+  const stepListRef = useRef<HTMLDivElement>(null);
+  const { edges, onScroll } = useStepListScroll(stepListRef, isOpen, isActive);
 
   const handleHeaderClick = () => {
-    if ((allCompleted || isStopped) && !hasError) {
-      // Completed: toggle between collapsed and fully expanded (skip preview)
-      setDisplayMode(displayMode === 'collapsed' ? 'expanded' : 'collapsed');
-    } else {
-      setDisplayMode(displayMode === 'collapsed' ? 'preview' : 'collapsed');
-    }
-  };
-
-  const handleShowMore = () => {
-    setDisplayMode('expanded');
-  };
-
-  const handleCollapse = () => {
-    setDisplayMode('preview');
+    setDisplayMode(displayMode === 'collapsed' ? 'expanded' : 'collapsed');
   };
 
   if (unifiedSteps.length === 0) return null;
@@ -402,7 +454,7 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
           open/closed classes roll it up/down on later toggles — including the
           auto-collapse when the answer starts streaming — while the content
           stays mounted (inert + hidden from a11y when closed). */}
-      {timelineEverOpened && visibleSteps.length > 0 && (
+      {timelineEverOpened && (
         <div
           inert={!isOpen || undefined}
           aria-hidden={!isOpen || undefined}
@@ -412,104 +464,104 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
             'block-expand-enter',
           )}
         >
-        <div className="flow-timeline pl-1">
-          {visibleSteps.map((step, index) => {
-            const isLastVisible = index === visibleSteps.length - 1;
-            // Show connector if not the last visible step, or if there are trailing nodes
-            const hasTrailingNodes = allCompleted || isStopped || isActive || hasError;
-            const isFullyExpanded = displayMode === 'expanded' || !needsTruncation;
-            const showConnector = !isLastVisible || (isFullyExpanded && hasTrailingNodes);
-            // For a thinking step, signal whether execution has moved on to a
-            // tool step after it — used to auto-collapse the reasoning panel.
-            const hasLaterToolStep = unifiedSteps
-              .slice(unifiedSteps.indexOf(step) + 1)
-              .some((s) => s.type !== 'thinking');
+          <div
+            ref={stepListRef}
+            data-step-list
+            onScroll={onScroll}
+            className={cn(
+              STEP_LIST,
+              edges.canScrollUp && STEP_LIST_FADE_TOP,
+              edges.canScrollDown && STEP_LIST_FADE_BOTTOM,
+            )}
+          >
+            <div className="flow-timeline pl-1">
+              {unifiedSteps.map((step, index) => {
+                const isLast = index === unifiedSteps.length - 1;
+                // Show connector if not the last step, or if there are trailing nodes
+                const hasTrailingNodes = allCompleted || isStopped || isActive || hasError;
+                const showConnector = !isLast || hasTrailingNodes;
+                // For a thinking step, signal whether execution has moved on to a
+                // tool step after it — used to auto-collapse the reasoning panel.
+                const hasLaterToolStep = unifiedSteps
+                  .slice(unifiedSteps.indexOf(step) + 1)
+                  .some((s) => s.type !== 'thinking');
 
-            return (
-              <TaskStepItem
-                key={step.id}
-                step={step}
-                showConnector={showConnector}
-                hasLaterToolStep={hasLaterToolStep}
-                locale={locale}
-                t={t}
-                fileChange={step.toolCallId ? fileChanges?.get(step.toolCallId) : undefined}
-                toolResults={toolResults}
-              />
-            );
-          })}
+                return (
+                  <TaskStepItem
+                    key={step.id}
+                    step={step}
+                    showConnector={showConnector}
+                    hasLaterToolStep={hasLaterToolStep}
+                    locale={locale}
+                    t={t}
+                    fileChange={step.toolCallId ? fileChanges?.get(step.toolCallId) : undefined}
+                    toolResults={toolResults}
+                    toolViewRecord={step.toolCallId ? toolViewRecords?.get(step.toolCallId) : undefined}
+                    timelineOpen={isOpen}
+                  />
+                );
+              })}
 
-          {/* Show more / Collapse toggle */}
-          {needsTruncation && (
-            <div className="flex items-start gap-3">
-              <div className="w-3.5 shrink-0" />
-              <div className="flex-1 min-w-0 pb-2">
-                <Button variant="plain" size="sm" onClick={displayMode === 'preview' ? handleShowMore : handleCollapse}>
-                  {displayMode === 'preview' ? t.task.showMore : t.task.collapse}
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {/* Done node — only in fully expanded or no truncation needed */}
-          {allCompleted && !isStopped && (displayMode === 'expanded' || !needsTruncation) && (
-            <div className="flex items-start gap-3">
-              <StepIconSlot>
-                <StatusIcon tone="success" size="sm" />
-              </StepIconSlot>
-              <div className="flex-1 min-w-0 pb-2">
-                <div className="text-ui text-label-tertiary">{t.task.done}</div>
-              </div>
-            </div>
-          )}
-
-          {/* User-stopped node — distinct from successful completion. */}
-          {isStopped && (displayMode === 'expanded' || !needsTruncation) && (
-            <div className="flex items-start gap-3">
-              <StepIconSlot>
-                <Icon icon={AppIcons.stopped} size="sm" className="text-label-tertiary" />
-              </StepIconSlot>
-              <div className="flex-1 min-w-0 pb-2">
-                <div className="text-ui text-label-tertiary">{t.task.stopped}</div>
-              </div>
-            </div>
-          )}
-
-          {/* Error node */}
-          {hasError && !isActive && (displayMode === 'expanded' || !needsTruncation) && (
-            <div className="flex items-start gap-3">
-              <StepIconSlot>
-                <StatusIcon tone="danger" size="sm" />
-              </StepIconSlot>
-              <div className="flex-1 min-w-0 pb-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-ui text-danger">
-                    {t.task.errorOccurred}
-                  </span>
-                  {onRetry && (
-                    <Button variant="secondary" size="sm" icon={AppIcons.retry} onClick={onRetry}>
-                      {t.task.retryAction}
-                    </Button>
-                  )}
+              {/* Done node */}
+              {allCompleted && !isStopped && (
+                <div className="flex items-start gap-3">
+                  <StepIconSlot>
+                    <StatusIcon tone="success" size="sm" />
+                  </StepIconSlot>
+                  <div className="flex-1 min-w-0 pb-2">
+                    <div className="text-ui text-label-tertiary">{t.task.done}</div>
+                  </div>
                 </div>
-              </div>
-            </div>
-          )}
+              )}
 
-          {/* Running node: still icon, the header holds the block's spinner */}
-          {isActive && (
-            <div className="flex items-start gap-3">
-              <StepIconSlot>
-                <Icon icon={AppIcons.loading} size="sm" className="text-label-tertiary" />
-              </StepIconSlot>
-              <div className="flex-1 min-w-0 pb-2">
-                <div className="text-ui text-label-tertiary">
-                  {t.task.running}
+              {/* User-stopped node — distinct from successful completion. */}
+              {isStopped && (
+                <div className="flex items-start gap-3">
+                  <StepIconSlot>
+                    <Icon icon={AppIcons.stopped} size="sm" className="text-label-tertiary" />
+                  </StepIconSlot>
+                  <div className="flex-1 min-w-0 pb-2">
+                    <div className="text-ui text-label-tertiary">{t.task.stopped}</div>
+                  </div>
                 </div>
-              </div>
+              )}
+
+              {/* Error node */}
+              {hasError && !isActive && (
+                <div className="flex items-start gap-3">
+                  <StepIconSlot>
+                    <StatusIcon tone="danger" size="sm" />
+                  </StepIconSlot>
+                  <div className="flex-1 min-w-0 pb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-ui text-danger">
+                        {t.task.errorOccurred}
+                      </span>
+                      {onRetry && (
+                        <Button variant="secondary" size="sm" icon={AppIcons.retry} onClick={onRetry}>
+                          {t.task.retryAction}
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Running node: still icon, the header holds the block's spinner */}
+              {isActive && (
+                <div className="flex items-start gap-3">
+                  <StepIconSlot>
+                    <Icon icon={AppIcons.loading} size="sm" className="text-label-tertiary" />
+                  </StepIconSlot>
+                  <div className="flex-1 min-w-0 pb-2">
+                    <div className="text-ui text-label-tertiary">
+                      {t.task.running}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
-          )}
-        </div>
+          </div>
         </div>
       )}
     </div>
@@ -535,9 +587,13 @@ export interface TaskStepItemProps {
   fileChange?: FileChange;
   /** Whole results by tool call id; left out for an expert's nested steps. */
   toolResults?: ReadonlyMap<string, string>;
+  /** Input and outcome records of the step's tool call; left out for an expert's nested steps. */
+  toolViewRecord?: ToolViewRecord;
+  /** The timeline around the step is open; false folds the step's view. */
+  timelineOpen?: boolean;
 }
 
-export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t, fileChange, toolResults }: TaskStepItemProps) {
+export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t, fileChange, toolResults, toolViewRecord, timelineOpen }: TaskStepItemProps) {
   const stepGlyph = getStepIcon(step);
   const typeLabel = getTypeLabel(step, t);
   const isRunning = step.status === 'running';
@@ -549,6 +605,19 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t,
 
   const taskExecutionStore = useTaskExecutionStore();
   const [diffExpanded, setDiffExpanded] = useState(false);
+
+  // A step whose tool has a view opens it from its title; an image read keeps its image block.
+  const viewToolName = hasToolView(step.toolName) && !step.detailBlocks?.some((b) => b.type === 'image')
+    ? step.toolName
+    : undefined;
+  const showsToolView = viewToolName !== undefined;
+  const [viewExpanded, setViewExpanded] = useState(false);
+  useEffect(() => {
+    if (timelineOpen === false) setViewExpanded(false);
+  }, [timelineOpen]);
+  const fetchUrl = step.toolName === TOOL_NAMES.HTTP_FETCH ? toolViewRecord?.input.url ?? step.toolInput?.url : undefined;
+  const exitCode = toolViewRecord?.commandOutcome?.exitCode;
+  const httpStatus = toolViewRecord?.httpFetchOutcome?.status;
 
   // Generate step label - for thinking steps, show duration; for waiting ask_user_question, show waiting text
   const stepLabel = useMemo(() => {
@@ -568,10 +637,10 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t,
     if (step.completionMessage) return step.completionMessage;
     if (isCompleted && step.toolName && step.toolInput && step.toolResult) {
       const executionTime = step.duration;
-      return generateCompletionMessage(step.toolName, step.toolInput, step.toolResult, locale, executionTime);
+      return generateCompletionMessage(step.toolName, step.toolInput, step.toolResult, locale, executionTime, { exitCode });
     }
     return null;
-  }, [step, isCompleted, locale]);
+  }, [step, isCompleted, locale, exitCode]);
 
   // Thinking expanded state — starts true when running so content is visible
   // during streaming, and persists across the running→completed transition
@@ -623,13 +692,14 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t,
 
   // Render detail blocks if available (new architecture)
   const renderDetailBlocks = () => {
-    if (!step.detailBlocks || step.detailBlocks.length === 0) {
+    const blocks = showsToolView ? step.detailBlocks?.filter((block) => block.type === 'image') : step.detailBlocks;
+    if (!blocks || blocks.length === 0) {
       return null;
     }
 
     return (
       <div className="flex flex-wrap gap-2">
-        {step.detailBlocks.map((block) => (
+        {blocks.map((block) => (
           <DetailBlockView
             key={block.id}
             block={block}
@@ -707,6 +777,7 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t,
 
   // Render legacy collapsible details (backward compatibility)
   const renderLegacyDetails = () => {
+    if (showsToolView) return null;
     if (step.detailBlocks && step.detailBlocks.length > 0 && !step.showLegacyDetailsWithDetailBlocks) {
       return null; // Use new detail blocks instead
     }
@@ -777,7 +848,20 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t,
                 : 'text-label-tertiary'
           )}
         >
-          {fileChange ? <StepFileLabel label={stepLabel} fileChange={fileChange} t={t} /> : stepLabel}
+          {!showsToolView ? (
+            fileChange ? <StepFileLabel label={stepLabel} fileChange={fileChange} t={t} /> : stepLabel
+          ) : typeof fetchUrl === 'string' ? (
+            <StepUrlLabel label={stepLabel} url={fetchUrl} expanded={viewExpanded} onToggle={() => setViewExpanded((open) => !open)} />
+          ) : (
+            <Pressable
+              onClick={() => setViewExpanded((open) => !open)}
+              aria-expanded={viewExpanded}
+              aria-label={stepLabel}
+              className={STEP_TITLE_BUTTON}
+            >
+              {stepLabel}
+            </Pressable>
+          )}
           {fileChange && fileChange.added !== undefined && fileChange.deleted !== undefined && (
             <StepLineCounts
               added={fileChange.added}
@@ -787,8 +871,18 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t,
             />
           )}
           {isCancelled && (
-            <span role="status" aria-label={t.task.cancelled} className="ml-2 inline-flex align-middle">
-              <Tag>{t.task.cancelled}</Tag>
+            <span role="status" aria-label={t.task.stopped} className="ml-2 inline-flex align-middle">
+              <Tag>{t.task.stopped}</Tag>
+            </span>
+          )}
+          {exitCode !== undefined && exitCode !== 0 && isCompleted && (
+            <span className="ml-2 inline-flex align-middle">
+              <Tag data-exit-code={exitCode}>{format(t.task.exitCode, { code: exitCode })}</Tag>
+            </span>
+          )}
+          {httpStatus !== undefined && (httpStatus < 200 || httpStatus >= 300) && (
+            <span className="ml-2 inline-flex align-middle">
+              <Tag data-http-status={httpStatus}>{httpStatus}</Tag>
             </span>
           )}
           {/* Token warning for large tool outputs */}
@@ -809,6 +903,22 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t,
         {/* Detail blocks - prefer new architecture */}
         {renderDetailBlocks()}
         {renderLegacyDetails()}
+
+        {viewToolName !== undefined && viewExpanded && (() => {
+          const { text, fullUnavailable, failed } = stepViewText(step, toolResults, toolViewRecord);
+          return (
+            <div className="mt-2">
+              <StepToolView
+                toolName={viewToolName}
+                status={failed && !isCancelled ? 'error' : step.status}
+                input={toolViewRecord?.input ?? step.toolInput ?? {}}
+                record={toolViewRecord}
+                text={text}
+                fullUnavailable={fullUnavailable}
+              />
+            </div>
+          );
+        })()}
 
         {/* Completion message */}
         {isCompleted && completionMsg && (
@@ -833,6 +943,7 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t,
                   hasLaterToolStep={childHasLaterToolStep}
                   locale={locale}
                   t={t}
+                  timelineOpen={timelineOpen}
                 />
               );
             })}
@@ -952,6 +1063,37 @@ function StepFileLabel({ label, fileChange, t }: { label: string; fileChange: Fi
           {fileName}
         </Pressable>
       )}
+    </>
+  );
+}
+
+/**
+ * Title of a page fetch: the words before the address open the step's view,
+ * and the address beside them opens the page.
+ */
+function StepUrlLabel({ label, url, expanded, onToggle }: {
+  label: string;
+  url: string;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const address = shortUrl(url);
+  const leading = label.endsWith(address) ? label.slice(0, label.length - address.length).trimEnd() : label;
+  return (
+    <>
+      <Pressable onClick={onToggle} aria-expanded={expanded} aria-label={label} className={STEP_TITLE_BUTTON}>
+        {leading}
+      </Pressable>
+      {' '}
+      <Link
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(e) => e.stopPropagation()}
+        className="break-all"
+      >
+        {address}
+      </Link>
     </>
   );
 }

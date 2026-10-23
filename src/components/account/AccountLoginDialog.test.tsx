@@ -25,7 +25,11 @@ vi.mock('@/core/account/accountStore', () => ({
   useAccountStore: (selector: (state: Record<string, unknown>) => unknown) => selector(mocks.accountState),
 }));
 
-vi.mock('@/config/featureGates', () => ({ IS_ENTERPRISE_BUILD: true }));
+// These cases cover the personal sign-in, which ships once personal accounts are on; LoginPage.personalGate.test.tsx covers the gate off.
+vi.mock('@/config/featureGates', () => ({
+  IS_ENTERPRISE_BUILD: true,
+  IS_PERSONAL_ACCOUNT_ENABLED: true,
+}));
 
 vi.mock('@/core/enterprise/accountLogin', () => ({
   startEnterpriseAccountLogin: mocks.startEnterpriseLogin,

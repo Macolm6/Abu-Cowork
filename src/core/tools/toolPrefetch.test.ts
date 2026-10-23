@@ -13,8 +13,13 @@ function makeCtx(overrides: Partial<PrefetchContext> = {}): PrefetchContext {
 
 describe('toolPrefetch', () => {
   describe('CORE_TOOL_NAMES', () => {
-    it('should contain 18 core tools', () => {
-      expect(CORE_TOOL_NAMES.size).toBe(18);
+    it('should contain 19 core tools', () => {
+      expect(CORE_TOOL_NAMES.size).toBe(19);
+    });
+
+    it('offers apply_patch as core, beside edit_file, so the profile can keep either', () => {
+      expect(CORE_TOOL_NAMES.has('apply_patch')).toBe(true);
+      expect(CORE_TOOL_NAMES.has('edit_file')).toBe(true);
     });
 
     it('offers present_files on every turn, since it is called when a turn ends', () => {

@@ -236,6 +236,37 @@ describe('conversationRunMirror', () => {
       expect(toolCalls?.[1].backgroundCommand).toEqual(backgroundCommand);
     });
 
+    it('keeps the three outcome records on both chat delta writes', () => {
+      const conv = makeConversation({
+        messages: [makeMessage({
+          id: 'm1',
+          toolCalls: [
+            { id: 'tc1', name: 'run_command', input: { command: 'npm test' }, isExecuting: true },
+            { id: 'tc2', name: 'read_file', input: { path: '/w/a.ts' }, isExecuting: true },
+          ],
+        })],
+      });
+      const mirror = createConversationRunMirror('conv-1', { conversation: conv });
+      const commandOutcome = { exitCode: 1, stdout: [8, 20] as [number, number], stderr: [30, 41] as [number, number] };
+      const fileReadOutcome = { kind: 'text' as const, startLine: 200, lineCount: 100, totalLines: 1500, bodyStart: 60 };
+      const httpFetchOutcome = { status: 404, statusText: 'Not Found', body: [20, 90] as [number, number], truncated: false };
+
+      mirror.applyChatDeltaWrite('updateToolCall', [
+        'conv-1', 'm1', 'tc1', 'Exit code: 1', undefined, false, undefined, { commandOutcome, fileReadOutcome, httpFetchOutcome },
+      ]);
+      mirror.applyChatDeltaWrite('checkpointToolCallMetadata', [
+        'conv-1', 'm1', 'tc2', { commandOutcome, fileReadOutcome, httpFetchOutcome },
+      ]);
+
+      const toolCalls = mirror.reader.getConversation('conv-1')?.messages[0].toolCalls;
+      for (const tc of toolCalls ?? []) {
+        expect(tc.commandOutcome).toEqual(commandOutcome);
+        expect(tc.fileReadOutcome).toEqual(fileReadOutcome);
+        expect(tc.httpFetchOutcome).toEqual(httpFetchOutcome);
+      }
+      expect(toolCalls).toHaveLength(2);
+    });
+
     it('accepts trusted recovery metadata only for run_command', () => {
       const conv = makeConversation({
         messages: [makeMessage({
@@ -508,6 +539,53 @@ describe('conversationRunMirror', () => {
       mirror.applyChatDeltaWrite('cancelStreaming', ['conv-1']);
       expect(mirror.reader.getConversation('conv-1')?.messages[0].isStreaming).toBe(false);
       expect(mirror.reader.getThinkingStartTime('conv-1')).toBeNull();
+    });
+
+    describe('context cache', () => {
+      const cache = {
+        summaryMessage: makeMessage({ id: 'context-summary-1', role: 'user', content: 'summary' }),
+        summarizedRange: [2, 10] as [number, number],
+        messageCountAtCompression: 14,
+      };
+
+      it('setContextCache is readable back through the reader', () => {
+        const mirror = createConversationRunMirror('conv-1', { conversation: makeConversation() });
+        mirror.applyChatDeltaWrite('setContextCache', ['conv-1', cache]);
+        expect(mirror.reader.getConversation('conv-1')?.contextCache).toEqual(cache);
+      });
+
+      it('clearContextCache drops the cache', () => {
+        const mirror = createConversationRunMirror('conv-1', { conversation: makeConversation() });
+        mirror.applyChatDeltaWrite('setContextCache', ['conv-1', cache]);
+        mirror.applyChatDeltaWrite('clearContextCache', ['conv-1']);
+        expect(mirror.reader.getConversation('conv-1')?.contextCache).toBeUndefined();
+      });
+
+      it('deleteMessagesFrom invalidates the cache, as chatStore does', () => {
+        const conv = makeConversation({ messages: [makeMessage({ id: 'a' }), makeMessage({ id: 'b' })] });
+        const mirror = createConversationRunMirror('conv-1', { conversation: conv });
+        mirror.applyChatDeltaWrite('setContextCache', ['conv-1', cache]);
+        mirror.applyChatDeltaWrite('deleteMessagesFrom', ['conv-1', 'b']);
+        expect(mirror.reader.getConversation('conv-1')?.contextCache).toBeUndefined();
+      });
+    });
+
+    describe('updateMessageUsage', () => {
+      it('writes usage onto the targeted message so a read-back for persistence carries it', () => {
+        const conv = makeConversation({ messages: [makeMessage({ id: 'm1' }), makeMessage({ id: 'm2' })] });
+        const mirror = createConversationRunMirror('conv-1', { conversation: conv });
+        mirror.applyChatDeltaWrite('updateMessageUsage', ['conv-1', { inputTokens: 120, outputTokens: 30, cacheReadTokens: 5 }, 'm1']);
+        const messages = mirror.reader.getConversation('conv-1')?.messages;
+        expect(messages?.[0].usage).toEqual({ inputTokens: 120, outputTokens: 30 });
+        expect(messages?.[1].usage).toBeUndefined();
+      });
+
+      it('targets the last message when no msgId is given', () => {
+        const conv = makeConversation({ messages: [makeMessage({ id: 'm1' }), makeMessage({ id: 'm2' })] });
+        const mirror = createConversationRunMirror('conv-1', { conversation: conv });
+        mirror.applyChatDeltaWrite('updateMessageUsage', ['conv-1', { inputTokens: 1, outputTokens: 2 }, undefined]);
+        expect(mirror.reader.getConversation('conv-1')?.messages[1].usage).toEqual({ inputTokens: 1, outputTokens: 2 });
+      });
     });
 
     it('unhandled methods (e.g. flushTokens) are a documented no-op — no throw', () => {

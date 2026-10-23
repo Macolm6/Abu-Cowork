@@ -91,6 +91,37 @@ describe('adapter', () => {
 
   // ── classifyError — HTTP status codes ──
   describe('classifyError', () => {
+    it('400 whose text names a rejected request capability carries its class', () => {
+      const err = classifyError(400, JSON.stringify({
+        error: {
+          message: "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.",
+          type: 'invalid_request_error',
+          param: 'max_tokens',
+          code: 'unsupported_parameter',
+        },
+      }));
+      expect(err.code).toBe('invalid_request');
+      expect(err.capabilityRejection).toBe('max_tokens_field');
+      expect(err.retryable).toBe(false);
+    });
+
+    it('400 with any other text carries no class', () => {
+      const err = classifyError(400, JSON.stringify({ error: { message: 'Invalid value for messages[0].role' } }));
+      expect(err.code).toBe('invalid_request');
+      expect(err.capabilityRejection).toBeUndefined();
+    });
+
+    it('a context overflow is never a capability rejection', () => {
+      const err = classifyError(400, JSON.stringify({ error: { message: "This model's maximum context length is 128000 tokens." } }));
+      expect(err.code).toBe('context_too_long');
+      expect(err.capabilityRejection).toBeUndefined();
+    });
+
+    it('a capability text on another status is not classified', () => {
+      const err = classifyError(422, JSON.stringify({ error: { message: "Unsupported parameter: 'reasoning_effort' is not supported with this model." } }));
+      expect(err.capabilityRejection).toBeUndefined();
+    });
+
     it('429 → rate_limit (retryable)', () => {
       const err = classifyError(429, 'Too many requests');
       expect(err.code).toBe('rate_limit');
