@@ -80,6 +80,61 @@ describe('declared tool file targets', () => {
     });
   });
 
+  it('plans every section of a patch as a write target and hands the tool the resolved paths', async () => {
+    const input = {
+      input: [
+        '*** Begin Patch',
+        '*** Add File: docs/new.md',
+        '+hello',
+        '*** Delete File: old.txt',
+        '*** Update File: src/a.ts',
+        '@@',
+        '-x',
+        '+y',
+        '*** Update File: src/b.ts',
+        '*** Move to: src/c.ts',
+        '@@',
+        '-1',
+        '+2',
+        '*** End Patch',
+      ].join('\n'),
+    };
+    const plan = await planToolFiles('apply_patch', input, { workspacePath: '/work', loopId: 'turn' });
+    expect(plan?.targets.map(target => [target.path, target.purpose, target.followFinalSymlink])).toEqual([
+      ['/work/docs/new.md', 'write', true],
+      ['/work/old.txt', 'delete', false],
+      ['/work/old.txt', 'read', false],
+      ['/work/src/a.ts', 'write', true],
+      ['/work/src/a.ts', 'read', true],
+      ['/work/src/b.ts', 'delete', false],
+      ['/work/src/b.ts', 'read', false],
+      ['/work/src/c.ts', 'write', true],
+    ]);
+    expect(plan?.input.input).toBe(input.input);
+    expect(plan?.input.operations).toEqual([
+      { type: 'add', path: '/work/docs/new.md' },
+      { type: 'delete', path: '/work/old.txt' },
+      { type: 'update', path: '/work/src/a.ts' },
+      { type: 'update', path: '/work/src/b.ts', moveTo: '/work/src/c.ts' },
+    ]);
+    const resolved = resolveToolFileInput('apply_patch', plan!.input, new Map([
+      ['/work/src/a.ts', '/canonical/a.ts'], ['/work/src/c.ts', '/canonical/c.ts'],
+    ]));
+    expect(resolved.operations).toEqual([
+      { type: 'add', path: '/work/docs/new.md' },
+      { type: 'delete', path: '/work/old.txt' },
+      { type: 'update', path: '/canonical/a.ts' },
+      { type: 'update', path: '/work/src/b.ts', moveTo: '/canonical/c.ts' },
+    ]);
+    expect(resolved.input).toBe(input.input);
+  });
+
+  it('declares no target for a patch the parser rejects, leaving the tool to report it', async () => {
+    const plan = await planToolFiles('apply_patch', { input: 'not a patch' }, { workspacePath: '/work' });
+    expect(plan?.targets).toEqual([]);
+    expect(plan?.input.operations).toBeUndefined();
+  });
+
   it('chooses a generated image destination before later work and resolves explicit destinations', async () => {
     const generated = await planToolFiles('generate_image', { prompt: 'image' });
     expect(generated?.targets[0].path).toBe('/Users/testuser/Downloads/abu-image-1791936000000.png');

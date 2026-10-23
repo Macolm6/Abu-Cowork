@@ -43,6 +43,7 @@ import { adapterKindFor, usageProtocolFor } from '../llm/adapterKind';
 import { promptTokensOf } from '../llm/usageAccounting';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelProfile } from '../llm/modelProfile';
+import { selectToolsForProfile } from '../tools/toolSelection';
 import { repairToolCallsForProfile } from './toolArgumentRepair';
 import { getCapsPort, type CapsPort } from './ports/capsPort';
 import { getWorkspaceReader, type WorkspaceReader } from './ports/workspaceReader';
@@ -847,13 +848,15 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     if (Array.isArray(agent.disallowedTools) && agent.disallowedTools.length > 0) {
       warnPatternsWithoutKnownTool(agent.name, 'disallowedTools', agent.disallowedTools, allTools);
     }
-    const tools = resolveSubagentToolRoster(
+    // One editing style per model and the family's tool descriptions, from
+    // the profile of the model this subagent runs on.
+    const tools = selectToolsForProfile(resolveSubagentToolRoster(
       allTools,
       agent,
       options.allowedTools,
       options.blockedTools,
       runStanding,
-    ).map((tool) => adaptComputerToolForTier(tool, agentCapabilities.computerUseTier, isWindows()));
+    ).map((tool) => adaptComputerToolForTier(tool, agentCapabilities.computerUseTier, isWindows())), startupProfile);
     // The resolver always strips orchestration tools from sub-agents to prevent recursive
     // fan-out (a sub-agent spawning its own batch → unbounded blow-up, since there
     // is no depth/total-agent cap). Multi-agent orchestration is a main-agent-only
