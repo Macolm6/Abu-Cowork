@@ -138,6 +138,9 @@ p, .h3 { text-wrap: balance; }
 .nav-links a[data-new]::after { right: 28px; }
 .nav-links a[data-new]::before { content: "NEW"; position: absolute; right: 0; top: -9px; padding: 2px 5px; border-radius: 999px; background: var(--brand); color: var(--brand-ink); font-family: var(--mono); font-size: 9px; font-weight: 600; letter-spacing: 0.04em; line-height: 1; }
 .nav-cta { display: flex; gap: 8px; align-items: center; }
+/* The bar's filled button reads 下载 on most pages and 预约演示 on the enterprise page; one width keeps the entries in place between pages. */
+.nav-cta .btn-fill { min-width: 6.6em; justify-content: center; }
+:lang(en) .nav-cta .btn-fill { min-width: 8.8em; }
 /* The link to the same page in the other language. */
 .nav-lang { display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; font-size: 14px; opacity: 0.72; white-space: nowrap; transition: opacity 200ms; }
 .nav-lang:hover { opacity: 1; }
