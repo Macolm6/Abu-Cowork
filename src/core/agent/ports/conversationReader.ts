@@ -1,6 +1,7 @@
 import { getConversationAgentState, useChatStore } from '@/stores/chatStore';
 import type { Conversation } from '@/types';
 import type { ConversationMeta } from '../../session/conversationStorage';
+import { resolveActiveSkillInfo, type ActiveSkillInfo } from '../../skill/activeSkillInstructions';
 import { createPortSlot } from './portSlot';
 
 /**
@@ -66,6 +67,11 @@ export interface ConversationReader {
   getIndexEntry(convId: string): Readonly<ConversationMeta> | undefined;
   /** Mirrors the addressed conversation's agent-state thinking timer. */
   getThinkingStartTime(convId: string): number | null;
+  /** The conversation's active skills, resolved against the shell's skill
+   *  index: what the loop needs for tool exposure (name, blocked tools). The
+   *  index exists only in the shell, so a sidecar-run loop is served a copy
+   *  the shell resolved and keeps current (`state.convPatch`). */
+  getActiveSkills(convId: string): readonly ActiveSkillInfo[];
 }
 
 /** Default in-process implementation over the Zustand store's synchronous
@@ -82,6 +88,8 @@ export function createInProcessConversationReader(): ConversationReader {
       const state = useChatStore.getState();
       return getConversationAgentState(state.agentStates, convId).thinkingStartTime;
     },
+    getActiveSkills: (convId) =>
+      resolveActiveSkillInfo(useChatStore.getState().conversations[convId]?.activeSkills),
   };
 }
 

@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { useChatStore } from '@/stores/chatStore';
-import type { Conversation } from '@/types';
+import { skillLoader } from '@/core/skill/loader';
+import type { Conversation, Skill } from '@/types';
 import type { ConversationMeta } from '../../session/conversationStorage';
 import {
   createInProcessConversationReader,
@@ -65,6 +66,27 @@ describe('createInProcessConversationReader', () => {
     expect(reader.getThinkingStartTime(c2)).toBeNull();
   });
 
+  it('getActiveSkills() resolves the conversation\'s active skill names against the skill index', () => {
+    const getSkill = vi.spyOn(skillLoader, 'getSkill').mockImplementation((name) => (
+      name === 'docx' ? { name: 'docx', blockedTools: ['computer'] } as Skill : undefined
+    ));
+    const conv: Conversation = {
+      id: 'c1',
+      title: 't',
+      messages: [],
+      createdAt: 0,
+      updatedAt: 0,
+      status: 'idle',
+      activeSkills: ['docx', 'not-in-index'],
+    };
+    useChatStore.setState({ conversations: { c1: conv } });
+    const reader = createInProcessConversationReader();
+
+    expect(reader.getActiveSkills('c1')).toEqual([{ name: 'docx', blockedTools: ['computer'] }]);
+    expect(reader.getActiveSkills('does-not-exist')).toEqual([]);
+    getSkill.mockRestore();
+  });
+
   it('reflects store updates on the next call (not cached at construction time)', () => {
     const reader = createInProcessConversationReader();
     expect(reader.getConversation('c1')).toBeUndefined();
@@ -94,6 +116,7 @@ describe('getConversationReader / setConversationReader', () => {
     expect(typeof reader.getConversation).toBe('function');
     expect(typeof reader.getIndexEntry).toBe('function');
     expect(typeof reader.getThinkingStartTime).toBe('function');
+    expect(typeof reader.getActiveSkills).toBe('function');
   });
 
   it('setConversationReader() swaps the module-level reader returned by getConversationReader()', () => {
@@ -101,6 +124,7 @@ describe('getConversationReader / setConversationReader', () => {
       getConversation: () => undefined,
       getIndexEntry: () => undefined,
       getThinkingStartTime: () => 999,
+      getActiveSkills: () => [],
     };
     setConversationReader(stub);
     expect(getConversationReader()).toBe(stub);

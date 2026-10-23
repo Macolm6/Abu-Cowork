@@ -4893,16 +4893,14 @@ export interface TranslationDict {
     // use_skill / delegate_to_agent / save_agent / request_workspace
     agent: {
       // use_skill
-      /** Skill already active in this conversation. {skillName} */
-      skillAlreadyActive: string;
       /** use_skill / skill_view: the organization's skill blacklist names this skill, so it cannot be used. {skillName} */
       skillBlockedByPolicy: string;
       /** Skill loaded. {name}, {description} */
       skillLoaded: string;
       /** Context line appended after skillLoaded. {context} */
       skillContextLine: string;
-      /** Line appended after skillLoaded (and optional context). */
-      skillInjected: string;
+      /** Line appended after skillLoaded (and optional context); the skill instructions follow it. */
+      skillInstructionsFollow: string;
       // delegate_to_agent
       /** Error: agent not found. {agentName}, {available}, {presetList} */
       errAgentNotFound: string;

@@ -13,9 +13,11 @@
  * `ConversationReader`: messages by id (including reading back its OWN
  * just-written message — the "flush-then-read" hazard), `workspacePath`,
  * `activeSkills`, `title`, `indexEntry.model`, `getThinkingStartTime()`,
- * plus `contextCache` (the ephemeral compression summary the loop reuses on
- * every later iteration of the run) and the turn message's `usage` (read
- * back for the per-turn `replaceMessageById` persistence).
+ * `getActiveSkills()` (the shell-resolved copy of the active skills, seeded
+ * at run start and replaced by `state.convPatch`), plus `contextCache` (the
+ * ephemeral compression summary the loop reuses on every later iteration of
+ * the run) and the turn message's `usage` (read back for the per-turn
+ * `replaceMessageById` persistence).
  * Only the WRITE methods that touch these facts get a real, faithful apply
  * below (mirroring `chatStore.ts`'s own action bodies side by side — same
  * `msgId ?? "last message"` targeting semantics `findTargetMessage`/
@@ -60,18 +62,23 @@ import {
 } from '@/core/agent/batchTerminalSummary';
 import type { Conversation, Message, AgentStatus, ToolCall } from '@/types';
 import type { ConversationMeta } from '@/core/session/conversationStorage';
+import type { ActiveSkillInfo } from '@/core/skill/activeSkillInstructions';
 import { appendBoundedSubagentToolCall } from '@/core/session/durableToolResultContent';
 import { sanitizeGoalState, type GoalState } from '@/core/goal/goalTypes';
 
 export interface ConversationRunMirrorSeed {
   conversation: Conversation;
   indexEntry?: ConversationMeta;
+  /** The conversation's active skills as the shell resolved them at run start. Absent = none active. */
+  activeSkillInfo?: ActiveSkillInfo[];
 }
 
 export interface ConversationPatch {
   workspacePath?: string | null;
   title?: string;
   activeSkills?: string[];
+  /** Travels with every `activeSkills` change: the same names, shell-resolved. */
+  activeSkillInfo?: ActiveSkillInfo[];
   model?: { providerId: string; modelId: string };
   /** Goal mode state; `null` = the goal was cleared. */
   goal?: GoalState | null;
@@ -99,8 +106,10 @@ export function createConversationRunMirror(
   const conversation: Conversation = seed.conversation;
   let indexEntry: ConversationMeta | undefined = seed.indexEntry;
   let thinkingStartTime: number | null = null;
+  let activeSkillInfo: ActiveSkillInfo[] = seed.activeSkillInfo ?? [];
 
   const reader: ConversationReader = {
+    getActiveSkills: (convId) => (convId === conversationId ? activeSkillInfo : []),
     getConversation: (convId) => (convId === conversationId ? conversation : undefined),
     getIndexEntry: (convId) => (convId === conversationId ? indexEntry : undefined),
     getThinkingStartTime: (convId) => (convId === conversationId ? thinkingStartTime : null),
@@ -184,6 +193,7 @@ export function createConversationRunMirror(
       }
       case 'deactivateSkills': {
         conversation.activeSkills = [];
+        activeSkillInfo = [];
         break;
       }
       case 'setMessageStreamingFlag': {
@@ -379,6 +389,9 @@ export function createConversationRunMirror(
     }
     if (Object.prototype.hasOwnProperty.call(patch, 'activeSkills')) {
       conversation.activeSkills = patch.activeSkills;
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'activeSkillInfo')) {
+      activeSkillInfo = patch.activeSkillInfo ?? [];
     }
     if (Object.prototype.hasOwnProperty.call(patch, 'model')) {
       conversation.model = patch.model;
