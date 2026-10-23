@@ -1,50 +1,33 @@
 import { useChatStore } from '@/stores/chatStore';
-import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
+import { runAgentLoopDispatched, type AgentLoopDispatchResult } from '@/core/agent/agentLoopRunner';
 import { getMessageText } from '@/core/context/contextUtils';
 import { getI18n, format } from '@/i18n';
 
 const MAX_REQUEST_CHARS = 500;
 
 /**
- * Restart recovery for team conversations (block R): when an orphaned crash
- * checkpoint shows a team run was cut mid-way, continue it automatically
- * from where it stopped instead of waiting for the user (Codex resumes an
- * active goal after restart, Claude Code restores /goal on resume).
+ * Continue a team run the application closed on. Started by the user's click
+ * on the interrupted row (block R): the leader picks up from what the
+ * conversation already holds instead of running the turn again.
  *
- * Conversations owned by the scheduler / a trigger / an IM channel are left
- * to their own delivery envelope (the scheduler's catch-up re-runs a missed
- * task); read-only imports never run. Returns true when a run was started.
+ * Opening the app authorizes nothing — the startup checkpoint sweep only
+ * marks the row, exactly as the goal driver leaves a restored goal disarmed
+ * until the user resumes it. The click is a human send, so the run keeps the
+ * conversation's own permission mode and dialogs and is dispatched as
+ * `initiatedBy: 'user'`; its outcome shows on the row it appends, like any
+ * other send. Returns null when there is nothing to continue: a conversation
+ * without a team, a read-only import, or no user request on record.
  */
-export async function resumeTeamRunAfterRestart(conversationId: string, turnCount: number): Promise<boolean> {
+export async function resumeTeamRunAfterRestart(conversationId: string): Promise<AgentLoopDispatchResult | null> {
   const conversation = useChatStore.getState().conversations[conversationId];
-  if (!conversation?.teamId || conversation.readOnly) return false;
-  if (conversation.scheduledTaskId || conversation.triggerId || conversation.imChannelId) return false;
+  if (!conversation?.teamId || conversation.readOnly) return null;
   const lastUser = [...conversation.messages].reverse().find((m) => m.role === 'user' && !m.isSystem);
-  if (!lastUser) return false;
+  if (!lastUser) return null;
   const request = getMessageText(lastUser.content).trim().slice(0, MAX_REQUEST_CHARS);
-  if (!request) return false;
-  const explain = (error: string) => {
-    console.warn('[resumeAfterRestart] could not restart the team run', { conversationId, error });
-    useChatStore.getState().addMessage(conversationId, {
-      id: `resume-failed-${Date.now().toString(36)}`,
-      role: 'assistant',
-      content: format(getI18n().team.resumeAfterRestartFailed, { error }),
-      timestamp: Date.now(),
-      isSystem: true,
-      // A plain system row is filtered out of the transcript; this one has to
-      // be read, because the run it explains never produced anything (#549).
-      isRecoveryNotice: true,
-    });
-  };
-  try {
-    const result = await runAgentLoopDispatched(conversationId, format(getI18n().team.resumeAfterRestart, { turn: turnCount, request }));
-    if (result.reason === 'error') {
-      explain(result.error ?? result.reason);
-      return false;
-    }
-    return true;
-  } catch (err) {
-    explain(err instanceof Error ? err.message : String(err));
-    return false;
-  }
+  if (!request) return null;
+  return runAgentLoopDispatched(
+    conversationId,
+    format(getI18n().team.resumeAfterRestart, { request }),
+    { initiatedBy: 'user' },
+  );
 }

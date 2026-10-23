@@ -2365,8 +2365,10 @@ export interface TranslationDict {
     stoppedTryAnotherWayFollowUp: string;
     stoppedSkipFollowUp: string;
     stallStoppedNotice: string;
+    /** The prompt the leader gets when the user continues a run the app closed on. */
     resumeAfterRestart: string;
-    resumeAfterRestartFailed: string;
+    /** The button under the interrupted message of a team conversation. */
+    resumeAfterRestartAction: string;
     fieldPlanApproval: string;
     fieldPlanApprovalHint: string;
     chatReceiptEmptyGoal: string;

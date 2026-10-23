@@ -85,7 +85,6 @@ import { startPetStatusBridge, resyncPetStatus } from '@/core/pet/petStatusBridg
 import { schedulerEngine } from '@/core/scheduler/scheduler';
 import { startTeamStallWatchdog } from '@/core/team/stallWatchdog';
 import { installGoalDriver } from '@/core/goal/goalDriver';
-import { resumeTeamRunAfterRestart } from '@/core/team/resumeAfterRestart';
 import { triggerEngine } from '@/core/trigger/triggerEngine';
 import { imChannelRouter } from '@/core/im/channelRouter';
 import { startTraySync, stopTraySync } from '@/core/im/traySync';
@@ -702,9 +701,10 @@ function App() {
           // conversation says what happened to it.
           await useChatStore.getState().loadConversation(cp.conversationId);
           await clearCheckpoint(cp.conversationId);
-          // A team run continues on its own from where it stopped (block R);
-          // an ordinary conversation still waits for the user.
-          void resumeTeamRunAfterRestart(cp.conversationId, cp.turnCount);
+          // Nothing runs from here: opening the app authorizes no spending.
+          // The interrupted row offers 「重新发送」, or 「继续」 in a team
+          // conversation (resumeAfterRestart.ts), and the user's click starts
+          // the run with the user's own authority.
           // Do NOT auto-navigate — app always starts on welcome screen.
         }
       }).catch(() => {});
