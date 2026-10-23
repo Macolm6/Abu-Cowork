@@ -89,6 +89,15 @@ describe('generateSummary — live block names what is happening now', () => {
     expect(generateSummary([workStep('s1', 'tool', 'running', 'ask_user_question')], t, locale, true)).toBe(t.userQuestion.waitingForAnswer);
   });
 
+  it('names the wait for an answer even without the live signal, over the finished counts', () => {
+    const steps = [
+      workStep('s1', 'file-read', 'completed', 'read_file'),
+      workStep('s2', 'file-read', 'completed', 'read_file'),
+      workStep('s3', 'tool', 'running', 'ask_user_question'),
+    ];
+    expect(generateSummary(steps, t, locale, false)).toBe(t.userQuestion.waitingForAnswer);
+  });
+
   it('names a running skill by its kind, apart from the row that names the skill', () => {
     const steps = [workStep('s1', 'skill', 'running', 'use_skill')];
     expect(generateSummary(steps, t, locale, true)).toBe(t.task.nowUsingSkill);

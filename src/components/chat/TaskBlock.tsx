@@ -158,9 +158,14 @@ export function generateSummary(
 ): string {
   if (isStopped) return t.task.stopped;
   // The header names the kind of work; the rows below name the specifics, so
-  // the two never read the same. A live block is titled by what is happening
-  // now; a settled block by the kinds of work it did, counted.
-  if (isActive) return currentActivityLabel(steps, t);
+  // the two never read the same. A block waiting on the user's answer is named
+  // by that wait whether or not it is live (MessageGroup drops the live signal,
+  // and with it the spinner, while only the question runs). Otherwise a live
+  // block is titled by what is happening now; a settled block by the kinds of
+  // work it did, counted.
+  const running = [...steps].reverse().find((s) => s.status === 'running');
+  if (running?.toolName === TOOL_NAMES.ASK_USER_QUESTION) return t.userQuestion.waitingForAnswer;
+  if (isActive) return currentActivityLabel(running, t);
 
   const separator = locale.startsWith('zh') ? '，' : ', ';
   const counts = { skill: 0, presented: 0, create: 0, modify: 0, read: 0, command: 0, other: 0 };
@@ -214,10 +219,8 @@ export function generateSummary(
 // thinking between steps. The thinking label keeps the words of the placeholder
 // dots row the header replaces mid-stream (the active header strips its
 // trailing …/... before its animated dots).
-function currentActivityLabel(steps: UnifiedStep[], t: TranslationDict): string {
-  const running = [...steps].reverse().find((s) => s.status === 'running');
+function currentActivityLabel(running: UnifiedStep | undefined, t: TranslationDict): string {
   if (!running || running.type === 'thinking') return t.chat.thinking;
-  if (running.toolName === TOOL_NAMES.ASK_USER_QUESTION) return t.userQuestion.waitingForAnswer;
   if (running.toolName === TOOL_NAMES.PRESENT_FILES) return t.task.nowPresentingFiles;
   switch (running.type) {
     case 'file-read':
