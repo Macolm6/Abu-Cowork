@@ -43,6 +43,12 @@ function shortCommand(command: string): string {
   return command.length > 20 ? command.slice(0, 20) + '...' : command;
 }
 
+/** A web address without its scheme, cut to 40 characters. */
+export function shortUrl(url: string): string {
+  const chars = Array.from(url.replace(/^[a-z][a-z0-9+.-]*:\/\//, ''));
+  return chars.length > 40 ? chars.slice(0, 40).join('') + '…' : chars.join('');
+}
+
 function dictionary(isZh: boolean): TranslationDict {
   return isZh ? zhCN : enUS;
 }
@@ -177,6 +183,15 @@ export function getToolLabel(
         label: isZh ? (shortQuery ? `网页搜索 "${shortQuery}"` : '网页搜索') : (shortQuery ? `Web search "${shortQuery}"` : 'Web search'),
         detail: query,
       };
+    }
+
+    case TOOL_NAMES.HTTP_FETCH: {
+      const url = toolInput.url;
+      const template = dictionary(isZh).task.fetchPage;
+      if (typeof url === 'string') {
+        return { label: format(template, { url: shortUrl(url) }), detail: url };
+      }
+      return { label: format(template, { url: '' }).trim() };
     }
 
     case TOOL_NAMES.USE_SKILL: {

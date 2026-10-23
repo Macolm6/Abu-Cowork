@@ -135,6 +135,9 @@ const sampleToolExecutionMetadata = {
     deleted: 1,
     hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b'] }],
   },
+  commandOutcome: { exitCode: 1, stdout: [8, 20] as [number, number], stderr: [30, 41] as [number, number] },
+  fileReadOutcome: { kind: 'text' as const, startLine: 200, lineCount: 100, totalLines: 1500, bodyStart: 60 },
+  httpFetchOutcome: { status: 404, statusText: 'Not Found', body: [20, 90] as [number, number], truncated: false },
 };
 
 const sampleExecutionStep = {
