@@ -179,6 +179,7 @@ import {
   scopeSubagentLoopProgress,
   scopeSubagentProgressEvent,
 } from './subagentProgressIdentity';
+import { forgetFileReads } from '../tools/fileReadRecords';
 import { disposeRunBrowserViews } from '../browser/browserViewLifecycle';
 import { startBrowserRun } from '../browser/browserRunLifecycle';
 import { releaseRunBrowserTabClaims } from '../browser/bridgeTabClaims';
@@ -934,8 +935,14 @@ async function runLocalSubagentLoop(options: SubagentLoopOptions): Promise<Subag
     // Same seal, the other browser channel: the extension drives the user's
     // own Chrome, so this run's claim on a real page has to end here too.
     releaseRunBrowserTabClaims(options.parentConversationId, options.agentRunId);
+    forgetRunFileReads(options.parentConversationId, options.agentRunId);
     await browserCleanup;
   }
+}
+
+/** A finished run reads nothing more, so its read records go with it. */
+function forgetRunFileReads(conversationId: string | undefined, runId: string | undefined): void {
+  if (conversationId && runId) forgetFileReads(conversationId, runId);
 }
 
 async function runSubagentForSignal(options: SubagentLoopOptions): Promise<SubagentResult> {
@@ -1183,6 +1190,7 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
       if (options.authorizationScopeId !== undefined) await session.resourceSettlement.settlement;
     } finally {
       sessions.delete(runId);
+      forgetRunFileReads(options.parentConversationId, runId);
       unregisterRunResourceSettlement(runId, session.resourceSettlement);
       if (graceTimer) clearTimeout(graceTimer);
       signal?.removeEventListener('abort', onAbort);

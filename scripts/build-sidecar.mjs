@@ -220,6 +220,10 @@ export const SHIM_TARGETS = [
   // real store writes) run — see each shim's own doc.
   { real: path.resolve(srcDir, 'core/agent/defaultWorkspace.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/defaultWorkspaceRun.ts') },
   { real: path.resolve(srcDir, 'utils/aiEditSnapshots.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/aiEditSnapshotsRun.ts') },
+  // The records of what each agent has read live in the shell, which sees
+  // every file tool call; the locally-executed file tools forward each record
+  // and lookup there with an awaited REQUEST — see fileReadRecordsRun.ts.
+  { real: path.resolve(srcDir, 'core/tools/fileReadRecords.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/fileReadRecordsRun.ts') },
   // P1-3d-5 slice 2a/2b (docs/2026-07-21-phase1-p3d-tool-migration-design.md)
   // — `commandTools.ts` (`run_command`) shims. LIVE since slice 2b registered
   // `run_command` in `localTools/index.ts` (`SIDE_EFFECTING_LOCAL_TOOLS`):

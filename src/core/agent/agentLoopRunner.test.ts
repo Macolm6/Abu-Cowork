@@ -14,6 +14,7 @@ import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vite
 // NOT mocked: the real derivation, used to drive `isInteractiveDesktop` in the
 // run-initiator staging tests below.
 import { deriveRunInteractionMode } from './runInteractionMode';
+import type { ToolExecutionContext } from '../../types';
 
 // ── Mocked dependencies ─────────────────────────────────────────────────
 
@@ -817,10 +818,11 @@ describe('agentLoopRunner', () => {
       // shared hookBridge) and 7 requests (native.invoke/tool.list/
       // approval.check — P1-3d-3 — /
       // snapshot.beforeAiEdit — P1-3d A-write — /
+      // fileReads.record / fileReads.get /
       // workspace.authorizedWritablePaths — P1-3d-5 slice 2a — /
       // tool.invoke via the router / hook.emit via the shared hookBridge).
       expect(onSidecarNotification).toHaveBeenCalledTimes(12);
-      expect(onSidecarRequest).toHaveBeenCalledTimes(8);
+      expect(onSidecarRequest).toHaveBeenCalledTimes(10);
       expect(onSidecarConnectionState).toHaveBeenCalledTimes(1);
 
       const notifiedMethods = onSidecarNotification.mock.calls.map((c) => c[0]);
@@ -829,7 +831,7 @@ describe('agentLoopRunner', () => {
       );
       const requestedMethods = onSidecarRequest.mock.calls.map((c) => c[0]);
       expect(requestedMethods).toEqual(
-        expect.arrayContaining(['native.invoke', 'tool.list', 'approval.check', 'snapshot.beforeAiEdit', 'workspace.authorizedWritablePaths', 'tool.invoke', 'hook.emit']),
+        expect.arrayContaining(['native.invoke', 'tool.list', 'approval.check', 'snapshot.beforeAiEdit', 'fileReads.record', 'fileReads.get', 'workspace.authorizedWritablePaths', 'tool.invoke', 'hook.emit']),
       );
     });
 
@@ -3802,6 +3804,89 @@ describe('agentLoopRunner', () => {
 
       await expect(handler({ runId: 'no-such-run', path: '/w/plan.md' })).rejects.toThrow();
       expect(captureTurnFileBeforeMock).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── fileReads.record / fileReads.get ────────────────────────────────────
+  //
+  // The records of what each agent read live in this process. A main-loop
+  // read_file the sidecar executed itself records here through the shim
+  // (`fileReadRecordsRun.ts`); a write the sidecar hands back over tool.invoke
+  // (a PDF read, the reverse-path retry, apply_patch, host-owned file
+  // execution) must find that same record through the context this module
+  // builds for it.
+
+  describe('fileReads handlers', () => {
+    async function invokedContext(runId: string, wireContext: Record<string, unknown>): Promise<ToolExecutionContext> {
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+      await handler({ runId, toolName: 'write_file', input: { path: '/w/a.txt', content: 'x' }, context: wireContext });
+      return executeAnyToolMock.mock.calls.at(-1)?.[4] as ToolExecutionContext;
+    }
+
+    it('lets a write handed back over tool.invoke find what the sidecar-executed read recorded', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      const { recordedFileVersion } = await import('../tools/fileReadRecords');
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+
+      await handlerFor(onSidecarRequest, 'fileReads.record')({ runId: 'run-1', path: '/w/a.txt', version: 'abc' });
+
+      expect(await recordedFileVersion('/w/a.txt', await invokedContext('run-1', {}))).toBe('abc');
+      expect(await handlerFor(onSidecarRequest, 'fileReads.get')({ runId: 'run-1', path: '/w/a.txt' }))
+        .toEqual({ recorded: true, version: 'abc' });
+    });
+
+    it('keeps a nested subagent\'s reads apart from the conversation agent\'s on both paths', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      const { recordedFileVersion } = await import('../tools/fileReadRecords');
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+
+      await handlerFor(onSidecarRequest, 'fileReads.record')({ runId: 'run-1', agentRunId: 'sar-n', path: '/w/a.txt', version: 'nested' });
+
+      const nested = await invokedContext('run-1', { agentRunId: 'sar-n' });
+      expect(nested.agentRunId).toBeUndefined();
+      expect(await recordedFileVersion('/w/a.txt', nested)).toBe('nested');
+      expect(await recordedFileVersion('/w/a.txt', await invokedContext('run-1', {}))).toBeUndefined();
+    });
+
+    it('records an absent file and reports a path never read as not recorded', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+      const get = handlerFor(onSidecarRequest, 'fileReads.get');
+
+      await handlerFor(onSidecarRequest, 'fileReads.record')({ runId: 'run-1', path: '/w/gone.txt', version: null });
+
+      expect(await get({ runId: 'run-1', path: '/w/gone.txt' })).toEqual({ recorded: true, version: null });
+      expect(await get({ runId: 'run-1', path: '/w/never.txt' })).toEqual({ recorded: false });
+    });
+
+    it('records under the session\'s conversation, not one the request names', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      const { recordedFileVersion } = await import('../tools/fileReadRecords');
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+
+      await handlerFor(onSidecarRequest, 'fileReads.record')({ runId: 'run-1', conversationId: 'conv-other', path: '/w/a.txt', version: 'abc' });
+
+      expect(await recordedFileVersion('/w/a.txt', { conversationId: 'conv-1' })).toBe('abc');
+      expect(await recordedFileVersion('/w/a.txt', { conversationId: 'conv-other' })).toBeUndefined();
+    });
+
+    it('refuses an unknown run and malformed params', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+      const record = handlerFor(onSidecarRequest, 'fileReads.record');
+      const get = handlerFor(onSidecarRequest, 'fileReads.get');
+
+      await expect(record({ runId: 'no-such-run', path: '/w/a.txt', version: 'abc' })).rejects.toThrow();
+      await expect(get({ runId: 'no-such-run', path: '/w/a.txt' })).rejects.toThrow();
+      await expect(record({ runId: 'run-1', path: '/w/a.txt', version: 42 })).rejects.toThrow();
+      await expect(record({ runId: 'run-1', path: '/w/a.txt' })).rejects.toThrow();
+      await expect(get({ runId: 'run-1', path: '/w/a.txt', agentRunId: 7 })).rejects.toThrow();
+      await expect(get(null)).rejects.toThrow();
     });
   });
 

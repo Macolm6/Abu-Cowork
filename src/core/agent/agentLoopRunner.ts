@@ -181,6 +181,7 @@ import { AgentLoopDispatchError, wrapAgentLoopDispatchError } from './agentLoopD
 import { isPayloadTooLargeError } from '../ipc/payloadTooLarge';
 import { paramsBuildDisplayMessage } from './paramsBuildFailure';
 import { waitForConversationStarts } from './conversationStartHold';
+import { recordFileVersion, recordedFileVersion, type FileVersion } from '../tools/fileReadRecords';
 import {
   isInProcessAgentEnvironment,
   waitForSidecarVenue,
@@ -1704,6 +1705,7 @@ function contextForSession(
     // `main` puts them back where the conversation delete cascade reaps them
     // and the parent can see them.
     agentRunId: undefined,
+    fileReadRunId: typeof incoming?.agentRunId === 'string' ? incoming.agentRunId : undefined,
     agentName: session.options.directDelegateAgentName,
     teamApprovalDispatch: undefined,
     ...(Object.prototype.hasOwnProperty.call(session.options, 'workspacePathSnapshot')
@@ -2142,6 +2144,49 @@ async function handleSnapshotBeforeAiEdit(rawParams: unknown): Promise<null> {
 }
 
 /**
+ * Who a sidecar-executed file tool reads for: the run's conversation, and the
+ * nested subagent run named by the call's own context, if any (see
+ * `ToolExecutionContext.fileReadRunId`). The sidecar twin is
+ * `sidecar/src/shims/fileReadRecordsRun.ts`.
+ */
+function fileReaderForRequest(method: string, params: { runId?: unknown; agentRunId?: unknown; path?: unknown } | null): {
+  path: string;
+  reader: Pick<ToolExecutionContext, 'conversationId' | 'fileReadRunId'>;
+} {
+  if (!params || typeof params.runId !== 'string' || typeof params.path !== 'string'
+    || (params.agentRunId !== undefined && typeof params.agentRunId !== 'string')) {
+    throw new SidecarRequestError(-32602, `Invalid ${method} params: runId and path must be strings`);
+  }
+  const session = sessions.get(params.runId);
+  if (!session) {
+    throw new SidecarRequestError(-32000, `Unknown agent-loop runId: ${params.runId}`);
+  }
+  return {
+    path: params.path,
+    reader: { conversationId: session.conversationId, fileReadRunId: params.agentRunId },
+  };
+}
+
+/** `fileReads.record` (REQUEST) → {runId, agentRunId?, path, version} → records what a sidecar-executed file tool saw. */
+async function handleFileReadsRecord(rawParams: unknown): Promise<null> {
+  const params = rawParams as { runId?: unknown; agentRunId?: unknown; path?: unknown; version?: unknown } | null;
+  const { path, reader } = fileReaderForRequest('fileReads.record', params);
+  const version = params?.version;
+  if (version !== null && typeof version !== 'string') {
+    throw new SidecarRequestError(-32602, 'Invalid fileReads.record params: version must be a string or null');
+  }
+  await recordFileVersion(path, version, reader);
+  return null;
+}
+
+/** `fileReads.get` (REQUEST) → {runId, agentRunId?, path} → the version recorded for that reader, for write_file's check. */
+async function handleFileReadsGet(rawParams: unknown): Promise<{ recorded: false } | { recorded: true; version: FileVersion }> {
+  const { path, reader } = fileReaderForRequest('fileReads.get', rawParams as { runId?: unknown; path?: unknown } | null);
+  const version = await recordedFileVersion(path, reader);
+  return version === undefined ? { recorded: false } : { recorded: true, version };
+}
+
+/**
  * `skillHooks.clearAll` (legacy wire name, NOTIFICATION) → {runId} → clear
  * hooks owned by that exact run loop. Closes a P1-3B-3A escalation
  * (`sidecar/src/shims/builtinsRun.ts`'s doc comment / P1-3B-3A-REPORT.md
@@ -2239,6 +2284,8 @@ export function ensureHandlersRegistered(): void {
   onSidecarRequest('tool.list', handleToolList);
   onSidecarRequest('approval.check', handleApprovalCheck);
   onSidecarRequest('snapshot.beforeAiEdit', handleSnapshotBeforeAiEdit);
+  onSidecarRequest('fileReads.record', handleFileReadsRecord);
+  onSidecarRequest('fileReads.get', handleFileReadsGet);
   onSidecarRequest('workspace.authorizedWritablePaths', handleWorkspaceAuthorizedPaths);
 }
 

@@ -1853,6 +1853,46 @@ describe('subagentRunner', () => {
     });
   });
 
+  // A finished run reads nothing more: its records of what it read go with it,
+  // while the conversation agent's stay.
+  describe('per-run file read records', () => {
+    it('drops a sidecar run\'s records when it settles', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const { runSubagent } = await importFresh();
+      const records = await import('../tools/fileReadRecords');
+      let runId = '';
+      sidecarRequestMock.mockImplementation(async (_method: string, params: { runId: string }) => {
+        runId = params.runId;
+        await records.recordFileVersion('/w/a.txt', 'run', { conversationId: 'conv-1', agentRunId: runId });
+        return { text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' };
+      });
+      await records.recordFileVersion('/w/a.txt', 'main', { conversationId: 'conv-1' });
+
+      await runSubagent({ agent, task: 'edit', parentConversationId: 'conv-1' });
+
+      expect(runId).toMatch(/^sar-/);
+      expect(await records.recordedFileVersion('/w/a.txt', { conversationId: 'conv-1', agentRunId: runId })).toBeUndefined();
+      expect(await records.recordedFileVersion('/w/a.txt', { conversationId: 'conv-1' })).toBe('main');
+    });
+
+    it('drops an in-process run\'s records when it returns', async () => {
+      getSidecarStatus.mockReturnValue('stopped');
+      const { runSubagent } = await importFresh();
+      const records = await import('../tools/fileReadRecords');
+      let runId = '';
+      runSubagentLoopMock.mockImplementationOnce(async (options: { agentRunId: string }) => {
+        runId = options.agentRunId;
+        await records.recordFileVersion('/w/a.txt', 'run', { conversationId: 'conv-1', agentRunId: runId });
+        return { text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 };
+      });
+
+      await runSubagent({ agent, task: 'edit', parentConversationId: 'conv-1' });
+
+      expect(runId).toMatch(/^sar-/);
+      expect(await records.recordedFileVersion('/w/a.txt', { conversationId: 'conv-1', agentRunId: runId })).toBeUndefined();
+    });
+  });
+
   // A2 — a finished run's browser tabs are visible to nobody else, so nothing
   // but the run's own settlement can ever release them. The seal is the point
   // after which the run can no longer start another tool.

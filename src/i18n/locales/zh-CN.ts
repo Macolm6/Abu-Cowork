@@ -4233,6 +4233,7 @@ const zhCN: TranslationDict = {
       docCheckOpenSaved: '{name} 正开在 {app} 里（没有未保存的修改）。{app} 仍然锁着这个文件，直接写入会失败。告诉用户，并问是要他们关掉它、还是改在 {app} 窗口里做。',
       docCheckSameNameElsewhere: '{app} 里开着一个同名文件 {name}，但它的路径是 {otherPath}，和你要写的不是同一个文件。本次写入不受影响。',
       errFileLocked: 'Error: {path} 正在被其他专家编辑，请稍后重试。',
+      errWriteNeedsRead: 'Error: 没有写入 {path}。这份文件已经存在，你还没有读取过它，或者读取之后它又被改过。先用 read_file 读取它的当前内容，再用 write_file 写入。',
       movedToTrash: '已移入废纸篓（一般可恢复）：{path}',
       trashFailed: 'Error: 移入废纸篓失败：{error}（未删除，也未永久删除）',
       deleteRefusedCatastrophic: 'Error: 拒绝将 {path} 移入废纸篓 —— 不允许删除文件系统根目录或用户主目录。',
