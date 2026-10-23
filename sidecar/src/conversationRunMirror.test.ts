@@ -236,6 +236,37 @@ describe('conversationRunMirror', () => {
       expect(toolCalls?.[1].backgroundCommand).toEqual(backgroundCommand);
     });
 
+    it('keeps the three outcome records on both chat delta writes', () => {
+      const conv = makeConversation({
+        messages: [makeMessage({
+          id: 'm1',
+          toolCalls: [
+            { id: 'tc1', name: 'run_command', input: { command: 'npm test' }, isExecuting: true },
+            { id: 'tc2', name: 'read_file', input: { path: '/w/a.ts' }, isExecuting: true },
+          ],
+        })],
+      });
+      const mirror = createConversationRunMirror('conv-1', { conversation: conv });
+      const commandOutcome = { exitCode: 1, stdout: [8, 20] as [number, number], stderr: [30, 41] as [number, number] };
+      const fileReadOutcome = { kind: 'text' as const, startLine: 200, lineCount: 100, totalLines: 1500, bodyStart: 60 };
+      const httpFetchOutcome = { status: 404, statusText: 'Not Found', body: [20, 90] as [number, number], truncated: false };
+
+      mirror.applyChatDeltaWrite('updateToolCall', [
+        'conv-1', 'm1', 'tc1', 'Exit code: 1', undefined, false, undefined, { commandOutcome, fileReadOutcome, httpFetchOutcome },
+      ]);
+      mirror.applyChatDeltaWrite('checkpointToolCallMetadata', [
+        'conv-1', 'm1', 'tc2', { commandOutcome, fileReadOutcome, httpFetchOutcome },
+      ]);
+
+      const toolCalls = mirror.reader.getConversation('conv-1')?.messages[0].toolCalls;
+      for (const tc of toolCalls ?? []) {
+        expect(tc.commandOutcome).toEqual(commandOutcome);
+        expect(tc.fileReadOutcome).toEqual(fileReadOutcome);
+        expect(tc.httpFetchOutcome).toEqual(httpFetchOutcome);
+      }
+      expect(toolCalls).toHaveLength(2);
+    });
+
     it('accepts trusted recovery metadata only for run_command', () => {
       const conv = makeConversation({
         messages: [makeMessage({

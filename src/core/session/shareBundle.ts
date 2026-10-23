@@ -122,15 +122,22 @@ export async function buildShareBundle(
       && !isMaxTurnsNoticeMessage(m),
   );
   const cleanedMessages: Message[] = [];
+  // The router puts a step's whole text on the turn's last assistant message, which can be a later one than its call.
+  const redactedContextIds = new Set<string>();
   let done = 0;
   for (const src of visible) {
     if (opts.signal?.aborted) throw new DOMException('share bundle build aborted', 'AbortError');
     const cleaned = await prepareMessage(src, conv.id, snapshotByPath, tier, (r) => {
       redactionCount += r.count;
       redactionSamples.push(...r.samples);
-    });
+    }, redactedContextIds);
     cleanedMessages.push(cleaned);
     opts.onProgress?.(++done, visible.length);
+  }
+  for (const message of cleanedMessages) {
+    for (const tc of message.toolCalls ?? []) {
+      if (redactedContextIds.has(tc.id)) dropOutcomeRecords(tc);
+    }
   }
 
   const references = await collectExportedReferences(visible, conv.workspacePath);
@@ -193,6 +200,7 @@ async function prepareMessage(
   snapshotByPath: Map<string, SnapshotEntry>,
   tier: ShareTier,
   onRedaction: (r: { count: number; samples: RedactionSample[] }) => void,
+  redactedContextIds: Set<string>,
 ): Promise<Message> {
   // Deep clone first so we never mutate the caller's object graph.
   const clone: Message = JSON.parse(JSON.stringify(msg));
@@ -227,9 +235,12 @@ async function prepareMessage(
     clone.toolCalls = clone.toolCalls.map((tc) => redactToolCall(tc, onRedaction));
   }
   if (clone.toolCallsForContext && clone.toolCallsForContext.length > 0) {
-    const r = redactDeep(clone.toolCallsForContext, isMediaData);
-    onRedaction({ count: r.count, samples: r.samples });
-    clone.toolCallsForContext = r.value as typeof clone.toolCallsForContext;
+    clone.toolCallsForContext = clone.toolCallsForContext.map((context) => {
+      const r = redactDeep(context, isMediaData);
+      onRedaction({ count: r.count, samples: r.samples });
+      if (r.count > 0 && context.id) redactedContextIds.add(context.id);
+      return r.value as typeof context;
+    });
   }
   if (clone.thinking) {
     const r = redactText(clone.thinking);
@@ -355,6 +366,18 @@ async function prepareImageBlock(
   };
 }
 
+/**
+ * The records hold positions into the result text, so they are kept only while
+ * that text is unchanged: the stored result and the whole text in
+ * toolCallsForContext, which the views read and which is the only full copy of
+ * a result over the offload threshold.
+ */
+function dropOutcomeRecords(tc: ToolCall): void {
+  delete tc.commandOutcome;
+  delete tc.fileReadOutcome;
+  delete tc.httpFetchOutcome;
+}
+
 function redactToolCall(
   tc: ToolCall,
   onRedaction: (r: { count: number; samples: RedactionSample[] }) => void,
@@ -369,6 +392,7 @@ function redactToolCall(
     const r = redactText(out.result);
     onRedaction(r);
     out.result = r.text;
+    if (r.count > 0) dropOutcomeRecords(out);
   } else if (out.result !== undefined) {
     const r = redactDeep(out.result, isMediaData);
     onRedaction({ count: r.count, samples: r.samples });

@@ -24,14 +24,15 @@ export function collectToolResultTexts(messages: readonly Message[]): Map<string
 /**
  * The whole text a detail block can show: undefined when the block keeps its
  * own view, null when only part of it is left and the rest is not in the
- * conversation.
+ * conversation. A step's tool view reads a list block as text too (`readsList`).
  */
 export function blockFullText(
   block: DetailBlock,
   step: { toolCallId?: string; status: string; toolResult?: string },
   toolResults: ReadonlyMap<string, string> | undefined,
+  readsList = false,
 ): string | null | undefined {
-  if (!toolResults || !FULL_TEXT_BLOCKS.has(block.type)) return undefined;
+  if (!toolResults || !(FULL_TEXT_BLOCKS.has(block.type) || (readsList && block.type === 'list'))) return undefined;
   const stored = step.toolCallId ? toolResults.get(step.toolCallId) : undefined;
   if (stored !== undefined) {
     return step.status === 'error' && stored.startsWith(STEP_ERROR_PREFIX) ? stored.slice(STEP_ERROR_PREFIX.length) : stored;

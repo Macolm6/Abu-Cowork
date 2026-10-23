@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { toolRegistry, FILE_TOOL_PATH_MAP } from './registry';
+import { toolRegistry, FILE_TOOL_PATH_MAP, executeAnyTool } from './registry';
 import { FILE_TOOL_NAMES } from './osPermissionGuide';
-import type { ToolDefinition } from '../../types';
+import type { ToolDefinition, ToolExecutionContext } from '../../types';
 
 // Test tool with required params
 const testTool: ToolDefinition = {
@@ -136,6 +136,26 @@ describe('ToolRegistry', () => {
   describe('FILE_TOOL_NAMES ↔ FILE_TOOL_PATH_MAP sync', () => {
     it('the OS-guide file-tool set matches the path-map keys exactly', () => {
       expect([...FILE_TOOL_NAMES].sort()).toEqual(Object.keys(FILE_TOOL_PATH_MAP).sort());
+    });
+  });
+
+  describe('executeAnyTool', () => {
+    it('hands the context usage to the tool', async () => {
+      const contexts: Array<ToolExecutionContext | undefined> = [];
+      toolRegistry.register({
+        ...noRequiredTool,
+        execute: async (_input, context) => {
+          contexts.push(context);
+          return 'info result';
+        },
+      });
+
+      await executeAnyTool('test_info', {}, undefined, undefined, { conversationId: 'c1' }, 72);
+      await executeAnyTool('test_info', {}, undefined, undefined, { conversationId: 'c1' });
+
+      expect(contexts).toHaveLength(2);
+      expect(contexts[0]?.contextUsagePercent).toBe(72);
+      expect(contexts[1]).not.toHaveProperty('contextUsagePercent');
     });
   });
 });
