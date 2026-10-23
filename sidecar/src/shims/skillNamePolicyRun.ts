@@ -4,9 +4,12 @@
  * A BUNDLE-GRAPH shim: the real module's default reads the organization's
  * policy through `getCurrentPolicy()`, which reaches the enterprise store —
  * never allowed in this bundle. `skill/loader.ts` is here only because
- * `agentLoop.ts` imports it; the sidecar's loader is never populated (skills
- * are resolved in the shell: `use_skill` runs there, and a subagent's
- * preloaded skills arrive as rendered text — `subagentHost.ts`).
+ * `subagentLoop.ts` imports `prompts/preloadedSkills.ts`, which imports it;
+ * the sidecar's loader is never populated. Skills are resolved in the shell:
+ * `use_skill` runs there and returns the instructions in its tool result,
+ * skills active at run start arrive as a rendered system-prompt section with
+ * their tool facts (`activeSkillInfoSnapshot`, `state.convPatch`), and a
+ * subagent's preloaded skills arrive as rendered text — `subagentHost.ts`.
  *
  * The default therefore refuses every name. Today that changes nothing (there
  * is nothing to refuse). If the sidecar ever starts discovering skills without

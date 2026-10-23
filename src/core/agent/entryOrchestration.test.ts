@@ -10,6 +10,8 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { RouteResult } from './orchestrator';
+import type { Conversation } from '@/types';
+import { useChatStore } from '@/stores/chatStore';
 
 const routeInputMock = vi.fn();
 const buildSystemPromptSectionsMock = vi.fn().mockResolvedValue([]);
@@ -19,8 +21,13 @@ vi.mock('./orchestrator', () => ({
 }));
 
 const refreshSkillMock = vi.fn().mockResolvedValue(undefined);
+const getSkillMock = vi.fn();
 vi.mock('../skill/loader', () => ({
-  skillLoader: { refreshSkill: (...a: unknown[]) => refreshSkillMock(...a) },
+  skillLoader: {
+    refreshSkill: (...a: unknown[]) => refreshSkillMock(...a),
+    getSkill: (...a: unknown[]) => getSkillMock(...a),
+    listSupportingFiles: async () => [],
+  },
 }));
 
 const resolvePreloadedSkillsMock = vi.fn().mockResolvedValue(null);
@@ -116,5 +123,59 @@ describe('precomputeOrchestration', () => {
     await precomputeOrchestration('conv-1', 'hi', undefined, { settingsForModel });
 
     expect(buildSystemPromptSectionsMock.mock.calls.at(-1)?.[5]).toMatchObject({ computerUseTier: 'structured' });
+  });
+
+  describe('skills already active when the run starts', () => {
+    const baseSection = { name: 'base', text: 'base prompt', cacheable: true };
+
+    beforeEach(() => {
+      routeInputMock.mockReturnValue({ type: 'general', cleanInput: 'hi' });
+      buildSystemPromptSectionsMock.mockResolvedValue([baseSection]);
+      getSkillMock.mockReset();
+      useChatStore.setState({ conversations: {} });
+    });
+
+    function seedConversation(overrides: Partial<Conversation>): void {
+      useChatStore.setState({
+        conversations: {
+          'conv-1': { id: 'conv-1', title: 't', messages: [], createdAt: 0, updatedAt: 0, status: 'idle', ...overrides },
+        },
+      });
+    }
+
+    it('appends their instructions, with arguments, as a system prompt section', async () => {
+      seedConversation({ activeSkills: ['weekly-report'], activeSkillArgs: { 'weekly-report': 'for the sales team' } });
+      getSkillMock.mockImplementation((name: string) => (name === 'weekly-report'
+        ? { name, description: 'd', content: 'Write the weekly report.', filePath: '/s/weekly-report/SKILL.md', skillDir: '/s/weekly-report' }
+        : undefined));
+
+      const { systemPromptSections } = await precomputeOrchestration('conv-1', 'hi', undefined, { settingsForModel });
+
+      expect(systemPromptSections).toEqual([
+        baseSection,
+        {
+          name: 'active-skills',
+          cacheable: true,
+          text: '## Active Skill Instructions\n### weekly-report\nWrite the weekly report.\nARGUMENTS: for the sales team',
+        },
+      ]);
+    });
+
+    it('adds no section for a skill the index refuses', async () => {
+      seedConversation({ activeSkills: ['blocked-by-policy'] });
+      getSkillMock.mockReturnValue(undefined);
+
+      const { systemPromptSections } = await precomputeOrchestration('conv-1', 'hi', undefined, { settingsForModel });
+
+      expect(systemPromptSections).toEqual([baseSection]);
+    });
+
+    it('adds no section when no skill is active', async () => {
+      seedConversation({});
+
+      const { systemPromptSections } = await precomputeOrchestration('conv-1', 'hi', undefined, { settingsForModel });
+
+      expect(systemPromptSections).toEqual([baseSection]);
+    });
   });
 });

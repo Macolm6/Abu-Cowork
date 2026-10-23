@@ -43,6 +43,7 @@ describe('history_unavailable wire contract — sidecar', () => {
       options: { prePersistedUserMessageId: 'msg-contract-run' },
       orchestration: { route: { type: 'chat', cleanInput: 'hello' }, systemPromptSections: [] },
       conversationSnapshot: { id: 'conv-contract', title: 'T', messages: [], createdAt: 0, updatedAt: 0, status: 'idle' },
+      activeSkillInfoSnapshot: [],
       settingsSnapshot: { activeModel: { providerId: 'p', modelId: 'm' } },
       resolvedCreds: { apiKey: 'sk-test', baseUrl: undefined, forceOpenAiCompatible: false },
       toolList: [],
