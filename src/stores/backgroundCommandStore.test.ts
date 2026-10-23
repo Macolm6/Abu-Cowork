@@ -126,6 +126,19 @@ describe('backgroundCommandStore', () => {
       stop();
     });
 
+    it('keeps the rows it held when the read after a change fails', async () => {
+      useBackgroundCommandStore.setState({ rows: { c7: [row('bg-0000000a')] } });
+      const { stop, emitChanged } = await startSync();
+      invokeMock.mockRejectedValueOnce(new Error('host unavailable'));
+
+      emitChanged('c7');
+
+      await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(1));
+      await Promise.resolve();
+      expect(useBackgroundCommandStore.getState().rows).toEqual({ c7: [row('bg-0000000a')] });
+      stop();
+    });
+
     it('stops reading once unsubscribed', async () => {
       const { stop, emitChanged, unlisten } = await startSync();
 
