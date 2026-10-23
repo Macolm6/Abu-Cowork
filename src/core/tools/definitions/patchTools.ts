@@ -21,7 +21,8 @@ import { computeFileChange, diffTexts } from '@/core/files/fileChange';
 import { bindWorkspaceFromWrite } from '../../agent/defaultWorkspace';
 import { getI18n, format } from '../../../i18n';
 import { TOOL_NAMES } from '../toolNames';
-import { acquireFileLock, fileBusyMessage, releaseFileLock } from './fileTools';
+import { acquireFileLock, fileBusyMessage, releaseFileLock, writtenVersionOf } from './fileTools';
+import { recordFileVersion } from '../fileReadRecords';
 
 /** One file section of a parsed patch, with its paths as the model wrote them. */
 export type PatchOperation = FileOp;
@@ -227,27 +228,34 @@ export const applyPatchTool: ToolDefinition = {
       }
 
       // Phase 2: write. Each file is captured for the turn's change record and
-      // the version history first, as edit_file and delete_file do.
+      // the version history first, as edit_file and delete_file do. What each
+      // section leaves on disk is what this agent has now seen of that path
+      // (fileReadRecords.ts).
       const snapshotOpts = { loopId: context?.loopId, conversationId: context?.conversationId, files };
       for (const write of writes) {
         switch (write.kind) {
           case 'update':
             await snapshotBeforeAiEdit(write.path, { ...snapshotOpts, knownContent: write.before });
             await writeText(write.path, write.after, files);
+            await recordFileVersion(write.path, await writtenVersionOf(write.after), context);
             break;
           case 'add':
             await snapshotBeforeAiEdit(write.path, snapshotOpts);
             await writeText(write.path, write.after, files);
+            await recordFileVersion(write.path, await writtenVersionOf(write.after), context);
             break;
           case 'delete':
             await captureTurnFileBefore(write.path, context?.loopId, files);
             await trash(write.path, files);
+            await recordFileVersion(write.path, null, context);
             break;
           case 'move':
             await snapshotBeforeAiEdit(write.to, snapshotOpts);
             await writeText(write.to, write.after, files);
+            await recordFileVersion(write.to, await writtenVersionOf(write.after), context);
             await captureTurnFileBefore(write.from, context?.loopId, files);
             await trash(write.from, files);
+            await recordFileVersion(write.from, null, context);
             break;
         }
       }

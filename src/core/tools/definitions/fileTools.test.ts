@@ -7,6 +7,14 @@ import { toolRegistry } from '../registry';
 import { platform } from '@tauri-apps/plugin-os';
 import { initPlatform } from '../../../utils/platform';
 import { TOOL_NAMES } from '../toolNames';
+import { recordFileVersion } from '../fileReadRecords';
+import { sha256Hex } from '@/core/session/turnUndoRecord';
+import type { ToolExecutionContext } from '@/types';
+
+/** What a read_file of `path` leaves recorded: plugin-fs readFile answers empty bytes here. */
+async function markRead(path: string, context: ToolExecutionContext): Promise<void> {
+  await recordFileVersion(path, await sha256Hex(new Uint8Array()), context);
+}
 
 const snapshotBeforeAiEditMock = vi.fn().mockResolvedValue(undefined);
 const captureTurnFileBeforeMock = vi.fn().mockResolvedValue(undefined);
@@ -55,6 +63,11 @@ afterEach(() => {
 describe('readFileTool — PDF shell injection regression', () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
+    vi.mocked(exists).mockResolvedValue(true);
+  });
+
+  afterEach(() => {
+    vi.mocked(exists).mockResolvedValue(false);
   });
 
   it('pdftotext strategy: dispatches run_argv_command with filePath as a raw argv element', async () => {
@@ -186,6 +199,11 @@ describe('readFileTool — PDF shell injection regression', () => {
 describe('readFileTool — non-vision model image gating', () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
+    vi.mocked(exists).mockResolvedValue(true);
+  });
+
+  afterEach(() => {
+    vi.mocked(exists).mockResolvedValue(false);
   });
 
   it('returns a text note (no image block) when supportsVision is false', async () => {
@@ -316,6 +334,7 @@ describe('write/edit — a file another program holds open', () => {
   afterEach(() => {
     vi.mocked(writeTextFile).mockReset();
     vi.mocked(writeTextFile).mockResolvedValue(undefined);
+    vi.mocked(exists).mockResolvedValue(false);
   });
 
   it('explains an EBUSY write instead of inviting a retry', async () => {
@@ -545,7 +564,7 @@ describe('AI edit pre-snapshot hook', () => {
   beforeEach(() => {
     vi.mocked(writeTextFile).mockClear();
     vi.mocked(readTextFile).mockClear();
-    vi.mocked(exists).mockClear();
+    vi.mocked(exists).mockReset().mockResolvedValue(false);
     snapshotBeforeAiEditMock.mockClear();
     snapshotBeforeAiEditMock.mockResolvedValue(undefined);
     bindWorkspaceFromWriteMock.mockClear();
@@ -795,6 +814,10 @@ describe('the locked-file message points at the check, on Windows', () => {
     await initPlatform();
   });
 
+  beforeEach(() => {
+    vi.mocked(exists).mockReset().mockResolvedValue(false);
+  });
+
   it('names check_open_document so the model asks who holds the file', async () => {
     vi.mocked(platform).mockResolvedValue('windows');
     await initPlatform();
@@ -864,8 +887,10 @@ describe('file change reporting', () => {
       vi.mocked(exists).mockResolvedValue(true);
       vi.mocked(stat).mockResolvedValue({ isFile: true, size: 8 } as never);
       vi.mocked(readTextFile).mockResolvedValue('one\ntwo\n');
+      const context = { reportMetadata, conversationId: 'conv-report-diff' };
+      await markRead('/w/a.txt', context);
 
-      await writeFileTool.execute({ path: '/w/a.txt', content: 'one\n2\n' }, { reportMetadata });
+      await writeFileTool.execute({ path: '/w/a.txt', content: 'one\n2\n' }, context);
 
       expect(vi.mocked(readTextFile).mock.invocationCallOrder[0])
         .toBeLessThan(vi.mocked(writeTextFile).mock.invocationCallOrder[0]);
@@ -893,8 +918,10 @@ describe('file change reporting', () => {
     it('reports path and kind only when the existing file is over the size limit', async () => {
       vi.mocked(exists).mockResolvedValue(true);
       vi.mocked(stat).mockResolvedValue({ isFile: true, size: 2 * 1024 * 1024 + 1 } as never);
+      const context = { reportMetadata, conversationId: 'conv-report-big' };
+      await markRead('/w/big.log', context);
 
-      const result = await writeFileTool.execute({ path: '/w/big.log', content: 'x' }, { reportMetadata });
+      const result = await writeFileTool.execute({ path: '/w/big.log', content: 'x' }, context);
 
       expect(result).toContain('Successfully wrote');
       expect(readTextFile).not.toHaveBeenCalled();
@@ -904,8 +931,10 @@ describe('file change reporting', () => {
     it('fails the write when the existing text cannot be read', async () => {
       vi.mocked(exists).mockResolvedValue(true);
       vi.mocked(readTextFile).mockRejectedValue(new Error('EACCES: permission denied'));
+      const context = { reportMetadata, conversationId: 'conv-report-unreadable' };
+      await markRead('/w/a.txt', context);
 
-      const result = await writeFileTool.execute({ path: '/w/a.txt', content: 'x' }, { reportMetadata });
+      const result = await writeFileTool.execute({ path: '/w/a.txt', content: 'x' }, context);
 
       expect(result).toContain('Error writing file');
       expect(result).toContain('EACCES');
@@ -926,8 +955,10 @@ describe('file change reporting', () => {
     it('reports path and kind only for an existing path that is no regular file', async () => {
       vi.mocked(exists).mockResolvedValue(true);
       vi.mocked(stat).mockResolvedValue({ isFile: false, size: 0 } as never);
+      const context = { reportMetadata, conversationId: 'conv-report-special' };
+      await markRead('/w/a.txt', context);
 
-      await writeFileTool.execute({ path: '/w/a.txt', content: 'x' }, { reportMetadata });
+      await writeFileTool.execute({ path: '/w/a.txt', content: 'x' }, context);
 
       expect(readTextFile).not.toHaveBeenCalled();
       expect(reportMetadata).toHaveBeenCalledWith({ fileChange: { path: '/w/a.txt', kind: 'modify' } });
@@ -1088,9 +1119,13 @@ describe('file read outcome record', () => {
   beforeEach(() => {
     reportMetadata.mockReset();
     setDiskDefaults();
+    vi.mocked(exists).mockReset().mockResolvedValue(true);
   });
 
-  afterEach(setDiskDefaults);
+  afterEach(() => {
+    setDiskDefaults();
+    vi.mocked(exists).mockReset().mockResolvedValue(false);
+  });
 
   it('records a whole text read from line one', async () => {
     vi.mocked(stat).mockResolvedValue({ isFile: true, size: 14 } as never);

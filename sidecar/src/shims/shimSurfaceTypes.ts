@@ -136,6 +136,8 @@ import type * as realDefaultWorkspaceRun from '@/core/agent/defaultWorkspace';
 import type * as shimDefaultWorkspaceRun from './defaultWorkspaceRun';
 import type * as realAiEditSnapshotsRun from '@/utils/aiEditSnapshots';
 import type * as shimAiEditSnapshotsRun from './aiEditSnapshotsRun';
+import type * as realFileReadRecordsRun from '@/core/tools/fileReadRecords';
+import type * as shimFileReadRecordsRun from './fileReadRecordsRun';
 import type * as realAuthorizedPathsReaderRun from '@/core/agent/ports/authorizedPathsReader';
 import type * as shimAuthorizedPathsReaderRun from './authorizedPathsReaderRun';
 import type * as realSandboxRecoveryRun from '@/core/sandbox/recovery';
@@ -303,6 +305,9 @@ export type DefaultWorkspaceRunReturns = NoDrift<ReturnDrift<typeof realDefaultW
 
 export type AiEditSnapshotsRunParams = NoDrift<ParamDrift<typeof realAiEditSnapshotsRun, typeof shimAiEditSnapshotsRun>>;
 export type AiEditSnapshotsRunReturns = NoDrift<ReturnDrift<typeof realAiEditSnapshotsRun, typeof shimAiEditSnapshotsRun>>;
+
+export type FileReadRecordsRunParams = NoDrift<ParamDrift<typeof realFileReadRecordsRun, typeof shimFileReadRecordsRun>>;
+export type FileReadRecordsRunReturns = NoDrift<ReturnDrift<typeof realFileReadRecordsRun, typeof shimFileReadRecordsRun>>;
 
 export type AuthorizedPathsReaderRunParams = NoDrift<ParamDrift<typeof realAuthorizedPathsReaderRun, typeof shimAuthorizedPathsReaderRun>>;
 export type AuthorizedPathsReaderRunReturns = NoDrift<ReturnDrift<typeof realAuthorizedPathsReaderRun, typeof shimAuthorizedPathsReaderRun>>;

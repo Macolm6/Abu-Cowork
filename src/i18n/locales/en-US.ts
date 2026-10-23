@@ -4234,6 +4234,7 @@ const enUS: TranslationDict = {
       docCheckOpenSaved: '{name} is open in {app} (nothing unsaved). {app} still holds a lock on the file, so writing it will fail. Tell the user and ask whether to have them close it or to make the change in the {app} window instead.',
       docCheckSameNameElsewhere: '{app} has a file called {name} open, but from {otherPath} — a different file from the one you are writing. This write is unaffected.',
       errFileLocked: 'Error: {path} is being edited by another expert — please retry later.',
+      errWriteNeedsRead: 'Error: {path} was not written. The file already exists, and you have not read it yet or it changed after you read it. Read its current content with read_file, then write it with write_file.',
       movedToTrash: 'Moved to Trash (usually recoverable): {path}',
       trashFailed: 'Error: could not move to Trash: {error} (nothing was deleted)',
       deleteRefusedCatastrophic: 'Error: refused to move {path} to Trash — deleting the filesystem root or home directory is not allowed.',
