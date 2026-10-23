@@ -231,6 +231,82 @@ describe('MessageBubble user run status', () => {
 
       expect(screen.queryByRole('status')).not.toBeInTheDocument();
     });
+
+    describe('in a team conversation', () => {
+      function makeModelUsable(): void {
+        useSettingsStore.setState((state) => ({
+          providers: state.providers.map((provider) =>
+            provider.id === state.activeModel.providerId
+              ? {
+                  ...provider,
+                  enabled: true,
+                  apiKey: 'test-key',
+                  models: [{ id: state.activeModel.modelId, label: state.activeModel.modelId }],
+                }
+              : provider,
+          ),
+        }));
+      }
+
+      it('offers to continue the team run instead of sending the message again', () => {
+        setConversation(closedMidway, 'idle', { teamId: 'team-1' });
+
+        render(<MessageBubble message={closedMidway} />);
+
+        const notice = screen.getByRole('status');
+        expect(notice).toHaveTextContent('The app was closed before this turn finished.');
+        expect(within(notice).getByRole('button', { name: 'Continue' })).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Send again' })).not.toBeInTheDocument();
+      });
+
+      it('offers no button while the conversation is running', () => {
+        setConversation(closedMidway, 'running', { teamId: 'team-1' });
+
+        render(<MessageBubble message={closedMidway} />);
+
+        expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
+      });
+
+      it('continues from where the run stopped, as a user-initiated send, keeping what was produced', async () => {
+        setConversation(closedMidway, 'idle', { teamId: 'team-1' });
+        makeModelUsable();
+
+        render(<MessageBubble message={closedMidway} />);
+        fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+        await waitFor(() => expect(runAgentLoopDispatched).toHaveBeenCalled());
+
+        expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
+        const [conversationId, text, options] = vi.mocked(runAgentLoopDispatched).mock.calls[0];
+        expect(conversationId).toBe('conversation-1');
+        expect(text).toContain(baseMessage.content as string);
+        expect(text).not.toBe(baseMessage.content);
+        expect(options).toEqual({ initiatedBy: 'user' });
+        // The interrupted row and everything the run produced stay in place.
+        expect(useChatStore.getState().conversations['conversation-1'].messages.map((m) => m.id)).toEqual([closedMidway.id]);
+      });
+
+      it('shows nothing once a later request exists, such as the continuation itself', () => {
+        const continuation: Message = { id: 'message-2', role: 'user', content: '继续', timestamp: 1 };
+        setConversation(closedMidway, 'idle', { teamId: 'team-1', messages: [closedMidway, continuation] });
+
+        render(<MessageBubble message={closedMidway} />);
+
+        expect(screen.queryByRole('status')).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
+      });
+
+      it('refuses to continue when the conversation model is no longer usable', () => {
+        setConversation(closedMidway, 'idle', { teamId: 'team-1' });
+        useSettingsStore.setState((state) => ({
+          providers: state.providers.map((provider) => ({ ...provider, enabled: false, apiKey: '' })),
+        }));
+
+        render(<MessageBubble message={closedMidway} />);
+        fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+        expect(runAgentLoopDispatched).not.toHaveBeenCalled();
+      });
+    });
   });
 
   it('#549: Retry dispatches as a user-initiated send so a stopped sidecar restarts', async () => {
