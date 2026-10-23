@@ -4,7 +4,7 @@
 
 ## Download
 
-Go to the [Abu official website](https://myabu.cn/), select the download button at the top of the page, and choose the installer for your platform:
+Go to the [Abu official website](https://abuwork.com/), select the download button at the top of the page, and choose the installer for your platform:
 
 | Platform | File |
 |----------|------|
