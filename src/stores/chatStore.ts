@@ -3,7 +3,6 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 import { current, enableMapSet } from 'immer';
-import { invoke } from '@tauri-apps/api/core';
 import type { Message, Conversation, AgentStatus, RetryInfo, TokenUsage, ConversationStatus, ToolCallForContext, ToolResultContent, ToolCall, NoticeCardAction, SandboxRecoveryAction, ToolExecutionMetadata, UserQuestionResult, UpstreamErrorDetails } from '../types';
 import type { ExecutionStepSnapshot, PlannedStep } from '../types/execution';
 import type { MaxTurnsNoticeAction } from '../core/agent/maxTurnsNotice';
@@ -1282,9 +1281,6 @@ export const useChatStore = create<ChatStore>()(
           controller.abort('conversation-deleted');
           abortControllers.delete(id);
         }
-        // Background commands outlive their run; nothing would be left to stop them once the
-        // conversation is gone. A failed stop is not caught: it surfaces as an unhandled rejection.
-        void invoke('background_command_stop_conversation', { conversationId: id });
         // Clean up per-conversation state in external modules
         clearInputQueue(id);
         useTeamConfirmationStore.getState().clearConversation(id);

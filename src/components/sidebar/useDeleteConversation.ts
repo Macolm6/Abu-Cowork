@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useConfirm } from '@/components/ds/confirm-context';
+import { redactFailureText } from '@/core/diagnostic/scrub';
 import { useI18n } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { useToastStore } from '@/stores/toastStore';
@@ -19,6 +20,10 @@ import { UNDO_OFFER_MS } from './undoOffer';
  * them, and its undo brings back only the conversation. The answer is checked
  * against the store as it is then: a conversation that has gone meanwhile is left alone, and one
  * that has been read meanwhile is deleted like any other. One delete per conversation at a time.
+ *
+ * The conversation's background commands are stopped, and the stop awaited, before the
+ * conversation is deleted. When they cannot be counted or stopped the conversation stays and a
+ * notice asks the user to try again: deleting it would leave commands nobody can stop.
  */
 export interface DeleteConversation {
   /** For the menu item. */
@@ -55,12 +60,26 @@ export function useDeleteConversation(rowFocus: ConversationRowFocus, offersUndo
 
   return useMemo(() => {
     const chat = useChatStore.getState;
+    // The host's text goes to the log only, as redacted text; the notice says what did not happen.
+    const reportFailure = (err: unknown) => {
+      console.warn(
+        '[useDeleteConversation] background commands could not be counted or stopped:',
+        redactFailureText(err instanceof Error ? err.message : String(err)),
+      );
+      useToastStore.getState().addToast({ type: 'error', title: latest.current.t.sidebar.deleteConversationFailed });
+    };
     const remove = async (convId: string, menuHasGone: boolean) => {
       if (deleting.current.has(convId)) return;
       deleting.current.add(convId);
       try {
         if (!menuHasGone) await chat().loadConversation(convId);
-        const runningCommands = await invoke<number>('background_command_running_count', { conversationId: convId });
+        let runningCommands: number;
+        try {
+          runningCommands = await invoke<number>('background_command_running_count', { conversationId: convId });
+        } catch (err) {
+          reportFailure(err);
+          return;
+        }
         const unreadable = isUnreadable(convId);
         if (unreadable || runningCommands > 0) {
           if (!menuHasGone && menuClosing.current) {
@@ -96,6 +115,13 @@ export function useDeleteConversation(rowFocus: ConversationRowFocus, offersUndo
           if (!confirmed || !mounted.current) return;
           if (chat().conversationIndex[convId] === undefined) return;
         }
+        try {
+          await invoke('background_command_stop_conversation', { conversationId: convId });
+        } catch (err) {
+          reportFailure(err);
+          return;
+        }
+        if (chat().conversationIndex[convId] === undefined) return;
         const current = latest.current;
         // Null for a conversation that is not in memory: nothing to offer back.
         const json = current.offersUndo ? chat().exportConversation(convId) : null;

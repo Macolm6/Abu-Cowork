@@ -180,6 +180,8 @@ export interface TranslationDict {
     deleteUnreadableWithBackgroundCommandsMessage: string;
     /** Singular of `deleteUnreadableWithBackgroundCommandsMessage`, for exactly one command. */
     deleteUnreadableWithBackgroundCommandsMessageOne: string;
+    /** The notice when the background commands could not be counted or stopped: the conversation stays. */
+    deleteConversationFailed: string;
     importSession: string;
     renameConversation: string;
     moreActions: string;
@@ -840,6 +842,9 @@ export interface TranslationDict {
       durationMinutes: string;
       /** {h}, {m} */
       durationHours: string;
+      /** The list's top line when opening it could not read the commands; the last list stays below. */
+      loadFailed: string;
+      retry: string;
     };
     // /compact slash command toasts
     compactCommand: {

@@ -10,12 +10,16 @@ import { DesignSystemProvider } from '@/components/ds/provider';
 const highlighterRenders = vi.fn();
 const shellRenders = vi.fn();
 
-vi.mock('react-syntax-highlighter/dist/esm/prism-light', () => {
-  const PrismLight = ({ children }: { children: string }) => {
+// Counts renders of the real highlighter. Its registerLanguage stays the real one, so the
+// grammars MarkdownRenderer registers up front are registered here too and a typescript
+// block starts no grammar load that would outlive the file.
+vi.mock('react-syntax-highlighter/dist/esm/prism-light', async (importOriginal) => {
+  const { default: Real } = await importOriginal<typeof import('react-syntax-highlighter/dist/esm/prism-light')>();
+  const PrismLight = (props: React.ComponentProps<typeof Real>) => {
     highlighterRenders();
-    return <div>{children}</div>;
+    return <Real {...props} />;
   };
-  PrismLight.registerLanguage = () => {};
+  PrismLight.registerLanguage = Real.registerLanguage;
   return { default: PrismLight };
 });
 
