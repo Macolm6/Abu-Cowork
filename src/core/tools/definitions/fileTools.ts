@@ -120,9 +120,15 @@ export const readFileTool: ToolDefinition = {
     const offset = typeof input.offset === 'number' ? Math.max(0, Math.floor(input.offset)) : undefined;
     const limit = typeof input.limit === 'number' ? Math.max(1, Math.floor(input.limit)) : undefined;
     // A read that showed the model any of the file records the whole file's
-    // current version, so write_file may overwrite it (fileReadRecords.ts).
+    // version, so write_file may overwrite it (fileReadRecords.ts). The
+    // version is taken before the content is read and again after it.
+    let versionBefore: string | undefined;
     const recordRead = async (): Promise<void> => {
-      await recordFileVersion(filePath, await fileVersionOf(filePath, io), context);
+      const versionAfter = await fileVersionOf(filePath, io);
+      // The file changed while it was read, so no version names what the
+      // model saw: nothing is recorded, and an overwrite needs another read.
+      if (versionAfter !== versionBefore) return;
+      await recordFileVersion(filePath, versionAfter, context);
     };
     // Extracted document text is recorded as a document; an error text is not.
     const documentText = async (text: string): Promise<string> => {
@@ -166,6 +172,8 @@ export const readFileTool: ToolDefinition = {
           { type: 'image', source: { type: 'base64', media_type: resizedBytes ? 'image/png' : mediaType, data } },
         ] as ToolResultContent[];
       }
+
+      versionBefore = await fileVersionOf(filePath, io);
 
       // --- PDF files: extract text ---
       if (ext === '.pdf') {

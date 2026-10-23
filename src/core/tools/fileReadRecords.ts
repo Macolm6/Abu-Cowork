@@ -59,6 +59,11 @@ export async function recordedFileVersion(path: string, context: ReaderContext):
   return records.get(owner.conversationId)?.get(owner.reader)?.get(normalizeLexicalPath(path));
 }
 
+/** Drops every record of a deleted conversation, its subagent runs' included. */
+export function forgetConversationFileReads(conversationId: string): void {
+  records.delete(conversationId);
+}
+
 /** Drops a finished subagent run's records. */
 export function forgetFileReads(conversationId: string, agentRunId: string): void {
   const readers = records.get(conversationId);

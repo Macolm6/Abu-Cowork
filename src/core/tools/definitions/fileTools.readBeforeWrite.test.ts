@@ -4,7 +4,7 @@ import type { ToolFileAccess } from '@/core/tools/fileOperation';
 import { getI18n, format } from '@/i18n';
 import { editFileTool, readFileTool, writeFileTool } from './fileTools';
 import { applyPatchTool } from './patchTools';
-import { forgetFileReads, recordFileVersion, recordedFileVersion } from '../fileReadRecords';
+import { forgetConversationFileReads, forgetFileReads, recordFileVersion, recordedFileVersion } from '../fileReadRecords';
 
 vi.mock('@/utils/aiEditSnapshots', () => ({
   captureTurnFileBefore: vi.fn().mockResolvedValue(undefined),
@@ -91,6 +91,21 @@ describe('write_file — overwriting needs a read of the current version', () =>
     expect(await readFileTool.execute({ path: '/work/a.txt' }, ctx(files))).toBe('v2 edited by the user');
     await writeFileTool.execute({ path: '/work/a.txt', content: 'model' }, ctx(files));
     expect(disk.get('/work/a.txt')).toBe('model');
+  });
+
+  it('records nothing when the file changes while it is read, so the next overwrite needs another read', async () => {
+    const { files, disk } = memoryFiles({ '/work/a.txt': 'v1' });
+    const readText = files.readTextFile.bind(files);
+    // The user saves between the version taken before the read and the one after it.
+    (files as { readTextFile: (path: string) => Promise<string> }).readTextFile = async (path: string) => {
+      const text = await readText(path);
+      disk.set(path, 'v2 saved by the user during the read');
+      return text;
+    };
+
+    expect(await readFileTool.execute({ path: '/work/a.txt' }, ctx(files))).toBe('v1');
+    expect(await writeFileTool.execute({ path: '/work/a.txt', content: 'model' }, ctx(files))).toBe(refusal('/work/a.txt'));
+    expect(disk.get('/work/a.txt')).toBe('v2 saved by the user during the read');
   });
 
   it('does not let one expert overwrite a file only another expert has read', async () => {
@@ -193,5 +208,16 @@ describe('fileReadRecords', () => {
     forgetFileReads(conversationId, 'sar-a');
     expect(await recordedFileVersion('/work/a.txt', { conversationId, agentRunId: 'sar-a' })).toBeUndefined();
     expect(await recordedFileVersion('/work/a.txt', { conversationId })).toBe('main');
+  });
+
+  it('drops every record of a deleted conversation and leaves other conversations alone', async () => {
+    const other = `${conversationId}-other`;
+    await recordFileVersion('/work/a.txt', 'main', { conversationId });
+    await recordFileVersion('/work/a.txt', 'nested', { conversationId, agentRunId: 'sar-n' });
+    await recordFileVersion('/work/a.txt', 'kept', { conversationId: other });
+    forgetConversationFileReads(conversationId);
+    expect(await recordedFileVersion('/work/a.txt', { conversationId })).toBeUndefined();
+    expect(await recordedFileVersion('/work/a.txt', { conversationId, agentRunId: 'sar-n' })).toBeUndefined();
+    expect(await recordedFileVersion('/work/a.txt', { conversationId: other })).toBe('kept');
   });
 });
