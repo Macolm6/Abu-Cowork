@@ -901,6 +901,12 @@ export interface ToolExecutionContext {
 export interface ToolDefinition {
   name: string;
   description: string;
+  /**
+   * A description written for one model family, keyed by the profile's
+   * `harness.promptVariant`. `selectToolsForProfile` swaps it in for that
+   * family; every other family reads `description`.
+   */
+  descriptionByFamily?: Partial<Record<import('@/core/llm/model-data/families').ModelFamily, string>>;
   inputSchema: {
     type: 'object';
     properties: Record<string, ToolParameter>;
