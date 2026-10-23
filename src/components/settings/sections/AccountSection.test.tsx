@@ -13,8 +13,10 @@ vi.mock('@enterprise-modules/components/enterprise/EnterpriseAccountSlot', () =>
 
 const mocks = vi.hoisted(() => ({
   openAccountLogin: vi.fn(),
+  openSystemSettings: vi.fn(),
   hydrate: vi.fn(),
   signOut: vi.fn(),
+  startEnterpriseLogin: vi.fn(),
   accountState: {} as Record<string, unknown>,
 }));
 
@@ -22,9 +24,14 @@ vi.mock('@/core/account/accountStore', () => ({
   useAccountStore: (selector: (state: Record<string, unknown>) => unknown) => selector(mocks.accountState),
 }));
 
+vi.mock('@/core/enterprise/accountLogin', () => ({
+  startEnterpriseAccountLogin: mocks.startEnterpriseLogin,
+}));
+
 vi.mock('@/stores/settingsStore', () => ({
   useSettingsStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
     openAccountLogin: mocks.openAccountLogin,
+    openSystemSettings: mocks.openSystemSettings,
   }),
 }));
 
@@ -43,11 +50,14 @@ describe('AccountSection', () => {
     };
   });
 
-  it('keeps local use available and opens the shared login dialog', () => {
+  it('keeps local use available and starts enterprise login while personal accounts are off', () => {
+    mocks.startEnterpriseLogin.mockResolvedValue('started');
     render(<AccountSection />);
     expect(screen.getByText('不登录也能继续使用本地模型和自己的 API Key')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '登录 / 注册' }));
-    expect(mocks.openAccountLogin).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('button', { name: '登录 / 注册' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '企业账号登录' }));
+    expect(mocks.startEnterpriseLogin).toHaveBeenCalledOnce();
+    expect(mocks.openAccountLogin).not.toHaveBeenCalled();
   });
 
   it('shows only authenticated profile fields', () => {
@@ -76,14 +86,14 @@ describe('AccountSection', () => {
   it('fills the one button of a signed-out page', () => {
     render(<AccountSection />);
     expect(screen.getAllByRole('button')).toHaveLength(1);
-    expect(screen.getByRole('button', { name: '登录 / 注册' })).toHaveClass('bg-emphasis');
+    expect(screen.getByRole('button', { name: '企业账号登录' })).toHaveClass('bg-emphasis');
   });
 
   it('keeps the page title outside the enterprise slot and the account card inside it', () => {
     render(<AccountSection />);
     const slot = screen.getByTestId('enterprise-account-slot');
     expect(slot).not.toContainElement(screen.getByRole('heading', { name: '账号' }));
-    expect(slot).toContainElement(screen.getByRole('button', { name: '登录 / 注册' }));
+    expect(slot).toContainElement(screen.getByRole('button', { name: '企业账号登录' }));
     expect(slot.children).toHaveLength(1);
   });
 

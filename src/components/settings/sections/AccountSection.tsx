@@ -1,9 +1,12 @@
 import EnterpriseAccountSlot from '@enterprise-modules/components/enterprise/EnterpriseAccountSlot';
+import { useCallback } from 'react';
 import { Button } from '@/components/ds/button';
 import { AppIcons } from '@/components/ds/icons';
 import { InlineMessage } from '@/components/ds/inline-message';
 import { Spinner } from '@/components/ds/spinner';
 import { useAccountStore } from '@/core/account/accountStore';
+import { startEnterpriseAccountLogin } from '@/core/enterprise/accountLogin';
+import { IS_PERSONAL_ACCOUNT_ENABLED } from '@/config/featureGates';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
@@ -15,7 +18,15 @@ export default function AccountSection() {
   const hydrate = useAccountStore((state) => state.hydrate);
   const signOut = useAccountStore((state) => state.signOut);
   const openAccountLogin = useSettingsStore((state) => state.openAccountLogin);
+  const openSystemSettings = useSettingsStore((state) => state.openSystemSettings);
   const { t } = useI18n();
+  const startEnterpriseLogin = useCallback(() => {
+    void startEnterpriseAccountLogin()
+      .then((result) => {
+        if (result === 'configuration_required') openSystemSettings('enterprise');
+      })
+      .catch(() => openSystemSettings('enterprise'));
+  }, [openSystemSettings]);
   const expired = status === 'expired' && account !== null;
   const signedIn = status === 'signed_in' && account !== null;
 
@@ -29,8 +40,13 @@ export default function AccountSection() {
           <p className="text-ui text-label-secondary">
             {t.account.localWithoutLogin}
           </p>
-          <Button variant="primary" icon={AppIcons.signIn} onClick={openAccountLogin}>
-            {t.account.loginRegister}
+          {/* With personal accounts off, the organization sign-in is all that is left, so it starts directly. */}
+          <Button
+            variant="primary"
+            icon={AppIcons.signIn}
+            onClick={IS_PERSONAL_ACCOUNT_ENABLED ? openAccountLogin : startEnterpriseLogin}
+          >
+            {IS_PERSONAL_ACCOUNT_ENABLED ? t.account.loginRegister : t.account.enterpriseLogin}
           </Button>
         </section>
       ) : (

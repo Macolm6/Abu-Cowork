@@ -53,7 +53,7 @@ describe('SystemSettingsView navigation', () => {
     const t = getI18n();
     renderView();
     expect(groups()).toEqual([
-      [t.account.title, t.settings.general, t.settings.capabilityOverview, t.voiceInput.title, t.settings.sandbox, t.settings.labs],
+      [t.settings.general, t.settings.capabilityOverview, t.voiceInput.title, t.settings.sandbox, t.settings.labs],
       [t.settings.aiServices, t.usage.title],
       [t.sidebar.personalMemory, t.soul.title],
       [t.imChannel.title],
@@ -71,7 +71,6 @@ describe('SystemSettingsView navigation', () => {
       Array.from(button.querySelector('svg')?.classList ?? []).filter((name) => name.startsWith('lucide-')).at(-1),
     ]));
     expect(glyphs).toEqual({
-      [t.account.title]: 'lucide-user-round',
       [t.settings.general]: 'lucide-sliders-horizontal',
       [t.settings.capabilityOverview]: 'lucide-zap',
       [t.voiceInput.title]: 'lucide-mic',
@@ -132,5 +131,11 @@ describe('SystemSettingsView navigation', () => {
   it('has no enterprise page in the open-source build', () => {
     renderView();
     expect(within(navigation()).queryByRole('button', { name: getI18n().settings.enterpriseMode })).toBeNull();
+  });
+
+  // With personal accounts off, the open-source build has no way to sign in, so its Account page would be empty.
+  it('has no account page in the open-source build while personal accounts are off', () => {
+    renderView();
+    expect(within(navigation()).queryByRole('button', { name: getI18n().account.title })).toBeNull();
   });
 });

@@ -1,4 +1,4 @@
-import { IS_ENTERPRISE_BUILD } from '@/config/featureGates';
+import { IS_ENTERPRISE_BUILD, IS_PERSONAL_ACCOUNT_ENABLED } from '@/config/featureGates';
 import { Button } from '@/components/ds/button';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
@@ -83,14 +83,22 @@ export default function LoginPage({
       ) : (
         <div className="space-y-3">
           {failure && <InlineMessage tone="danger">{failure}</InlineMessage>}
-          <div>
-            <Button className="w-full" variant="primary" icon={AppIcons.account} onClick={onPersonalLogin}>
-              {status === 'expired' ? t.account.retry : t.account.personalLogin}
-            </Button>
-          </div>
+          {IS_PERSONAL_ACCOUNT_ENABLED && (
+            <div>
+              <Button className="w-full" variant="primary" icon={AppIcons.account} onClick={onPersonalLogin}>
+                {status === 'expired' ? t.account.retry : t.account.personalLogin}
+              </Button>
+            </div>
+          )}
           {IS_ENTERPRISE_BUILD && (
             <div>
-              <Button className="w-full" variant="secondary" icon={AppIcons.enterprise} onClick={onEnterpriseLogin}>
+              <Button
+                className="w-full"
+                // With personal accounts off, the organization sign-in is the only way in.
+                variant={IS_PERSONAL_ACCOUNT_ENABLED ? 'secondary' : 'primary'}
+                icon={AppIcons.enterprise}
+                onClick={onEnterpriseLogin}
+              >
                 {t.account.enterpriseLogin}
               </Button>
             </div>
