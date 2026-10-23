@@ -36,6 +36,7 @@ import { resolveChatWidth, useViewportWidth } from '@/components/panel/panelWidt
 import ToasterMount from '@/components/common/ToasterMount';
 import QuitRequestListener from '@/components/common/QuitRequestListener';
 import { noteQuitConfirmedByUser } from '@/core/session/quitFlush';
+import { answerCloseRequest, type CloseRequest } from '@/core/session/closeRequest';
 import { isConversationRunningInSidecar } from '@/core/agent/sidecarRunPredicate';
 import { setToastPlacesForDecision } from '@/stores/toastStore';
 import { startBackgroundCommandSync } from '@/stores/backgroundCommandStore';
@@ -511,18 +512,15 @@ function App() {
     if (!isTauriEnv()) return; // web / E2E: no Tauri IPC
     let unlistenFn: (() => void) | null = null;
     let cancelled = false;
-    listen('close-requested', () => {
-      const action = useSettingsStore.getState().closeAction;
-      if (action === 'quit') {
+    listen<CloseRequest>('close-requested', (event) => {
+      const answer = answerCloseRequest(event.payload, useSettingsStore.getState().closeAction);
+      if (answer.kind === 'quit') {
         invoke('app_exit');
-      } else if (action === 'minimize') {
+      } else if (answer.kind === 'minimize') {
         invoke('window_hide');
       } else {
-        // The count is read before the dialog opens, so its first paint already names them.
-        void invoke<number>('background_command_running_count', {}).then((count) => {
-          setCloseDialogCommandCount(count);
-          setShowCloseDialog(true);
-        });
+        setCloseDialogCommandCount(answer.backgroundCommandCount);
+        setShowCloseDialog(true);
       }
     }).then((fn) => {
       if (cancelled) fn();

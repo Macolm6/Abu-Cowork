@@ -23,10 +23,13 @@ vi.mock('@/core/session/conversationStorage', async () => {
 
 // The main process as the renderer sees it: running background commands per conversation.
 const running = new Map<string, number>();
+// Commands the main process answers with an error.
+const failing = new Set<string>();
 
 function fakeMainProcess() {
   vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
     const conversationId = (args as { conversationId?: string } | undefined)?.conversationId ?? '';
+    if (failing.has(cmd)) throw new Error(`${cmd}: the main process did not answer`);
     switch (cmd) {
       case 'background_command_running_count':
         return running.get(conversationId) ?? 0;
@@ -66,6 +69,8 @@ async function deleteFromMenu(deletion: ReturnType<typeof useDeleteConversation>
 }
 
 const offer = () => within(screen.getByRole('region', { name: '通知' })).queryByText('会话已删除')?.closest('li') ?? null;
+const failureNotice = () => within(screen.getByRole('region', { name: '通知' })).queryByText('没能删除这段对话，请再试一次');
+const stopCalls = () => vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === 'background_command_stop_conversation');
 
 function clearNotices() {
   for (const toast of useToastStore.getState().toasts) useToastStore.getState().removeToast(toast.id);
@@ -75,6 +80,7 @@ describe('useDeleteConversation and background commands', () => {
   beforeEach(() => {
     initLanguage('zh-CN');
     running.clear();
+    failing.clear();
     fakeMainProcess();
     clearNotices();
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null, loadFailures: {} });
@@ -122,6 +128,97 @@ describe('useDeleteConversation and background commands', () => {
     expect(screen.queryByRole('alertdialog')).toBeNull();
     expect(useToastStore.getState().toasts.map((toast) => [toast.title, toast.actions?.map((action) => action.label)]))
       .toEqual([['会话已删除', ['撤销']]]);
+    expect(stopCalls()).toEqual([['background_command_stop_conversation', { conversationId: id }]]);
+  });
+
+  it('deletes only once the stop has answered', async () => {
+    const user = userEvent.setup();
+    const id = useChatStore.getState().createConversation();
+    running.set(id, 1);
+    let answerStop: () => void = () => undefined;
+    const answered = new Promise<void>((resolve) => { answerStop = resolve; });
+    const mainProcess = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === 'background_command_stop_conversation') await answered;
+      return mainProcess(cmd, args as never);
+    });
+    const { result } = renderDeletion();
+
+    await deleteFromMenu(result.current, id);
+    const question = await screen.findByRole('alertdialog');
+    passSettleInterval();
+    await user.click(within(question).getByRole('button', { name: '删除' }));
+
+    await waitFor(() => expect(stopCalls()).toHaveLength(1));
+    expect(useChatStore.getState().conversations[id]).toBeDefined();
+
+    await act(async () => { answerStop(); });
+    await waitFor(() => expect(useChatStore.getState().conversations[id]).toBeUndefined());
+    expect(offer()).not.toBeNull();
+  });
+
+  it('keeps the conversation and asks to try again when the stop fails', async () => {
+    const user = userEvent.setup();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const id = useChatStore.getState().createConversation();
+    running.set(id, 2);
+    failing.add('background_command_stop_conversation');
+    const { result } = renderDeletion();
+
+    await deleteFromMenu(result.current, id);
+    const question = await screen.findByRole('alertdialog');
+    passSettleInterval();
+    await user.click(within(question).getByRole('button', { name: '删除' }));
+
+    await waitFor(() => expect(failureNotice()).not.toBeNull());
+    expect(useChatStore.getState().conversations[id]).toBeDefined();
+    expect(useChatStore.getState().conversationIndex[id]).toBeDefined();
+    expect(running.get(id)).toBe(2);
+    expect(offer()).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    // The next try goes through once the main process answers.
+    failing.clear();
+    await deleteFromMenu(result.current, id);
+    const again = await screen.findByRole('alertdialog');
+    passSettleInterval();
+    await user.click(within(again).getByRole('button', { name: '删除' }));
+    await waitFor(() => expect(useChatStore.getState().conversations[id]).toBeUndefined());
+    expect(running.has(id)).toBe(false);
+  });
+
+  it('keeps the conversation and asks to try again when the count cannot be read', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const id = useChatStore.getState().createConversation();
+    failing.add('background_command_running_count');
+    const { result } = renderDeletion();
+
+    await deleteFromMenu(result.current, id);
+
+    await waitFor(() => expect(failureNotice()).not.toBeNull());
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(useChatStore.getState().conversations[id]).toBeDefined();
+    expect(stopCalls()).toEqual([]);
+    expect(offer()).toBeNull();
+  });
+
+  it('words the failure notice in English', async () => {
+    const previousLanguage = getLanguageSetting();
+    initLanguage('en-US');
+    try {
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const id = useChatStore.getState().createConversation();
+      failing.add('background_command_stop_conversation');
+      const { result } = renderDeletion();
+
+      await deleteFromMenu(result.current, id);
+
+      await waitFor(() => expect(useToastStore.getState().toasts.map((toast) => [toast.type, toast.title]))
+        .toEqual([['error', 'Couldn\'t delete this conversation. Try again.']]));
+      expect(useChatStore.getState().conversations[id]).toBeDefined();
+    } finally {
+      initLanguage(previousLanguage);
+    }
   });
 
   it('asks once, naming the stop, for an unreadable conversation with running background commands', async () => {

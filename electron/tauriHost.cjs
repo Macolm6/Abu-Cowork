@@ -168,6 +168,7 @@ const {
   COMMAND_MISS,
   teardownCommandHost,
   installBackgroundCommands,
+  runningBackgroundCommandCount,
   legacyConsoleEncoding,
 } = require('./commandHost.cjs');
 const { createBackgroundCommands } = require('./backgroundCommands.cjs');
@@ -352,11 +353,13 @@ function wireWindowEvents(win) {
   //    close handler (early startup), don't preventDefault into a dead emit —
   //    that swallows the close click (window neither closes nor prompts) until
   //    the app finishes loading. No listener yet → let the close proceed.
+  // The payload carries the running background commands, so the close dialog
+  // opens with their count and needs no read of its own.
   win.on('close', (e) => {
     if (quitting) return;
     if (!hasListeners('close-requested')) return;
     e.preventDefault();
-    emitEvent('close-requested', null);
+    emitEvent('close-requested', { backgroundCommandCount: runningBackgroundCommandCount() });
   });
   // Windows ends the session through the window; macOS and Linux report it on
   // powerMonitor (registerTauriHost).

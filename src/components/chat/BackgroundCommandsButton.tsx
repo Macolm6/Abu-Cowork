@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useI18n, format, type TranslationDict } from '@/i18n';
 import { cn } from '@/lib/utils';
@@ -6,6 +6,7 @@ import { createLogger } from '@/core/logging/logger';
 import { Button, IconButton } from '@/components/ds/button';
 import { Disclosure } from '@/components/ds/disclosure';
 import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
 import { Popover } from '@/components/ds/popover';
 import { Tooltip } from '@/components/ds/tooltip';
 import {
@@ -161,6 +162,22 @@ function CommandRow({ conversationId, row, now, expanded, onExpandedChange }: {
 function CommandList({ conversationId, rows }: { conversationId: string; rows: BackgroundCommandRow[] }) {
   const { t } = useI18n();
   const s = t.chat.backgroundCommands;
+  const [readFailed, setReadFailed] = useState(false);
+  const [reading, setReading] = useState(false);
+  // Opening the list reads the rows again: an update that failed while it was closed left an
+  // older list, which stays below the failure line until a read succeeds.
+  const readRows = useCallback(async () => {
+    try {
+      await useBackgroundCommandStore.getState().refresh(conversationId);
+      setReadFailed(false);
+    } catch (error) {
+      logger.warn('Failed to read background commands', { error: String(error) });
+      setReadFailed(true);
+    } finally {
+      setReading(false);
+    }
+  }, [conversationId]);
+  useEffect(() => { void readRows(); }, [readRows]);
   const [now, setNow] = useState(() => Date.now());
   // One row is expanded at a time.
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -187,6 +204,29 @@ function CommandList({ conversationId, rows }: { conversationId: string; rows: B
 
   return (
     <div className="max-h-120 overflow-y-auto">
+      {readFailed && (
+        <div className="mb-2">
+          <InlineMessage
+            tone="warning"
+            action={(
+              <Button
+                variant="plain"
+                size="sm"
+                busy={reading}
+                onClick={() => {
+                  if (reading) return;
+                  setReading(true);
+                  void readRows();
+                }}
+              >
+                {s.retry}
+              </Button>
+            )}
+          >
+            {s.loadFailed}
+          </InlineMessage>
+        </div>
+      )}
       {running.map(renderRow)}
       {finished.length > 0 && (
         <>

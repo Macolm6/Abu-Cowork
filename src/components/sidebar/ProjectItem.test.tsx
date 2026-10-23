@@ -116,6 +116,12 @@ const project: Project = {
 };
 
 function renderItem(convs: ConversationMeta[], props: Partial<Parameters<typeof ProjectItem>[0]> = {}) {
+  // A listed task is in the store's index; a delete reads it there again after the stop of its
+  // background commands. Entries a test put there itself stay as it wrote them.
+  mocks.chat.conversationIndex = {
+    ...Object.fromEntries(convs.map((conv) => [conv.id, conv])),
+    ...(mocks.chat.conversationIndex as Record<string, ConversationMeta>),
+  };
   return render(
     <ProjectItem
       project={project}

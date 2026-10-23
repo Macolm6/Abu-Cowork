@@ -140,6 +140,7 @@ const enUS: TranslationDict = {
     deleteWithBackgroundCommandsMessageOne: 'Deleting stops it. Undo brings back only the conversation.',
     deleteUnreadableWithBackgroundCommandsMessage: 'The record of "{name}" can\'t be read right now. Deleting it can\'t be undone, and it also stops these commands.',
     deleteUnreadableWithBackgroundCommandsMessageOne: 'The record of "{name}" can\'t be read right now. Deleting it can\'t be undone, and it also stops this command.',
+    deleteConversationFailed: 'Couldn\'t delete this conversation. Try again.',
     importSession: 'Import session',
     renameConversation: 'Rename',
     moreActions: 'More actions',
@@ -666,6 +667,8 @@ const enUS: TranslationDict = {
       durationSeconds: '{s}s',
       durationMinutes: '{m}m {s}s',
       durationHours: '{h}h {m}m',
+      loadFailed: 'Couldn\'t load the latest status',
+      retry: 'Retry',
     },
     compactCommand: {
       done: 'Context compacted',
