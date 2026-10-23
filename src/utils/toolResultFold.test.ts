@@ -1,14 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { charsOmittedMarker, linesOmittedMarker, truncateToolResult } from '@/core/context/truncation';
+import { charsOmittedMarker, linesOmittedMarker, scaledTruncationRule, truncateText, truncateToolResult } from '@/core/context/truncation';
 import { DURABLE_RESULT_OMITTED_NOTE } from '@/core/session/durableToolResultContent';
-import { COMMAND_OUTPUT_CUT_NOTE, foldToolResult, toResultRows } from './toolResultFold';
+import { COMMAND_OUTPUT_CUT_NOTE, foldResultRows, foldRowList, foldToolResult, toResultRows } from './toolResultFold';
 
 const lines = (n: number) => Array.from({ length: n }, (_, i) => `line ${i + 1}`).join('\n');
 
 describe('toResultRows', () => {
   it('turns the line-omission marker and its blank padding into one note row', () => {
-    const rows = toResultRows(truncateToolResult('run_command', lines(5000)));
+    const rows = toResultRows(truncateText(lines(5000), scaledTruncationRule('run_command')));
     expect(rows.filter((row) => row.kind === 'note')).toEqual([{ kind: 'note', note: 'linesNotRead', count: 4820 }]);
     expect(rows.filter((row) => row.kind === 'text')).toHaveLength(180);
   });
@@ -62,7 +62,7 @@ describe('foldToolResult', () => {
   });
 
   it('counts only the lines Abu read, without the note', () => {
-    expect(foldToolResult(truncateToolResult('run_command', lines(5000))).hidden).toEqual({ unit: 'lines', count: 180 });
+    expect(foldToolResult(truncateText(lines(5000), scaledTruncationRule('run_command'))).hidden).toEqual({ unit: 'lines', count: 180 });
   });
 
   it('keeps a note that ends the result in the folded tail', () => {
@@ -83,5 +83,63 @@ describe('foldToolResult', () => {
     const head = fold.head[0];
     expect(head.kind === 'text' && Array.from(head.text).every((char) => char === '😀')).toBe(true);
     expect(fold.hidden).toEqual({ unit: 'chars', count: 1100 });
+  });
+});
+
+describe('foldRowList', () => {
+  const numbers = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
+
+  it('keeps nine rows whole', () => {
+    const fold = foldRowList(numbers(9), () => true);
+    expect(fold.hidden).toBeNull();
+    expect(fold.head).toEqual(numbers(9));
+    expect(fold.tail).toEqual([]);
+  });
+
+  it('folds ten rows to five and four and counts the lines', () => {
+    const fold = foldRowList(numbers(10), (row) => row !== 6);
+    expect(fold.rows).toEqual(numbers(10));
+    expect(fold.head).toEqual([1, 2, 3, 4, 5]);
+    expect(fold.tail).toEqual([7, 8, 9, 10]);
+    expect(fold.hidden).toEqual({ unit: 'lines', count: 9 });
+  });
+
+  it('gives foldToolResult the same answer as before', () => {
+    const text = truncateText(lines(5000), scaledTruncationRule('run_command'));
+    expect(foldToolResult(text)).toEqual(foldRowList(toResultRows(text), (row) => row.kind === 'text'));
+  });
+});
+
+describe('foldResultRows', () => {
+  it('folds ten rows by lines', () => {
+    const fold = foldResultRows(toResultRows(lines(10)));
+    expect(fold.hidden).toEqual({ unit: 'lines', count: 10 });
+    expect(fold.head).toHaveLength(5);
+    expect(fold.tail).toHaveLength(4);
+  });
+
+  it('folds one long line by characters', () => {
+    const fold = foldResultRows([{ kind: 'text', text: `${'a'.repeat(700)}b${'c'.repeat(2299)}` }]);
+    expect(fold.hidden).toEqual({ unit: 'chars', count: 3000 });
+    expect(fold.head).toEqual([{ kind: 'text', text: 'a'.repeat(700) }]);
+    expect(fold.tail).toEqual([{ kind: 'text', text: 'c'.repeat(300) }]);
+  });
+
+  it('shows few short rows whole', () => {
+    const rows = toResultRows('one\ntwo');
+    expect(foldResultRows(rows)).toEqual({ rows, head: rows, tail: [], hidden: null });
+  });
+
+  it('gives foldToolResult the same answers', () => {
+    const texts = [
+      lines(9),
+      lines(10),
+      truncateText(lines(5000), scaledTruncationRule('run_command')),
+      'a'.repeat(1000),
+      `${'a'.repeat(700)}b${'c'.repeat(300)}`,
+      `stdout:\n${'x'.repeat(3000)}\n\nexit code: 0`,
+      '😀'.repeat(1100),
+    ];
+    for (const text of texts) expect(foldToolResult(text)).toEqual(foldResultRows(toResultRows(text)));
   });
 });

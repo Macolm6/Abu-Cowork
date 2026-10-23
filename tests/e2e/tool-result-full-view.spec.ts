@@ -141,16 +141,22 @@ async function waitUntilAtRest(target: Locator): Promise<void> {
     .length)).toBe(0);
 }
 
-/** The content column of the step whose label is `label`. */
+/** The content column of the step whose label is `label`: the parent of the step's title line. */
 function stepRow(page: Page, label: string): Locator {
-  return page.getByText(label, { exact: true }).locator('xpath=..');
+  return page.getByText(label, { exact: true })
+    .locator('xpath=ancestor-or-self::div[contains(concat(" ", normalize-space(@class), " "), " text-ui ")][1]/..');
 }
 
-/** Open the step's result (or error) block and return the area that shows it. */
+/**
+ * Open the step's result (or error) and return the area that shows it. A
+ * command step opens its view from the title button of its row; the other
+ * steps open their chip.
+ */
 async function openBlock(row: Locator, name: '结果' | '错误'): Promise<Locator> {
   await waitUntilAtRest(row);
-  const chip = row.getByRole('button', { name, exact: true });
-  if ((await chip.getAttribute('aria-expanded')) === 'false') await chip.click();
+  const title = row.locator('xpath=./div[1]/button[@aria-expanded and @aria-label]');
+  const toggle = (await title.count()) > 0 ? title : row.getByRole('button', { name, exact: true });
+  if ((await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click();
   const area = row.locator('[data-tool-result]');
   await expect(area).toBeVisible();
   return area;
@@ -188,7 +194,7 @@ test('a long result folds to its first and last lines and shows all of it, a sho
   await showSteps(page);
 
   const long = await openBlock(stepRow(page, '执行 seq 1 60'), '结果');
-  const showAll = long.getByRole('button', { name: '显示全部 63 行', exact: true });
+  const showAll = long.getByRole('button', { name: '显示全部 60 行', exact: true });
   await expect(showAll).toBeVisible();
   expect(await shownLines(long)).not.toContain('30');
   await shot(page, '01-folded');
@@ -204,7 +210,7 @@ test('a long result folds to its first and last lines and shows all of it, a sho
   const reopened = await reopenConversation();
   await showSteps(reopened);
   const afterRestart = await openBlock(stepRow(reopened, '执行 seq 1 60'), '结果');
-  await afterRestart.getByRole('button', { name: '显示全部 63 行', exact: true }).click();
+  await afterRestart.getByRole('button', { name: '显示全部 60 行', exact: true }).click();
   expect(await shownLines(afterRestart)).toContain('30');
   await shot(reopened, '03-all-after-restart');
 });
@@ -237,8 +243,8 @@ test('where Abu read only the start and end of a long output, the result says ho
 
   const area = await openBlock(stepRow(page, '执行 seq 1 5000'), '结果');
   await area.getByRole('button', { name: '显示全部 180 行', exact: true }).click();
-  // "stdout:", 5000 numbers, a blank line and "exit code: 0" make 5003 lines; Abu kept 150 + 30.
-  await expect(area.getByText('内容过长，阿布没有读取中间的 4823 行', { exact: true })).toBeVisible();
+  // The output section holds the 5000 numbers; Abu kept 150 + 30.
+  await expect(area.getByText('内容过长，阿布没有读取中间的 4820 行', { exact: true })).toBeVisible();
   expect(await shownLines(area)).toContain('4999');
   await expect(area).not.toContainText('omitted');
   await shot(page, '05-lines-not-read');
@@ -276,7 +282,7 @@ test('a finished step shows all of its result while the turn is still running', 
   await openGroup(page);
 
   const area = await openBlock(stepRow(page, '执行 seq 1 60'), '结果');
-  await area.getByRole('button', { name: '显示全部 63 行', exact: true }).click();
+  await area.getByRole('button', { name: '显示全部 60 行', exact: true }).click();
   expect(await shownLines(area)).toContain('30');
   await shot(page, '07-all-while-running');
 });

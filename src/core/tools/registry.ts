@@ -2661,7 +2661,11 @@ export async function executeAnyTool(
   // is treated as absent here too, so a stale/hallucinated tool_use falls
   // through to the "Unknown tool" fail-safe instead of silently executing.
   if (toolRegistry.has(name) && !isToolGatedOff(name)) {
-    const result = await toolRegistry.execute(name, executionInput, toolContext);
+    const result = await toolRegistry.execute(
+      name,
+      executionInput,
+      contextUsagePercent !== undefined ? { ...toolContext, contextUsagePercent } : toolContext,
+    );
     await files?.assertCurrent();
     await captureOutputs(result);
     // Only truncate string results; rich content (images) passes through

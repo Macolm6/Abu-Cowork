@@ -1596,6 +1596,83 @@ describe('agentLoopHost', () => {
       expect(reportMetadata).not.toHaveBeenCalled();
     });
 
+    it('replays a validated command outcome envelope into the original tool context', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      mockSendRequest({
+        toolInvokeResult: {
+          result: 'Exit code: 2',
+          metadata: { commandOutcome: { exitCode: 2, stdout: [8, 12], unknownField: 'dropped' } },
+        },
+      });
+      const reportMetadata = vi.fn();
+
+      await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('run_command', { command: 'npm test' }, undefined, undefined, { reportMetadata }),
+      );
+
+      expect(reportMetadata).toHaveBeenCalledWith({ commandOutcome: { exitCode: 2, stdout: [8, 12] } });
+    });
+
+    it('replays the exit code -1 of a killed or timed out command', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      mockSendRequest({ toolInvokeResult: { result: 'exit code: -1', metadata: { commandOutcome: { exitCode: -1 } } } });
+      const reportMetadata = vi.fn();
+
+      await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('run_command', { command: 'sleep 60' }, undefined, undefined, { reportMetadata }),
+      );
+
+      expect(reportMetadata).toHaveBeenCalledWith({ commandOutcome: { exitCode: -1 } });
+    });
+
+    it.each([
+      ['a non-numeric exit code', { exitCode: 'x' }],
+      ['a reversed output range', { exitCode: 0, stdout: [12, 8] }],
+    ])('rejects a command outcome envelope with %s', async (_label, commandOutcome) => {
+      hasLocalToolMock.mockReturnValue(false);
+      mockSendRequest({ toolInvokeResult: { result: 'Exit code: 0', metadata: { commandOutcome } } });
+      const reportMetadata = vi.fn();
+
+      await expect(withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('run_command', { command: 'npm test' }, undefined, undefined, { reportMetadata }),
+      )).rejects.toThrow(/Invalid tool\.invoke command outcome envelope/);
+      expect(reportMetadata).not.toHaveBeenCalled();
+    });
+
+    it('replays file read and http fetch outcome envelopes and rejects malformed ones', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      const fileReadOutcome = { kind: 'text', startLine: 200, lineCount: 100, totalLines: 1500, bodyStart: 60 };
+      const httpFetchOutcome = { status: 404, statusText: 'Not Found', body: [20, 90], truncated: false };
+
+      mockSendRequest({ toolInvokeResult: { result: 'file body', metadata: { fileReadOutcome } } });
+      const readMetadata = vi.fn();
+      await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('read_file', { path: '/w/a.ts' }, undefined, undefined, { reportMetadata: readMetadata }),
+      );
+      expect(readMetadata).toHaveBeenCalledWith({ fileReadOutcome });
+
+      mockSendRequest({ toolInvokeResult: { result: 'HTTP 404 Not Found', metadata: { httpFetchOutcome } } });
+      const fetchMetadata = vi.fn();
+      await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('http_fetch', { url: 'http://127.0.0.1/x' }, undefined, undefined, { reportMetadata: fetchMetadata }),
+      );
+      expect(fetchMetadata).toHaveBeenCalledWith({ httpFetchOutcome });
+
+      mockSendRequest({ toolInvokeResult: { result: 'file body', metadata: { fileReadOutcome: { kind: 'video' } } } });
+      const badRead = vi.fn();
+      await expect(withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('read_file', { path: '/w/a.ts' }, undefined, undefined, { reportMetadata: badRead }),
+      )).rejects.toThrow('Invalid tool.invoke file read outcome envelope');
+      expect(badRead).not.toHaveBeenCalled();
+
+      mockSendRequest({ toolInvokeResult: { result: 'HTTP 200 OK', metadata: { httpFetchOutcome: { status: 200 } } } });
+      const badFetch = vi.fn();
+      await expect(withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('http_fetch', { url: 'http://127.0.0.1/x' }, undefined, undefined, { reportMetadata: badFetch }),
+      )).rejects.toThrow('Invalid tool.invoke http fetch outcome envelope');
+      expect(badFetch).not.toHaveBeenCalled();
+    });
+
     it('replays a validated batch terminal summary metadata envelope into the original tool context', async () => {
       hasLocalToolMock.mockReturnValue(false);
       const summary = {
