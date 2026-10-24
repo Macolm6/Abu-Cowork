@@ -197,7 +197,7 @@
 }
 ```
 
-只用内置专家团的应用见官方市场的 `builtin-plugin-market/apps/recruiting/`。
+官方市场的 `builtin-plugin-market/apps/ecommerce/` 是一个完整的例子：专家、专家团和技能来自同一市场里的插件 `plugins/ecommerce/`，网页入口接了多个业务系统。
 
 ## 4. 图片
 

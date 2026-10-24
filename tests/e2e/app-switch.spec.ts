@@ -184,7 +184,7 @@ test.describe.serial('apps', () => {
     const market = page.getByTestId('app-market-dialog');
     await expect(market).toBeVisible({ timeout: READY_TIMEOUT });
     // The official market's own apps are there before anything is added.
-    await expect(market.locator('[data-testid="app-market-entry"][data-app-id="recruiting@abu-official"]')).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(market.locator('[data-testid="app-market-entry"][data-app-id="ecommerce@abu-official"]')).toBeVisible({ timeout: READY_TIMEOUT });
 
     await market.getByTestId('app-market-add-market').click();
     await page.getByTestId('plugin-marketplace-dir-input').fill(marketDir);

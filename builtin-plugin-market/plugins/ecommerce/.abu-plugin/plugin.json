@@ -1,0 +1,29 @@
+{
+  "name": "ecommerce",
+  "version": "1.0.0",
+  "description": "电商运营包：九位电商专家、五个专家团，以及上架检查、详情页、主图和活动复盘四项技能",
+  "author": { "name": "Abu" },
+  "license": "Apache-2.0",
+  "keywords": ["ecommerce", "taobao", "tmall", "jd", "pinduoduo", "douyin", "xiaohongshu", "listing", "promotion"],
+  "minAbuVersion": "0.51.0",
+  "interface": {
+    "displayName": "电商运营包",
+    "shortDescription": "九位电商专家和五个专家团，做上新、大促、店铺诊断、客服售后和库存",
+    "longDescription": "给淘宝天猫、京东、拼多多、抖店和小红书店铺准备的一组能力。电商运营经理带队，选品分析师、详情页文案、视觉设计师、短视频与直播策划、推广投放专员、电商数据分析师、库存与供应链专员、客服主管各自负责一块工作；按工作组成电商运营专家团、新品上架团、大促筹备团、店铺诊断团和客服售后团。附带上架检查清单、详情页结构、主图规范和活动复盘模板四项技能。专家只根据你提供的数据工作：上传的导出表、贴进来的表格和你打开的页面，缺数据时会告诉你要导出哪一份。",
+    "developerName": "Abu",
+    "category": "ecommerce",
+    "capabilities": [
+      "读取你上传或贴入的销售、流量、推广、库存、评价和退款数据",
+      "根据你提供的商品资料写标题、详情页、主图方案、话术和活动方案",
+      "不连接任何店铺后台，也不替你发布商品或修改价格"
+    ],
+    "brandColor": "#085041",
+    "logo": "assets/logo.svg",
+    "logoDark": "assets/logo-dark.svg",
+    "defaultPrompt": [
+      "这是店铺近 30 天的经营数据导出，帮我做一次全店诊断",
+      "这款新品要上淘宝，帮我准备整套上架资料",
+      "这是近一个月的差评导出，帮我按原因分类并给出改进建议"
+    ]
+  }
+}

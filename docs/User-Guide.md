@@ -185,16 +185,16 @@ Computer Use remains subject to sensitive-app blocking, dangerous-key intercepti
 
 ## Apps
 
-An app is Abu prepared for one line of work: its own home page, a few groups of scenes, who handles each scene (an expert team, an expert or a skill), and its own navigation. The **app switcher** at the top of the sidebar reads **Discover apps** in the general shell and shows the app's name once you are inside one.
+An app is Abu prepared for one line of work: its own home page, a few groups of scenes, who handles each scene (an expert team, an expert or a skill), and the web pages of the business systems that work uses. Apps are an experimental feature: turn on **Apps** under **Settings → Labs**, and the **app switcher** appears at the top of the sidebar. It reads **Discover apps** in the general shell and shows the app's name once you are inside one. Apps your company provides through the enterprise edition stay visible whatever this setting says.
 
 ### Add an app and start working
 
-- Choose **See more** in the switcher to open the **App market**. Each app shows its name, a line about it, and the teams, experts and skills it **Uses**. Three apps ship with Abu in the official market: **Recruiting**, **Finance reconciliation** and **Content creation**.
+- Choose **See more** in the switcher to open the **App market**. Each app shows its name, a line about it, and the teams, experts and skills it **Uses**. **E-commerce Ops** ships with Abu in the official market: five modes (launches, campaigns, store diagnosis, customer service, inventory and supply chain), a set of e-commerce experts and teams, and sidebar entries for JuShuiTan, Linkmore and the platforms' seller centers.
 - Click **Use**. When the app needs plugins this computer does not have yet, a review screen lists them under **Installed along with it**, with the experts, teams, skills and connector settings they bring; when the app has web pages, the screen lists **This app opens these websites inside Abu**. After **Confirm** the app appears under **My apps** in the switcher and its home page opens. An app that needs nothing installed opens straight away.
 - The home page starts with the app's name and a line about it, then its modes and scenes. Opening a scene shows a few sample prompts; clicking one puts the text into the composer, where you can edit it before sending. Each scene card says who handles it.
 - When a connector the app needs is not connected yet, the home page offers **Connect** and **Not now**.
 - Inside an app, the **Experts** page shows **This app** — the experts and teams the app uses — by default; switch to **All** to see everything.
-- The sidebar navigation follows the app's definition. The app's own web page opens in the main area and stays on the sites the app declared; links elsewhere open in the system browser.
+- New Task, Experts, Extensions and Automation stay in the sidebar in every app; the app's own web pages come after them, open in the main area and stay on the sites the app declared; links elsewhere open in the system browser.
 
 ### Add a market
 

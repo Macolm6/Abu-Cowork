@@ -197,7 +197,7 @@ The "Shop Operations" app, which uses the "Shop Assistant" plugin (excerpt; the 
 }
 ```
 
-For an app that uses only built-in expert teams, see `builtin-plugin-market/apps/recruiting/` in the official market.
+`builtin-plugin-market/apps/ecommerce/` in the official market is a complete example: its experts, teams and skills come from the plugin `plugins/ecommerce/` in the same market, and its web pages reach several business systems.
 
 ## 4. Images
 

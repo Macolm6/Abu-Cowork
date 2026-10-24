@@ -51,7 +51,7 @@ describe('built-in skills', () => {
   });
 });
 
-const marketApps = ['recruiting', 'finance-reconciliation', 'content-creation'];
+const marketApps = ['ecommerce'];
 
 describe('apps of the official market', () => {
   it.each(marketApps)('%s names and describes itself in zh-CN and en-US', (name) => {
