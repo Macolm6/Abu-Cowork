@@ -15,18 +15,29 @@ export interface AppPageStateEvent {
 
 export const APP_PAGE_STATE_EVENT = 'app-page://state';
 
-type AppPageAction = 'show' | 'setBounds' | 'hide' | 'reload' | 'destroyForApp' | 'setManagedApps';
+type AppPageAction = 'show' | 'setBounds' | 'capture' | 'hide' | 'reload' | 'destroyForApp' | 'setManagedApps';
 
-async function request(action: AppPageAction, input: object = {}): Promise<void> {
+async function call(action: AppPageAction, input: object = {}): Promise<unknown> {
   const bridge = (globalThis as typeof globalThis & { __ABU_SHELL__?: {
     appPage?: (action: string, input: object) => Promise<unknown>;
   } }).__ABU_SHELL__?.appPage;
   if (!bridge) throw new Error('App pages require the Electron desktop host');
-  await bridge(action, input);
+  return bridge(action, input);
+}
+
+async function request(action: AppPageAction, input: object = {}): Promise<void> {
+  await call(action, input);
 }
 
 export const showAppPage = (appId: string, navItemId: string, bounds: AppPageBounds) => request('show', { appId, navItemId, bounds });
 export const setAppPageBounds = (appId: string, navItemId: string, bounds: AppPageBounds) => request('setBounds', { appId, navItemId, bounds });
+/** The shown page's last frame as an image data URL; null when it has none to give. */
+export async function captureAppPage(appId: string, navItemId: string): Promise<string | null> {
+  const frame = await call('capture', { appId, navItemId });
+  if (frame === null) return null;
+  if (typeof frame !== 'string' || !frame.startsWith('data:image/')) throw new Error('App page capture returned no image');
+  return frame;
+}
 export const hideAppPages = () => request('hide');
 export const reloadAppPage = (appId: string, navItemId: string) => request('reload', { appId, navItemId });
 export const destroyAppPages = (appId: string, clearStorage: boolean) => request('destroyForApp', { appId, clearStorage });

@@ -51,7 +51,16 @@ function fakeView() {
   webContents.close = () => { webContents.destroyed = true; };
   webContents.loadURL = async url => { webContents.loaded.push(url); };
   webContents.setWindowOpenHandler = handler => { webContents.windowOpen = handler; };
-  return { webContents, bounds: null, visible: true, setBounds(rect) { this.bounds = rect; }, setVisible(value) { this.visible = value; } };
+  // What the page has painted: null until it paints, then a frame capturePage returns.
+  webContents.frame = null;
+  webContents.capturePage = async () => ({
+    isEmpty: () => webContents.frame === null,
+    toDataURL: () => `data:image/png;base64,${webContents.frame}`,
+  });
+  return {
+    webContents, bounds: null, visible: true,
+    setBounds(rect) { this.bounds = rect; }, setVisible(value) { this.visible = value; }, getVisible() { return this.visible; },
+  };
 }
 
 function harness(home) {
@@ -123,6 +132,23 @@ test('shows a sandboxed view in the app\'s own partition, sized to the given bou
     host.dispatch('setBounds', { appId: APP_ID, navItemId: 'portal', bounds: { x: 5, y: 5, width: 20, height: 20 } });
     assert.deepEqual(view.bounds, { x: 5, y: 5, width: 20, height: 20 });
     assert.throws(() => toRect({ x: 'a', y: 0, width: 1, height: 1 }), /finite numbers/);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('captures the shown page\'s last frame, and nothing for a page that is hidden, unpainted or not shown', async () => {
+  const home = seedHome();
+  try {
+    const { host, views } = harness(home);
+    const ids = { appId: APP_ID, navItemId: 'portal' };
+    assert.equal(await host.dispatch('capture', ids), null, 'no page is shown yet');
+    host.dispatch('show', { ...ids, bounds });
+    const [view] = views;
+    assert.equal(await host.dispatch('capture', ids), null, 'the page has painted nothing');
+    view.webContents.frame = 'AAAA';
+    assert.equal(await host.dispatch('capture', ids), 'data:image/png;base64,AAAA');
+    host.dispatch('hide');
+    assert.equal(await host.dispatch('capture', ids), null, 'a hidden view has no frame of its own');
+    await assert.rejects(async () => host.dispatch('capture', { appId: APP_ID }), /navItemId/);
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 

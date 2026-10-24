@@ -27,7 +27,7 @@ const { APP_FILE_PATH, isAllowedAppPageOrigin, parseAppFile, resolveAppPageUrl }
 
 const APP_PAGE_CHANNEL = 'abu:app-page';
 const APP_PAGE_STATE_EVENT = 'app-page://state';
-const ACTIONS = new Set(['show', 'setBounds', 'hide', 'reload', 'destroyForApp', 'setManagedApps']);
+const ACTIONS = new Set(['show', 'setBounds', 'capture', 'hide', 'reload', 'destroyForApp', 'setManagedApps']);
 const MANAGED_APP_PREFIX = 'enterprise-app:';
 
 function fail(message) {
@@ -251,6 +251,19 @@ function createAppPageHost({ home, getMainWindow, emit, createView, sessionFor, 
     return null;
   }
 
+  /**
+   * The page's last frame as a PNG data URL, for the renderer to show in its
+   * place while the view hides under a React overlay (a hidden view has no
+   * frame to capture). Null when the page is not shown or has painted nothing.
+   */
+  async function capture(request) {
+    const { appId, navItemId } = requireIds(request);
+    const page = pages.get(keyOf(appId, navItemId));
+    if (!page || !page.view.getVisible() || page.view.webContents.isDestroyed()) return null;
+    const image = await page.view.webContents.capturePage();
+    return image.isEmpty() ? null : image.toDataURL();
+  }
+
   function hide() {
     hideAll();
     return null;
@@ -294,6 +307,7 @@ function createAppPageHost({ home, getMainWindow, emit, createView, sessionFor, 
     switch (action) {
       case 'show': return show(request);
       case 'setBounds': return setBounds(request);
+      case 'capture': return capture(request);
       case 'hide': return hide();
       case 'reload': return reload(request);
       case 'destroyForApp': return destroyForApp(request);
