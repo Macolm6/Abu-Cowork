@@ -69,6 +69,7 @@ const SIGNATURE_VARIANT_RESOURCE_ROOTS = [
   'sandbox-launcher',
   'node-runtime',
   'python-runtime',
+  'speech-runtime',
   path.join('app.asar.unpacked', 'node_modules', 'node-pty'),
 ];
 
