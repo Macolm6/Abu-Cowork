@@ -42,7 +42,7 @@
 | `home` | 是 | object | 首页，见 3.3 |
 | `defaultRun` | 否 | 运行引用 | 用户不点任何场景、直接发送时交给谁来做。不写时由阿布带着应用的提示词回答 |
 | `promptAppend` | 否 | string | 应用级的提示词，对应用里的每个会话生效。上限 16000 个字符 |
-| `nav` | 否 | object | 导航，见 3.5。不写时沿用 Abu 的默认导航 |
+| `nav` | 否 | object | 应用自己的网页入口，见 3.5。Abu 自己的入口一直显示，不用写 |
 | `allowedOrigins` | 有 `url:` 导航项时必填 | string[] | 应用网页允许的来源，见 3.6 |
 | `requiredConnectors` | 否 | string[] | `<插件名称>/<连接器名称>`，插件必须列在 `plugins` 里。连接器没有连上时，首页顶部提示用户去连接 |
 | `composer.placeholder` | 否 | LocalizedText | 输入框的占位文字 |
@@ -116,22 +116,16 @@
 
 ### 3.5 导航 `nav`
 
+侧栏上 Abu 自己的入口（新任务、专家、扩展、自动化）在每个应用里都显示，应用不能去掉或改动它们。`nav` 只写应用自己的网页，排在这些入口后面。
+
 | 字段 | 必填 | 类型 | 说明 |
 |---|---|---|---|
+| `items` | 是 | array | 至少一项 |
 | `items[].id` | 是 | string | 在导航内唯一 |
-| `items[].title` | `url:` 导航项必填 | LocalizedText | 内置入口不写时用 Abu 自己的名称 |
+| `items[].title` | 是 | LocalizedText | 侧栏上显示的名称 |
 | `items[].icon` | 否 | string | 应用目录内图片的相对路径 |
 | `items[].order` | 否 | number | 从小到大排列 |
-| `items[].target` | 是 | string | 见下表 |
-
-| `target` | 含义 |
-|---|---|
-| `builtin:chat` | 新任务。必须出现一次 |
-| `builtin:todos`、`builtin:inbox` | 待办、收件箱 |
-| `builtin:team` | 专家 |
-| `builtin:extensions` | 扩展 |
-| `builtin:automation` | 自动化 |
-| `url:<网址>` | 应用自己的网页，显示在主区域。只接受 `https://` 和本机预览的 `http://`，来源必须在 `allowedOrigins` 里 |
+| `items[].target` | 是 | string | `url:<网址>`：应用自己的网页，显示在主区域。只接受 `https://` 和本机预览的 `http://`，来源必须在 `allowedOrigins` 里 |
 
 「项目」、会话列表和账户菜单不属于导航项，在所有应用里保持显示。
 
@@ -197,14 +191,13 @@
   },
   "nav": {
     "items": [
-      { "id": "chat", "target": "builtin:chat", "order": 1 },
-      { "id": "portal", "title": { "zh-CN": "店铺后台", "en-US": "Shop portal" }, "target": "url:https://example.com/portal", "order": 2 }
+      { "id": "portal", "title": { "zh-CN": "店铺后台", "en-US": "Shop portal" }, "target": "url:https://example.com/portal", "order": 1 }
     ]
   }
 }
 ```
 
-只用内置专家团的应用见官方市场的 `builtin-plugin-market/apps/recruiting/`。
+官方市场的 `builtin-plugin-market/apps/ecommerce/` 是一个完整的例子：专家、专家团和技能来自同一市场里的插件 `plugins/ecommerce/`，网页入口接了多个业务系统。
 
 ## 4. 图片
 
@@ -313,8 +306,8 @@
 | `…run.team`、`…run.expert`、`…run.skill` | 写法不在 3.4 的表里；内置专家团或内置专家不存在；`plugin:` 的插件没有列在 `plugins` 里 |
 | `…templates` | 少于 3 条或者多于 6 条 |
 | `allowedOrigins` | 来源写了路径、通配符或者不是 HTTPS |
-| `nav.items[n].target` | `url:` 地址协议无效；来源不在 `allowedOrigins` 里 |
-| `nav.items[n].title` | `url:` 导航项没有写 `title` |
+| `nav.items[n].target` | 写了 `url:` 以外的值（例如 `builtin:chat`）；`url:` 地址协议无效；来源不在 `allowedOrigins` 里 |
+| `nav.items[n].title` | 没有写 `title` |
 | `requiredConnectors[n]` | 不是 `<插件名称>/<连接器名称>`；插件没有列在 `plugins` 里 |
 | 任意路径 | 写了表里没有的字段（多数是拼写错误） |
 

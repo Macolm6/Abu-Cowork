@@ -29,7 +29,6 @@ function seedHome() {
       { id: 'a', title: 'A', prompt: 'A' }, { id: 'b', title: 'B', prompt: 'B' }, { id: 'c', title: 'C', prompt: 'C' },
     ] }] }] } },
     nav: { items: [
-      { id: 'chat', target: 'builtin:chat' },
       { id: 'portal', title: 'Portal', target: 'url:https://shop.example.com/portal?tab=orders' },
     ] },
   }));
@@ -39,7 +38,7 @@ function seedHome() {
 const orgApp = {
   appId: ORG_APP_ID,
   allowedOrigins: ['https://contracts.example.com', 'https://sso.example.com'],
-  nav: { items: [{ id: 'chat', target: 'builtin:chat' }, { id: 'system', title: '合同系统', target: 'url:https://contracts.example.com/home' }] },
+  nav: { items: [{ id: 'system', title: '合同系统', target: 'url:https://contracts.example.com/home' }] },
 };
 
 /** A WebContentsView stand-in: records bounds/visibility and lets a test fire navigation events. */
@@ -51,7 +50,16 @@ function fakeView() {
   webContents.close = () => { webContents.destroyed = true; };
   webContents.loadURL = async url => { webContents.loaded.push(url); };
   webContents.setWindowOpenHandler = handler => { webContents.windowOpen = handler; };
-  return { webContents, bounds: null, visible: true, setBounds(rect) { this.bounds = rect; }, setVisible(value) { this.visible = value; } };
+  // What the page has painted: null until it paints, then a frame capturePage returns.
+  webContents.frame = null;
+  webContents.capturePage = async () => ({
+    isEmpty: () => webContents.frame === null,
+    toDataURL: () => `data:image/png;base64,${webContents.frame}`,
+  });
+  return {
+    webContents, bounds: null, visible: true,
+    setBounds(rect) { this.bounds = rect; }, setVisible(value) { this.visible = value; }, getVisible() { return this.visible; },
+  };
 }
 
 function harness(home) {
@@ -88,7 +96,7 @@ test('resolves a page from the added app\'s own copied file, never from the rend
     const page = resolvePage({ home, fs, appId: APP_ID, navItemId: 'portal', managed: new Map() });
     assert.equal(page.url, 'https://shop.example.com/portal?tab=orders');
     assert.deepEqual(page.allowedOrigins, ['https://shop.example.com']);
-    assert.throws(() => resolvePage({ home, fs, appId: APP_ID, navItemId: 'chat', managed: new Map() }), /not a url: target/);
+    assert.throws(() => resolvePage({ home, fs, appId: APP_ID, navItemId: 'chat', managed: new Map() }), /does not exist/);
     assert.throws(() => resolvePage({ home, fs, appId: 'ghost@market', navItemId: 'portal', managed: new Map() }), /is not added/);
     assert.throws(() => resolvePage({ home, fs, appId: '../escape', navItemId: 'portal', managed: new Map() }), /cannot name a directory/);
     const { host } = harness(home);
@@ -123,6 +131,23 @@ test('shows a sandboxed view in the app\'s own partition, sized to the given bou
     host.dispatch('setBounds', { appId: APP_ID, navItemId: 'portal', bounds: { x: 5, y: 5, width: 20, height: 20 } });
     assert.deepEqual(view.bounds, { x: 5, y: 5, width: 20, height: 20 });
     assert.throws(() => toRect({ x: 'a', y: 0, width: 1, height: 1 }), /finite numbers/);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('captures the shown page\'s last frame, and nothing for a page that is hidden, unpainted or not shown', async () => {
+  const home = seedHome();
+  try {
+    const { host, views } = harness(home);
+    const ids = { appId: APP_ID, navItemId: 'portal' };
+    assert.equal(await host.dispatch('capture', ids), null, 'no page is shown yet');
+    host.dispatch('show', { ...ids, bounds });
+    const [view] = views;
+    assert.equal(await host.dispatch('capture', ids), null, 'the page has painted nothing');
+    view.webContents.frame = 'AAAA';
+    assert.equal(await host.dispatch('capture', ids), 'data:image/png;base64,AAAA');
+    host.dispatch('hide');
+    assert.equal(await host.dispatch('capture', ids), null, 'a hidden view has no frame of its own');
+    await assert.rejects(async () => host.dispatch('capture', { appId: APP_ID }), /navItemId/);
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
@@ -172,7 +197,7 @@ test('an app added again replaces the open page instead of keeping the old addre
 
     const raw = JSON.parse(fs.readFileSync(appFile(home), 'utf8'));
     raw.allowedOrigins = ['https://portal.example.com'];
-    raw.nav.items[1].target = 'url:https://portal.example.com/portal';
+    raw.nav.items[0].target = 'url:https://portal.example.com/portal';
     fs.writeFileSync(appFile(home), JSON.stringify(raw));
 
     host.dispatch('show', { appId: APP_ID, navItemId: 'portal', bounds });

@@ -258,11 +258,14 @@ export async function pressWhenSettled(locator: Locator): Promise<void> {
   await locator.click();
 }
 
-/** Persist the common first-run acknowledgements used by Electron E2E journeys. */
-export async function dismissFirstRunOverlays(page: Page): Promise<void> {
+/**
+ * Persist the common first-run acknowledgements used by Electron E2E journeys.
+ * `apps` also turns on the Apps experiment (Settings → 实验功能), off by default.
+ */
+export async function dismissFirstRunOverlays(page: Page, options: { apps?: boolean } = {}): Promise<void> {
   // Settings writes are serialized now. Seed under the same lock and reload
   // before returning control, so a queued pre-seed save cannot restore overlays.
-  await Promise.all([page.waitForEvent('load'), page.evaluate(async () => {
+  await Promise.all([page.waitForEvent('load'), page.evaluate(async (apps) => {
     await navigator.locks.request('abu-browser-permission-config-v2', () => {
       const raw = window.localStorage.getItem('abu-settings');
       if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
@@ -271,10 +274,11 @@ export async function dismissFirstRunOverlays(page: Page): Promise<void> {
         guideShown: true, guideOpen: false,
         hasAcknowledgedDisclaimer: true, hasRunSensitiveAudit_v015: true,
       });
+      if (apps) persisted.state.labs = { ...(persisted.state.labs as Record<string, boolean> | undefined), apps: true };
       window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
       window.location.reload();
     });
-  })]);
+  }, options.apps === true)]);
   await expect(page.getByPlaceholder(/^(想让阿布帮你做点什么？|What can Abu help you with\?)$/)).toBeVisible({ timeout: READY_TIMEOUT });
 }
 

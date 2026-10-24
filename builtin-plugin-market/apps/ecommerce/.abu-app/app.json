@@ -1,0 +1,220 @@
+{
+  "name": "ecommerce",
+  "version": "1.0.0",
+  "minAbuVersion": "0.51.0",
+  "interface": {
+    "displayName": { "zh-CN": "电商运营", "en-US": "E-commerce Ops" },
+    "shortDescription": { "zh-CN": "上新、大促、店铺诊断、客服售后、库存，一个应用办完", "en-US": "Launches, campaigns, store diagnosis, customer service and inventory in one app" },
+    "longDescription": {
+      "zh-CN": "给淘宝天猫、京东、拼多多、抖店和小红书店铺准备的应用。上新、大促、店铺诊断、客服售后、库存与供应链五组场景，交给插件「电商运营包」里的九位电商专家和五个专家团来做：店铺运营经理带队，选品、文案、视觉、直播、推广、数据、库存和客服各有专人。专家只根据你提供的数据工作，包括上传的后台导出表、贴进来的表格和你打开的页面；缺数据时会告诉你要导出哪一份，涉及平台规则的地方会提醒你去规则中心确认。导航里可以直接打开聚水潭、领猫、千牛、抖店、拼多多、京麦和千帆的后台，登录状态只保存在这个应用里。",
+      "en-US": "An app for stores on Taobao/Tmall, JD, Pinduoduo, Douyin and Xiaohongshu. Five groups of scenes — launches, campaigns, store diagnosis, customer service and inventory — are handled by the nine specialists and five teams of the E-commerce Ops plugin: the operations manager leads, with dedicated specialists for sourcing, copy, visuals, live streams, ads, data, inventory and service. They work only from the data you provide: uploaded back-end exports, pasted tables and pages you have open. When data is missing they tell you which export to pull, and they remind you to confirm anything that depends on platform rules. The navigation opens the Jushuitan, Linkmore, Qianniu, Doudian, Pinduoduo, Jingmai and Qianfan back-ends directly, and their sign-ins stay inside this app."
+    },
+    "developerName": "Abu",
+    "category": "ecommerce",
+    "brandColor": "#F2643A",
+    "logo": "assets/logo.svg",
+    "logoDark": "assets/logo-dark.svg"
+  },
+  "plugins": ["ecommerce"],
+  "defaultRun": { "team": "plugin:ecommerce/ecommerce-ops" },
+  "promptAppend": "The user runs or operates an online store on Chinese marketplaces (Taobao/Tmall, JD, Pinduoduo, Douyin, Xiaohongshu), often with an ERP such as Jushuitan (聚水潭) and a supply-chain platform such as Linkmore (领猫). Work only from data the user provides: uploaded exports, pasted tables, screenshots, product files and pages the user has open. Never invent prices, costs, sales, traffic, conversion rates, stock levels, reviews or competitor figures; when data is missing, name the specific export to pull (platform, report, date range, columns) or leave a visible placeholder. Platform rules change often and differ by category; when advice depends on one, say so and ask the user to confirm it in the platform's current rules center. You cannot operate the store back-ends: prepare what the user will do there, step by step. Deliver material the user can use directly.",
+  "composer": {
+    "placeholder": { "zh-CN": "说说要做的店铺工作，或者从上面选一件事开始", "en-US": "Describe the store work to do, or pick a task above" }
+  },
+  "home": {
+    "header": {
+      "title": { "zh-CN": "电商运营，从上新到售后", "en-US": "E-commerce, from launch to after-sales" },
+      "slogan": { "zh-CN": "把后台导出的数据发给我，或者从下面选一件事开始", "en-US": "Send me your back-end exports, or pick a task below" }
+    },
+    "modes": {
+      "defaultSelected": "launch",
+      "items": [
+        {
+          "modeId": "launch",
+          "title": { "zh-CN": "上新", "en-US": "Launch" },
+          "scenes": [
+            {
+              "id": "new-listing",
+              "title": { "zh-CN": "新品上架", "en-US": "List a new product" },
+              "run": { "team": "plugin:ecommerce/new-launch" },
+              "placeholder": { "zh-CN": "说说商品是什么、要上哪个平台，资料可以直接拖进来", "en-US": "Describe the product and the platform; drop the files in" },
+              "templates": [
+                { "id": "full-package", "title": { "zh-CN": "整套上架资料", "en-US": "Full listing package" }, "prompt": { "zh-CN": "这款新品要上淘宝，我把商品参数和供应商资料发给你，帮我准备整套上架资料：标题、卖点、主图方案、详情页结构和 SKU 设置", "en-US": "This new product goes on Taobao. I'm sending the specifications and supplier documents; prepare the full listing package: title, selling points, main image plan, detail page structure and SKU setup" } },
+                { "id": "pre-check", "title": { "zh-CN": "上架前检查", "en-US": "Pre-listing check" }, "prompt": { "zh-CN": "按上架检查清单帮我过一遍这个商品的资料，列出不合格的地方和改法", "en-US": "Run the listing checklist over this product's materials and list what fails and how to fix it" } },
+                { "id": "multi-platform-titles", "title": { "zh-CN": "多平台标题", "en-US": "Titles for each platform" }, "prompt": { "zh-CN": "同一款商品要同时上淘宝、京东和拼多多，根据我给的参数分别写三个平台的标题，并说明每个平台的写法差别", "en-US": "The same product goes on Taobao, JD and Pinduoduo. From the specifications I give you, write a title for each platform and explain how they differ" } },
+                { "id": "worth-launching", "title": { "zh-CN": "判断值不值得上", "en-US": "Worth launching?" }, "prompt": { "zh-CN": "这是我准备上新的几款商品和对应的成本表，帮我判断哪几款值得先上，定价区间怎么定", "en-US": "Here are the products I plan to launch and their cost sheet; tell me which to launch first and what price band to use" } },
+                { "id": "sku-pricing", "title": { "zh-CN": "SKU 与价格", "en-US": "SKUs and prices" }, "prompt": { "zh-CN": "帮我根据这份成本表和颜色尺码，设计 SKU 组合和每个 SKU 的价格", "en-US": "From this cost sheet and the colours and sizes, design the SKU options and the price of each" } }
+              ]
+            },
+            {
+              "id": "detail-page",
+              "title": { "zh-CN": "详情页与主图", "en-US": "Detail page and images" },
+              "run": { "expert": "plugin:ecommerce/详情页文案", "skill": "plugin:ecommerce/详情页结构" },
+              "placeholder": { "zh-CN": "把商品参数、卖点或者现有详情页发过来", "en-US": "Send the specifications, selling points or the current detail page" },
+              "templates": [
+                { "id": "write-page", "title": { "zh-CN": "写整页详情页", "en-US": "Write the whole page" }, "prompt": { "zh-CN": "根据我给的商品参数和卖点，按详情页结构写一整页详情页文案", "en-US": "From the specifications and selling points I give you, write a complete detail page following the detail page structure" } },
+                { "id": "rewrite-page", "title": { "zh-CN": "改写现有详情页", "en-US": "Rewrite the current page" }, "prompt": { "zh-CN": "这是我们现在的详情页截图，转化不高，帮我找出问题并重写文案", "en-US": "Here are screenshots of our current detail page; it converts poorly. Find the problems and rewrite the copy" } },
+                { "id": "image-captions", "title": { "zh-CN": "主图文案", "en-US": "Main image copy" }, "prompt": { "zh-CN": "帮我给这款商品的 5 张主图各写一句主图文案，并说明每张图要拍什么", "en-US": "Write one line of copy for each of this product's 5 main images and say what each image should show" } },
+                { "id": "selling-points", "title": { "zh-CN": "提炼卖点", "en-US": "Find the selling points" }, "prompt": { "zh-CN": "从这份商品资料和用户评价里，提炼出最打动人的三个卖点", "en-US": "From this product information and the customer reviews, find the three most persuasive selling points" } },
+                { "id": "banned-words", "title": { "zh-CN": "违禁词检查", "en-US": "Banned word check" }, "prompt": { "zh-CN": "检查这段详情页文案里有没有广告法违禁词和平台限制用语，给出替换说法", "en-US": "Check this detail page copy for words banned by the Advertising Law or restricted by the platform, and suggest replacements" } }
+              ]
+            }
+          ]
+        },
+        {
+          "modeId": "promo",
+          "title": { "zh-CN": "大促", "en-US": "Campaigns" },
+          "scenes": [
+            {
+              "id": "campaign-plan",
+              "title": { "zh-CN": "活动策划", "en-US": "Plan a campaign" },
+              "run": { "team": "plugin:ecommerce/big-promo" },
+              "placeholder": { "zh-CN": "说说是哪场活动、目标和预算，往期数据可以直接拖进来", "en-US": "Name the campaign, the target and the budget; drop past data in" },
+              "templates": [
+                { "id": "full-plan", "title": { "zh-CN": "双十一整体方案", "en-US": "Double 11 plan" }, "prompt": { "zh-CN": "店铺要参加双十一，帮我做一份完整的活动方案：选品、价格机制、预热节奏、推广预算和备货", "en-US": "The store is joining Double 11. Draw up a complete campaign plan: products, price mechanics, pre-heat timing, promotion budget and stock-up" } },
+                { "id": "price-mechanics", "title": { "zh-CN": "活动价格机制", "en-US": "Price mechanics" }, "prompt": { "zh-CN": "根据这几款主推商品的成本和日常售价，帮我设计大促的优惠组合，算出到手价和毛利", "en-US": "From the cost and everyday price of these hero products, design the campaign offers and calculate the final price and gross margin" } },
+                { "id": "live-schedule", "title": { "zh-CN": "直播排期", "en-US": "Live schedule" }, "prompt": { "zh-CN": "大促期间想做 7 场直播，帮我排直播日程、每场主推商品和脚本要点", "en-US": "We want 7 live sessions during the campaign; plan the schedule, the hero products and the script points for each" } },
+                { "id": "stock-up", "title": { "zh-CN": "大促备货", "en-US": "Campaign stock-up" }, "prompt": { "zh-CN": "这是近 90 天的销售和库存导出，帮我估算大促要备多少货、什么时候下单", "en-US": "Here are the last 90 days of sales and stock; estimate how much to stock for the campaign and when to order" } },
+                { "id": "budget-split", "title": { "zh-CN": "推广预算分配", "en-US": "Budget split" }, "prompt": { "zh-CN": "大促推广预算有限，帮我把预算分到站内推广、达人和内容种草，并说明理由", "en-US": "The campaign budget is limited; split it across on-platform ads, creators and content seeding, and explain why" } }
+              ]
+            },
+            {
+              "id": "campaign-review",
+              "title": { "zh-CN": "大促复盘", "en-US": "Campaign review" },
+              "run": { "expert": "plugin:ecommerce/电商数据分析师", "skill": "plugin:ecommerce/活动复盘模板" },
+              "placeholder": { "zh-CN": "把活动期间的销售、流量和推广数据导出发过来", "en-US": "Send the sales, traffic and ad exports for the campaign period" },
+              "templates": [
+                { "id": "full-review", "title": { "zh-CN": "完整复盘报告", "en-US": "Full review report" }, "prompt": { "zh-CN": "这是大促期间的销售、流量和推广数据导出，帮我按活动复盘模板写一份复盘报告", "en-US": "Here are the sales, traffic and ad exports from the campaign; write a review report with the campaign review template" } },
+                { "id": "target-gap", "title": { "zh-CN": "目标差距", "en-US": "Gap to target" }, "prompt": { "zh-CN": "对比大促目标和实际完成情况，找出差距最大的三个环节和原因", "en-US": "Compare the campaign target with the actual results and find the three biggest gaps and their causes" } },
+                { "id": "ad-return", "title": { "zh-CN": "推广效果", "en-US": "Ad return" }, "prompt": { "zh-CN": "这是大促期间各推广计划的投放数据，帮我算投入产出，列出该加大和该停掉的计划", "en-US": "Here is the data for each ad plan during the campaign; calculate the return and list the plans to scale up and to stop" } },
+                { "id": "next-time", "title": { "zh-CN": "下次怎么改", "en-US": "Next time" }, "prompt": { "zh-CN": "根据这次大促的数据，列出下次活动要保留的做法和要改进的地方", "en-US": "From this campaign's data, list what to keep and what to improve for the next campaign" } }
+              ]
+            }
+          ]
+        },
+        {
+          "modeId": "diagnosis",
+          "title": { "zh-CN": "店铺诊断", "en-US": "Store diagnosis" },
+          "scenes": [
+            {
+              "id": "business-check",
+              "title": { "zh-CN": "经营诊断", "en-US": "Business check" },
+              "run": { "team": "plugin:ecommerce/store-diagnosis" },
+              "placeholder": { "zh-CN": "把店铺近一段时间的后台数据导出发过来，说说最担心的问题", "en-US": "Send recent store exports and say what worries you most" },
+              "templates": [
+                { "id": "full-check", "title": { "zh-CN": "全店体检", "en-US": "Full store check" }, "prompt": { "zh-CN": "这是店铺近 30 天的经营数据导出，帮我做一次全店诊断，找出最影响销售的问题", "en-US": "Here is the store's last 30 days of data; run a full diagnosis and find the problems that hurt sales most" } },
+                { "id": "traffic-drop", "title": { "zh-CN": "流量下滑", "en-US": "Traffic drop" }, "prompt": { "zh-CN": "店铺最近两周流量明显下滑，我把流量来源数据发给你，帮我找原因", "en-US": "Store traffic dropped sharply in the last two weeks. I'm sending the traffic source data; find out why" } },
+                { "id": "low-conversion", "title": { "zh-CN": "转化率低", "en-US": "Low conversion" }, "prompt": { "zh-CN": "访客数正常但转化率低，帮我结合商品页和数据分析原因，给出改进清单", "en-US": "Visitors are normal but conversion is low; analyse the product pages and the data and give me a list of fixes" } },
+                { "id": "product-tiers", "title": { "zh-CN": "商品分层", "en-US": "Product tiers" }, "prompt": { "zh-CN": "根据这份商品销售明细，把商品分成主推、潜力、待清理三类，并给出各自的做法", "en-US": "From this product sales breakdown, sort products into hero, potential and clear-out groups, with what to do for each" } },
+                { "id": "monthly-report", "title": { "zh-CN": "月度经营报告", "en-US": "Monthly report" }, "prompt": { "zh-CN": "把这个月的经营数据整理成一份月报，包括核心指标、变化原因和下月重点", "en-US": "Turn this month's data into a monthly report with key metrics, reasons for the changes and next month's priorities" } }
+              ]
+            },
+            {
+              "id": "competitors",
+              "title": { "zh-CN": "竞品分析", "en-US": "Competitor analysis" },
+              "run": { "expert": "plugin:ecommerce/选品分析师" },
+              "placeholder": { "zh-CN": "打开竞品的商品页，或者把价格、销量和评价贴进来", "en-US": "Open the competitor pages, or paste their prices, sales and reviews" },
+              "templates": [
+                { "id": "compare", "title": { "zh-CN": "竞品对比", "en-US": "Compare competitors" }, "prompt": { "zh-CN": "我打开了三家竞品的商品页，帮我对比价格、卖点、主图和评价，找出我们的差距", "en-US": "I have three competitor product pages open; compare price, selling points, main images and reviews, and find where we fall short" } },
+                { "id": "competitor-reviews", "title": { "zh-CN": "竞品差评", "en-US": "Competitor complaints" }, "prompt": { "zh-CN": "这是竞品的差评整理，帮我找出顾客最不满意的地方，看看我们能不能做得更好", "en-US": "Here are the competitor's negative reviews; find what customers dislike most and whether we can do better" } },
+                { "id": "opportunities", "title": { "zh-CN": "选品机会", "en-US": "Product opportunities" }, "prompt": { "zh-CN": "根据我给的类目热销榜截图，帮我找出值得跟进的商品方向", "en-US": "From the category best-seller screenshots I give you, find product directions worth following" } },
+                { "id": "pricing", "title": { "zh-CN": "定价参考", "en-US": "Pricing reference" }, "prompt": { "zh-CN": "对比这几家同款商品的价格和销量，帮我给我们的商品定一个有竞争力的价格", "en-US": "Compare the prices and sales of these identical products and set a competitive price for ours" } }
+              ]
+            }
+          ]
+        },
+        {
+          "modeId": "service",
+          "title": { "zh-CN": "客服售后", "en-US": "Service" },
+          "scenes": [
+            {
+              "id": "scripts-faq",
+              "title": { "zh-CN": "话术与 FAQ", "en-US": "Scripts and FAQ" },
+              "run": { "expert": "plugin:ecommerce/电商客服主管" },
+              "placeholder": { "zh-CN": "把商品资料和店铺的售后规则发过来", "en-US": "Send the product information and the store's after-sales policy" },
+              "templates": [
+                { "id": "product-faq", "title": { "zh-CN": "商品 FAQ", "en-US": "Product FAQ" }, "prompt": { "zh-CN": "根据这份商品资料，整理顾客最常问的 20 个问题和标准回答", "en-US": "From this product information, write the 20 questions customers ask most and the standard answers" } },
+                { "id": "pre-sales", "title": { "zh-CN": "售前话术", "en-US": "Pre-sales scripts" }, "prompt": { "zh-CN": "帮我写一套售前咨询话术，包括问尺码、问发货、问优惠和犹豫不下单的情况", "en-US": "Write a set of pre-sales scripts covering size questions, shipping, offers and hesitant buyers" } },
+                { "id": "after-sales", "title": { "zh-CN": "售后话术", "en-US": "After-sales scripts" }, "prompt": { "zh-CN": "帮我写退换货、物流延误和商品破损三类售后情况的回复话术", "en-US": "Write reply scripts for three after-sales cases: returns and exchanges, shipping delays and damaged goods" } },
+                { "id": "campaign-replies", "title": { "zh-CN": "大促快捷回复", "en-US": "Campaign quick replies" }, "prompt": { "zh-CN": "大促期间咨询量大，帮我准备一套快捷回复，覆盖优惠规则、发货时间和价格保护", "en-US": "Inquiries spike during the campaign; prepare quick replies covering offer rules, shipping times and price protection" } },
+                { "id": "review-replies", "title": { "zh-CN": "差评回复", "en-US": "Negative review replies" }, "prompt": { "zh-CN": "这几条差评需要公开回复，帮我写诚恳、不推卸的回复", "en-US": "These negative reviews need public replies; write sincere replies that take responsibility" } }
+              ]
+            },
+            {
+              "id": "reviews-refunds",
+              "title": { "zh-CN": "差评与退款分析", "en-US": "Reviews and refunds" },
+              "run": { "team": "plugin:ecommerce/service-aftersales" },
+              "placeholder": { "zh-CN": "把差评、退款或者聊天记录的导出发过来", "en-US": "Send the review, refund or chat exports" },
+              "templates": [
+                { "id": "review-causes", "title": { "zh-CN": "差评原因", "en-US": "Review causes" }, "prompt": { "zh-CN": "这是近一个月的差评导出，帮我按原因分类，算出各类占比，并给出改进建议", "en-US": "Here are last month's negative reviews; classify them by cause, calculate each share and suggest fixes" } },
+                { "id": "refund-causes", "title": { "zh-CN": "退款分析", "en-US": "Refund analysis" }, "prompt": { "zh-CN": "这是退款订单导出，帮我分析退款原因和集中在哪些商品，哪些可以从源头减少", "en-US": "Here are the refund orders; analyse the reasons, which products they cluster on and which can be prevented at the source" } },
+                { "id": "problem-products", "title": { "zh-CN": "问题商品", "en-US": "Problem products" }, "prompt": { "zh-CN": "结合评价和退款数据，找出问题最多的商品，并说明问题出在商品、描述还是物流", "en-US": "Combine review and refund data to find the products with the most problems, and say whether the cause is the product, the description or logistics" } },
+                { "id": "service-quality", "title": { "zh-CN": "客服质量", "en-US": "Service quality" }, "prompt": { "zh-CN": "这是客服聊天记录导出，帮我找出回复慢、答错和态度问题，整理成培训要点", "en-US": "Here are the customer service chat logs; find slow replies, wrong answers and tone problems, and turn them into training points" } }
+              ]
+            }
+          ]
+        },
+        {
+          "modeId": "supply",
+          "title": { "zh-CN": "库存与供应链", "en-US": "Inventory" },
+          "scenes": [
+            {
+              "id": "replenishment",
+              "title": { "zh-CN": "补货计划", "en-US": "Replenishment" },
+              "run": { "expert": "plugin:ecommerce/库存与供应链专员" },
+              "placeholder": { "zh-CN": "把 ERP 导出的库存和销量发过来", "en-US": "Send the stock and sales exports from your ERP" },
+              "templates": [
+                { "id": "reorder", "title": { "zh-CN": "补货建议", "en-US": "Reorder plan" }, "prompt": { "zh-CN": "这是聚水潭导出的库存和近 60 天销量，帮我算每个 SKU 要补多少、什么时候下单", "en-US": "Here are the Jushuitan stock export and the last 60 days of sales; work out how much to reorder for each SKU and when" } },
+                { "id": "slow-movers", "title": { "zh-CN": "滞销清理", "en-US": "Slow movers" }, "prompt": { "zh-CN": "找出这份库存表里的滞销商品，给出清仓或调拨的建议", "en-US": "Find the slow-moving products in this stock sheet and suggest clearance or transfer options" } },
+                { "id": "safety-stock", "title": { "zh-CN": "安全库存", "en-US": "Safety stock" }, "prompt": { "zh-CN": "根据这些商品的日均销量和供应商交货周期，帮我算安全库存和补货点", "en-US": "From these products' average daily sales and supplier lead times, calculate the safety stock and reorder points" } },
+                { "id": "stockout-alert", "title": { "zh-CN": "断货预警", "en-US": "Stock-out alert" }, "prompt": { "zh-CN": "帮我从这份库存表里找出 2 周内可能断货的 SKU，按紧急程度排序", "en-US": "Find the SKUs in this stock sheet that may run out within 2 weeks and sort them by urgency" } }
+              ]
+            },
+            {
+              "id": "suppliers",
+              "title": { "zh-CN": "供应商沟通", "en-US": "Suppliers" },
+              "run": { "expert": "plugin:ecommerce/库存与供应链专员" },
+              "placeholder": { "zh-CN": "说说要跟供应商沟通什么，把订单或报价单发过来", "en-US": "Say what you need from the supplier and send the order or quote" },
+              "templates": [
+                { "id": "chase", "title": { "zh-CN": "催货消息", "en-US": "Chase a delivery" }, "prompt": { "zh-CN": "这批货已经延期，帮我写一条给供应商的催货消息，问清新的交货时间", "en-US": "This shipment is late; write a message to the supplier chasing it and asking for the new delivery date" } },
+                { "id": "order-confirm", "title": { "zh-CN": "下单确认", "en-US": "Order confirmation" }, "prompt": { "zh-CN": "根据这份采购清单，帮我写一份给供应商的下单确认，列清数量、规格、价格和交期", "en-US": "From this purchase list, write an order confirmation to the supplier stating quantities, specifications, prices and delivery dates" } },
+                { "id": "quality-issue", "title": { "zh-CN": "质量问题反馈", "en-US": "Quality complaint" }, "prompt": { "zh-CN": "收到的货有质量问题，我把照片和问题描述发给你，帮我写一份给供应商的反馈和处理要求", "en-US": "The goods we received have quality problems. I'm sending photos and a description; write the supplier a complaint with our requested remedy" } },
+                { "id": "compare-quotes", "title": { "zh-CN": "比较供应商", "en-US": "Compare suppliers" }, "prompt": { "zh-CN": "这是三家供应商的报价单，帮我从价格、起订量、交期和付款方式比较，给出选择建议", "en-US": "Here are quotes from three suppliers; compare price, minimum order, lead time and payment terms, and recommend one" } }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "nav": {
+    "items": [
+      { "id": "jushuitan", "title": { "zh-CN": "聚水潭 ERP", "en-US": "Jushuitan ERP" }, "target": "url:https://www.erp321.com/", "order": 1 },
+      { "id": "linkmore", "title": { "zh-CN": "领猫", "en-US": "Linkmore" }, "target": "url:https://www.linkmore.com/", "order": 2 },
+      { "id": "qianniu", "title": { "zh-CN": "千牛", "en-US": "Qianniu" }, "target": "url:https://myseller.taobao.com/", "order": 3 },
+      { "id": "doudian", "title": { "zh-CN": "抖店", "en-US": "Doudian" }, "target": "url:https://fxg.jinritemai.com/", "order": 4 },
+      { "id": "pinduoduo", "title": { "zh-CN": "拼多多商家后台", "en-US": "Pinduoduo Seller Center" }, "target": "url:https://mms.pinduoduo.com/", "order": 5 },
+      { "id": "jingmai", "title": { "zh-CN": "京东京麦", "en-US": "JD Jingmai" }, "target": "url:https://shop.jd.com/", "order": 6 },
+      { "id": "qianfan", "title": { "zh-CN": "小红书千帆", "en-US": "Xiaohongshu Qianfan" }, "target": "url:https://ark.xiaohongshu.com/", "order": 7 }
+    ]
+  },
+  "allowedOrigins": [
+    "https://www.erp321.com",
+    "https://www.linkmore.com",
+    "https://www-lingshang.linkmore.com",
+    "https://myseller.taobao.com",
+    "https://loginmyseller.taobao.com",
+    "https://havanalogin.taobao.com",
+    "https://login.taobao.com",
+    "https://passport.taobao.com",
+    "https://fxg.jinritemai.com",
+    "https://doudian-sso.jinritemai.com",
+    "https://mms.pinduoduo.com",
+    "https://shop.jd.com",
+    "https://passport.shop.jd.com",
+    "https://passport.jd.com",
+    "https://ark.xiaohongshu.com",
+    "https://customer.xiaohongshu.com",
+    "https://redpass.xiaohongshu.com"
+  ]
+}

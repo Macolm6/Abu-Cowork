@@ -12,6 +12,7 @@ import {
   closeAbuElectron,
   dismissFirstRunOverlays,
   launchAbuElectron,
+  pressWhenSettled,
   removeElectronDataRoot,
   type ElectronDataRoot,
 } from './electronHelpers';
@@ -73,21 +74,13 @@ const RECRUITING_DETAIL: Record<Locale, { expertise: string[]; prompts: string[]
 
 const RECRUITING_LEADER_NOTE = '先把岗位要求、预算和时间线问清楚再动手；薪资行情必须让调研专家去取证并附来源，不要凭印象报数。';
 
-const APPS: Array<{ appId: string } & Record<Locale, { name: string; description: string; team: string }>> = [
+// The official market's app. Its experts and teams come with the plugin 电商运营包, installed
+// together with the app; `firstSceneLead` is the team on the first scene of its home.
+const APPS: Array<{ appId: string } & Record<Locale, { name: string; description: string; firstSceneLead: string }>> = [
   {
-    appId: 'recruiting@abu-official',
-    'zh-CN': { name: '招聘', description: '写 JD、筛简历、备面试、查行情', team: '招聘专家团' },
-    'en-US': { name: 'Recruiting', description: 'Write JDs, screen resumes, prepare interviews, check the market', team: 'Recruiting Team' },
-  },
-  {
-    appId: 'finance-reconciliation@abu-official',
-    'zh-CN': { name: '财务对账', description: '对流水、查差异、出报表', team: '财务对账专家团' },
-    'en-US': { name: 'Finance Reconciliation', description: 'Match statements, find differences, produce reports', team: 'Finance Reconciliation Team' },
-  },
-  {
-    appId: 'content-creation@abu-official',
-    'zh-CN': { name: '内容创作', description: '从选题到成稿、配图和发布物料', team: '内容创作专家团' },
-    'en-US': { name: 'Content Creation', description: 'From topic to finished draft, visuals and a publishing kit', team: 'Content Creation Team' },
+    appId: 'ecommerce@abu-official',
+    'zh-CN': { name: '电商运营', description: '上新、大促、店铺诊断、客服售后、库存，一个应用办完', firstSceneLead: '新品上架团' },
+    'en-US': { name: 'E-commerce Ops', description: 'Launches, campaigns, store diagnosis, customer service and inventory in one app', firstSceneLead: 'New Product Launch Team' },
   },
 ];
 
@@ -203,24 +196,27 @@ async function readAppMarket(page: Page, locale: Locale) {
     await expect(entry).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(entry.getByText(app[locale].name, { exact: true })).toBeVisible();
     await expect(entry).toContainText(app[locale].description);
-    await expect(entry).toContainText(app[locale].team);
     read[app.appId] = await textOf(entry);
   }
   return { market, read };
 }
 
-/** Enter the Recruiting app from the market (adding it the first time) and read its home. */
+/** Enter the e-commerce app from the market (adding it and its plugin the first time) and read its home. */
 async function readAppHome(page: Page, market: Locator, locale: Locale) {
-  const recruiting = APPS[0];
-  const entry = market.locator(`[data-testid="app-market-entry"][data-app-id="${recruiting.appId}"]`);
+  const ecommerce = APPS[0];
+  const entry = market.locator(`[data-testid="app-market-entry"][data-app-id="${ecommerce.appId}"]`);
   const enter = entry.getByTestId('app-market-enter');
-  if (await enter.count() > 0) await enter.click();
-  else await entry.getByTestId('app-market-use').click();
-  await expect(page.getByTestId('app-switcher-current')).toHaveText(recruiting[locale].name, { timeout: READY_TIMEOUT });
+  if (await enter.count() > 0) {
+    await enter.click();
+  } else {
+    await entry.getByTestId('app-market-use').click();
+    await pressWhenSettled(page.getByTestId('app-add-confirm'));
+  }
+  await expect(page.getByTestId('app-switcher-current')).toHaveText(ecommerce[locale].name, { timeout: READY_TIMEOUT });
   await expect(market).toBeHidden();
   const scenes = page.getByTestId('app-home-scenes');
   await expect(scenes).toBeVisible({ timeout: READY_TIMEOUT });
-  await expect(scenes.locator('[data-testid^="app-home-scene-"]').first()).toContainText(recruiting[locale].team);
+  await expect(scenes.locator('[data-testid^="app-home-scene-"]').first()).toContainText(ecommerce[locale].firstSceneLead);
   return {
     switcher: await textOf(page.getByTestId('app-switcher-current')),
     title: await textOf(page.getByTestId('app-home-title')),
@@ -238,8 +234,8 @@ test.describe.serial('built-in content follows the interface language', () => {
     dataRoot = launched;
     app = launched.app;
     page = await app.firstWindow();
-    await expect(page.getByTestId('app-switcher-trigger')).toBeVisible({ timeout: READY_TIMEOUT });
-    await dismissFirstRunOverlays(page);
+    await expect(page.getByLabel('Main navigation')).toBeVisible({ timeout: READY_TIMEOUT });
+    await dismissFirstRunOverlays(page, { apps: true });
   });
 
   test.afterAll(async () => {

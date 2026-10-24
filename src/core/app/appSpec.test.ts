@@ -215,27 +215,29 @@ describe('home', () => {
 });
 
 describe('nav and pages', () => {
-  const chat = { id: 'chat', target: 'builtin:chat' };
   const page = { id: 'portal', title: '门户', target: 'url:https://portal.example.com/home?x=1' };
+  const origins = { allowedOrigins: ['https://portal.example.com'] };
 
-  it('requires builtin:chat exactly once and unique ids', () => {
-    expect(failingField(() => parseAppFile(appFile({ nav: { items: [{ id: 'team', target: 'builtin:team' }] } })))).toBe('nav.items');
-    expect(failingField(() => parseAppFile(appFile({ nav: { items: [chat, { id: 'chat2', target: 'builtin:chat' }] } })))).toBe('nav.items');
-    expect(failingField(() => parseAppFile(appFile({ nav: { items: [chat, { id: 'chat', target: 'builtin:team' }] } })))).toBe('nav.items[1]');
-    expect(failingField(() => parseAppFile(appFile({ nav: { items: [chat, { id: 'x', target: 'builtin:settings' }] } })))).toBe('nav.items[1].target');
+  // Abu's own entries are always shown; an app's navigation lists its web pages only.
+  it('takes the app\'s own pages only, at least one, with unique ids', () => {
+    expect(failingField(() => parseAppFile(appFile({ nav: { items: [] } })))).toBe('nav.items');
+    for (const target of ['builtin:chat', 'builtin:team', 'builtin:settings']) {
+      expect(failingField(() => parseAppFile(appFile({ ...origins, nav: { items: [page, { id: 'x', target }] } })))).toBe('nav.items[1].target');
+    }
+    expect(failingField(() => parseAppFile(appFile({ ...origins, nav: { items: [page, { ...page }] } })))).toBe('nav.items[1]');
   });
 
   it('binds url: targets to allowedOrigins and requires a title', () => {
-    expect(failingField(() => parseAppFile(appFile({ nav: { items: [chat, page] } })))).toBe('nav.items[1].target');
-    expect(failingField(() => parseAppFile(appFile({ nav: { items: [chat, page] }, allowedOrigins: ['https://other.example.com'] })))).toBe('nav.items[1].target');
-    expect(failingField(() => parseAppFile(appFile({ nav: { items: [chat, { ...page, title: undefined }] }, allowedOrigins: ['https://portal.example.com'] })))).toBe('nav.items[1].title');
+    expect(failingField(() => parseAppFile(appFile({ nav: { items: [page] } })))).toBe('nav.items[0].target');
+    expect(failingField(() => parseAppFile(appFile({ nav: { items: [page] }, allowedOrigins: ['https://other.example.com'] })))).toBe('nav.items[0].target');
+    expect(failingField(() => parseAppFile(appFile({ ...origins, nav: { items: [{ ...page, title: undefined }] } })))).toBe('nav.items[0].title');
     // `blob:` and `filesystem:` take their origin from the address inside
     // them, so an origin comparison alone would let one through while the
     // page it names is something else entirely.
     for (const scheme of ['blob:https://portal.example.com/x', 'filesystem:https://portal.example.com/temporary/x']) {
-      expect(failingField(() => parseAppFile(appFile({ nav: { items: [chat, { ...page, target: `url:${scheme}` }] }, allowedOrigins: ['https://portal.example.com'] })))).toBe('nav.items[1].target');
+      expect(failingField(() => parseAppFile(appFile({ ...origins, nav: { items: [{ ...page, target: `url:${scheme}` }] } })))).toBe('nav.items[0].target');
     }
-    const parsed = parseAppFile(appFile({ nav: { items: [chat, page] }, allowedOrigins: ['https://portal.example.com'] }));
+    const parsed = parseAppFile(appFile({ ...origins, nav: { items: [page] } }));
     expect(resolveAppPageUrl(parsed.config, 'portal')).toBe('https://portal.example.com/home?x=1');
     // The host loads whatever `resolveAppPageUrl` returns, so it settles the
     // scheme itself rather than trusting the config it was handed.

@@ -8,6 +8,64 @@ export function formatAgentSource(source) {
     const plugin = source.plugin.trim();
     return plugin === '' ? undefined : `${AGENT_SOURCE_PLUGIN_PREFIX}${plugin}`;
 }
+const AGENT_I18N_LOCALES = ['zh-CN', 'en-US'];
+// Frontmatter key → the per-locale metadata field it fills, and whether it is a list.
+const AGENT_I18N_FIELDS = [
+    ['name', 'displayNames', false],
+    ['description', 'descriptions', false],
+    ['intro', 'intros', false],
+    ['expertise', 'expertiseI18n', true],
+    ['sample-prompts', 'samplePromptsI18n', true],
+    ['tags', 'tagsI18n', true],
+];
+/**
+ * The frontmatter `i18n` map: per locale, the display text of the fields the
+ * built-ins carry in code (`i18n: { en-US: { name, description, intro,
+ * expertise, sample-prompts, tags } }`), read into `displayNames`,
+ * `descriptions`, `intros`, `expertiseI18n`, `samplePromptsI18n` and
+ * `tagsI18n`. The agent keeps its stored `name`. Anything else in the map is an
+ * authoring mistake and throws.
+ */
+export function parseAgentI18n(value) {
+    if (value === undefined)
+        return {};
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+        throw new Error('i18n must be a map of locales');
+    const fields = {};
+    for (const [locale, entries] of Object.entries(value)) {
+        if (!AGENT_I18N_LOCALES.includes(locale))
+            throw new Error(`i18n locale "${locale}" is not supported`);
+        if (!entries || typeof entries !== 'object' || Array.isArray(entries))
+            throw new Error(`i18n ${locale} must be a map`);
+        for (const [key, entry] of Object.entries(entries)) {
+            const spec = AGENT_I18N_FIELDS.find(([name]) => name === key);
+            if (!spec)
+                throw new Error(`i18n field "${key}" is not supported`);
+            const [, target, isList] = spec;
+            if (isList) {
+                if (!Array.isArray(entry) || entry.some((item) => typeof item !== 'string' || item.trim() === ''))
+                    throw new Error(`i18n ${key} must be a list of strings`);
+            }
+            else if (typeof entry !== 'string' || entry.trim() === '') {
+                throw new Error(`i18n ${key} must be a non-empty string`);
+            }
+            fields[target] = { ...fields[target], [locale]: entry };
+        }
+    }
+    return fields;
+}
+/** The frontmatter `i18n` map for the per-locale metadata fields, or undefined when none is set. */
+export function serializeAgentI18n(metadata) {
+    const map = {};
+    for (const [key, source] of AGENT_I18N_FIELDS) {
+        for (const [locale, entry] of Object.entries(metadata[source] ?? {})) {
+            if (entry === undefined || (Array.isArray(entry) && entry.length === 0))
+                continue;
+            map[locale] = { ...map[locale], [key]: entry };
+        }
+    }
+    return Object.keys(map).length > 0 ? map : undefined;
+}
 export function serializeAgentMd(metadata, systemPrompt) {
     const meta = {};
     const set = (key, value) => {
@@ -41,6 +99,7 @@ export function serializeAgentMd(metadata, systemPrompt) {
     set('sample-prompts', metadata.samplePrompts);
     set('category', metadata.category);
     set('tags', metadata.tags);
+    set('i18n', serializeAgentI18n(metadata));
     const yaml = stringifyYaml(meta, { lineWidth: 0 }).trimEnd();
     return `---\n${yaml}\n---\n\n${systemPrompt}`;
 }
@@ -60,6 +119,7 @@ export const AGENT_FRONTMATTER_ALLOWLIST = [
     'sample-prompts',
     'category',
     'tags',
+    'i18n',
     'source',
 ];
 /** Allowlisted keys whose value is a list, however the author spelled it. */
@@ -213,6 +273,7 @@ export function renderAgentMd(agent, options) {
         samplePrompts: asStringArray(fm['sample-prompts']),
         category: asString(fm.category),
         tags: asStringArray(fm.tags),
+        ...parseAgentI18n(fm.i18n),
         // Provenance comes from the caller — never from `fm`, which had `source`
         // dropped on conversion. Rendering the same agent without a key (the
         // user-authored path) writes no `source` at all.

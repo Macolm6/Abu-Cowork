@@ -29,9 +29,8 @@ describe('validate-plugin-market', () => {
     expect(official.failures.map(String)).toEqual([]);
     expect(official.checked.map(entry => `${entry.kind} ${entry.name}`)).toEqual([
       'plugin abu-prd-doctor',
-      'app recruiting',
-      'app finance-reconciliation',
-      'app content-creation',
+      'plugin ecommerce',
+      'app ecommerce',
     ]);
 
     const examples = await checkMarket(path.join(repoRoot, 'examples', 'plugin-market'), { hostVersion });

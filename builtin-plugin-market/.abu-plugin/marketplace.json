@@ -11,11 +11,19 @@
       "author": { "name": "Abu" },
       "category": "productivity",
       "source": "./plugins/abu-prd-doctor"
+    },
+    {
+      "name": "ecommerce",
+      "displayName": "电商运营包",
+      "description": "电商运营包：电商运营专家团和上新、大促、店铺诊断、客服售后四支专家团，配上架检查、详情页结构、主图规范、活动复盘四个技能",
+      "version": "1.0.0",
+      "author": { "name": "Abu" },
+      "category": "ecommerce",
+      "minAbuVersion": "0.51.0",
+      "source": "./plugins/ecommerce"
     }
   ],
   "apps": [
-    { "name": "recruiting", "source": "./apps/recruiting" },
-    { "name": "finance-reconciliation", "source": "./apps/finance-reconciliation" },
-    { "name": "content-creation", "source": "./apps/content-creation" }
+    { "name": "ecommerce", "source": "./apps/ecommerce" }
   ]
 }

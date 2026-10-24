@@ -64,11 +64,15 @@ interface Fading {
 // question (an alert, or a dialog's question about unsaved input) is shown — not one that waits
 // its turn, and not one that is fading out — once per change. The app shows one notification
 // then, so that none lies over the buttons that answer. Ordinary dialogs do not count.
-export function LayerProvider({ children, container, onModalChange, onDecisionChange }: {
+// `onFloatingChange` hears whether a menu, a select list or a popover is shown, once per change.
+// A menu opened from the sidebar spreads over the main area, where the app page is a native web
+// view that paints over it; the app hides that view while one is.
+export function LayerProvider({ children, container, onModalChange, onDecisionChange, onFloatingChange }: {
   children: ReactNode;
   container?: HTMLElement | null;
   onModalChange?: (open: boolean) => void;
   onDecisionChange?: (asked: boolean) => void;
+  onFloatingChange?: (open: boolean) => void;
 }) {
   // The layers that are shown.
   const layers = useRef<LayerEntry[]>([]);
@@ -92,6 +96,9 @@ export function LayerProvider({ children, container, onModalChange, onDecisionCh
   const decisionListener = useRef(onDecisionChange);
   useLayoutEffect(() => { decisionListener.current = onDecisionChange; });
   const decisionAsked = useRef(false);
+  const floatingListener = useRef(onFloatingChange);
+  useLayoutEffect(() => { floatingListener.current = onFloatingChange; });
+  const floatingOpen = useRef(false);
   // Dialogs whose own question about unsaved input is on the page. That question is no layer.
   const discardQuestions = useRef(new Set<string>());
   // Alert id → the innermost dialog or approval that was open when the alert was asked. The alert
@@ -111,6 +118,7 @@ export function LayerProvider({ children, container, onModalChange, onDecisionCh
   useLayoutEffect(() => {
     if (!modalOpen.current) modalListener.current?.(false);
     if (!decisionAsked.current) decisionListener.current?.(false);
+    if (!floatingOpen.current) floatingListener.current?.(false);
   }, []);
   // Layers read which keys were pressed since they were shown (heldKey.ts).
   useLayoutEffect(() => trackKeysDown(), []);
@@ -136,6 +144,11 @@ export function LayerProvider({ children, container, onModalChange, onDecisionCh
       if (asked !== decisionAsked.current) {
         decisionAsked.current = asked;
         decisionListener.current?.(asked);
+      }
+      const floating = layers.current.some((layer) => layer.kind === 'popover');
+      if (floating !== floatingOpen.current) {
+        floatingOpen.current = floating;
+        floatingListener.current?.(floating);
       }
       const open = painted.current.size > 0 || layers.current.some((layer) => layer.kind !== 'popover');
       if (open === modalOpen.current) return;

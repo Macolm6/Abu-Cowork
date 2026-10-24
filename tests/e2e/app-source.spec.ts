@@ -16,8 +16,8 @@ test.afterEach(async () => {
 async function launch(): Promise<void> {
   ({ app } = await launchAbuElectron(dataRoot));
   page = await app.firstWindow();
-  await expect(page.getByTestId('app-switcher-trigger')).toBeVisible({ timeout: 45_000 });
-  await dismissFirstRunOverlays(page);
+  await expect(page.getByLabel('Main navigation')).toBeVisible({ timeout: 45_000 });
+  await dismissFirstRunOverlays(page, { apps: true });
 }
 
 async function openMarket(): Promise<void> {

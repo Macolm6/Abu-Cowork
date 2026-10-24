@@ -21,7 +21,7 @@ import { isBuiltinAgentPath } from './builtinAgent';
  * `registry.managed.test.ts` pins this set against what `registerBuiltins`
  * actually registers, so a new built-in cannot drift out of it.
  */
-import { BUILTIN_AGENT_NAMES as BUILTIN_AGENT_NAME_LIST } from '../../../electron/shared/pluginAgentFormat.mjs';
+import { BUILTIN_AGENT_NAMES as BUILTIN_AGENT_NAME_LIST, parseAgentI18n } from '../../../electron/shared/pluginAgentFormat.mjs';
 const BUILTIN_AGENT_NAMES: ReadonlySet<string> = new Set(BUILTIN_AGENT_NAME_LIST);
 
 /** @see BUILTIN_AGENT_NAMES */
@@ -118,6 +118,7 @@ export function parseAgentFile(raw: string, filePath: string): SubagentDefinitio
       samplePrompts: meta['sample-prompts'] as string[] | undefined,
       category: meta.category as string | undefined,
       tags: meta.tags as string[] | undefined,
+      ...parseAgentI18n(meta.i18n),
       systemPrompt,
       filePath,
     };

@@ -75,10 +75,7 @@
   },
   "nav": {
     "items": [
-      { "id": "chat", "target": "builtin:chat", "order": 1 },
-      { "id": "experts", "target": "builtin:team", "order": 2 },
-      { "id": "portal", "title": { "zh-CN": "店铺后台", "en-US": "Shop portal" }, "target": "url:https://example.com/portal", "order": 3 },
-      { "id": "extensions", "target": "builtin:extensions", "order": 4 }
+      { "id": "portal", "title": { "zh-CN": "店铺后台", "en-US": "Shop portal" }, "target": "url:https://example.com/portal", "order": 1 }
     ]
   }
 }

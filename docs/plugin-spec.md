@@ -165,8 +165,17 @@ display-description:
 | `expertise` | string[] | 擅长领域，用于展示 |
 | `sample-prompts` | string[] | 示例提问。点击以后文字填进输入框，不直接发送 |
 | `category`、`tags` | string、string[] | 分类与标签 |
+| `i18n` | object | 其他语言界面里显示的文字，按语言写（`zh-CN`、`en-US`），每种语言可写 `name`、`description`、`intro`、`expertise`、`sample-prompts`、`tags`。专家的名称仍是 `name`，这里只改变显示 |
 
 `tools`、`disallowed-tools`、`skills`、`tags` 可以写成数组，也可以写成用逗号分隔的字符串。
+
+```yaml
+i18n:
+  en-US:
+    name: Listing Copywriter
+    description: Writes product titles, selling points and detail pages
+    expertise: [Product titles, Detail pages]
+```
 
 ### 5.3 安装时 Abu 的处理
 

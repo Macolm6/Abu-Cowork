@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { exists, readDir, readTextFile } from '@tauri-apps/plugin-fs';
 import { getI18n, initLanguage } from '@/i18n';
 import { useAppStore } from '@/stores/appStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
 import { useAppDraftStore } from '@/stores/appDraftStore';
 import { useChatStore } from '@/stores/chatStore';
@@ -46,6 +47,8 @@ beforeEach(() => {
     name: d.name, isDirectory: d.isDirectory(), isFile: d.isFile(), isSymlink: d.isSymbolicLink(),
   })) as never);
   useAppStore.setState({ addedApps: [], managedApps: {} });
+  // Creating an app happens with the Apps experiment on.
+  useSettingsStore.setState({ labs: { apps: true } });
   useAppDraftStore.setState({ draftsByConversation: { creator: { id: 'd'.repeat(32), dir, createdAt: '2026-09-28T00:00:00.000Z' } } });
   useTeamStore.setState({ teams: [] });
   myTeamId = useTeamStore.getState().createTeam({ name: '复盘小组', leaderRoleId: 'builtin:产品经理', memberRoleIds: ['builtin:产品经理', 'builtin:数据分析师'] }).id;
@@ -53,6 +56,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  useSettingsStore.setState({ labs: {} });
   rmSync(root, { recursive: true, force: true });
 });
 

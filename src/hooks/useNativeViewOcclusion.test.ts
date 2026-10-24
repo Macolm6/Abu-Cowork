@@ -17,12 +17,12 @@ describe('useNativeViewOcclusion', () => {
     drainCapabilitySetupRequests();
     useChatStore.setState({ activeConversationId: 'active-conversation' });
     useSettingsStore.setState({ systemSettingsOpen: false });
-    usePreviewStore.setState({ menuOpen: false, appModalOpen: false, dsModalOpen: false });
+    usePreviewStore.setState({ menuOpen: false, appModalOpen: false, dsModalOpen: false, dsFloatingOpen: false });
     useImageLightboxStore.getState().close();
   });
   afterEach(() => {
     cleanup();
-    usePreviewStore.setState({ menuOpen: false, appModalOpen: false, dsModalOpen: false });
+    usePreviewStore.setState({ menuOpen: false, appModalOpen: false, dsModalOpen: false, dsFloatingOpen: false });
     useSettingsStore.setState({ systemSettingsOpen: false });
   });
 
@@ -42,6 +42,7 @@ describe('useNativeViewOcclusion', () => {
   it.each([
     ['the settings window', () => useSettingsStore.setState({ systemSettingsOpen: true })],
     ['a workspace menu', () => usePreviewStore.setState({ menuOpen: true })],
+    ['a design-system menu or popover', () => usePreviewStore.getState().setDsFloatingOpen(true)],
   ])('still hides it for %s', (_name, open) => {
     const { result } = renderHook(() => useNativeViewOcclusion());
     act(() => { open(); });

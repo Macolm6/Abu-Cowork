@@ -165,8 +165,17 @@ Both shapes go through the same conversion at installation, and the result is th
 | `expertise` | string[] | Areas of expertise, used for display |
 | `sample-prompts` | string[] | Example prompts. A click puts the text into the input box and does not send it |
 | `category`, `tags` | string, string[] | The category and the tags |
+| `i18n` | object | The text shown in another interface language, per locale (`zh-CN`, `en-US`); each locale may give `name`, `description`, `intro`, `expertise`, `sample-prompts` and `tags`. The expert's name stays `name`; this changes only what is displayed |
 
 `tools`, `disallowed-tools`, `skills` and `tags` can be written as an array or as a comma-separated string.
+
+```yaml
+i18n:
+  en-US:
+    name: Listing Copywriter
+    description: Writes product titles, selling points and detail pages
+    expertise: [Product titles, Detail pages]
+```
 
 ### 5.3 What Abu does at installation
 

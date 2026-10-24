@@ -29,15 +29,6 @@ export const APP_CONFIG_VERSION = 1;
 export const APPS_MIN_ABU_VERSION = '0.51.0';
 export const APP_PAGE_TARGET_PREFIX = 'url:';
 
-export const APP_BUILTIN_NAV_TARGETS = Object.freeze([
-    'builtin:chat',
-    'builtin:todos',
-    'builtin:inbox',
-    'builtin:team',
-    'builtin:extensions',
-    'builtin:automation',
-]);
-
 export const APP_LIMITS = Object.freeze({
     promptAppend: 16000,
     templatesMin: 3,
@@ -234,6 +225,8 @@ export function appPageUrl(target) {
     return typeof target === 'string' && target.startsWith(APP_PAGE_TARGET_PREFIX) ? target.slice(APP_PAGE_TARGET_PREFIX.length) : undefined;
 }
 
+// An app's navigation lists its own web pages. Abu's own entries (new task,
+// experts, extensions, automation) are always shown and come before them.
 function parseNav(value, field, allowedOrigins) {
     const nav = requireObject(value, field);
     rejectUnknownKeys(nav, field, ['items']);
@@ -245,23 +238,20 @@ function parseNav(value, field, allowedOrigins) {
         const target = item.target;
         if (typeof target !== 'string') fail('is required', `${itemField}.target`, 'missing');
         const url = appPageUrl(target);
-        if (url === undefined) {
-            if (!APP_BUILTIN_NAV_TARGETS.includes(target)) fail(`unknown target "${target}"`, `${itemField}.target`, 'type');
-        } else {
-            let parsed;
-            try {
-                parsed = new URL(url);
-            } catch {
-                fail('url: target must be an absolute URL', `${itemField}.target`, 'type');
-            }
-            // A scheme that borrows its origin from an inner URL (`blob:`,
-            // `filesystem:`) passes an origin comparison while naming something
-            // else entirely, so the scheme is settled before the origin is.
-            if (!APP_PAGE_PROTOCOLS.has(parsed.protocol)) fail('url: target must be an http(s) address', `${itemField}.target`, 'origin');
-            if (parsed.username || parsed.password) fail('url: target must not carry credentials', `${itemField}.target`, 'origin');
-            if (!allowedOrigins.includes(parsed.origin)) fail(`origin ${parsed.origin} is not listed in allowedOrigins`, `${itemField}.target`, 'origin');
-            if (item.title === undefined) fail('is required for url: targets', `${itemField}.title`, 'missing');
+        if (url === undefined) fail(`must be a url: target (Abu's own entries are always shown), got "${target}"`, `${itemField}.target`, 'type');
+        let parsed;
+        try {
+            parsed = new URL(url);
+        } catch {
+            fail('url: target must be an absolute URL', `${itemField}.target`, 'type');
         }
+        // A scheme that borrows its origin from an inner URL (`blob:`,
+        // `filesystem:`) passes an origin comparison while naming something
+        // else entirely, so the scheme is settled before the origin is.
+        if (!APP_PAGE_PROTOCOLS.has(parsed.protocol)) fail('url: target must be an http(s) address', `${itemField}.target`, 'origin');
+        if (parsed.username || parsed.password) fail('url: target must not carry credentials', `${itemField}.target`, 'origin');
+        if (!allowedOrigins.includes(parsed.origin)) fail(`origin ${parsed.origin} is not listed in allowedOrigins`, `${itemField}.target`, 'origin');
+        if (item.title === undefined) fail('is required for url: targets', `${itemField}.title`, 'missing');
         return {
             id: requireId(item.id, `${itemField}.id`),
             title: parseLocalizedText(item.title, `${itemField}.title`),
@@ -271,8 +261,6 @@ function parseNav(value, field, allowedOrigins) {
         };
     });
     assertUnique(items.map(item => item.id), `${field}.items`, 'nav id');
-    const chatEntries = items.filter(item => item.target === 'builtin:chat').length;
-    if (chatEntries !== 1) fail('must contain builtin:chat exactly once', `${field}.items`, chatEntries === 0 ? 'missing' : 'duplicate');
     return { items };
 }
 

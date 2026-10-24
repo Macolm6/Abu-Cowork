@@ -133,7 +133,7 @@ describe('appSync', () => {
       appId: 'enterprise-app:a1', name: '合同审阅', version: '1', origin: { kind: 'enterprise' }, plugins: [],
       config: {
         home: { modes: { items: [] } },
-        nav: { items: [{ id: 'chat', target: 'builtin:chat' }, { id: 'p', title: 'P', target: 'url:https://contracts.example.com/x' }] },
+        nav: { items: [{ id: 'p', title: 'P', target: 'url:https://contracts.example.com/x' }] },
         allowedOrigins: ['https://contracts.example.com'],
       },
     } as unknown as AppDefinition;

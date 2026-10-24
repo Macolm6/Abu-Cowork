@@ -86,7 +86,7 @@ import TeamAvatar from '@/components/team/TeamAvatar';
 import AppHome, { AppHomeScenes } from './AppHome';
 import ConversationAppBadge from './ConversationAppBadge';
 import ConversationAppNotice from './ConversationAppNotice';
-import { useSelectedApp } from '@/stores/appStore';
+import { appBindingShown, useAppsLabOn, useSelectedApp } from '@/stores/appStore';
 import { GENERAL_APP_ID } from '@/types/app';
 import {
   VIRTUOSO_ITEM_TRAILING_PAD,
@@ -1127,6 +1127,7 @@ export default function ChatView({
   // team or expert the app pins shows in the composer chip, the header stays
   // the app's.
   const selectedApp = useSelectedApp();
+  const appsLabOn = useAppsLabOn();
   const appHome = selectedApp.appId === GENERAL_APP_ID ? null : selectedApp;
 
   // Hide guide when user starts typing (called from ChatInput)
@@ -1582,7 +1583,7 @@ export default function ChatView({
             {activeConv.title}
           </span>
         )}
-        {activeConv.appBinding && !isRenamingTitle && <ConversationAppBadge binding={activeConv.appBinding} />}
+        {activeConv.appBinding && appBindingShown(activeConv.appBinding, appsLabOn) && !isRenamingTitle && <ConversationAppBadge binding={activeConv.appBinding} />}
         {titleTeamLeader && !isRenamingTitle && (
           <span
             data-testid="chat-title-team-badge"
@@ -1866,7 +1867,7 @@ export default function ChatView({
           {/* Staged mid-task messages — cancellable pills at the composer's
               top-right edge; they enter the transcript when the loop drains them */}
           <QueuedMessagesStrip conversationId={activeConv.id} />
-          {activeConv.appBinding && <ConversationAppNotice binding={activeConv.appBinding} />}
+          {activeConv.appBinding && appBindingShown(activeConv.appBinding, appsLabOn) && <ConversationAppNotice binding={activeConv.appBinding} />}
           <ChatInput variant="chat" onSend={handleSend} />
           <div className="mt-2 flex items-center justify-center gap-3 overflow-hidden whitespace-nowrap">
             <UsageChip conversationId={activeConv.id} />

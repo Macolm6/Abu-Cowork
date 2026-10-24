@@ -16,7 +16,7 @@ The file and every object inside it accept only the fields listed here. Any othe
 | `home` | yes | object | The home page, see below |
 | `defaultRun` | no | run reference | Who takes the conversation when the user sends without choosing a scene. Absent: Abu answers with the app prompt |
 | `promptAppend` | no | string | App-level prompt, applied to every conversation in the app. At most 16000 characters |
-| `nav` | no | object | Navigation, see below. Absent: Abu's default navigation |
+| `nav` | no | object | The app's own web pages, see below. Abu's own entries are always shown |
 | `allowedOrigins` | required when a `url:` navigation item exists | string[] | Origins the app's web pages may use, see below |
 | `requiredConnectors` | no | string[] | `<plugin>/<connector>` of a plugin listed in `plugins`. While one is not connected, the home page shows a hint |
 | `composer.placeholder` | no | LocalizedText | Placeholder of the composer |
@@ -88,22 +88,16 @@ A reference to something that does not exist on this computer fails validation. 
 
 ## `nav`
 
+Abu's own entries (new task, experts, extensions, automation) are shown in every app and are never listed here. `nav` lists the app's own web pages, placed after them; leave `nav` out when the app has none.
+
 | Field | Required | Type | Meaning |
 |---|---|---|---|
+| `items` | yes | array | At least one item |
 | `items[].id` | yes | string | Unique within the navigation |
-| `items[].title` | required for `url:` items | LocalizedText | Built-in entries fall back to Abu's own label |
+| `items[].title` | yes | LocalizedText | The name shown in the sidebar |
 | `items[].icon` | no | string | Image path inside the draft folder |
 | `items[].order` | no | number | Ascending |
-| `items[].target` | yes | string | See below |
-
-| `target` | Meaning |
-|---|---|
-| `builtin:chat` | New task. Must appear exactly once |
-| `builtin:todos`, `builtin:inbox` | Todos, inbox |
-| `builtin:team` | Experts |
-| `builtin:extensions` | Extensions |
-| `builtin:automation` | Automation |
-| `url:<address>` | The app's own web page, shown in the main area. `https://` only, or `http://` for a local preview, and its origin must be listed in `allowedOrigins` |
+| `items[].target` | yes | string | `url:<address>`: the app's own web page, shown in the main area. `https://` only, or `http://` for a local preview, and its origin must be listed in `allowedOrigins` |
 
 Projects, the conversation list and the account menu are not navigation items and stay visible in every app.
 

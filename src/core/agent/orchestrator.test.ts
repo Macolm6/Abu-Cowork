@@ -416,6 +416,8 @@ describe('buildSystemPromptSections - app context', () => {
 
   it('adds the app section, cacheable, after the identity block and before the date, only for app-bound conversations', async () => {
     const { useChatStore } = await import('@/stores/chatStore');
+    const settings = useSettingsStore.getState();
+    vi.mocked(useSettingsStore.getState).mockReturnValue({ ...settings, labs: { apps: true } } as never);
     const conversation = (id: string, appBinding?: typeof binding) => ({ id, title: id, messages: [], createdAt: 0, updatedAt: 0, status: 'idle' as const, ...(appBinding ? { appBinding } : {}) });
     useChatStore.setState((state) => ({ conversations: { ...state.conversations, plain: conversation('plain'), bound: conversation('bound', binding) } }));
     const plainNames = (await buildSystemPromptSections(routeInput('hello'), basePrompt, 'plain')).map((section) => section.name);
@@ -429,6 +431,22 @@ describe('buildSystemPromptSections - app context', () => {
     expect(section.cacheable).toBe(true);
     expect(section.text).toContain('inside the app "店铺运营"');
     expect(section.text).toContain('<app-instructions>\nFocus on margins.\n</app-instructions>');
+    vi.mocked(useSettingsStore.getState).mockReturnValue(settings);
+  });
+
+  // Apps are a Labs experiment: off, a conversation started in an app the user
+  // added runs as an ordinary one; an organization app's context stays.
+  it('leaves out an added app\'s context while the Apps experiment is off, never an organization app\'s', async () => {
+    const { useChatStore } = await import('@/stores/chatStore');
+    const settings = useSettingsStore.getState();
+    vi.mocked(useSettingsStore.getState).mockReturnValue({ ...settings, labs: {} } as never);
+    const conversation = (id: string, origin: 'market' | 'enterprise') => ({
+      id, title: id, messages: [], createdAt: 0, updatedAt: 0, status: 'idle' as const, appBinding: { ...binding, origin },
+    });
+    useChatStore.setState((state) => ({ conversations: { ...state.conversations, added: conversation('added', 'market'), org: conversation('org', 'enterprise') } }));
+    expect((await buildSystemPromptSections(routeInput('hello'), basePrompt, 'added')).map((section) => section.name)).not.toContain('app-context');
+    expect((await buildSystemPromptSections(routeInput('hello'), basePrompt, 'org')).map((section) => section.name)).toContain('app-context');
+    vi.mocked(useSettingsStore.getState).mockReturnValue(settings);
   });
 });
 

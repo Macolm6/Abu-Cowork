@@ -1,11 +1,13 @@
 import { useMemo } from 'react';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { AppDefinition, AppLocale } from '@/types/app';
+import type { AppDefinition, AppLocale, ConversationAppBinding } from '@/types/app';
 import { GENERAL_APP_ID } from '@/types/app';
 import { getApp, listApps } from '@/core/app/appRegistry';
 import { getEnterpriseAppPolicy } from '@/core/enterprise/appPolicy';
 import { getLocale, useI18n } from '@/i18n';
+import { LABS_APPS } from '@/core/labs/registry';
+import { isLabsFlagOn, useLabsFlag } from '@/core/labs/resolve';
 import { useSettingsStore } from './settingsStore';
 import { useChatStore } from './chatStore';
 
@@ -91,9 +93,23 @@ export function availableApps(state: AppLists, locale: AppLocale = getLocale()):
   return listApps(state.addedApps, managedList(state.managedApps), locale);
 }
 
-/** The selected app, or the general shell when the selection no longer exists. */
-export function selectedApp(state: AppLists & Pick<AppState, 'selectedAppId'>, locale: AppLocale = getLocale()): AppDefinition {
-  const apps = availableApps(state, locale);
+/**
+ * What the shell shows: the apps the user added only while the Apps experiment
+ * is on, the organization's always. The store keeps every list and the
+ * remembered selection either way, so turning the experiment back on returns
+ * the user to where they were.
+ */
+export function visibleApps(state: AppLists, locale: AppLocale = getLocale(), addedVisible: boolean = isLabsFlagOn(LABS_APPS)): AppDefinition[] {
+  return listApps(addedVisible ? state.addedApps : [], managedList(state.managedApps), locale);
+}
+
+/** The selected app, or the general shell when the selection is not shown. */
+export function selectedApp(
+  state: AppLists & Pick<AppState, 'selectedAppId'>,
+  locale: AppLocale = getLocale(),
+  addedVisible: boolean = isLabsFlagOn(LABS_APPS),
+): AppDefinition {
+  const apps = visibleApps(state, locale, addedVisible);
   return getApp(apps, state.selectedAppId) ?? apps[0];
 }
 
@@ -261,14 +277,48 @@ export function useSelectedApp(): AppDefinition {
   const addedApps = useAppStore((s) => s.addedApps);
   const managedApps = useAppStore((s) => s.managedApps);
   const selectedAppId = useAppStore((s) => s.selectedAppId);
+  const addedVisible = useLabsFlag(LABS_APPS);
   const { locale } = useI18n();
-  return useMemo(() => selectedApp({ addedApps, managedApps, selectedAppId }, locale), [addedApps, managedApps, selectedAppId, locale]);
+  return useMemo(
+    () => selectedApp({ addedApps, managedApps, selectedAppId }, locale, addedVisible),
+    [addedApps, managedApps, selectedAppId, locale, addedVisible],
+  );
 }
 
 /** Every app the switcher lists, general shell first. */
 export function useAvailableApps(): AppDefinition[] {
   const addedApps = useAppStore((s) => s.addedApps);
   const managedApps = useAppStore((s) => s.managedApps);
+  const addedVisible = useLabsFlag(LABS_APPS);
   const { locale } = useI18n();
-  return useMemo(() => availableApps({ addedApps, managedApps }, locale), [addedApps, managedApps, locale]);
+  return useMemo(() => visibleApps({ addedApps, managedApps }, locale, addedVisible), [addedApps, managedApps, locale, addedVisible]);
+}
+
+/**
+ * Whether the shell shows apps at all: the Apps experiment is on, or the
+ * organization pushed apps down (those stay visible whatever the flag says).
+ */
+export function useAppsVisible(): boolean {
+  const addedVisible = useLabsFlag(LABS_APPS);
+  const hasManaged = useAppStore((s) => Object.values(s.managedApps).some((apps) => apps.length > 0));
+  return addedVisible || hasManaged;
+}
+
+/**
+ * Whether a conversation shows (and the agent reads) the app it was started
+ * in: an organization app always, an app the user added while the Apps
+ * experiment is on. Off, the conversation reads as an ordinary one.
+ */
+export function appBindingShown(binding: ConversationAppBinding, addedVisible: boolean = isLabsFlagOn(LABS_APPS)): boolean {
+  return addedVisible || binding.origin === 'enterprise';
+}
+
+/** The Apps experiment flag, for `appBindingShown` in components. */
+export function useAppsLabOn(): boolean {
+  return useLabsFlag(LABS_APPS);
+}
+
+/** `useAppsVisible` for code outside React. */
+export function appsVisible(): boolean {
+  return isLabsFlagOn(LABS_APPS) || Object.values(useAppStore.getState().managedApps).some((apps) => apps.length > 0);
 }

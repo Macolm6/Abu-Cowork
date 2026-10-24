@@ -34,6 +34,8 @@ import type { PromptSection } from '../llm/promptSections';
 import type { TeamRouteContext } from '../team/leaderRoute';
 import { buildTeamRoleBlock, buildTeamAvailableAgentsText } from '../team/leaderRoute';
 import { sectionsToString, orderSectionsForCaching } from '../llm/promptSections';
+import { LABS_APPS } from '../labs/registry';
+import { isLabsFlagOn } from '../labs/resolve';
 
 const DEFAULT_PERSONA = 'You are Abu (阿布), a professional and reliable desktop assistant. Reply in a friendly and concise manner.';
 
@@ -479,8 +481,9 @@ export async function buildSystemPromptSections(
   // mode above, right after the identity block: the app is the workspace the
   // user chose, and a team-pinned conversation keeps both this and its Role.
   // Fork contexts stay minimal, as for every other identity addition.
+  // With the Apps experiment off, only an organization app's context still applies.
   const appBinding = getConversationReader().getConversation(conversationId)?.appBinding;
-  if (appBinding && !isForkContext) {
+  if (appBinding && !isForkContext && (appBinding.origin === 'enterprise' || isLabsFlagOn(LABS_APPS))) {
     sections.push({ name: 'app-context', text: buildAppContextSection(appBinding), cacheable: true });
   }
 

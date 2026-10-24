@@ -4,7 +4,6 @@ export const APP_FILE_PATH: '.abu-app/app.json';
 export const APP_CONFIG_VERSION: 1;
 export const APPS_MIN_ABU_VERSION: string;
 export const APP_PAGE_TARGET_PREFIX: 'url:';
-export const APP_BUILTIN_NAV_TARGETS: readonly string[];
 export const APP_LIMITS: Readonly<{
   promptAppend: number;
   templatesMin: number;

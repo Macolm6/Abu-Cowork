@@ -25,6 +25,7 @@ import TodoView from '@/components/todos/TodoView';
 import InboxView from '@/components/inbox/InboxView';
 import { useLabsFlag, resolveLabsFlag } from '@/core/labs/resolve';
 import { LABS_TODOS_INBOX, LABS_PET } from '@/core/labs/registry';
+import { useSelectedApp } from '@/stores/appStore';
 import { resolvePetBootAction } from '@/core/pet/petBoot';
 import { setPetVisible, hidePet } from '@/core/pet/petVisibility';
 import { PET_POSITION_EVENT, parsePetPosition } from '@/core/pet/petPositionSync';
@@ -253,6 +254,13 @@ function App() {
       setViewMode('chat');
     }
   }, [showTodosInbox, viewMode, setViewMode]);
+
+  // The same for an app's web page: once its app is no longer shown (the Apps
+  // experiment turned off), the page and its sidebar entry are gone.
+  const shownApp = useSelectedApp();
+  useEffect(() => {
+    if (viewMode === 'app-page' && shownApp.origin === null) setViewMode('chat');
+  }, [shownApp.origin, viewMode, setViewMode]);
 
   const theme = useSettingsStore((s) => s.theme);
   useEffect(() => {
@@ -909,7 +917,11 @@ function App() {
   return (
     <ErrorBoundary onError={traceAppRootRenderError}>
     {/* A dialog or question on screen hides the native browser view, which paints above the page. */}
-    <DesignSystemProvider onModalChange={usePreviewStore.getState().setDsModalOpen} onDecisionChange={setToastPlacesForDecision}>
+    <DesignSystemProvider
+      onModalChange={usePreviewStore.getState().setDsModalOpen}
+      onDecisionChange={setToastPlacesForDecision}
+      onFloatingChange={usePreviewStore.getState().setDsFloatingOpen}
+    >
       <div
         data-abu-app-shell
         className="relative flex h-full w-full flex-col overflow-hidden bg-desk"

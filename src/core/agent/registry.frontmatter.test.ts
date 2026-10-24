@@ -268,3 +268,50 @@ describe('parseAgentFile / serializeAgentMd — role tool inheritance', () => {
     });
   });
 });
+
+/**
+ * A plugin expert has no code entry, so the `i18n` frontmatter map carries the
+ * display text the built-ins keep in `displayNames` and the other per-locale
+ * fields. The stored name stays what it is.
+ */
+describe('parseAgentFile — i18n frontmatter', () => {
+  const filePath = '/home/.abu/agents/详情页文案/AGENT.md';
+  const file = (i18n: string) => `---\nname: 详情页文案\ndescription: 写详情页\n${i18n}\n---\n\nYou write listings.\n`;
+
+  it('reads the per-locale name, description, intro, expertise, sample prompts and tags', () => {
+    const agent = parseAgentFile(file([
+      'i18n:',
+      '  en-US:',
+      '    name: Listing Copywriter',
+      '    description: Writes product listings',
+      '    intro: Give me the specs.',
+      '    expertise: [Titles, Detail pages]',
+      '    sample-prompts: [Write a title]',
+      '    tags: [copy]',
+    ].join('\n')), filePath);
+    expect(agent).toMatchObject({
+      name: '详情页文案',
+      displayNames: { 'en-US': 'Listing Copywriter' },
+      descriptions: { 'en-US': 'Writes product listings' },
+      intros: { 'en-US': 'Give me the specs.' },
+      expertiseI18n: { 'en-US': ['Titles', 'Detail pages'] },
+      samplePromptsI18n: { 'en-US': ['Write a title'] },
+      tagsI18n: { 'en-US': ['copy'] },
+    });
+  });
+
+  it('reads nothing extra from a file without it', () => {
+    const agent = parseAgentFile(file(''), filePath);
+    expect(agent?.displayNames).toBeUndefined();
+  });
+
+  it.each([
+    ['an unknown locale', 'i18n:\n  fr-FR:\n    name: Rédacteur'],
+    ['an unknown field', 'i18n:\n  en-US:\n    color: blue'],
+    ['a blank name', "i18n:\n  en-US:\n    name: ''"],
+    ['a list that is no list', 'i18n:\n  en-US:\n    expertise: Titles'],
+    ['a locale that is no map', 'i18n:\n  en-US: Listing Copywriter'],
+  ])('refuses the file for %s', (_case, i18n) => {
+    expect(parseAgentFile(file(i18n), filePath)).toBeNull();
+  });
+});

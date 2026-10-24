@@ -25,6 +25,8 @@ const settingsState = {
   toolboxSearchQuery: '',
   setToolboxSearchQuery: vi.fn((value: string) => { settingsState.toolboxSearchQuery = value; }),
   disabledAgents: [] as string[],
+  // The 本应用 / 全部 filter belongs to apps, a Labs experiment.
+  labs: { apps: true } as Record<string, boolean>,
   setActiveTeamTab: vi.fn((tab: 'inbox' | 'tasks' | 'members' | 'teams') => {
     settingsState.activeTeamTab = tab;
     settingsListeners.forEach((listener) => listener());

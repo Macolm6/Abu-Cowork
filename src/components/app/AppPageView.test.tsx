@@ -4,12 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { listen } from '@tauri-apps/api/event';
 import { DesignSystemProvider } from '@/components/ds/provider';
-import { APP_PAGE_STATE_EVENT, hideAppPages, reloadAppPage, setAppPageBounds, showAppPage, type AppPageStateEvent } from '@/core/app/appPageBridge';
+import { APP_PAGE_STATE_EVENT, captureAppPage, hideAppPages, reloadAppPage, setAppPageBounds, showAppPage, type AppPageStateEvent } from '@/core/app/appPageBridge';
 import { DEFAULT_APP_CONFIG } from '@/data/defaultAppConfig';
 import { useNativeViewOcclusion } from '@/hooks/useNativeViewOcclusion';
 import { getI18n } from '@/i18n';
 import { useAppStore } from '@/stores/appStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { LABS_APPS } from '@/core/labs/registry';
 import type { AppDefinition } from '@/types/app';
 import AppPageView from './AppPageView';
 
@@ -19,9 +20,20 @@ vi.mock('@/core/app/appPageBridge', async (importOriginal) => ({
   showAppPage: vi.fn(async () => undefined),
   setAppPageBounds: vi.fn(async () => undefined),
   hideAppPages: vi.fn(async () => undefined),
+  captureAppPage: vi.fn(async () => null),
   reloadAppPage: vi.fn(async () => undefined),
 }));
 vi.mock('@/hooks/useNativeViewOcclusion', () => ({ useNativeViewOcclusion: vi.fn(() => false) }));
+const host = vi.hoisted(() => ({ platform: 'macos' as 'macos' | 'windows', electron: true }));
+vi.mock('@/utils/platform', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/utils/platform')>()),
+  isMacOS: () => host.platform === 'macos',
+  isWindows: () => host.platform === 'windows',
+}));
+vi.mock('@/utils/electronHost', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/utils/electronHost')>()),
+  hasElectronCommandHost: () => host.electron,
+}));
 
 const t = () => getI18n();
 const APP_ID = 'shop@org';
@@ -92,9 +104,14 @@ describe('AppPageView', () => {
       return () => { listeners.delete(listener); };
     });
     vi.mocked(useNativeViewOcclusion).mockReturnValue(false);
-    for (const call of [showAppPage, setAppPageBounds, hideAppPages, reloadAppPage]) vi.mocked(call).mockClear();
+    for (const call of [showAppPage, setAppPageBounds, hideAppPages, reloadAppPage]) {
+      vi.mocked(call).mockReset();
+      vi.mocked(call).mockResolvedValue(undefined);
+    }
+    vi.mocked(captureAppPage).mockReset();
+    vi.mocked(captureAppPage).mockResolvedValue(null);
     useAppStore.setState({ addedApps: [shop], selectedAppId: APP_ID, activeAppPage: { appId: APP_ID, navItemId: 'portal' } });
-    useSettingsStore.setState({ viewMode: 'app-page' });
+    useSettingsStore.setState({ viewMode: 'app-page', labs: { [LABS_APPS]: true } });
   });
 
   afterEach(() => {
@@ -104,7 +121,8 @@ describe('AppPageView', () => {
     vi.mocked(listen).mockReset();
     vi.mocked(listen).mockResolvedValue(() => undefined);
     useAppStore.setState({ addedApps: [], selectedAppId: '__general__', activeAppPage: null });
-    useSettingsStore.setState({ viewMode: 'chat' });
+    useSettingsStore.setState({ viewMode: 'chat', sidebarCollapsed: false, labs: {} });
+    host.platform = 'macos';
   });
 
   describe('the native page', () => {
@@ -141,10 +159,11 @@ describe('AppPageView', () => {
       expect(setAppPageBounds).not.toHaveBeenCalled();
     });
 
-    it('is hidden while a window of the app would be painted under it, and shown again after', () => {
+    it('is hidden while a menu or a window would be painted under it, and shown again after', async () => {
       vi.mocked(useNativeViewOcclusion).mockReturnValue(true);
       const { rerender } = show();
       expect(showAppPage).not.toHaveBeenCalled();
+      await act(async () => { await Promise.resolve(); });
       expect(hideAppPages).toHaveBeenCalledTimes(1);
       expect(observers).toHaveLength(0);
 
@@ -154,8 +173,42 @@ describe('AppPageView', () => {
 
       vi.mocked(useNativeViewOcclusion).mockReturnValue(true);
       rerender(<AppPageView />);
-      expect(hideAppPages).toHaveBeenCalledTimes(3);
       expect(observers[0].disconnected).toBe(true);
+      await act(async () => { await Promise.resolve(); });
+      expect(hideAppPages).toHaveBeenCalledTimes(2);
+    });
+
+    // A hidden view has no frame, so the page's last frame is taken before it hides and stands in
+    // for it: the area keeps showing the page under the menu instead of going blank.
+    it('shows the page\'s last frame while it is covered, taken before the view hides', async () => {
+      const order: string[] = [];
+      vi.mocked(captureAppPage).mockImplementation(async () => { order.push('capture'); return 'data:image/png;base64,AAAA'; });
+      vi.mocked(hideAppPages).mockImplementation(async () => { order.push('hide'); });
+      const { rerender } = show();
+      vi.mocked(useNativeViewOcclusion).mockReturnValue(true);
+      rerender(<AppPageView />);
+      await act(async () => { await Promise.resolve(); });
+      expect(vi.mocked(captureAppPage).mock.calls).toEqual([[APP_ID, 'portal']]);
+      expect(order).toEqual(['capture', 'hide']);
+      expect(screen.getByTestId('app-page-frame')).toHaveAttribute('src', 'data:image/png;base64,AAAA');
+
+      vi.mocked(useNativeViewOcclusion).mockReturnValue(false);
+      rerender(<AppPageView />);
+      await act(async () => { await Promise.resolve(); });
+      expect(screen.queryByTestId('app-page-frame')).toBeNull();
+    });
+
+    it('does not hide the page for an overlay that left before the frame was taken', async () => {
+      let resolveFrame: (frame: string | null) => void = () => undefined;
+      vi.mocked(captureAppPage).mockImplementation(() => new Promise((resolve) => { resolveFrame = resolve; }));
+      const { rerender } = show();
+      vi.mocked(useNativeViewOcclusion).mockReturnValue(true);
+      rerender(<AppPageView />);
+      vi.mocked(useNativeViewOcclusion).mockReturnValue(false);
+      rerender(<AppPageView />);
+      await act(async () => { resolveFrame('data:image/png;base64,AAAA'); await Promise.resolve(); });
+      expect(hideAppPages).not.toHaveBeenCalled();
+      expect(screen.queryByTestId('app-page-frame')).toBeNull();
     });
 
     it('is hidden when another view is in the main area', () => {
@@ -183,6 +236,20 @@ describe('AppPageView', () => {
       act(() => useAppStore.setState({ activeAppPage: { appId: APP_ID, navItemId: 'untitled' } }));
       expect(view()).toHaveAttribute('data-nav-item', 'untitled');
       expect(screen.getByText('Shop desk')).toBeInTheDocument();
+    });
+
+    // Collapsed, the window's controls float over the card's top-left, where the title would be.
+    it.each([
+      ['macOS', 'macos', 'pl-48'],
+      ['Windows', 'windows', 'pl-20'],
+    ] as const)('moves its title clear of the window controls on %s while the sidebar is collapsed', (_name, platform, inset) => {
+      host.platform = platform;
+      useSettingsStore.setState({ sidebarCollapsed: false });
+      show();
+      const header = screen.getByText('Order portal').parentElement;
+      expect(header).not.toHaveClass(inset);
+      act(() => useSettingsStore.setState({ sidebarCollapsed: true }));
+      expect(header).toHaveClass(inset);
     });
 
     it('reloads the page from its retry button', () => {
