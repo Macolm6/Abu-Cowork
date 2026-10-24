@@ -465,6 +465,26 @@ describe('LayerProvider', () => {
       expect(onModalChange.mock.calls).toEqual([[false], [true], [false]]);
     });
 
+    // The app page's native view hides for a menu; this is how the app learns of one.
+    it('says when a menu or popover is shown, once per change, and not for a dialog', async () => {
+      const user = userEvent.setup();
+      const onFloatingChange = vi.fn();
+      render(
+        <LayerProvider onFloatingChange={onFloatingChange}>
+          <FakeLayer name="menu" kind="popover" />
+          <FakeLayer name="dialog" kind="dialog" />
+        </LayerProvider>,
+      );
+      expect(onFloatingChange.mock.calls).toEqual([[false]]);
+      await user.click(screen.getByText('open menu'));
+      expect(onFloatingChange.mock.calls).toEqual([[false], [true]]);
+      await user.click(screen.getByText('close menu'));
+      expect(onFloatingChange.mock.calls).toEqual([[false], [true], [false]]);
+      await user.click(screen.getByText('open dialog'));
+      await user.click(screen.getByText('close dialog'));
+      expect(onFloatingChange.mock.calls).toEqual([[false], [true], [false]]);
+    });
+
     // The app shows one notification while the user is asked to decide; this is how it learns of it.
     it('says when an approval or a question is on the page, once per change, and not for a dialog', async () => {
       const user = userEvent.setup();

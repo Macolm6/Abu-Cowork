@@ -223,6 +223,9 @@ interface PreviewState {
   // in the app, until its fade has ended (reported by the layer registry). The native browser
   // webview hides for it like for a workspace menu. Ephemeral.
   dsModalOpen: boolean;
+  // True while a design-system menu, select list or popover is shown (reported by the layer
+  // registry). The app page's native view hides for it: a sidebar menu spreads over it. Ephemeral.
+  dsFloatingOpen: boolean;
   // Resizable chat-column width (px) while the workspace is open; null = use default.
   // The workspace column flex-fills whatever the chat leaves.
   chatWidth: number | null;
@@ -330,6 +333,7 @@ interface PreviewState {
   setMenuOpen: (open: boolean) => void;
   setAppModalOpen: (open: boolean) => void;
   setDsModalOpen: (open: boolean) => void;
+  setDsFloatingOpen: (open: boolean) => void;
 }
 
 export const usePreviewStore = create<PreviewState>((set, get) => {
@@ -428,6 +432,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
   menuOpen: false,
   appModalOpen: false,
   dsModalOpen: false,
+  dsFloatingOpen: false,
   chatWidth: null,
   emptyPanelShown: {},
   previewFilePath: null,
@@ -814,6 +819,10 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
 
   setDsModalOpen: (open) => {
     set({ dsModalOpen: open });
+  },
+
+  setDsFloatingOpen: (open) => {
+    set({ dsFloatingOpen: open });
   },
   });
 });

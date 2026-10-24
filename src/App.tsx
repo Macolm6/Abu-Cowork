@@ -909,7 +909,11 @@ function App() {
   return (
     <ErrorBoundary onError={traceAppRootRenderError}>
     {/* A dialog or question on screen hides the native browser view, which paints above the page. */}
-    <DesignSystemProvider onModalChange={usePreviewStore.getState().setDsModalOpen} onDecisionChange={setToastPlacesForDecision}>
+    <DesignSystemProvider
+      onModalChange={usePreviewStore.getState().setDsModalOpen}
+      onDecisionChange={setToastPlacesForDecision}
+      onFloatingChange={usePreviewStore.getState().setDsFloatingOpen}
+    >
       <div
         data-abu-app-shell
         className="relative flex h-full w-full flex-col overflow-hidden bg-desk"

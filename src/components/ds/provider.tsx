@@ -8,18 +8,25 @@ import { LayerProvider } from './layer';
 // the root (from the first batch that uses these components); the design preview
 // mounts its own with its host node as the portal container.
 // `onModalChange` hears whether a dialog or a question is open, `onDecisionChange` whether an
-// approval or a question is asking the user to decide (see LayerProvider).
-export function DesignSystemProvider({ children, container, onModalChange, onDecisionChange }: {
+// approval or a question is asking the user to decide, `onFloatingChange` whether a menu, a
+// select list or a popover is shown (see LayerProvider).
+export function DesignSystemProvider({ children, container, onModalChange, onDecisionChange, onFloatingChange }: {
   children: ReactNode;
   container?: HTMLElement | null;
   onModalChange?: (open: boolean) => void;
   onDecisionChange?: (asked: boolean) => void;
+  onFloatingChange?: (open: boolean) => void;
 }) {
   // Dialogs read it to open without a focus ring after a pointer press.
   useEffect(() => trackInputModality(), []);
   return (
     <TooltipPrimitive.Provider delayDuration={500} skipDelayDuration={300}>
-      <LayerProvider container={container} onModalChange={onModalChange} onDecisionChange={onDecisionChange}>
+      <LayerProvider
+        container={container}
+        onModalChange={onModalChange}
+        onDecisionChange={onDecisionChange}
+        onFloatingChange={onFloatingChange}
+      >
         <ConfirmProvider>{children}</ConfirmProvider>
       </LayerProvider>
     </TooltipPrimitive.Provider>

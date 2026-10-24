@@ -8,9 +8,12 @@ import { useI18n } from '@/i18n';
 import { useAppStore, useSelectedApp } from '@/stores/appStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useNativeViewOcclusion } from '@/hooks/useNativeViewOcclusion';
-import { APP_PAGE_STATE_EVENT, hideAppPages, reloadAppPage, setAppPageBounds, showAppPage, type AppPageStateEvent } from '@/core/app/appPageBridge';
+import { APP_PAGE_STATE_EVENT, captureAppPage, hideAppPages, reloadAppPage, setAppPageBounds, showAppPage, type AppPageStateEvent } from '@/core/app/appPageBridge';
 import { resolveText } from '@/core/app/appBinding';
 import { reportAppFailure } from '@/core/app/appFailure';
+import { cn } from '@/lib/utils';
+import { hasElectronCommandHost } from '@/utils/electronHost';
+import { isMacOS, isWindows } from '@/utils/platform';
 
 /**
  * The main-area host for an app's `url:` page. It owns a placeholder that
@@ -25,9 +28,12 @@ export default function AppPageView() {
   const app = useSelectedApp();
   const activePage = useAppStore((s) => s.activeAppPage);
   const viewMode = useSettingsStore((s) => s.viewMode);
+  const sidebarCollapsed = useSettingsStore((s) => s.sidebarCollapsed);
   const occluded = useNativeViewOcclusion();
   const containerRef = useRef<HTMLDivElement>(null);
   const [state, setState] = useState<AppPageStateEvent | null>(null);
+  // The page's last frame, shown in its place while the native view is hidden under an overlay.
+  const [freezeFrame, setFreezeFrame] = useState<string | null>(null);
   const appId = app.origin === null ? null : app.appId;
   const navItemId = activePage?.appId === app.appId ? activePage.navItemId : null;
   const navItem = navItemId ? app.config.nav?.items.find((item) => item.id === navItemId) : undefined;
@@ -46,9 +52,22 @@ export default function AppPageView() {
     return () => { disposed = true; unlisten?.(); };
   }, [appId, navItemId]);
 
+  // The view leaves the window with this component.
+  useEffect(() => () => { void hideAppPages(); }, []);
+
   useEffect(() => {
     const element = containerRef.current;
     if (!shouldShow || !element || !appId || !navItemId) {
+      // Covered by a menu or a window: the page's last frame stands in for it, so the area keeps
+      // showing the page under the overlay. A hidden view has no frame, so it is taken first.
+      if (viewMode === 'app-page' && occluded && appId && navItemId) {
+        let current = true;
+        void captureAppPage(appId, navItemId)
+          .then((frame) => { if (current) setFreezeFrame(frame); })
+          .finally(() => { if (current) void hideAppPages(); });
+        return () => { current = false; };
+      }
+      setFreezeFrame(null);
       void hideAppPages();
       return;
     }
@@ -61,7 +80,8 @@ export default function AppPageView() {
       const next = bounds();
       if (!shown) {
         shown = true;
-        void showAppPage(appId, navItemId, next);
+        // The frame goes once the page paints over it again.
+        void showAppPage(appId, navItemId, next).then(() => setFreezeFrame(null));
         return;
       }
       void setAppPageBounds(appId, navItemId, next);
@@ -70,17 +90,22 @@ export default function AppPageView() {
     const observer = new ResizeObserver(() => sync());
     observer.observe(element);
     window.addEventListener('resize', sync);
+    // Hiding is left to the next run, which may first take the page's frame, and to the unmount.
     return () => {
       observer.disconnect();
       window.removeEventListener('resize', sync);
-      void hideAppPages();
     };
-  }, [shouldShow, appId, navItemId]);
+  }, [shouldShow, viewMode, occluded, appId, navItemId]);
 
   return (
     <div className="flex h-full flex-col" data-testid="app-page-view" data-nav-item={navItemId ?? undefined}>
       {/* h-11: the native page's rectangle starts right under this row. */}
-      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-separator px-4">
+      <div className={cn(
+        'flex h-11 shrink-0 items-center gap-2 border-b border-separator px-4',
+        // Collapsed, the window's controls float over the card's top-left, as in the chat header.
+        sidebarCollapsed && isMacOS() && 'pl-48',
+        sidebarCollapsed && isWindows() && hasElectronCommandHost() && 'pl-20',
+      )}>
         <span className="min-w-0 flex-1 truncate text-ui font-medium text-label">
           {resolveText(navItem?.title === undefined ? app.name : navItem.title)}
         </span>
@@ -92,6 +117,7 @@ export default function AppPageView() {
         )}
       </div>
       <div ref={containerRef} className="relative min-h-0 flex-1 bg-surface">
+        {freezeFrame && <img data-testid="app-page-frame" src={freezeFrame} alt="" className="absolute inset-0 size-full" />}
         {state?.state === 'failed' && (
           <div data-testid="app-page-failed" className="absolute inset-0 flex flex-col items-center justify-center">
             {appId && navItemId
