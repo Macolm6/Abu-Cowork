@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { AppDefinition } from '@/types/app';
 import { GENERAL_APP_ID } from '@/types/app';
-import { MAX_RECENT_APPS, selectedApp, useAppStore } from './appStore';
+import { LABS_APPS } from '@/core/labs/registry';
+import { MAX_RECENT_APPS, appBindingShown, appsVisible, selectedApp, useAppStore, visibleApps } from './appStore';
 import { useChatStore } from './chatStore';
 import { useSettingsStore } from './settingsStore';
 
@@ -10,7 +11,7 @@ const make = (id: string, origin: AppDefinition['origin'] = { kind: 'market', ma
   config: {
     version: 1,
     home: { modes: { items: [{ modeId: 'm', title: 'M', scenes: [{ id: 's', title: 'S', templates: [] }] }] } },
-    nav: { items: [{ id: 'chat', target: 'builtin:chat' }, { id: 'portal', title: 'P', target: 'url:https://a.example.com/p' }] },
+    nav: { items: [{ id: 'portal', title: 'P', target: 'url:https://a.example.com/p' }] },
     allowedOrigins: ['https://a.example.com'],
   },
 });
@@ -21,18 +22,48 @@ function reset() {
     selectedAppId: GENERAL_APP_ID, recentAppIds: [], selectedModeIdByApp: {}, addedApps: [], managedApps: {},
     suspendedManagedAppId: null, seenAppIds: {}, activeAppPage: null, dismissedConnectorHintByApp: {}, expandedSceneIdByApp: {}, pendingEnterAppId: null,
   });
-  useSettingsStore.setState({ viewMode: 'chat' });
+  useSettingsStore.setState({ viewMode: 'chat', labs: { [LABS_APPS]: true } });
 }
 
 describe('appStore', () => {
   beforeEach(reset);
+
+  // Apps are a Labs experiment: off, the shell shows the organization's apps
+  // only, and the store still remembers the user's choice for when it is on.
+  it('shows the apps the user added only while the Apps experiment is on', () => {
+    useAppStore.getState().setAddedApps([make('a')]);
+    useAppStore.getState().replaceManagedApps('org', [org('o')]);
+    useAppStore.getState().enterApp('a');
+    useSettingsStore.setState({ labs: { [LABS_APPS]: false } });
+    const state = useAppStore.getState();
+    expect(selectedApp(state).appId).toBe(GENERAL_APP_ID);
+    expect(visibleApps(state).map((app) => app.appId)).toEqual([GENERAL_APP_ID, 'o']);
+    expect(appsVisible()).toBe(true);
+    expect(state.selectedAppId).toBe('a');
+    useSettingsStore.setState({ labs: { [LABS_APPS]: true } });
+    expect(selectedApp(useAppStore.getState()).appId).toBe('a');
+  });
+
+  it('shows no apps at all with the experiment off and no organization apps', () => {
+    useAppStore.getState().setAddedApps([make('a')]);
+    useSettingsStore.setState({ labs: {} });
+    expect(appsVisible()).toBe(false);
+    expect(visibleApps(useAppStore.getState()).map((app) => app.appId)).toEqual([GENERAL_APP_ID]);
+  });
+
+  it('keeps an organization app bound to a conversation whatever the experiment says', () => {
+    const binding = { version: 2 as const, appId: 'x', appVersion: '1.0.0', appName: 'X', modeId: 'm' };
+    expect(appBindingShown({ ...binding, origin: 'enterprise' }, false)).toBe(true);
+    expect(appBindingShown({ ...binding, origin: 'market' }, false)).toBe(false);
+    expect(appBindingShown({ ...binding, origin: 'market' }, true)).toBe(true);
+  });
 
   it('returns to chat when an application update removes the page being shown', () => {
     const app = make('a');
     useAppStore.getState().setAddedApps([app]);
     useAppStore.getState().enterApp('a');
     useAppStore.getState().openAppPage('portal');
-    useAppStore.getState().setAddedApps([{ ...app, config: { ...app.config, nav: { items: [{ id: 'chat', target: 'builtin:chat' }] } } }]);
+    useAppStore.getState().setAddedApps([{ ...app, config: { ...app.config, nav: undefined } }]);
     expect(useAppStore.getState().activeAppPage).toBeNull();
     expect(useSettingsStore.getState().viewMode).toBe('chat');
     expect(useAppStore.getState().selectedAppId).toBe('a');

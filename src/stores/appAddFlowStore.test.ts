@@ -62,7 +62,7 @@ function writeApp(name: string, options: { plugin?: string; site?: string; minAb
     name, version: '1.0.0', minAbuVersion: options.minAbuVersion ?? '0.51.0',
     interface: { displayName: '合同审阅', shortDescription: '审合同' },
     plugins: options.plugin ? [options.plugin] : [],
-    ...(options.site ? { allowedOrigins: [options.site], nav: { items: [{ id: 'chat', target: 'builtin:chat' }, { id: 'p', title: 'P', target: `url:${options.site}/x` }] } } : {}),
+    ...(options.site ? { allowedOrigins: [options.site], nav: { items: [{ id: 'p', title: 'P', target: `url:${options.site}/x` }] } } : {}),
     home: { modes: { items: [{ modeId: 'm', title: 'M', scenes: [{ id: 's', title: 'S', run: { team: options.plugin ? `plugin:${options.plugin}/review` : 'builtin-team:reporting' }, templates }] }] } },
   }));
 }

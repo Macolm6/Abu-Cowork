@@ -19,7 +19,7 @@ function writeDraft(sceneRun: Record<string, string>) {
   writeFileSync(join(dir, '.abu-app', 'app.json'), JSON.stringify({
     name: 'weekly-report', version: '1.0.0', minAbuVersion: '0.51.0',
     interface: { displayName: '周报', shortDescription: '每周五整理周报' },
-    nav: { items: [{ id: 'chat', target: 'builtin:chat' }, { id: 'wiki', title: 'Wiki', target: 'url:https://wiki.example.com/team' }] },
+    nav: { items: [{ id: 'wiki', title: 'Wiki', target: 'url:https://wiki.example.com/team' }] },
     allowedOrigins: ['https://wiki.example.com'],
     home: { modes: { items: [{ modeId: 'write', title: '写周报', scenes: [
       { id: 'draft', title: '整理成周报', run: { expert: 'mine:周报整理员' }, templates },

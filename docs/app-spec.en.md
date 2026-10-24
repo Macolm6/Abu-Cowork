@@ -42,7 +42,7 @@ The app file and every object in it accept only the fields listed in the tables 
 | `home` | Yes | object | The home page, see 3.3 |
 | `defaultRun` | No | run reference | Who handles a message the user sends without clicking any scene. When omitted, Abu answers with the app's prompt |
 | `promptAppend` | No | string | The app-level prompt, which applies to every conversation in the app. At most 16000 characters |
-| `nav` | No | object | Navigation, see 3.5. When omitted, the app keeps Abu's default navigation |
+| `nav` | No | object | The app's own web pages, see 3.5. Abu's own entries are always shown and are not listed here |
 | `allowedOrigins` | Required when there is a `url:` navigation item | string[] | The origins the app's web pages are allowed to use, see 3.6 |
 | `requiredConnectors` | No | string[] | `<plugin name>/<connector name>`; the plugin must be listed in `plugins`. While a connector is not connected, the top of the home page prompts the user to connect it |
 | `composer.placeholder` | No | LocalizedText | The placeholder text of the input box |
@@ -116,22 +116,16 @@ When a scene points to an expert team, the team's leader handles the conversatio
 
 ### 3.5 Navigation `nav`
 
+Abu's own sidebar entries (New Task, Experts, Extensions, Automation) are shown in every app; an app cannot remove or change them. `nav` lists the app's own web pages only, placed after those entries.
+
 | Field | Required | Type | Description |
 |---|---|---|---|
+| `items` | Yes | array | At least one item |
 | `items[].id` | Yes | string | Unique within the navigation |
-| `items[].title` | Required for a `url:` navigation item | LocalizedText | A built-in entry without a title uses Abu's own name for it |
+| `items[].title` | Yes | LocalizedText | The name shown in the sidebar |
 | `items[].icon` | No | string | The relative path of an image inside the app directory |
 | `items[].order` | No | number | Items are sorted from the lowest value to the highest |
-| `items[].target` | Yes | string | See the table below |
-
-| `target` | Meaning |
-|---|---|
-| `builtin:chat` | New Task. Must appear once |
-| `builtin:todos`, `builtin:inbox` | Todos, Inbox |
-| `builtin:team` | Experts |
-| `builtin:extensions` | Extensions |
-| `builtin:automation` | Automation |
-| `url:<address>` | A web page of the app itself, shown in the main area. Only `https://` and, for local preview, `http://` are accepted, and the origin must be in `allowedOrigins` |
+| `items[].target` | Yes | string | `url:<address>`: a web page of the app itself, shown in the main area. Only `https://` and, for local preview, `http://` are accepted, and the origin must be in `allowedOrigins` |
 
 "Projects", the conversation list and the account menu are not navigation items and stay visible in every app.
 
@@ -197,8 +191,7 @@ The "Shop Operations" app, which uses the "Shop Assistant" plugin (excerpt; the 
   },
   "nav": {
     "items": [
-      { "id": "chat", "target": "builtin:chat", "order": 1 },
-      { "id": "portal", "title": { "zh-CN": "店铺后台", "en-US": "Shop portal" }, "target": "url:https://example.com/portal", "order": 2 }
+      { "id": "portal", "title": { "zh-CN": "店铺后台", "en-US": "Shop portal" }, "target": "url:https://example.com/portal", "order": 1 }
     ]
   }
 }
@@ -311,7 +304,7 @@ When validation fails, the error message gives the full path of the invalid fiel
 | `…run.team`, `…run.expert`, `…run.skill` | The form is not in the table of 3.4; the built-in expert team or built-in expert does not exist; the plugin of a `plugin:` reference is not listed in `plugins` |
 | `…templates` | Fewer than 3 entries or more than 6 |
 | `allowedOrigins` | An origin contains a path or a wildcard, or is not HTTPS |
-| `nav.items[n].target` | A `url:` value is neither `https://` nor a local-preview `http://`; the origin is not in `allowedOrigins`; `title` is missing |
+| `nav.items[n].target` | A value other than `url:` (for example `builtin:chat`); a `url:` value is neither `https://` nor a local-preview `http://`; the origin is not in `allowedOrigins`; `title` is missing |
 | `requiredConnectors[n]` | The value is not `<plugin name>/<connector name>`; the plugin is not listed in `plugins` |
 | Any path | A field that is not in the tables is present (in most cases a spelling mistake) |
 

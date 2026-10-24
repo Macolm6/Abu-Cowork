@@ -8,6 +8,10 @@ import { keepClosingLayersOnScreen } from '@/test/dsWindows';
 import { initLanguage } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { usePluginStore } from '@/stores/pluginStore';
+import { useAppStore } from '@/stores/appStore';
+import { LABS_APPS } from '@/core/labs/registry';
+import { DEFAULT_APP_CONFIG } from '@/data/defaultAppConfig';
+import { GENERAL_APP_ID, type AppDefinition } from '@/types/app';
 
 // The sidebar's main navigation carries ONE entry for the Extensions view —
 // 「扩展」 / "Extensions" — which replaced the retired 工具箱 / Toolbox. This
@@ -194,6 +198,29 @@ describe('Sidebar — frame and navigation', () => {
     renderSidebar();
     const root = mainNav().parentElement!;
     expect(root.className.split(/\s+/).filter((name) => name.startsWith('bg-'))).toEqual([]);
+  });
+
+  // An app adds its web pages after Abu's own entries; it never takes one away.
+  it('keeps Abu\'s entries inside an app and lists the app\'s pages after them', () => {
+    const shop: AppDefinition = {
+      appId: 'shop@m', name: '店铺', version: '1.0.0', origin: { kind: 'market', market: 'm' }, plugins: [],
+      config: {
+        ...DEFAULT_APP_CONFIG,
+        allowedOrigins: ['https://erp.example.com', 'https://scm.example.com'],
+        nav: { items: [
+          { id: 'scm', title: '供应链', order: 2, target: 'url:https://scm.example.com/' },
+          { id: 'erp', title: 'ERP', order: 1, target: 'url:https://erp.example.com/' },
+        ] },
+      },
+    };
+    useSettingsStore.setState({ labs: { [LABS_APPS]: true } });
+    useAppStore.setState({ addedApps: [shop], managedApps: {}, selectedAppId: shop.appId });
+    renderSidebar();
+    const names = within(mainNav()).getAllByRole('button').map((button) => button.textContent);
+    expect(names).toEqual(['新任务', '专家', '扩展', '自动化', 'ERP', '供应链']);
+    act(() => useSettingsStore.setState({ labs: {} }));
+    expect(within(mainNav()).getAllByRole('button').map((button) => button.textContent)).toEqual(['新任务', '专家', '扩展', '自动化']);
+    useAppStore.setState({ addedApps: [], selectedAppId: GENERAL_APP_ID });
   });
 
   it('keeps the entries, their names and their order', () => {

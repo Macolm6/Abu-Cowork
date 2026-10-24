@@ -3,7 +3,7 @@ import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { APP_DEVELOPMENT_DOCS_URL } from '@/utils/helpDocs';
 import { GENERAL_APP_ID, type AppDefinition } from '@/types/app';
-import { useAppStore, useAvailableApps, useSelectedApp } from '@/stores/appStore';
+import { useAppStore, useAppsVisible, useAvailableApps, useSelectedApp } from '@/stores/appStore';
 import { resolveLocalizedText } from '@/core/app/appBinding';
 import { createAppDraft } from '@/core/app/appDraft';
 import { reportAppFailure } from '@/core/app/appFailure';
@@ -42,6 +42,7 @@ export default function AppSwitcher({ className }: { className?: string }) {
   const { t, format, locale } = useI18n();
   const apps = useAvailableApps();
   const selected = useSelectedApp();
+  const visible = useAppsVisible();
   const { allowExit } = useEnterpriseAppPolicy();
   const recentAppIds = useAppStore((s) => s.recentAppIds);
   const enterApp = useAppStore((s) => s.enterApp);
@@ -130,6 +131,9 @@ export default function AppSwitcher({ className }: { className?: string }) {
       </span>
     </MenuRadioItem>
   );
+
+  // Apps are a Labs experiment: no switcher until it is on (organization apps always show).
+  if (!visible) return null;
 
   return (
     // A flex box as high as the pill: the brand row keeps one height whatever the pill shows.

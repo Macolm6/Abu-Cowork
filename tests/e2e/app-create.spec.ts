@@ -143,7 +143,7 @@ test('创建应用 chosen on the extensions page lands in the creation conversat
   app = (await launchAbuElectron(dataRoot)).app;
   const page: Page = await app.firstWindow({ timeout: READY_TIMEOUT });
   await expect(page.getByTestId('app-switcher-trigger')).toBeVisible({ timeout: READY_TIMEOUT });
-  await dismissFirstRunOverlays(page);
+  await dismissFirstRunOverlays(page, { apps: true });
 
   await page.getByLabel('Main navigation').getByRole('button', { name: /^(扩展|Extensions)(\s.*)?$/ }).click();
   const extensionsTabs = page.getByRole('main').getByRole('button', { name: /^(插件|Plugins)(\s.*)?$/ });
@@ -171,7 +171,7 @@ test('创建应用 clears the expert selected on the welcome page', async () => 
   app = (await launchAbuElectron(dataRoot)).app;
   const page = await app.firstWindow({ timeout: READY_TIMEOUT });
   await expect(page.getByTestId('app-switcher-trigger')).toBeVisible({ timeout: READY_TIMEOUT });
-  await dismissFirstRunOverlays(page);
+  await dismissFirstRunOverlays(page, { apps: true });
   await page.getByTestId('sidebar-team').click();
   await page.getByTestId('top-tab-nav').getByRole('button', { name: '专家', exact: true }).click();
   await page.getByText('产品经理', { exact: true }).first().click();
@@ -192,7 +192,7 @@ test('创建应用 previews the draft in the conversation and confirming adds th
   app = (await launchAbuElectron(dataRoot)).app;
   const page: Page = await app.firstWindow({ timeout: READY_TIMEOUT });
   await expect(page.getByTestId('app-switcher-trigger')).toBeVisible({ timeout: READY_TIMEOUT });
-  await dismissFirstRunOverlays(page);
+  await dismissFirstRunOverlays(page, { apps: true });
   await configureLocalMockProvider(page, mock.baseUrl, PROVIDER_OPTIONS);
 
   await page.getByTestId('app-switcher-trigger').click();

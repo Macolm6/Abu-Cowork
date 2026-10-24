@@ -29,7 +29,6 @@ function seedHome() {
       { id: 'a', title: 'A', prompt: 'A' }, { id: 'b', title: 'B', prompt: 'B' }, { id: 'c', title: 'C', prompt: 'C' },
     ] }] }] } },
     nav: { items: [
-      { id: 'chat', target: 'builtin:chat' },
       { id: 'portal', title: 'Portal', target: 'url:https://shop.example.com/portal?tab=orders' },
     ] },
   }));
@@ -39,7 +38,7 @@ function seedHome() {
 const orgApp = {
   appId: ORG_APP_ID,
   allowedOrigins: ['https://contracts.example.com', 'https://sso.example.com'],
-  nav: { items: [{ id: 'chat', target: 'builtin:chat' }, { id: 'system', title: '合同系统', target: 'url:https://contracts.example.com/home' }] },
+  nav: { items: [{ id: 'system', title: '合同系统', target: 'url:https://contracts.example.com/home' }] },
 };
 
 /** A WebContentsView stand-in: records bounds/visibility and lets a test fire navigation events. */
@@ -97,7 +96,7 @@ test('resolves a page from the added app\'s own copied file, never from the rend
     const page = resolvePage({ home, fs, appId: APP_ID, navItemId: 'portal', managed: new Map() });
     assert.equal(page.url, 'https://shop.example.com/portal?tab=orders');
     assert.deepEqual(page.allowedOrigins, ['https://shop.example.com']);
-    assert.throws(() => resolvePage({ home, fs, appId: APP_ID, navItemId: 'chat', managed: new Map() }), /not a url: target/);
+    assert.throws(() => resolvePage({ home, fs, appId: APP_ID, navItemId: 'chat', managed: new Map() }), /does not exist/);
     assert.throws(() => resolvePage({ home, fs, appId: 'ghost@market', navItemId: 'portal', managed: new Map() }), /is not added/);
     assert.throws(() => resolvePage({ home, fs, appId: '../escape', navItemId: 'portal', managed: new Map() }), /cannot name a directory/);
     const { host } = harness(home);
@@ -198,7 +197,7 @@ test('an app added again replaces the open page instead of keeping the old addre
 
     const raw = JSON.parse(fs.readFileSync(appFile(home), 'utf8'));
     raw.allowedOrigins = ['https://portal.example.com'];
-    raw.nav.items[1].target = 'url:https://portal.example.com/portal';
+    raw.nav.items[0].target = 'url:https://portal.example.com/portal';
     fs.writeFileSync(appFile(home), JSON.stringify(raw));
 
     host.dispatch('show', { appId: APP_ID, navItemId: 'portal', bounds });

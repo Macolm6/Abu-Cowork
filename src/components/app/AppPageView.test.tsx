@@ -10,6 +10,7 @@ import { useNativeViewOcclusion } from '@/hooks/useNativeViewOcclusion';
 import { getI18n } from '@/i18n';
 import { useAppStore } from '@/stores/appStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { LABS_APPS } from '@/core/labs/registry';
 import type { AppDefinition } from '@/types/app';
 import AppPageView from './AppPageView';
 
@@ -110,7 +111,7 @@ describe('AppPageView', () => {
     vi.mocked(captureAppPage).mockReset();
     vi.mocked(captureAppPage).mockResolvedValue(null);
     useAppStore.setState({ addedApps: [shop], selectedAppId: APP_ID, activeAppPage: { appId: APP_ID, navItemId: 'portal' } });
-    useSettingsStore.setState({ viewMode: 'app-page' });
+    useSettingsStore.setState({ viewMode: 'app-page', labs: { [LABS_APPS]: true } });
   });
 
   afterEach(() => {
@@ -120,7 +121,7 @@ describe('AppPageView', () => {
     vi.mocked(listen).mockReset();
     vi.mocked(listen).mockResolvedValue(() => undefined);
     useAppStore.setState({ addedApps: [], selectedAppId: '__general__', activeAppPage: null });
-    useSettingsStore.setState({ viewMode: 'chat', sidebarCollapsed: false });
+    useSettingsStore.setState({ viewMode: 'chat', sidebarCollapsed: false, labs: {} });
     host.platform = 'macos';
   });
 

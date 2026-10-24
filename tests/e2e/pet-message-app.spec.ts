@@ -85,7 +85,7 @@ test('a pet message with the app home in view and no conversation open starts a 
     fs.cpSync(path.join(REPO_ROOT, 'examples', 'plugin-market'), marketDir, { recursive: true });
     const page = await launched.app.firstWindow();
     await expect(page.getByTestId('app-switcher-trigger')).toBeVisible({ timeout: READY_TIMEOUT });
-    await dismissFirstRunOverlays(page);
+    await dismissFirstRunOverlays(page, { apps: true });
     await configureLocalMockProvider(page, llm.baseUrl);
 
     // Add the example app from its market and enter it.

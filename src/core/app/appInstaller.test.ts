@@ -60,7 +60,7 @@ function writeMarket(apps: Array<{ name: string; run: unknown; plugins?: string[
       name: app.name, version: '1.0.0', minAbuVersion: app.minAbuVersion ?? '0.51.0',
       interface: { displayName: '合同审阅', shortDescription: '审合同' },
       plugins: app.plugins ?? [],
-      ...(app.allowedOrigins ? { allowedOrigins: app.allowedOrigins, nav: { items: [{ id: 'chat', target: 'builtin:chat' }, { id: 'p', title: 'P', target: `url:${app.allowedOrigins[0]}/x` }] } } : {}),
+      ...(app.allowedOrigins ? { allowedOrigins: app.allowedOrigins, nav: { items: [{ id: 'p', title: 'P', target: `url:${app.allowedOrigins[0]}/x` }] } } : {}),
       home: { modes: { items: [{ modeId: 'm', title: 'M', scenes: [{ id: 's', title: 'S', run: app.run, templates }] }] } },
     }));
   }

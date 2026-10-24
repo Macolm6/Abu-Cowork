@@ -76,7 +76,7 @@ import { lstat } from '@tauri-apps/plugin-fs';
 import { TOOL_NAMES } from './toolNames';
 import { applyOSPermissionGuideIfNeeded } from './osPermissionGuide';
 import { isLabsFlagOn } from '../labs/resolve';
-import { LABS_TODOS_INBOX } from '../labs/registry';
+import { LABS_APPS, LABS_TODOS_INBOX } from '../labs/registry';
 import {
   decideCommandUnderRunPermissionCeiling,
   decideFileUnderRunPermissionCeiling,
@@ -112,6 +112,7 @@ import { toolResultToString as browserSignalToolResultToString } from './toolRes
  */
 const LABS_GATED_TOOLS: Record<string, string> = {
   [TOOL_NAMES.CREATE_TODO]: LABS_TODOS_INBOX,
+  [TOOL_NAMES.APP_PREPARE]: LABS_APPS,
 };
 
 /** Shared by inventory and execution; never duplicate the experiment gate map. */

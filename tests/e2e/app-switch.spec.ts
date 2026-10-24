@@ -31,6 +31,7 @@ const EXPLICIT_TEAM_REQUEST = 'E2E-EXPLICIT-TEAM-ROUTE';
 const EXTENSIONS = /^(扩展|Extensions)(\s.*)?$/;
 const TEAM_NAV = /^(专家|Experts)$/;
 const NEW_TASK = /^(新任务|New task)$/;
+const AUTOMATION = /^(自动化|Automation)$/;
 
 interface MockRequest { system: string; user: string }
 
@@ -142,7 +143,7 @@ test.describe.serial('apps', () => {
     app = launched.app;
     page = await app.firstWindow();
     await expect(page.getByTestId('app-switcher-trigger')).toBeVisible({ timeout: READY_TIMEOUT });
-    await dismissFirstRunOverlays(page);
+    await dismissFirstRunOverlays(page, { apps: true });
     await configureLocalMockProvider(page, llm.baseUrl, { supportsTools: true });
   });
 
@@ -205,7 +206,7 @@ test.describe.serial('apps', () => {
     await dialog.getByLabel('SHOP_TOKEN', { exact: true }).fill('e2e-shop-token-placeholder');
     await dialog.getByTestId('app-add-confirm').click();
 
-    // Straight into the app: switcher, home title, the app's own navigation.
+    // Straight into the app: switcher, home title, Abu's entries and then the app's page.
     await expect(page.getByTestId('app-switcher-current')).toHaveText(APP_NAME, { timeout: READY_TIMEOUT });
     await expect(market).toBeHidden();
     await expect(page.getByTestId('app-home-title')).toHaveText(APP_NAME);
@@ -213,7 +214,7 @@ test.describe.serial('apps', () => {
     await expect(page.getByTestId('app-switcher-empty')).toHaveCount(0);
     await page.keyboard.press('Escape');
     await expect(page.getByTestId('sidebar-app-page-portal')).toBeVisible();
-    await expect(page.getByLabel('Main navigation').getByRole('button')).toHaveCount(4);
+    await expect(page.getByLabel('Main navigation').getByRole('button')).toHaveText([NEW_TASK, TEAM_NAV, EXTENSIONS, AUTOMATION, /^(店铺后台|Shop portal)$/]);
     await expect(page.getByTestId('app-connector-hint')).toContainText('shop-api');
     await page.getByTestId('app-connector-hint').getByRole('button', { name: /先不连接|Not now/ }).click();
     await expect(page.getByTestId('app-connector-hint')).toHaveCount(0);

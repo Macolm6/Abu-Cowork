@@ -7,6 +7,7 @@ import { initLanguage } from '@/i18n';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { TOAST_SETTLE_MS } from '@/components/ds/styles';
 import { useAppStore } from '@/stores/appStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
 import { DEFAULT_APP_CONFIG } from '@/data/defaultAppConfig';
 import type { AppDefinition } from '@/types/app';
@@ -51,10 +52,31 @@ beforeEach(() => {
   createAppDraft.mockClear();
   focusComposerAfterPageChange.mockClear();
   useAppStore.setState({ addedApps: [recruiting, weekly], managedApps: { enterprise: [shop, hr] }, recentAppIds: [], selectedAppId: shop.appId, appMarketOpen: false });
+  useSettingsStore.setState({ labs: { apps: true } });
 });
 afterEach(() => {
   cleanup();
   useAppStore.setState({ addedApps: [], managedApps: {}, recentAppIds: [], selectedAppId: '__general__', appMarketOpen: false });
+  useSettingsStore.setState({ labs: {} });
+});
+
+// Apps are a Labs experiment; organization apps stay whatever it says.
+describe('with the Apps experiment off', () => {
+  it('is not on the page when the organization pushed no apps', () => {
+    useSettingsStore.setState({ labs: {} });
+    useAppStore.setState({ managedApps: {}, selectedAppId: '__general__' });
+    render(<AppSwitcher />, { wrapper: DesignSystemProvider });
+    expect(screen.queryByTestId('app-switcher')).toBeNull();
+  });
+
+  it('lists the organization\'s apps and none the user added', async () => {
+    useSettingsStore.setState({ labs: {} });
+    render(<AppSwitcher />, { wrapper: DesignSystemProvider });
+    await userEvent.setup().click(screen.getByRole('button', { name: /切换应用/ }));
+    const menu = screen.getByRole('menu');
+    expect(within(menu).getByText(String(shop.name))).toBeInTheDocument();
+    expect(within(menu).queryByText(String(recruiting.name))).toBeNull();
+  });
 });
 
 describe('AppSwitcher', () => {

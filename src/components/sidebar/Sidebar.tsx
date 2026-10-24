@@ -20,7 +20,7 @@ import { TextField } from '@/components/ds/text-field';
 import { Tooltip } from '@/components/ds/tooltip';
 import AppSwitcher from '@/components/sidebar/AppSwitcher';
 import AppLogo from '@/components/app/AppLogo';
-import { useAppStore, useSelectedApp } from '@/stores/appStore';
+import { appBindingShown, useAppStore, useAppsLabOn, useSelectedApp } from '@/stores/appStore';
 import { DEFAULT_APP_CONFIG } from '@/data/defaultAppConfig';
 import { resolveText } from '@/core/app/appBinding';
 import type { AppNavItem } from '@/types/app';
@@ -107,9 +107,15 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   const viewMode = useSettingsStore((s) => s.viewMode);
   const setViewMode = useSettingsStore((s) => s.setViewMode);
   const selectedApp = useSelectedApp();
+  const appsLabOn = useAppsLabOn();
   const activeAppPage = useAppStore((s) => s.activeAppPage);
   const openAppPage = useAppStore((s) => s.openAppPage);
-  const navItems = [...(selectedApp.config.nav?.items ?? DEFAULT_APP_CONFIG.nav!.items)].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  // Abu's own entries are always there; an app adds its web pages after them.
+  const byOrder = (a: { order?: number }, b: { order?: number }) => (a.order ?? 0) - (b.order ?? 0);
+  const navItems = [
+    ...[...DEFAULT_APP_CONFIG.nav!.items].sort(byOrder),
+    ...(selectedApp.origin === null ? [] : [...(selectedApp.config.nav?.items ?? [])].sort(byOrder)),
+  ];
   const clearBadge = useNoticeBadgeStore((s) => s.clear);
   // Badge shows items still requiring user decision (pending), not just unread.
   // Once a user accepts/ignores an item, the count drops even if other items
@@ -346,8 +352,8 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
           </div>
         </>
       )}
-      {/* Top Navigation — the current app's entries (the general shell lists
-          Abu's six), rendered from one table of targets. */}
+      {/* Top Navigation — Abu's own entries, then the current app's web pages,
+          rendered from one table of targets. */}
       <nav className="flex flex-col gap-1 px-4 pb-2" aria-label="Main navigation">
         {navItems.map((item) => {
           const target = item.target;
@@ -507,7 +513,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                 {conv.importedFrom && (
                   <ImportedBadge importedAt={conv.importedFrom.importedAt} />
                 )}
-                {conv.appBinding && (
+                {conv.appBinding && appBindingShown(conv.appBinding, appsLabOn) && (
                   <span title={resolveText(conv.appBinding.appName)} data-testid="conversation-app-icon">
                     <AppLogo name={resolveText(conv.appBinding.appName)} logo={conv.appBinding.appLogo} logoDark={conv.appBinding.appLogoDark} icon={conv.appBinding.appIcon} size="sm" className="rounded-control" />
                   </span>

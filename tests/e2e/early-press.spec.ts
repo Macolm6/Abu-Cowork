@@ -154,7 +154,7 @@ test.describe('a pointer press that began before a confirming control could be r
     app = (await launchAbuElectron(dataRoot)).app;
     page = await app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForApp(page);
-    await dismissFirstRunOverlays(page);
+    await dismissFirstRunOverlays(page, { apps: true });
     await configureLocalMockProvider(page, mock.baseUrl, { supportsTools: true });
     await waitForApp(page);
   });

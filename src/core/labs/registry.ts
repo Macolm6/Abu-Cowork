@@ -49,7 +49,23 @@ export const LABS_TODOS_INBOX = 'todos-inbox';
  */
 export const LABS_PET = 'pet';
 
+/**
+ * Stable id for the Apps experiment: the app switcher, the app market, apps
+ * the user added or created, and everything bound to them. Organization apps
+ * an enterprise pushes down stay visible whatever this flag says
+ * (`visibleApps` and `useAppsVisible` in `src/stores/appStore.ts`).
+ */
+export const LABS_APPS = 'apps';
+
 export const LABS_EXPERIMENTS: readonly LabsExperiment[] = [
+  {
+    id: LABS_APPS,
+    title: () => getI18n().settings.labsExpAppsTitle,
+    description: () => getI18n().settings.labsExpAppsDesc,
+    locationHint: () => getI18n().settings.labsExpAppsWhere,
+    defaultEnabled: false,
+    expiresAfter: '2027-01-31',
+  },
   {
     id: LABS_PET,
     title: () => getI18n().settings.petEnable,

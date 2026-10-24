@@ -46,7 +46,7 @@ describe('「新任务」 on a project row', () => {
     useTeamStore.setState({ teams: [team], managedTeamSources: {} });
     useAppStore.setState({ addedApps: [shop], managedApps: {}, seenAppIds: { [shop.appId]: true }, selectedAppId: shop.appId, selectedModeIdByApp: { [shop.appId]: 'listing' }, expandedSceneIdByApp: {}, activeAppPage: null });
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null, pendingAppBinding: undefined, pendingTeamId: undefined, pendingInput: null });
-    useSettingsStore.setState({ viewMode: 'team' });
+    useSettingsStore.setState({ viewMode: 'team', labs: { apps: true } });
     render(<ProjectsSection onCreateProject={() => undefined} />, { wrapper: DesignSystemProvider });
   });
 

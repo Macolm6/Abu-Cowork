@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { LABS_APPS } from '@/core/labs/registry';
 import { useAppStore } from '@/stores/appStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { useTeamStore, type Team } from '@/stores/teamStore';
 import type { AppDefinition } from '@/types/app';
 import { GENERAL_APP_ID } from '@/types/app';
@@ -18,11 +20,13 @@ const shop: AppDefinition = {
 
 describe('appHomePicks', () => {
   beforeEach(() => {
+    useSettingsStore.setState({ labs: { [LABS_APPS]: true } });
     useTeamStore.setState({ teams: [team], managedTeamSources: {} });
     useAppStore.setState({ addedApps: [shop], managedApps: {}, seenAppIds: { [shop.appId]: true }, selectedAppId: shop.appId, selectedModeIdByApp: {}, expandedSceneIdByApp: {} });
   });
 
   afterEach(() => {
+    useSettingsStore.setState({ labs: {} });
     useTeamStore.setState({ teams: [], managedTeamSources: {} });
     useAppStore.setState({ addedApps: [], managedApps: {}, seenAppIds: {}, selectedAppId: GENERAL_APP_ID, selectedModeIdByApp: {}, expandedSceneIdByApp: {} });
   });
