@@ -60,6 +60,7 @@ export const AGENT_FRONTMATTER_ALLOWLIST = [
     'sample-prompts',
     'category',
     'tags',
+    'i18n',
     'source',
 ];
 /** Allowlisted keys whose value is a list, however the author spelled it. */

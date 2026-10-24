@@ -34,6 +34,7 @@ describe('AGENT_FRONTMATTER_ALLOWLIST', () => {
         'description',
         'disallowed-tools',
         'expertise',
+        'i18n',
         'intro',
         'max-turns',
         'memory',

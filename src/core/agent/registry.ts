@@ -2,7 +2,7 @@ import { isPluginAgentAllowed } from '../plugin/activationPolicy';
 import { parse as parseYaml } from 'yaml';
 import { readTextFile, readDir, exists, lstat } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
-import type { SubagentDefinition, SubagentMetadata } from '../../types';
+import type { AgentLocale, SubagentDefinition, SubagentMetadata } from '../../types';
 import { joinPath } from '../../utils/pathUtils';
 import { normalizeDeclaredSkills } from './prompts/preloadedSkills';
 import { isSafeSkillDirName } from '../skill/skillDirName';
@@ -73,6 +73,47 @@ export function formatAgentSource(source: SubagentMetadata['source']): string | 
   return plugin === '' ? undefined : `${AGENT_SOURCE_PLUGIN_PREFIX}${plugin}`;
 }
 
+const AGENT_I18N_LOCALES: readonly AgentLocale[] = ['zh-CN', 'en-US'];
+const AGENT_I18N_FIELDS = ['name', 'description', 'intro', 'expertise', 'sample-prompts', 'tags'] as const;
+
+type AgentI18nFields = Pick<SubagentMetadata, 'displayNames' | 'descriptions' | 'intros' | 'expertiseI18n' | 'samplePromptsI18n' | 'tagsI18n'>;
+
+/**
+ * The frontmatter `i18n` map: per locale, the display text of the fields the
+ * built-ins carry in code (`i18n: { en-US: { name, description, intro,
+ * expertise, sample-prompts, tags } }`). The agent keeps its stored `name`;
+ * these only change what the interface shows in that language. Anything else
+ * in the map is an authoring mistake and fails the file.
+ */
+export function parseAgentI18n(value: unknown): AgentI18nFields {
+  if (value === undefined) return {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('i18n must be a map of locales');
+  const fields: AgentI18nFields = {};
+  const text = (field: string, entry: unknown) => {
+    if (typeof entry !== 'string' || entry.trim() === '') throw new Error(`i18n ${field} must be a non-empty string`);
+    return entry;
+  };
+  const list = (field: string, entry: unknown) => {
+    if (!Array.isArray(entry) || entry.some((item) => typeof item !== 'string' || item.trim() === '')) throw new Error(`i18n ${field} must be a list of strings`);
+    return entry as string[];
+  };
+  for (const [locale, entries] of Object.entries(value as Record<string, unknown>)) {
+    if (!AGENT_I18N_LOCALES.includes(locale as AgentLocale)) throw new Error(`i18n locale "${locale}" is not supported`);
+    if (!entries || typeof entries !== 'object' || Array.isArray(entries)) throw new Error(`i18n ${locale} must be a map`);
+    const key = locale as AgentLocale;
+    for (const [field, entry] of Object.entries(entries as Record<string, unknown>)) {
+      if (!(AGENT_I18N_FIELDS as readonly string[]).includes(field)) throw new Error(`i18n field "${field}" is not supported`);
+      if (field === 'name') fields.displayNames = { ...fields.displayNames, [key]: text(field, entry) };
+      if (field === 'description') fields.descriptions = { ...fields.descriptions, [key]: text(field, entry) };
+      if (field === 'intro') fields.intros = { ...fields.intros, [key]: text(field, entry) };
+      if (field === 'expertise') fields.expertiseI18n = { ...fields.expertiseI18n, [key]: list(field, entry) };
+      if (field === 'sample-prompts') fields.samplePromptsI18n = { ...fields.samplePromptsI18n, [key]: list(field, entry) };
+      if (field === 'tags') fields.tagsI18n = { ...fields.tagsI18n, [key]: list(field, entry) };
+    }
+  }
+  return fields;
+}
+
 /**
  * Parse an AGENT.md file: YAML frontmatter + system prompt body
  */
@@ -118,6 +159,7 @@ export function parseAgentFile(raw: string, filePath: string): SubagentDefinitio
       samplePrompts: meta['sample-prompts'] as string[] | undefined,
       category: meta.category as string | undefined,
       tags: meta.tags as string[] | undefined,
+      ...parseAgentI18n(meta.i18n),
       systemPrompt,
       filePath,
     };
