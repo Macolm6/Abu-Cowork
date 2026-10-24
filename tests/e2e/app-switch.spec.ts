@@ -142,7 +142,7 @@ test.describe.serial('apps', () => {
     dataRoot = launched;
     app = launched.app;
     page = await app.firstWindow();
-    await expect(page.getByTestId('app-switcher-trigger')).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(page.getByLabel('Main navigation')).toBeVisible({ timeout: READY_TIMEOUT });
     await dismissFirstRunOverlays(page, { apps: true });
     await configureLocalMockProvider(page, llm.baseUrl, { supportsTools: true });
   });

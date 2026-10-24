@@ -186,7 +186,7 @@ test.describe.serial('app market by address', () => {
     llm = await startLlmMock();
     app = (await launchAbuElectron(dataRoot, { extraEnv: { NODE_EXTRA_CA_CERTS: certFile } })).app;
     page = await app.firstWindow();
-    await expect(page.getByTestId('app-switcher-trigger')).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(page.getByLabel('Main navigation')).toBeVisible({ timeout: READY_TIMEOUT });
     await dismissFirstRunOverlays(page, { apps: true });
     await configureLocalMockProvider(page, llm.baseUrl);
   });

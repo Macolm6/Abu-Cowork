@@ -171,6 +171,35 @@ describe('convertSingleFileAgent', () => {
 });
 
 describe('renderAgentMd', () => {
+  // The installer writes AGENT.md from scratch, so a plugin expert's display text
+  // in other languages has to survive that rewrite.
+  it('keeps the i18n display text through installation', () => {
+    const raw = [
+      '---',
+      'name: 详情页文案',
+      'description: 写详情页',
+      'i18n:',
+      '  en-US:',
+      '    name: Listing Copywriter',
+      '    expertise: [Titles, Detail pages]',
+      '---',
+      '',
+      'You write listings.',
+    ].join('\n');
+    const rendered = renderAgentMd(convertSingleFileAgent(raw, 'fallback'), { pluginKey: 'ecommerce@abu-official' });
+    const parsed = parseAgentFile(rendered, '/Users/testuser/.abu/agents/详情页文案/AGENT.md');
+    expect(parsed).toMatchObject({
+      name: '详情页文案',
+      displayNames: { 'en-US': 'Listing Copywriter' },
+      expertiseI18n: { 'en-US': ['Titles', 'Detail pages'] },
+    });
+  });
+
+  it('refuses an i18n map it cannot read, so the install fails instead of losing the text', () => {
+    const raw = '---\nname: reviewer\ni18n:\n  fr-FR:\n    name: Relecteur\n---\n\nYou review.';
+    expect(() => renderAgentMd(convertSingleFileAgent(raw, 'fallback'))).toThrow('i18n locale "fr-FR" is not supported');
+  });
+
   it('round-trips through parseAgentFile with the same fields', () => {
     const raw = [
       '---',

@@ -234,7 +234,7 @@ test.describe.serial('built-in content follows the interface language', () => {
     dataRoot = launched;
     app = launched.app;
     page = await app.firstWindow();
-    await expect(page.getByTestId('app-switcher-trigger')).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(page.getByLabel('Main navigation')).toBeVisible({ timeout: READY_TIMEOUT });
     await dismissFirstRunOverlays(page, { apps: true });
   });
 
