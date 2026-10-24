@@ -6,7 +6,7 @@
     "displayName": { "zh-CN": "电商运营", "en-US": "E-commerce Ops" },
     "shortDescription": { "zh-CN": "上新、大促、店铺诊断、客服售后、库存，一个应用办完", "en-US": "Launches, campaigns, store diagnosis, customer service and inventory in one app" },
     "longDescription": {
-      "zh-CN": "给淘宝天猫、京东、拼多多、抖店和小红书店铺准备的应用。上新、大促、店铺诊断、客服售后、库存与供应链五组场景，交给插件「电商运营包」里的九位电商专家和五个专家团来做：电商运营经理带队，选品、文案、视觉、直播、推广、数据、库存和客服各有专人。专家只根据你提供的数据工作，包括上传的后台导出表、贴进来的表格和你打开的页面；缺数据时会告诉你要导出哪一份，涉及平台规则的地方会提醒你去规则中心确认。导航里可以直接打开聚水潭、领猫、千牛、抖店、拼多多、京麦和千帆的后台，登录状态只保存在这个应用里。",
+      "zh-CN": "给淘宝天猫、京东、拼多多、抖店和小红书店铺准备的应用。上新、大促、店铺诊断、客服售后、库存与供应链五组场景，交给插件「电商运营包」里的九位电商专家和五个专家团来做：店铺运营经理带队，选品、文案、视觉、直播、推广、数据、库存和客服各有专人。专家只根据你提供的数据工作，包括上传的后台导出表、贴进来的表格和你打开的页面；缺数据时会告诉你要导出哪一份，涉及平台规则的地方会提醒你去规则中心确认。导航里可以直接打开聚水潭、领猫、千牛、抖店、拼多多、京麦和千帆的后台，登录状态只保存在这个应用里。",
       "en-US": "An app for stores on Taobao/Tmall, JD, Pinduoduo, Douyin and Xiaohongshu. Five groups of scenes — launches, campaigns, store diagnosis, customer service and inventory — are handled by the nine specialists and five teams of the E-commerce Ops plugin: the operations manager leads, with dedicated specialists for sourcing, copy, visuals, live streams, ads, data, inventory and service. They work only from the data you provide: uploaded back-end exports, pasted tables and pages you have open. When data is missing they tell you which export to pull, and they remind you to confirm anything that depends on platform rules. The navigation opens the Jushuitan, Linkmore, Qianniu, Doudian, Pinduoduo, Jingmai and Qianfan back-ends directly, and their sign-ins stay inside this app."
     },
     "developerName": "Abu",
@@ -130,7 +130,7 @@
             {
               "id": "scripts-faq",
               "title": { "zh-CN": "话术与 FAQ", "en-US": "Scripts and FAQ" },
-              "run": { "expert": "plugin:ecommerce/客服主管" },
+              "run": { "expert": "plugin:ecommerce/电商客服主管" },
               "placeholder": { "zh-CN": "把商品资料和店铺的售后规则发过来", "en-US": "Send the product information and the store's after-sales policy" },
               "templates": [
                 { "id": "product-faq", "title": { "zh-CN": "商品 FAQ", "en-US": "Product FAQ" }, "prompt": { "zh-CN": "根据这份商品资料，整理顾客最常问的 20 个问题和标准回答", "en-US": "From this product information, write the 20 questions customers ask most and the standard answers" } },
