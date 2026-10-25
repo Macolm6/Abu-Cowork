@@ -427,7 +427,9 @@ export default function RenderableCodeBlock({
   // --- Right-top hover toolbar (visualization mode) ---
   const vizToolbar = !isLoading && !showSource && (
     <div className="absolute top-2 right-2 z-sticky opacity-0 transition-opacity duration-fast group-hover/widget:opacity-100 focus-within:opacity-100">
-      <div className="relative flex items-center gap-1 rounded-control bg-raised p-1 text-label shadow-float">
+      {/* Part of the block it sits in, so a hairline and an opaque fill mark it:
+          a floating shadow would be cut square by the block's clipped edges. */}
+      <div className="relative flex items-center gap-1 rounded-control border border-separator bg-raised p-1 text-label">
         <IconButton size="sm" icon={AppIcons.zoomOut} label={t.panel.pdfZoomOut} onClick={handleZoomOut} disabled={scale <= ZOOM_MIN} />
         <Tooltip content="Reset zoom">
           <Button variant="plain" size="sm" onClick={handleZoomReset} className="w-10 tabular-nums">
