@@ -14,6 +14,7 @@ import { usePreviewStore } from '@/stores/previewStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import type { Conversation } from '@/types';
 import RightPanel from './RightPanel';
+import { PANEL_DIVIDER_EDGE, PANEL_DIVIDER_GAP } from './panelWidths';
 
 const tabStrip = vi.hoisted(() => ({ renders: 0 }));
 
@@ -239,6 +240,24 @@ describe('RightPanel', () => {
   });
 
   describe('resize handle', () => {
+    it('sits outside the panel over the gap and the panel edge, as no window drag region', async () => {
+      await renderPanel();
+      const handle = resizeHandle();
+
+      // The panel clips its content, so a handle inside it could not reach the gap.
+      expect(panel().contains(handle)).toBe(false);
+      expect(handle.nextElementSibling).toBe(panel());
+      expect(handle).toHaveAttribute('data-electron-no-drag');
+      expect(handle.style.width).toBe(`${PANEL_DIVIDER_GAP + PANEL_DIVIDER_EDGE}px`);
+      expect(handle.style.marginLeft).toBe(`-${PANEL_DIVIDER_GAP}px`);
+      expect(handle.style.marginRight).toBe(`-${PANEL_DIVIDER_EDGE}px`);
+      expect(handle).not.toHaveAttribute('hidden');
+
+      act(() => useSettingsStore.getState().setRightPanelCollapsed(true));
+
+      expect(handle).toHaveAttribute('hidden');
+    });
+
     it('resizes the narrow panel through pointer capture without a full-window layer', async () => {
       const capture = vi.spyOn(HTMLElement.prototype, 'setPointerCapture');
       await renderPanel();
