@@ -169,7 +169,7 @@ test.describe.serial('apps', () => {
       fixture.restoreAppDocsOpen = () => { shell.openExternal = originalOpen; };
       shell.openExternal = async (url) => { fixture.appDocsOpened.push(url); };
     });
-    await page.getByRole('menuitem', { name: '应用开发文档', exact: true }).click();
+    await page.getByRole('menuitem', { name: '开发文档', exact: true }).click();
     await expect(page.getByTestId('app-switcher-menu')).toBeHidden();
     await expect.poll(() => app.evaluate(() => (
       globalThis as typeof globalThis & { appDocsOpened: string[] }

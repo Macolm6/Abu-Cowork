@@ -1867,7 +1867,7 @@ const zhCN: TranslationDict = {
   appSwitcher: {
     fileAccessFailed: '无法读写应用文件，请检查文件权限和磁盘空间后重试',
     empty: '暂无应用',
-    developmentDocs: '应用开发文档',
+    developmentDocs: '开发文档',
     general: '通用',
     generalDescription: '阿布的全部能力',
     recent: '最近使用',
