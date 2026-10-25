@@ -4,13 +4,13 @@
     {
       "ghsa": "GHSA-w3rx-r6r6-pgpr",
       "package": "image-size",
-      "reason": "ICNS parser DoS. image-size has no patched version (advisory patched_versions is null as of 2026-09-07; latest 2.0.2 is in range). npm audit fix --force proposes pptxgenjs 1.1.5, a semver-major downgrade from the required ^4.0.1. Only reached via pptxgenjs, whose dist never requires image-size (grep of node_modules/pptxgenjs/dist: 0 hits), and pptxgenjs is bundled solely for the pptx skill.",
+      "reason": "ICNS parser DoS. The only patched release is image-size 2.0.3; the 1.x line has none (latest 1.2.1 is in range). pptxgenjs 4.0.1, its latest release and our only dependent, requires image-size ^1.2.1, and npm audit fix --force proposes pptxgenjs 4.0.0, a downgrade that still depends on image-size ^1.1.1. pptxgenjs's dist never requires image-size (grep of node_modules/pptxgenjs/dist: 0 hits as of 2026-10-25; its Node path requires 'sizeof'), and pptxgenjs is bundled solely for the pptx skill.",
       "expires": "2026-12-31"
     },
     {
       "ghsa": "GHSA-5p2g-fcmc-qvqq",
       "package": "image-size",
-      "reason": "JXL/HEIF parser DoS. image-size has no patched version (advisory patched_versions is null as of 2026-09-07; latest 2.0.2 is in range). npm audit fix --force proposes pptxgenjs 1.1.5, a semver-major downgrade from the required ^4.0.1. The only dependent (pptxgenjs) never loads image-size.",
+      "reason": "JXL/HEIF parser DoS. The only patched release is image-size 2.0.3; the 1.x line has none (latest 1.2.1 is in range). pptxgenjs 4.0.1, its latest release and our only dependent, requires image-size ^1.2.1. The only dependent (pptxgenjs) never loads image-size.",
       "expires": "2026-12-31"
     }
   ]
