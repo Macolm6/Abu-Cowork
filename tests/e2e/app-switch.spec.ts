@@ -409,9 +409,9 @@ test.describe.serial('apps', () => {
     const thisApp = scope.getByRole('radio', { name: /^(本应用|This app)$/ });
     const everything = scope.getByRole('radio', { name: /^(全部|All)$/ });
     await expect(thisApp).toHaveAttribute('aria-checked', 'true');
-    await page.getByTestId('team-source-mine').click();
-    await expect(page.getByText('店铺客服顾问', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    // The app's plugin experts sit on 市场; 本应用 keeps the shipped ones it does not use off it.
     await page.getByTestId('team-source-market').click();
+    await expect(page.getByText('店铺客服顾问', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(page.getByText('高级开发工程师', { exact: true })).toHaveCount(0);
     await everything.click();
     await expect(page.getByText('高级开发工程师', { exact: true })).toBeVisible();
@@ -440,7 +440,7 @@ test.describe.serial('apps', () => {
     await showSidebar(page);
     await page.getByTestId('sidebar-team').click();
     await page.getByTestId('top-tab-nav').getByRole('button', { name: '专家', exact: true }).click();
-    await page.getByTestId('team-source-mine').click();
+    await page.getByTestId('team-source-market').click();
     await page.getByText('店铺客服顾问', { exact: true }).click();
     await page.getByRole('button', { name: '开始对话', exact: true }).click();
     await expect(page.getByTestId('app-home-title')).toHaveText(APP_NAME);
@@ -582,7 +582,7 @@ test.describe.serial('apps', () => {
     await expect(page.getByTestId('plugin-mine-row').filter({ hasText: PLUGIN_NAME })).toHaveCount(1);
     await page.getByTestId('sidebar-team').click();
     await page.getByTestId('top-tab-nav').getByRole('button', { name: '专家团', exact: true }).click();
-    await page.getByTestId('team-source-mine').click();
+    await page.getByTestId('team-source-market').click();
     await expect(page.getByTestId('team-row-店铺运营小组')).toBeVisible();
 
     await page.getByTestId('conversation-app-icon').first().click();
