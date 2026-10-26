@@ -21,13 +21,13 @@ vi.mock('@/core/session/conversationStorage', async () => {
 });
 vi.mock('@/core/agent/agentLoopRunner', () => ({ runAgentLoopDispatched: vi.fn() }));
 vi.mock('./ScenarioGuide', () => ({ default: () => null }));
-vi.mock('react-virtuoso', async () => {
+vi.mock('./ChatMessageList', async () => {
   const React = await import('react');
   return {
-    Virtuoso: React.forwardRef(function MockVirtuoso(_props: unknown, ref) {
-      React.useImperativeHandle(ref, () => ({ scrollToIndex: () => undefined }));
-      return React.createElement('div', { 'data-testid': 'mock-virtuoso' });
-    }),
+    default: function MockMessageList(props: { ref?: React.Ref<unknown> }) {
+      React.useImperativeHandle(props.ref, () => ({ scrollToIndex: () => undefined }));
+      return React.createElement('div', { 'data-testid': 'mock-message-list' });
+    },
   };
 });
 vi.mock('./ChatInput', async () => {
@@ -150,7 +150,7 @@ describe('ChatView: a conversation whose record cannot be read', () => {
     await user.click(retry);
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
     expect(loadMessages).toHaveBeenCalledTimes(3);
-    expect(screen.getByTestId('mock-virtuoso')).toBeInTheDocument();
+    expect(screen.getByTestId('mock-message-list')).toBeInTheDocument();
     expect(useChatStore.getState().loadFailures).toEqual({});
   });
 
@@ -165,7 +165,7 @@ describe('ChatView: a conversation whose record cannot be read', () => {
     loadMessages.mockResolvedValueOnce([message('n1', 'user', 'other'), message('n2', 'assistant', 'other answer')]);
     await act(async () => { await useChatStore.getState().switchConversation('c2'); });
     expect(screen.queryByRole('alert')).toBeNull();
-    expect(screen.getByTestId('mock-virtuoso')).toBeInTheDocument();
+    expect(screen.getByTestId('mock-message-list')).toBeInTheDocument();
 
     // Coming back reads the record again; it still cannot be read.
     loadMessages.mockRejectedValueOnce(new Error(HOST_ERROR));

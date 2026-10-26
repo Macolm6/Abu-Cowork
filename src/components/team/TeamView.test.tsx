@@ -737,6 +737,8 @@ describe('TeamView', () => {
     seedAgent('分析师', { roleId: 'r-lead' });
     discoveryState.agents = [{ name: '分析师' }];
     useTeamStore.setState({ teams: [{ id: 'plugin-team:shop@market/crew', name: '店铺小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-gone'], createdAt: 1 }] });
+    // A plugin's team sits on 市场.
+    useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES, members: 'mine', teams: 'market' } });
     render(<TeamView />);
     fireEvent.click(screen.getByTestId('team-row-店铺小队'));
     expect(screen.getByTestId('team-member-invalid-r-gone').textContent).toContain('已失效');

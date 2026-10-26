@@ -29,6 +29,11 @@ function fireResize(height: number) {
   roCallback?.([{ contentRect: { height } }]);
 }
 
+// The rendered height of the outer box, as the browser would lay it out.
+function setRenderedHeight(outer: HTMLElement, height: number) {
+  vi.spyOn(outer, 'getBoundingClientRect').mockReturnValue({ height } as DOMRect);
+}
+
 describe('SmoothHeight', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -43,40 +48,52 @@ describe('SmoothHeight', () => {
     observed = null;
   });
 
-  function renderWrapper() {
-    const { container } = render(
-      <SmoothHeight>
+  function renderWrapper({ enabled = true }: { enabled?: boolean } = {}) {
+    const view = render(
+      <SmoothHeight enabled={enabled} swapKey="collapsed">
         <span>content</span>
       </SmoothHeight>,
     );
-    const outer = container.firstElementChild as HTMLDivElement;
-    return outer;
+    const outer = view.container.firstElementChild as HTMLDivElement;
+    const swap = (swapKey: string) =>
+      view.rerender(
+        <SmoothHeight enabled={enabled} swapKey={swapKey}>
+          <span>content</span>
+        </SmoothHeight>,
+      );
+    return { outer, swap };
   }
 
   it('observes the inner content element', () => {
-    const outer = renderWrapper();
+    const { outer } = renderWrapper();
     expect(observed).toBe(outer.firstElementChild);
   });
 
-  it('never animates the first measure after mount (virtualized remounts must not dance)', () => {
-    const outer = renderWrapper();
-    fireResize(500);
+  it('lets content that arrives without a swap land instantly (a chart finishing its render)', () => {
+    const { outer } = renderWrapper();
+    fireResize(544);
+    fireResize(2148);
+    fireResize(2100);
     expect(outer.style.height).toBe('');
     expect(outer.style.transition).toBe('');
+    expect(outer.style.overflow).toBe('');
   });
 
-  it('leaves small (streaming-token-sized) height changes instant', () => {
-    const outer = renderWrapper();
-    fireResize(100);
-    fireResize(120); // +20px ≤ threshold
-    expect(outer.style.height).toBe('');
-    expect(outer.style.transition).toBe('');
-  });
-
-  it('animates a large shrink (the completion-fold swap) and settles back to auto', async () => {
-    const outer = renderWrapper();
+  it('pins the pre-swap height when the swap commits, before any resize is observed', () => {
+    const { outer, swap } = renderWrapper();
     fireResize(300);
-    fireResize(100); // -200px > threshold
+    swap('expanded');
+    expect(outer.style.height).toBe('300px');
+    expect(outer.style.overflow).toBe('hidden');
+    expect(outer.style.transition).toBe('none');
+  });
+
+  it('animates the swap to the new natural height and settles back to auto', async () => {
+    const { outer, swap } = renderWrapper();
+    fireResize(300);
+    swap('expanded');
+    setRenderedHeight(outer, 300);
+    fireResize(100);
     expect(outer.style.height).toBe('100px');
     expect(outer.style.transition).toContain('height');
     expect(outer.style.overflow).toBe('hidden');
@@ -88,21 +105,44 @@ describe('SmoothHeight', () => {
     expect(outer.style.overflow).toBe('');
   });
 
-  it('retargets to the newest height when content changes mid-animation', async () => {
-    const outer = renderWrapper();
+  it('releases the pin when the swap does not change the height', async () => {
+    const { outer, swap } = renderWrapper();
     fireResize(300);
-    fireResize(100); // starts an animation toward 100px
-    fireResize(140); // small delta, but an animation is in flight → retarget
-    expect(outer.style.height).toBe('140px');
+    swap('expanded');
+    expect(outer.style.height).toBe('300px');
     await vi.advanceTimersByTimeAsync(330);
     expect(outer.style.height).toBe('');
+    expect(outer.style.overflow).toBe('');
+  });
+
+  it('retargets a running swap animation to the newest height', async () => {
+    const { outer, swap } = renderWrapper();
+    fireResize(300);
+    swap('expanded');
+    setRenderedHeight(outer, 300);
+    fireResize(100);
+    setRenderedHeight(outer, 220);
+    fireResize(140);
+    expect(outer.style.height).toBe('140px');
+    expect(outer.style.transition).toContain('height');
+    await vi.advanceTimersByTimeAsync(330);
+    expect(outer.style.height).toBe('');
+  });
+
+  it('never animates a swap before the first measure after mount (virtualized remounts must not dance)', () => {
+    const { outer, swap } = renderWrapper();
+    swap('expanded');
+    fireResize(500);
+    expect(outer.style.height).toBe('');
+    expect(outer.style.transition).toBe('');
   });
 
   it('does not animate when the app asks for reduced motion (<html data-motion="reduced">)', () => {
     document.documentElement.dataset.motion = 'reduced';
     try {
-      const outer = renderWrapper();
+      const { outer, swap } = renderWrapper();
       fireResize(300);
+      swap('expanded');
       fireResize(100);
       expect(outer.style.height).toBe('');
       expect(outer.style.transition).toBe('');
@@ -116,20 +156,20 @@ describe('SmoothHeight', () => {
       'matchMedia',
       vi.fn().mockReturnValue({ matches: true }),
     );
-    const outer = renderWrapper();
+    const { outer, swap } = renderWrapper();
     fireResize(300);
+    swap('expanded');
+    setRenderedHeight(outer, 300);
     fireResize(100);
     expect(outer.style.height).toBe('100px');
     expect(outer.style.transition).toContain('height');
   });
 
-  it('observes nothing when disabled (settled history groups)', () => {
-    render(
-      <SmoothHeight enabled={false}>
-        <span>content</span>
-      </SmoothHeight>,
-    );
+  it('observes nothing and pins nothing when disabled (settled history groups)', () => {
+    const { outer, swap } = renderWrapper({ enabled: false });
     expect(observed).toBeNull();
+    swap('expanded');
+    expect(outer.style.height).toBe('');
   });
 
   it('renders inert without ResizeObserver (jsdom safety)', () => {
@@ -137,7 +177,7 @@ describe('SmoothHeight', () => {
     // @ts-expect-error — simulate an environment without ResizeObserver
     delete globalThis.ResizeObserver;
     const { container } = render(
-      <SmoothHeight>
+      <SmoothHeight swapKey="collapsed">
         <span>content</span>
       </SmoothHeight>,
     );

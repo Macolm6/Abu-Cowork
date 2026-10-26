@@ -26,6 +26,7 @@ import { blockFullText } from './toolResultTexts';
 import { StepToolView } from './toolViews/StepToolView';
 import { hasToolView, type ToolViewRecord } from './toolViews/toolViewRecords';
 import { useStepListScroll } from './useStepListScroll';
+import { useEntersAfterRowMount } from './rowMount';
 
 type StepGlyph = ComponentProps<typeof Icon>['icon'];
 
@@ -36,7 +37,7 @@ const DETAIL_CHIP = 'inline-flex h-5 items-center gap-1 rounded-control bg-fill 
 const STEP_DIFF_FOLD: DiffFold = { head: 5, tail: 4 };
 
 // The title of a step that opens its tool's view.
-const STEP_TITLE_BUTTON = 'inline rounded-control text-left transition-colors duration-fast hover:text-label';
+const STEP_TITLE_BUTTON = 'inline rounded-control text-left transition-colors duration-fast hover:text-label group-hover/step:text-label';
 
 /**
  * What a step's view reads: its whole result, or the part the conversation
@@ -432,6 +433,7 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
   // that never showed (also react-hooks/refs forbids it).
   const [timelineEverOpened, setTimelineEverOpened] = useState(isOpen);
   if (isOpen && !timelineEverOpened) setTimelineEverOpened(true);
+  const timelineEnters = useEntersAfterRowMount(timelineEverOpened);
   const stepListRef = useRef<HTMLDivElement>(null);
   const { edges, onScroll } = useStepListScroll(stepListRef, isOpen, isActive);
 
@@ -464,6 +466,8 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
       {/* Flow Timeline. block-expand-enter animates the height open when this
           mounts mid-stream (the "思考中" dots swapping to the first thinking/
           tool step while pinned to the bottom must not land in one frame);
+          a timeline that shows together with its list row (switching to a
+          running conversation) is already open and does not animate.
           open/closed classes roll it up/down on later toggles — including the
           auto-collapse when the answer starts streaming — while the content
           stays mounted (inert + hidden from a11y when closed). */}
@@ -474,7 +478,7 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
           className={cn(
             'block-expand',
             isOpen ? 'block-expand-open' : 'block-expand-closed',
-            'block-expand-enter',
+            timelineEnters && 'block-expand-enter',
           )}
         >
           <div
@@ -659,6 +663,9 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t,
       didAutoCollapseThinking.current = true;
     }
   }, [isThinking, isCompleted, hasLaterToolStep]);
+  // The streaming pane grows open only when it appears inside a list row that
+  // was already there; shown together with its row it is simply open.
+  const thinkingPaneEnters = useEntersAfterRowMount(isThinking && isRunning && Boolean(step.detail));
 
   // Auto-scroll the streaming thinking pane to the bottom as new tokens arrive,
   // so the latest reasoning text stays in view instead of being clipped by max-height.
@@ -710,8 +717,9 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t,
       // mutates classes on mounted nodes instead of replacing the subtree; the
       // panel — kept mounted — rolls up/down over the shared 280ms transition
       // on later toggles, including the auto-collapse when execution moves on
-      // to a tool step.
-      <div className="mt-1">
+      // to a tool step. Its gap above lives inside the rolled-up row, so a
+      // folded panel takes no room under the row.
+      <div>
         {/* block-expand-enter while running: the pane can first mount inside
             an ALREADY open timeline (a later turn's thinking starting after
             tool steps), where the timeline-level mount animation won't fire —
@@ -723,15 +731,21 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t,
           className={cn(
             'block-expand',
             panelOpen ? 'block-expand-open' : 'block-expand-closed',
-            isRunning && 'block-expand-enter',
+            isRunning && thinkingPaneEnters && 'block-expand-enter',
           )}
         >
-          <div className="overflow-hidden rounded-panel border border-separator bg-surface">
-            <div ref={thinkingScrollRef} className="px-3 py-2 max-h-48 overflow-y-auto">
-              <pre className="m-0 whitespace-pre-wrap break-words font-sans text-ui-sm italic text-label-secondary">
-                {step.detail}
-                {isRunning && <span aria-hidden="true" className="ml-1 inline-block h-4 w-0.5 bg-label-secondary align-text-bottom" />}
-              </pre>
+          {/* The rolled-up grid row is the borderless wrapper: a bordered box
+              there keeps its two border lines on screen at zero height. */}
+          <div className="overflow-hidden">
+            <div className="pt-1">
+              <div className="overflow-hidden rounded-panel border border-separator bg-surface">
+                <div ref={thinkingScrollRef} className="px-3 py-2 max-h-48 overflow-y-auto">
+                  <pre className="m-0 whitespace-pre-wrap break-words font-sans text-ui-sm italic text-label-secondary">
+                    {step.detail}
+                    {isRunning && <span aria-hidden="true" className="ml-1 inline-block h-4 w-0.5 bg-label-secondary align-text-bottom" />}
+                  </pre>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -774,6 +788,16 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t,
     );
   };
 
+  // What a press on the step's line opens: the same thing its title button
+  // (or, on a file row, its "+N −M") opens; nothing on a line that opens nothing.
+  const rowToggle = isThinking && isCompleted && step.detail
+    ? () => setThinkingExpanded((open) => !open)
+    : showsToolView
+      ? () => setViewExpanded((open) => !open)
+      : fileChange?.hunks?.length && fileChange.added !== undefined && fileChange.deleted !== undefined
+        ? () => setDiffExpanded((open) => !open)
+        : undefined;
+
   return (
     <div className="flex items-start gap-3">
       {/* Icon column with vertical line */}
@@ -801,10 +825,18 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t,
 
       {/* Content column */}
       <div className="flex-1 min-w-0 pb-3">
-        {/* Step label */}
+        {/* Step label. A press anywhere on the line opens what its title button
+            opens; the title button stays the keyboard's control, and the
+            line's links and other buttons keep their own presses. */}
         <div
+          onClick={rowToggle ? (event) => {
+            if ((event.target as HTMLElement).closest('button, a')) return;
+            if (window.getSelection()?.toString()) return;
+            rowToggle();
+          } : undefined}
           className={cn(
             'text-ui',
+            rowToggle && 'group/step cursor-pointer',
             isRunning
               ? 'text-label-secondary'
               : isError
@@ -819,6 +851,7 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t,
               className={STEP_TITLE_BUTTON}
             >
               {stepLabel}
+              <StepDisclosure expanded={thinkingExpanded} />
             </Pressable>
           ) : !showsToolView ? (
             fileChange ? <StepFileLabel label={stepLabel} fileChange={fileChange} t={t} /> : stepLabel
@@ -832,6 +865,7 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t,
               className={STEP_TITLE_BUTTON}
             >
               {stepLabel}
+              <StepDisclosure expanded={viewExpanded} />
             </Pressable>
           )}
           {fileChange && fileChange.added !== undefined && fileChange.deleted !== undefined && (
@@ -1055,6 +1089,7 @@ function StepUrlLabel({ label, url, expanded, onToggle }: {
     <>
       <Pressable onClick={onToggle} aria-expanded={expanded} aria-label={label} className={STEP_TITLE_BUTTON}>
         {leading}
+        <StepDisclosure expanded={expanded} />
       </Pressable>
       {' '}
       <Link
@@ -1068,6 +1103,11 @@ function StepUrlLabel({ label, url, expanded, onToggle }: {
       </Link>
     </>
   );
+}
+
+/** The arrow after a step title that opens something: right while folded, down while open. */
+function StepDisclosure({ expanded }: { expanded: boolean }) {
+  return <Icon icon={expanded ? AppIcons.expand : AppIcons.disclose} size="sm" className="ml-1 inline-block align-middle" />;
 }
 
 /** "+N −M" of a step; a toggle for the step's diff when `expanded` is given. */
@@ -1091,7 +1131,7 @@ function StepLineCounts({ added, deleted, expanded, onToggle }: {
       onClick={onToggle}
       aria-expanded={expanded}
       aria-label={`+${added} −${deleted}`}
-      className="ml-2 inline-flex items-center gap-1 rounded-control align-middle font-code text-ui-sm text-label-tertiary"
+      className="ml-2 inline-flex items-center gap-1 rounded-control align-middle font-code text-ui-sm text-label-tertiary group-hover/step:text-label"
     >
       <Icon icon={expanded ? AppIcons.expand : AppIcons.disclose} size="sm" />
       {counts}

@@ -22,12 +22,12 @@ vi.mock('@/core/agent/agentLoopRunner', () => ({
   runAgentLoopDispatched: vi.fn(),
 }));
 
-vi.mock('react-virtuoso', async () => {
+vi.mock('./ChatMessageList', async () => {
   const React = await import('react');
   return {
-    Virtuoso: React.forwardRef(function MockVirtuoso() {
-      return React.createElement('div', { 'data-testid': 'mock-virtuoso' });
-    }),
+    default: function MockMessageList() {
+      return React.createElement('div', { 'data-testid': 'mock-message-list' });
+    },
   };
 });
 

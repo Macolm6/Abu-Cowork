@@ -1866,7 +1866,7 @@ const enUS: TranslationDict = {
   appSwitcher: {
     fileAccessFailed: 'App files could not be accessed. Check file permissions and disk space, then retry.',
     empty: 'No apps yet',
-    developmentDocs: 'App development docs',
+    developmentDocs: 'Development docs',
     general: 'General',
     generalDescription: 'Everything Abu can do',
     recent: 'Recent',

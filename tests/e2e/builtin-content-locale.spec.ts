@@ -127,7 +127,9 @@ async function readTeams(page: Page, locale: Locale) {
   await page.getByLabel('Main navigation').getByRole('button', { name: TEAM_NAV }).click();
   await page.getByRole('button', { name: TEAMS_TAB }).click();
   await page.getByTestId('team-source-market').click();
-  await expect(page.locator('[data-team-card]')).toHaveCount(TEAMS.length, { timeout: READY_TIMEOUT });
+  // 市场 also lists the teams the e-commerce app's plugin brought, each tagged with its source.
+  const shipped = page.locator('[data-team-card]').filter({ hasNot: page.getByTestId('source-badge') });
+  await expect(shipped).toHaveCount(TEAMS.length, { timeout: READY_TIMEOUT });
   const cards: string[] = [];
   for (const team of TEAMS) {
     const card = page.getByTestId(`team-row-${team.stored}`);

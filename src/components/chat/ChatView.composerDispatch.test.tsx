@@ -55,27 +55,24 @@ vi.mock('@/utils/electronHost', () => ({
   canonicalizeElectronPathForPolicy: vi.fn(async () => null),
 }));
 
-vi.mock('react-virtuoso', async () => {
-  const { createElement, forwardRef } = await import('react');
-  type MockVirtuosoProps = {
+vi.mock('./ChatMessageList', async () => {
+  const { createElement } = await import('react');
+  type MockMessageListProps = {
     data?: unknown[];
     itemContent?: (index: number, item: unknown) => ReturnType<typeof createElement>;
   };
   return {
-    Virtuoso: forwardRef<unknown, MockVirtuosoProps>(function MockVirtuoso(
-      { data = [], itemContent },
-      _ref,
-    ) {
+    default: function MockMessageList({ data = [], itemContent }: MockMessageListProps) {
       return createElement(
         'div',
-        { 'data-testid': 'mock-virtuoso' },
+        { 'data-testid': 'mock-message-list' },
         data.map((item, index) => createElement(
           'div',
           { key: index },
           itemContent?.(index, item),
         )),
       );
-    }),
+    },
   };
 });
 
@@ -276,7 +273,7 @@ describe('ChatView welcome composer dispatch ownership', () => {
       const run = takeFirstMessage();
       render(<ChatView />);
       const welcomeField = await submitWelcome('hello');
-      await waitFor(() => expect(screen.getByTestId('mock-virtuoso')).toHaveTextContent('hello'));
+      await waitFor(() => expect(screen.getByTestId('mock-message-list')).toHaveTextContent('hello'));
 
       expect(welcomeField.isConnected).toBe(false);
       const field = screen.getByRole('textbox');
@@ -304,7 +301,7 @@ describe('ChatView welcome composer dispatch ownership', () => {
         fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter', code: 'Enter' });
         act(() => { elsewhere.focus(); });
         focused.mockClear();
-        await waitFor(() => expect(screen.getByTestId('mock-virtuoso')).toHaveTextContent('hello'));
+        await waitFor(() => expect(screen.getByTestId('mock-message-list')).toHaveTextContent('hello'));
         await act(async () => { await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined))); });
 
         expect(elsewhere).toHaveFocus();
@@ -323,7 +320,7 @@ describe('ChatView welcome composer dispatch ownership', () => {
       act(() => {
         useChatStore.getState().addMessage(id, { id: 'arrived', role: 'user', content: 'from elsewhere', timestamp: 1, loopId: 'other-run' });
       });
-      await waitFor(() => expect(screen.getByTestId('mock-virtuoso')).toHaveTextContent('from elsewhere'));
+      await waitFor(() => expect(screen.getByTestId('mock-message-list')).toHaveTextContent('from elsewhere'));
       await act(async () => { await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined))); });
 
       expect(document.body).toHaveFocus();
@@ -464,7 +461,7 @@ describe('ChatView welcome composer dispatch ownership', () => {
     await waitFor(() => expect(dispatchMock).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue(''));
     expect(readComposerDraft(WELCOME_COMPOSER_DRAFT_KEY).text).toBe('');
-    expect(screen.getByTestId('mock-virtuoso')).toHaveTextContent('persist once');
+    expect(screen.getByTestId('mock-message-list')).toHaveTextContent('persist once');
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
     expect(useToastStore.getState().toasts).toEqual(
       expect.arrayContaining([
