@@ -171,6 +171,17 @@ p, .h3 { text-wrap: balance; }
   .nav-cta { margin-left: auto; }
   .nav-menu { display: inline-flex; }
 }
+/* The English entries are longer: the bar spaces them closer at full width, tightens from 1300px and gives them up below 1100px. */
+:lang(en) .nav-links { gap: 24px; }
+@media (max-width: 1300px) {
+  :lang(en) .nav-links { gap: 16px; font-size: 14px; }
+  :lang(en) .nav-cta .btn-line { display: none; }
+}
+@media (max-width: 1099px) {
+  :lang(en) .nav-links { display: none; }
+  :lang(en) .nav-cta { margin-left: auto; }
+  :lang(en) .nav-menu { display: inline-flex; }
+}
 .nav.on-night { color: var(--night-ink); }
 .nav.on-night .btn-fill { background: #fff; color: #1d1d1f; }
 .nav.on-night .btn-line { box-shadow: inset 0 0 0 1px #fff; }

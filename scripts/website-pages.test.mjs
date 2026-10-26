@@ -217,10 +217,10 @@ test('release notes live on the documentation page, the home page keeps version 
   assert.ok(fs.existsSync(path.join(websiteDir, 'assets/vendor/marked.umd.js')));
 });
 
-test('navigation stays in place and lists the same eight entries on every page', () => {
+test('navigation stays in place and lists the same nine entries on every page', () => {
   const labels = {
-    zh: ['预览', '能力', '场景', '架构', '企业版', '开放平台', '文档', '社区'],
-    en: ['Preview', 'Features', 'Use cases', 'Architecture', 'Enterprise', 'Open Platform', 'Docs', 'Community'],
+    zh: ['预览', '能力', '场景', '架构', '企业版', '开放平台', '文档', '社区', '关于作者'],
+    en: ['Preview', 'Features', 'Use cases', 'Architecture', 'Enterprise', 'Open Platform', 'Docs', 'Community', 'Author'],
   };
   assert.ok(read('site.css').includes('.nav { position: fixed; inset: 0 0 auto 0;'));
   assert.ok(!read('site.css').includes('is-hidden') && !read('site.js').includes('is-hidden'), 'the bar is never hidden while scrolling');
@@ -228,8 +228,13 @@ test('navigation stays in place and lists the same eight entries on every page',
     assert.deepEqual(navLabels(read(pair.zh)), labels.zh, pair.zh);
     assert.deepEqual(navLabels(read(pair.en)), labels.en, pair.en);
   }
-  assert.deepEqual(navTargets(homeZh), ['#preview', '#abilities', '#scenes', '#tech', 'enterprise.zh-CN.html', 'platform.zh-CN.html', 'docs.zh-CN.html', 'community.zh-CN.html']);
-  assert.deepEqual(navTargets(homeEn), ['#preview', '#abilities', '#scenes', '#tech', 'enterprise.html', 'platform.html', 'docs.html', 'community.html']);
+  assert.deepEqual(navTargets(homeZh), ['#preview', '#abilities', '#scenes', '#tech', 'enterprise.zh-CN.html', 'platform.zh-CN.html', 'docs.zh-CN.html', 'community.zh-CN.html', 'https://pmshawn.com']);
+  assert.deepEqual(navTargets(homeEn), ['#preview', '#abilities', '#scenes', '#tech', 'enterprise.html', 'platform.html', 'docs.html', 'community.html', 'https://pmshawn.com']);
+  for (const pair of pairs) {
+    for (const file of [pair.zh, pair.en]) {
+      assert.ok(read(file).includes('<a href="https://pmshawn.com" target="_blank" rel="noopener">'), `${file}: the author's site opens in a new tab`);
+    }
+  }
   for (const id of ['preview', 'how', 'abilities', 'scenes', 'voices', 'safe', 'tech', 'community', 'start']) {
     assert.ok(homeZh.includes(` id="${id}"`) && homeEn.includes(` id="${id}"`), `home pages are missing #${id}`);
   }
