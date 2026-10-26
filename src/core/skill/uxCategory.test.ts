@@ -22,15 +22,12 @@ describe('sourceToUXCategory', () => {
     expect(sourceToUXCategory('draft')).toBe('agent-evolved');
   });
 
-  it('maps builtin separately from mine', () => {
-    expect(sourceToUXCategory('builtin')).toBe('builtin');
+  it('files shipped and plugin-contributed skills under 市场 — someone else wrote them', () => {
+    expect(sourceToUXCategory('builtin')).toBe('market');
+    expect(sourceToUXCategory('plugin')).toBe('market');
   });
 
-  it('files plugin-contributed and organization-pushed skills under 我的 — the user has them', () => {
-    // 我的 is what the user owns, 市场 what they can still get. A skill an
-    // installed plugin brought in is theirs (badged, read-only, gone with the
-    // plugin); one the organization pushed likewise.
-    expect(sourceToUXCategory('plugin')).toBe('mine');
+  it('files organization-pushed skills under 我的', () => {
     expect(sourceToUXCategory('enterprise')).toBe('mine');
   });
 

@@ -175,7 +175,8 @@ async function readSkills(page: Page, locale: Locale) {
   await page.getByLabel('Main navigation').getByRole('button', { name: EXTENSIONS }).click();
   await page.getByRole('main').getByRole('button', { name: SKILLS_TAB }).click();
   await page.getByTestId('extensions-source-market').click();
-  const cards = page.locator('[data-skill-entry]');
+  // 市场 also lists the skills the e-commerce app's plugin brought, each tagged with its source.
+  const cards = page.locator('[data-skill-entry]').filter({ hasNot: page.getByTestId('source-badge') });
   await expect(page.locator('[data-skill-entry="docx"]')).toBeVisible({ timeout: READY_TIMEOUT });
   for (const sample of SKILL_SAMPLES) {
     await expect(page.locator(`[data-skill-entry="${sample.name}"]`)).toContainText(sample[locale]);
