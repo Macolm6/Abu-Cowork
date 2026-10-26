@@ -6,6 +6,7 @@ import { AppIcons } from '@/components/ds/icons';
 import { IconButton } from '@/components/ds/button';
 import { Pressable } from '@/components/ds/pressable';
 import MarkdownRenderer from './MarkdownRenderer';
+import { useEntersAfterRowMount } from './rowMount';
 import type { Message } from '@/types';
 
 const COPIED_MS = 2000;
@@ -30,6 +31,7 @@ export default function CompactDivider({ message, expanded, onToggle }: {
   const summary = message.compactBoundary?.summaryText ?? '';
   const hasSummary = summary.trim() !== '';
   const open = hasSummary && expanded;
+  const summaryEnters = useEntersAfterRowMount(open);
 
   const [copied, setCopied] = useState(false);
   useEffect(() => {
@@ -74,7 +76,7 @@ export default function CompactDivider({ message, expanded, onToggle }: {
         <span className="h-px flex-1 bg-separator" />
       </Pressable>
       {open && (
-        <div className="block-expand block-expand-open block-expand-enter">
+        <div className={cn('block-expand block-expand-open', summaryEnters && 'block-expand-enter')}>
           <div className="mt-2 flex items-start gap-2 pl-7">
             <div className="min-w-0 flex-1 break-words text-label select-text">
               <MarkdownRenderer content={summary} variant="assistant" />

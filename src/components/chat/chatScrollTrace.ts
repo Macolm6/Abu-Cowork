@@ -5,11 +5,11 @@ export type ChatScrollFollowSource =
   | 'conversation-switch'
   | 'turn-anchor'
   | 'total-list-height'
-  // Content the scroller measured itself, rather than a height Virtuoso
+  // Content the scroller measured itself, rather than a height the list
   // reported. Distinguishing the two is the point: a correction attributed
   // here is one no list-height callback would have delivered.
   | 'content-resize'
-  | 'virtuoso-follow-output';
+  | 'list-follow-output';
 
 export type ChatScrollTracePhase = 'decision' | 'scheduled' | 'applied';
 

@@ -91,8 +91,8 @@ function opensChapter(message: Message): boolean {
  * Derive the rail's chapters from the same groups the message list renders.
  *
  * Passing the groups rather than the raw messages is deliberate: the rail must
- * scroll to a Virtuoso index, and the only array whose indices mean anything to
- * Virtuoso is the one handed to `data`. Deriving from messages here would let
+ * scroll to a list index, and the only array whose indices mean anything to
+ * the list is the one handed to `data`. Deriving from messages here would let
  * the two drift apart silently the next time grouping changes.
  *
  * `fallbackTitle` names the opening stretch of a conversation that begins with
@@ -147,7 +147,7 @@ export function sameChapters(a: Chapter[], b: Chapter[], { summary = true }: { s
 
 /** One rendered message row, reduced to what the scroll-spy needs. */
 export interface RowPosition {
-  /** Virtuoso's `data-index` for the row — its index in the group array. */
+  /** The row's `data-index` — its index in the group array. */
   index: number;
   /** Row top, in pixels relative to the top of the scroll viewport. */
   top: number;
@@ -156,12 +156,11 @@ export interface RowPosition {
 /**
  * Index of the group occupying the top of the viewport.
  *
- * Virtuoso's `rangeChanged` callback looks like the signal for this and is not:
- * it is derived from the RENDERED item range, which includes whatever
- * `increaseViewportBy` adds above the viewport. With 900px of top overscan any
- * conversation shorter than viewport + 1800px renders every row at once and
- * reports startIndex 0 forever, so a rail driven by it pins to the first
- * chapter and never moves. Row geometry is the honest input instead.
+ * The list's rendered range looks like the signal for this and is not: it
+ * includes the 900px the list mounts above the viewport. Any conversation
+ * shorter than viewport + 1800px renders every row at once and starts at index
+ * 0 forever, so a rail driven by it pins to the first chapter and never moves.
+ * Row geometry is the honest input instead.
  *
  * `slack` lets a row count as "at the top" a few pixels before it strictly is,
  * so the chapter flips the moment its first row reaches the edge.

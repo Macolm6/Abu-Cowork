@@ -12,21 +12,21 @@ import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { getI18n } from '@/i18n';
 import type { Message, SubagentDefinition } from '@/types';
 
-interface MockVirtuosoProps {
+interface MockMessageListProps {
+  ref?: React.Ref<unknown>;
   atBottomStateChange?: (atBottom: boolean) => void;
   data?: Message[][];
   itemContent?: (index: number, group: Message[]) => React.ReactNode;
-  components?: { Footer?: React.ComponentType<{ context?: unknown }> };
-  context?: unknown;
+  footer?: React.ReactNode;
 }
 
 const harness = vi.hoisted(() => ({
-  props: null as MockVirtuosoProps | null,
+  props: null as MockMessageListProps | null,
   scrollToIndex: vi.fn(),
   tooltipRenders: vi.fn(),
   teamLeader: null as null | Record<string, unknown>,
   macOS: false,
-  // Rows the list has scrolled out of view: the stand-in unmounts them like Virtuoso does.
+  // Rows the list has scrolled out of view: the stand-in unmounts them like the real list does.
   unmountedRowIds: new Set<string>(),
   refreshList: null as null | (() => void),
 }));
@@ -38,24 +38,25 @@ vi.mock('@/utils/platform', async (importOriginal) => {
 
 vi.mock('@/core/agent/agentLoopRunner', () => ({ runAgentLoopDispatched: vi.fn() }));
 
-vi.mock('react-virtuoso', async () => {
+vi.mock('./ChatMessageList', async () => {
   const React = await import('react');
   return {
-    Virtuoso: React.forwardRef(function MockVirtuoso(props: MockVirtuosoProps, ref) {
+    default: function MockMessageList(props: MockMessageListProps) {
       harness.props = props;
       const [, refresh] = React.useReducer((n: number) => n + 1, 0);
       harness.refreshList = refresh;
-      React.useImperativeHandle(ref, () => ({ scrollToIndex: harness.scrollToIndex }));
+      React.useImperativeHandle(props.ref, () => ({ scrollToIndex: harness.scrollToIndex }));
       return React.createElement(
         'div',
-        { 'data-testid': 'mock-virtuoso' },
+        { 'data-testid': 'mock-message-list' },
         ...(props.data ?? []).map((group, index) => harness.unmountedRowIds.has(group[0]?.id) ? null : React.createElement(
           'div',
           { 'data-index': String(index), key: group[0]?.id ?? index },
           props.itemContent?.(index, group),
         )),
+        props.footer,
       );
-    }),
+    },
   };
 });
 
@@ -212,7 +213,7 @@ describe('ChatView frame', () => {
     setupConversation();
 
     render(<ChatView />);
-    await screen.findByTestId('mock-virtuoso');
+    await screen.findByTestId('mock-message-list');
 
     const scroller = document.querySelector<HTMLElement>('.overlay-scroll')!;
     const composerArea = scroller.nextElementSibling as HTMLElement;
@@ -284,7 +285,7 @@ describe('ChatView frame', () => {
     const user = setupUser();
     setupConversation();
     render(<ChatView />);
-    await screen.findByTestId('mock-virtuoso');
+    await screen.findByTestId('mock-message-list');
     const scroller = document.querySelector<HTMLElement>('.overlay-scroll')!;
 
     act(() => scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -12 })));
@@ -371,7 +372,7 @@ describe('ChatView frame', () => {
     const user = setupUser();
     setupCompactedConversation();
     render(<ChatView />);
-    await screen.findByTestId('mock-virtuoso');
+    await screen.findByTestId('mock-message-list');
 
     await user.click(compactRow());
     act(() => harness.props?.atBottomStateChange?.(false));
@@ -430,10 +431,8 @@ describe('ChatView frame', () => {
     store.setRetryInfo(conversationId, { attempt: 2, maxAttempts: 3, delayMs: 5000 });
     render(<ChatView />);
 
-    const Footer = harness.props?.components?.Footer;
-    expect(Footer).toBeDefined();
-    const { container } = render(Footer ? <Footer context={harness.props?.context} /> : <div />);
-    expect(container).toHaveTextContent(t.status.thinking);
-    expect(container).not.toHaveTextContent(/retrying/i);
+    const list = screen.getByTestId('mock-message-list');
+    expect(list).toHaveTextContent(t.status.thinking);
+    expect(list).not.toHaveTextContent(/retrying/i);
   });
 });

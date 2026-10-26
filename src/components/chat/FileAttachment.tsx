@@ -409,6 +409,30 @@ export function ImageThumbnail({ src }: { src: string }) {
   );
 }
 
+// The thumbnail box: `max-h-50 max-w-50` on the image below.
+const THUMBNAIL_MAX_PX = 200;
+const KNOWN_SIZES_LIMIT = 1000;
+
+// Image sizes seen before, by file. A card mounted again (switching back to a
+// conversation, scrolling it back into view) takes its final size at once, so
+// the image arriving a moment later does not push the transcript.
+const knownImageSizes = new Map<string, { w: number; h: number }>();
+
+function rememberImageSize(filePath: string, size: { w: number; h: number }): void {
+  knownImageSizes.delete(filePath);
+  knownImageSizes.set(filePath, size);
+  if (knownImageSizes.size > KNOWN_SIZES_LIMIT) {
+    const oldest = knownImageSizes.keys().next().value;
+    if (oldest !== undefined) knownImageSizes.delete(oldest);
+  }
+}
+
+/** The image's size in the thumbnail box: scaled down to fit, never up. */
+function fitThumbnail(size: { w: number; h: number }): { width: number; height: number } {
+  const scale = Math.min(1, THUMBNAIL_MAX_PX / size.w, THUMBNAIL_MAX_PX / size.h);
+  return { width: Math.round(size.w * scale), height: Math.round(size.h * scale) };
+}
+
 // Compact image preview card for generated images. Memoized: its reveal button carries a
 // tooltip, and finished message groups re-render with every streamed token of a later reply.
 export const ImagePreviewCard = memo(function ImagePreviewCard({ filePath }: { filePath: string }) {
@@ -417,7 +441,8 @@ export const ImagePreviewCard = memo(function ImagePreviewCard({ filePath }: { f
   const fileName = getBaseName(filePath);
   const [imgUrl, setImgUrl] = useState<string | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
-  const [dimensions, setDimensions] = useState<{ w: number; h: number } | null>(null);
+  const [dimensions, setDimensions] = useState<{ w: number; h: number } | null>(() => knownImageSizes.get(filePath) ?? null);
+  const fitted = dimensions ? fitThumbnail(dimensions) : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -437,9 +462,11 @@ export const ImagePreviewCard = memo(function ImagePreviewCard({ filePath }: { f
   const handleImgLoad = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
     const img = e.currentTarget;
     if (img.naturalWidth && img.naturalHeight) {
-      setDimensions({ w: img.naturalWidth, h: img.naturalHeight });
+      const size = { w: img.naturalWidth, h: img.naturalHeight };
+      rememberImageSize(filePath, size);
+      setDimensions(size);
     }
-  }, []);
+  }, [filePath]);
 
   const handleReveal = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -464,12 +491,18 @@ export const ImagePreviewCard = memo(function ImagePreviewCard({ filePath }: { f
           <img
             src={imgUrl}
             alt={fileName}
+            // A known size holds the box before the image decodes.
+            width={fitted?.width}
+            height={fitted?.height}
             className="block max-h-50 w-auto max-w-50 object-contain"
             onLoad={handleImgLoad}
             onError={() => { setImgUrl(null); setLoadFailed(true); }}
           />
         ) : (
-          <span className="flex h-30 w-40 items-center justify-center bg-fill">
+          <span
+            className={cn('flex items-center justify-center bg-fill', !fitted && 'h-30 w-40')}
+            style={fitted ? { width: fitted.width, height: fitted.height } : undefined}
+          >
             <Icon icon={AppIcons.fileImage} size="lg" className={loadFailed ? 'text-label-placeholder' : 'text-label-tertiary'} />
           </span>
         )}

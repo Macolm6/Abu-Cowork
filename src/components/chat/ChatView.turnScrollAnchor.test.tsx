@@ -11,10 +11,10 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import type { Message } from '@/types';
 
-interface MockVirtuosoProps {
+interface MockMessageListProps {
+  ref?: React.Ref<unknown>;
   atBottomStateChange?: (atBottom: boolean) => void;
-  components?: { Footer?: React.ComponentType<{ context?: unknown }> };
-  context?: unknown;
+  footer?: React.ReactNode;
   data?: Message[][];
   followOutput?: false | ((atBottom: boolean) => 'auto' | false);
   itemContent?: (index: number, group: Message[]) => React.ReactNode;
@@ -25,7 +25,7 @@ interface MockVirtuosoProps {
 const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 const harness = vi.hoisted(() => ({
-  props: null as MockVirtuosoProps | null,
+  props: null as MockMessageListProps | null,
   scrollToIndex: vi.fn(),
 }));
 
@@ -33,24 +33,23 @@ vi.mock('@/core/agent/agentLoopRunner', () => ({
   runAgentLoopDispatched: vi.fn(),
 }));
 
-vi.mock('react-virtuoso', async () => {
+vi.mock('./ChatMessageList', async () => {
   const React = await import('react');
   return {
-    Virtuoso: React.forwardRef(function MockVirtuoso(props: MockVirtuosoProps, ref) {
+    default: function MockMessageList(props: MockMessageListProps) {
       harness.props = props;
-      React.useImperativeHandle(ref, () => ({ scrollToIndex: harness.scrollToIndex }));
-      const Footer = props.components?.Footer;
+      React.useImperativeHandle(props.ref, () => ({ scrollToIndex: harness.scrollToIndex }));
       return React.createElement(
         'div',
-        { 'data-testid': 'mock-virtuoso' },
+        { 'data-testid': 'mock-message-list' },
         ...(props.data ?? []).map((group, index) => React.createElement(
           'div',
           { 'data-index': String(index), key: group[0]?.id ?? index },
           props.itemContent?.(index, group),
         )),
-        Footer ? React.createElement(Footer, { context: props.context }) : null,
+        props.footer,
       );
-    }),
+    },
   };
 });
 
@@ -120,7 +119,7 @@ class RecordingResizeObserver {
   }
 }
 
-/** What Virtuoso would do with new output: the prop itself when it is a value. */
+/** What the list would do with new output: the prop itself when it is a value. */
 function followDecision(): 'auto' | false | undefined {
   const followOutput = harness.props?.followOutput;
   return typeof followOutput === 'function' ? followOutput(false) : followOutput;
@@ -218,7 +217,7 @@ async function armNewTurn(conversationId: string, expectedFiller: number | null 
     store.setConversationStatus(conversationId, 'running');
     store.addMessage(conversationId, message('new-user', 'user', 'new prompt', 'new-loop'));
   });
-  await screen.findByTestId('mock-virtuoso');
+  await screen.findByTestId('mock-message-list');
   if (expectedFiller != null) {
     await waitFor(() => expect(fillerHeight()).toBe(expectedFiller));
   }
@@ -278,8 +277,8 @@ describe('ChatView active-turn scroll state machine', () => {
 
     expect(getScrollTop()).toBe(200);
     expect(minContentHeight()).toBe(500);
-    // A held turn keeps the list end above the viewport bottom; Virtuoso's own
-    // bottom-stick stays off only for a literal `false`.
+    // A held turn keeps the list end above the viewport bottom; the list's own
+    // follow stays off only for a literal `false`.
     expect(harness.props?.followOutput).toBe(false);
     geometry.contentHeight = 180;
     act(() => harness.props?.totalListHeightChanged?.(380));
@@ -531,7 +530,7 @@ describe('ChatView active-turn scroll state machine', () => {
     expect(fillerHeight()).toBe(0);
   });
 
-  it('clears spacer before the chapter rail changes the Virtuoso target', async () => {
+  it('clears spacer before the chapter rail changes the list target', async () => {
     const user = userEvent.setup();
     const conversationId = setupConversation();
     for (let index = 1; index <= 2; index += 1) {

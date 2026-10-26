@@ -37,9 +37,9 @@ import { noteComposerKey } from './composerActivity';
 // that nothing but a press on its own buttons answers it. The requests are real entries of the
 // approval queues; the rows, the composer and the strips of the chat are not under test.
 vi.mock('@/core/agent/agentLoopRunner', () => ({ runAgentLoopDispatched: vi.fn() }));
-vi.mock('react-virtuoso', async () => {
+vi.mock('./ChatMessageList', async () => {
   const React = await import('react');
-  return { Virtuoso: React.forwardRef(function MockVirtuoso() { return React.createElement('div'); }) };
+  return { default: function MockMessageList() { return React.createElement('div'); } };
 });
 vi.mock('./MessageGroup', () => ({ default: () => null }));
 // Stands in for the composer: the message field, and a Send button that the Stop button takes

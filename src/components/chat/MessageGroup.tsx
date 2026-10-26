@@ -19,6 +19,7 @@ import { collectToolViewRecords } from './toolViews/toolViewRecords';
 import McpAppBlock from './McpAppBlock';
 import { resolveToolCallAppUi } from '@/core/mcp/appHost';
 import SmoothHeight from './SmoothHeight';
+import { useEntersAfterRowMount } from './rowMount';
 import BatchProgress from './BatchProgress';
 import MarkdownRenderer from './MarkdownRenderer';
 import FileAttachment, { ImagePreviewCard, ImageThumbnail, isImageFile } from './FileAttachment';
@@ -145,8 +146,10 @@ function useRunElapsedMs(startMs: number | undefined, active: boolean): number {
  * text, not a button — no fold exists until the run settles, when the fold
  * header button takes this exact slot as a 1:1 row swap.
  *
- * ALWAYS grows in on mount (Codex animates its "Working for" divider the same
- * way). The dots slot is NOT this row's to take: when the first process
+ * Grows in when it appears inside a list row that was already there (Codex
+ * animates its "Working for" divider the same way); shown together with its
+ * row (switching to a running conversation) it is simply there. The dots slot
+ * is NOT this row's to take: when the first process
  * segment lands, TaskBlock's own header row is the dots row's designated
  * same-slot successor (see ThinkingStatusLine), so at that commit the instant
  * height budget is already spent (dots out, TaskBlock header in, net zero) —
@@ -155,8 +158,9 @@ function useRunElapsedMs(startMs: number | undefined, active: boolean): number {
  * row slides down one row-height over 200ms instead of teleporting.
  */
 function RunStatusDivider({ label }: { label: string }) {
+  const enters = useEntersAfterRowMount(true);
   return (
-    <div className="block-expand block-expand-open block-expand-enter">
+    <div className={cn('block-expand block-expand-open', enters && 'block-expand-enter')}>
       <div className="mb-2 text-ui text-label-secondary tabular-nums">
         {label}
       </div>
@@ -865,7 +869,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     () => (declaredMode ? collectPresentedFiles(allToolCalls) : []),
     [declaredMode, allToolCalls],
   );
-  const onDiskFiles = usePresentFilesOnDisk(declaredFiles, declaredMode && isGroupDone);
+  const { files: onDiskFiles, checked: onDiskChecked } = usePresentFilesOnDisk(declaredFiles, declaredMode && isGroupDone);
   const [allFilesShown, setAllFilesShown] = useState(false);
 
   // Declared mode: file names and paths in the reply text that name a file this
@@ -883,10 +887,11 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
   }, [turnFilePathsKey]);
 
   // Declared-mode auto-preview: decided once per mount, for the last group, by
-  // the first answer of the disk check after a run this mount watched has
-  // ended. It opens the last presented non-image file, or the last image when
-  // every file is an image; an empty answer opens nothing, also when a file
-  // reaches the disk later.
+  // the first answer of this mount's disk check after a run this mount watched
+  // has ended (the cards an earlier mount left do not count). It opens the
+  // last presented non-image file, or the last image when every file is an
+  // image; an empty answer opens nothing, also when a file reaches the disk
+  // later.
   const sawRunInProgressRef = useRef(false);
   const declaredPreviewDecidedRef = useRef(false);
   useEffect(() => {
@@ -896,7 +901,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
       return;
     }
     if (!sawRunInProgressRef.current || declaredPreviewDecidedRef.current) return;
-    if (onDiskFiles === null) return;
+    if (!onDiskChecked || onDiskFiles === null) return;
     declaredPreviewDecidedRef.current = true;
     if (onDiskFiles.length === 0) return;
     const nonImageFiles = onDiskFiles.filter((file) => !isImageFile(file.path));
@@ -905,7 +910,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     if (chat.conversations[conversationId]
       && chat.activeConversationId === conversationId
       && usePreviewStore.getState().currentConversationId === conversationId) openPreview(target.path);
-  }, [declaredMode, isLastGroupProp, isAgentDone, onDiskFiles, conversationId, openPreview]);
+  }, [declaredMode, isLastGroupProp, isAgentDone, onDiskFiles, onDiskChecked, conversationId, openPreview]);
 
   // The retry of a failed step runs the turn again from its user message and
   // deletes what follows (retryTurn); the redo question is rendered with the group.
