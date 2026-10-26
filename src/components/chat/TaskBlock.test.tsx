@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import TaskBlock, { convertExecutionStep, generateSummary, type UnifiedStep } from './TaskBlock';
 import { ThinkingStatusLine } from './ThinkingStatusLine';
+import RowMountProvider from './RowMountProvider';
 import { getI18n, getLocale, format, initLanguage } from '@/i18n';
 import { snapshotExecutionSteps, snapshotToExecutionSteps } from '@/core/agent/executionSnapshot';
 import { DesignSystemProvider } from '@/components/ds/provider';
@@ -172,6 +173,26 @@ describe('TaskBlock — expand-on-mount wrappers', () => {
     expect(wrappers.length).toBe(2);
     expect(wrappers[0].querySelector('.flow-timeline')).not.toBeNull();
     expect(container.querySelector('.flow-timeline .block-expand-enter')).not.toBeNull();
+  });
+
+  it('live block that mounts together with its list row shows its final state without expand wrappers', () => {
+    const { container } = render(
+      <RowMountProvider>
+        <TaskBlock executionSteps={[execThinkingStep()]} isActive />
+      </RowMountProvider>,
+    );
+    expect(container.querySelector('.flow-timeline')).not.toBeNull();
+    expect(container.querySelector('.block-expand-enter')).toBeNull();
+  });
+
+  it('live block that appears inside a mounted list row mounts inside expand wrappers', () => {
+    const { container, rerender } = render(<RowMountProvider>{null}</RowMountProvider>);
+    rerender(
+      <RowMountProvider>
+        <TaskBlock executionSteps={[execThinkingStep()]} isActive />
+      </RowMountProvider>,
+    );
+    expect(container.querySelectorAll('.block-expand-enter')).toHaveLength(2);
   });
 
   it('settled block mounts collapsed with no expand wrapper (no height animation on history remounts)', () => {

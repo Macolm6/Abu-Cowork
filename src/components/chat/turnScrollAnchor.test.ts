@@ -3,7 +3,7 @@ import type { Message } from '@/types';
 import {
   ANCHOR_TOLERANCE_PX,
   CHAPTER_RAIL_BOTTOM_THRESHOLD_PX,
-  VIRTUOSO_AT_BOTTOM_THRESHOLD_PX,
+  CHAT_AT_BOTTOM_THRESHOLD_PX,
   armTurnScrollAnchor,
   canArmTurnScrollAnchor,
   exitTurnScrollAnchor,
@@ -136,7 +136,7 @@ describe('turn scroll anchor invariants', () => {
   });
 
   it('risk F7 — derives bottom state from geometry instead of forcing false on unpin', () => {
-    expect(VIRTUOSO_AT_BOTTOM_THRESHOLD_PX).toBe(100);
+    expect(CHAT_AT_BOTTOM_THRESHOLD_PX).toBe(100);
     expect(isAtBottomFromGeometry(1)).toBe(true);
     expect(isAtBottomFromGeometry(99.9)).toBe(true);
     expect(isAtBottomFromGeometry(100.1)).toBe(false);

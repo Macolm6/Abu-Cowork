@@ -5,7 +5,7 @@ import abuAvatar from '@/assets/abu-avatar.png';
 
 // Single source of truth for the "thinking…" status typography shared by the
 // rows that hand off to each other during a turn's lifecycle:
-//   1. ChatView's VirtuosoTypingFooter (before the assistant group exists)
+//   1. ChatView's TypingFooter (before the assistant group exists)
 //   2. MessageGroup's in-group placeholder (group exists, no content yet)
 //   3. MessageGroup's RunStatusDivider (「处理中」 / 「已处理 Ns」), which takes
 //      the placeholder's slot once the first thinking/tool step arrives

@@ -617,7 +617,7 @@ test.describe.serial('MCP Apps host in Electron', () => {
     // request. (Scoped to the message list — the composer itself of course
     // holds the text, that is the point.)
     await expect(
-      page.locator('[data-testid="virtuoso-item-list"]')
+      page.locator('[data-testid="chat-message-list"]')
         .getByText('mcp-app-demo table: alpha=100 beta=200 gamma=300'),
     ).toHaveCount(0);
     // The counter only ever grows, so the real property is "still equal after a

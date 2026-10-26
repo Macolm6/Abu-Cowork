@@ -422,7 +422,7 @@ test.describe.serial('Thinking scroll anchor — real Electron', () => {
     // constant gap — up to 3px on integer-dpr displays (hosted CI runners),
     // sub-pixel fractions on Retina. 4px keeps real regressions (tens to
     // hundreds of px) detectable; the product's own at-bottom semantic is
-    // VIRTUOSO_AT_BOTTOM_THRESHOLD_PX = 100.
+    // CHAT_AT_BOTTOM_THRESHOLD_PX = 100.
     expect(
       finalBottomGap,
       `long reply did not settle at bottom: ${JSON.stringify(postExhaustionSamples.slice(-8))}`,

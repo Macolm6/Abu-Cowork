@@ -8,6 +8,7 @@ import { initLanguage } from '@/i18n';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { useToastStore } from '@/stores/toastStore';
 import { OPEN_REFUSED_RUNS_BY_DEFAULT } from '@/utils/openWithDefaultApp';
+import { loadLocalImage } from '@/utils/pathUtils';
 
 const previewRenders = vi.fn();
 const openPreview = vi.fn();
@@ -63,6 +64,38 @@ describe('ImagePreviewCard', () => {
     rerender(<Group tick={1}><ImagePreviewCard filePath="/workspace/chart.png" /></Group>);
     rerender(<Group tick={2}><ImagePreviewCard filePath="/workspace/chart.png" /></Group>);
     expect(previewRenders.mock.calls.length).toBe(settled);
+  });
+
+  it('takes the size it showed before at once when it mounts again, before the image is read', async () => {
+    const first = render(<Group tick={0}><ImagePreviewCard filePath="/workspace/wide.png" /></Group>);
+    const img = await screen.findByRole('img', { name: 'wide.png' });
+    Object.defineProperty(img, 'naturalWidth', { value: 800 });
+    Object.defineProperty(img, 'naturalHeight', { value: 400 });
+    fireEvent.load(img);
+    first.unmount();
+
+    vi.mocked(loadLocalImage).mockImplementationOnce(() => new Promise<string>(() => {}));
+    render(<Group tick={0}><ImagePreviewCard filePath="/workspace/wide.png" /></Group>);
+
+    // 800×400 fitted into the 200×200 thumbnail box.
+    const placeholder = screen.getByTitle('Click to preview').firstElementChild as HTMLElement;
+    expect(placeholder.style.width).toBe('200px');
+    expect(placeholder.style.height).toBe('100px');
+  });
+
+  it('gives the image its known size before it decodes', async () => {
+    const first = render(<Group tick={0}><ImagePreviewCard filePath="/workspace/tall.png" /></Group>);
+    const img = await screen.findByRole('img', { name: 'tall.png' });
+    Object.defineProperty(img, 'naturalWidth', { value: 100 });
+    Object.defineProperty(img, 'naturalHeight', { value: 300 });
+    fireEvent.load(img);
+    first.unmount();
+
+    render(<Group tick={0}><ImagePreviewCard filePath="/workspace/tall.png" /></Group>);
+
+    const again = await screen.findByRole('img', { name: 'tall.png' });
+    expect(again.getAttribute('width')).toBe('67');
+    expect(again.getAttribute('height')).toBe('200');
   });
 
   it('reveals the file with the folder icon the file chip uses', async () => {
