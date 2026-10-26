@@ -273,10 +273,14 @@ export const CollapsibleCodeBlock = memo(function CollapsibleCodeBlock({ codeStr
 
 // Placeholder while a diagram or widget renderer chunk loads. A component of its own
 // because the markdown `code` override is a plain function and cannot call hooks.
-function CodeRendererLoading() {
+/** Shown while a code block's renderer loads; `minHeight` is the height the block had last time. */
+function CodeRendererLoading({ minHeight }: { minHeight?: number }) {
   const { t } = useI18n();
   return (
-    <div className="my-3 flex justify-center rounded-panel bg-code p-6">
+    <div
+      className="my-3 flex justify-center rounded-panel bg-code p-6"
+      style={minHeight !== undefined ? { minHeight: `${minHeight}px` } : undefined}
+    >
       <Spinner label={t.common.loading} />
     </div>
   );
@@ -381,7 +385,7 @@ function buildMarkdownComponents(
       if (renderer) {
         const BlockComponent = renderer.component;
         return (
-          <Suspense fallback={<CodeRendererLoading />}>
+          <Suspense fallback={<CodeRendererLoading minHeight={renderer.recallHeight?.(codeString)} />}>
             <BlockComponent code={codeString} />
           </Suspense>
         );
