@@ -1,5 +1,4 @@
 import { useState, useCallback, useEffect, useLayoutEffect, useRef, useSyncExternalStore, useMemo } from 'react';
-import { Virtuoso, type Components, type VirtuosoHandle } from 'react-virtuoso';
 import { getConversationAgentState, useChatStore, useActiveConversation } from '@/stores/chatStore';
 import type { Message, ImageAttachment } from '@/types';
 import {
@@ -32,7 +31,6 @@ import { activeChapterIndex, deriveChapters, shouldShowRail, topVisibleGroup, ty
 import { isCompactBoundary } from '@/core/context/compactBoundary';
 import { isBrowserRunReportMessage } from '@/core/observability/browserRunReport';
 import { isMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
-import { getMessageText } from '@/core/context/contextUtils';
 import { compactConversationManually } from '@/core/context/compactionService';
 import { applyGoalCommand, checkGoalCreatable, clearGoalForReplacement, createGoalFromCommand, parseGoalCommand } from '@/core/goal/goalCommand';
 import { useConfirm } from '@/components/ds/confirm-context';
@@ -89,9 +87,12 @@ import ConversationAppNotice from './ConversationAppNotice';
 import { appBindingShown, useAppsLabOn, useSelectedApp } from '@/stores/appStore';
 import { GENERAL_APP_ID } from '@/types/app';
 import {
-  VIRTUOSO_ITEM_TRAILING_PAD,
+  CHAT_ROW_TRAILING_PAD,
   TYPING_FOOTER_GAP_COMPENSATION,
 } from './chatSpacing';
+import ChatMessageList, { type ChatMessageListHandle } from './ChatMessageList';
+import type { ChatListLocation } from './chatListRange';
+import { searchJumpTarget } from './searchJumpTarget';
 import { emitChatScrollTrace, type ChatScrollFollowSource } from './chatScrollTrace';
 import {
   announceChatTurnScrollIntent,
@@ -99,7 +100,7 @@ import {
 } from './chatTurnScrollIntent';
 import {
   ANCHOR_TOLERANCE_PX,
-  VIRTUOSO_AT_BOTTOM_THRESHOLD_PX,
+  CHAT_AT_BOTTOM_THRESHOLD_PX,
   armTurnScrollAnchor,
   canArmTurnScrollAnchor,
   exitTurnScrollAnchor,
@@ -114,52 +115,27 @@ import {
   type TurnScrollAnchorExitReason,
 } from './turnScrollAnchor';
 
-/**
- * Context passed to the Virtuoso `Footer` component (the streaming typing
- * indicator). Values that change every render (i18n strings, retry info) are
- * threaded through `context` rather than closed over, because the `Item`/
- * `Footer` component *references* passed to Virtuoso's `components` prop must
- * stay referentially stable across renders — recreating them inline would
- * force Virtuoso to remount its internals on every render, defeating
- * virtualization.
- */
-interface MessageListContext {
+// Spacing between message groups is each row's bottom padding
+// (CHAT_ROW_TRAILING_PAD in chatSpacing.ts), applied to every row uniformly.
+// This is deliberately unconditional (no "skip on last item" special-casing):
+// virtualized rows are NOT reliably `:first-child`/`:last-child` in the DOM
+// (whichever row is topmost/bottommost in the mounted window varies as the user
+// scrolls), so a CSS positional selector would apply to the wrong row. Net
+// effect: one ~1.25rem gap after the final row, before the `pb-16` wrapper
+// padding.
+
+// Typing indicator, rendered after the last message group as the list's
+// footer so it stays part of the scrolled content (needed for stick-to-bottom
+// behavior).
+function TypingFooter({
+  showTypingIndicator,
+  retryingLabel,
+  thinkingLabel,
+}: {
   showTypingIndicator: boolean;
   retryingLabel: string | null;
   thinkingLabel: string;
-}
-
-// Row wrapper for each virtualized message group. Spacing between groups
-// MUST be padding, not margin (react-virtuoso guidance: margins on measured
-// rows break height measurement/collapse behavior), so this replaces the
-// previous `space-y-5` (margin) gap with a padding-bottom
-// (VIRTUOSO_ITEM_TRAILING_PAD in chatSpacing.ts) applied
-// to every row uniformly. This is deliberately unconditional (no "skip on
-// last item" special-casing): virtualized rows are NOT reliably
-// `:first-child`/`:last-child` in the DOM (whichever row is topmost/
-// bottommost in the overscan window varies as the user scrolls), so a CSS
-// positional selector would apply to the wrong row. Net effect: one extra
-// ~1.25rem gap appears after the final row (before the existing `pb-16`
-// wrapper padding) that wasn't there before — a minor, intentional cosmetic
-// trade-off for correctness. Note: `ItemProps` only exposes `children` +
-// `style` (no `className`) — see react-virtuoso's `ItemProps<Data>` type.
-const VirtuosoMessageItem: NonNullable<Components<Message[], MessageListContext>['Item']> = ({
-  children,
-  item: _item,
-  context: _context,
-  ...props
-}) => (
-  <div {...props} className={VIRTUOSO_ITEM_TRAILING_PAD}>
-    {children}
-  </div>
-);
-
-// Typing indicator, rendered after the last message group via Virtuoso's
-// `Footer` slot so it stays part of the scrollable/measured content (needed
-// for stick-to-bottom behavior).
-const VirtuosoTypingFooter: NonNullable<Components<Message[], MessageListContext>['Footer']> = ({
-  context,
-}) => {
+}) {
   // Layout mirrors a MessageGroup's assistant row (shared AssistantRowAvatar,
   // gap-3, shared ThinkingStatusLine) so the hand-off from this footer to the
   // real assistant placeholder — and then to the TaskBlock header / "用时
@@ -168,14 +144,14 @@ const VirtuosoTypingFooter: NonNullable<Components<Message[], MessageListContext
   // bridges the item-pad vs in-group-gap difference — see chatSpacing.ts.
   const footerConv = useActiveConversation();
   const footerLeader = useConversationTeamLeader(footerConv?.id);
-  if (!context?.showTypingIndicator) return null;
+  if (!showTypingIndicator) return null;
   return (
     <div className={cn(TYPING_FOOTER_GAP_COMPENSATION, 'flex gap-3')}>
       <AssistantRowAvatar avatar={footerLeader ? <AgentAvatar agent={footerLeader.leader} size="md" round /> : undefined} name={footerLeader?.leaderName} />
-      <ThinkingStatusLine label={context.retryingLabel ?? context.thinkingLabel} />
+      <ThinkingStatusLine label={retryingLabel ?? thinkingLabel} />
     </div>
   );
-};
+}
 
 interface PendingTurnAnchor {
   conversationId: string;
@@ -192,19 +168,18 @@ const TURN_ANCHOR_TARGET_TOP_PX = 20;
 // mean the turn never materialized.
 const PENDING_TURN_ANCHOR_SUPPRESSION_BUDGET = 30;
 
+// Rows the transcript shows: internal system prompts are left out, crash
+// recovery notices (which explain an interrupted task) and goal-round openers
+// (rendered as a round marker) are kept.
+function isShownMessage(message: Message): boolean {
+  return !message.isSystem || Boolean(message.isRecoveryNotice) || Boolean(message.goalRound);
+}
+
 function syncElementToBottom(element: HTMLElement): number {
   const previousScrollTop = element.scrollTop;
   element.scrollTop = element.scrollHeight;
   return element.scrollTop - previousScrollTop;
 }
-
-// Declared at module scope (not inline in the component) — react-virtuoso
-// requires stable `components` object/function references, otherwise it
-// remounts its internal list machinery on every ChatView render.
-const virtuosoComponents: Components<Message[], MessageListContext> = {
-  Item: VirtuosoMessageItem,
-  Footer: VirtuosoTypingFooter,
-};
 
 // F13: the record of the conversation in view is on disk and could not be read. The page says so
 // and offers a retry. The host's own error text is never shown, in no attribute either: it can
@@ -423,11 +398,10 @@ export default function ChatView({
     resolveWorkspaceRequest(null);
   };
 
-  // Virtuoso needs the actual scrollable DOM node (via `customScrollParent`)
-  // to virtualize inside this container instead of creating its own nested
-  // scroller.
+  // The message list virtualizes inside this scrollable node instead of
+  // creating its own nested scroller.
   const [scrollParentEl, setScrollParentEl] = useState<HTMLDivElement | null>(null);
-  const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const listRef = useRef<ChatMessageListHandle>(null);
   // Bottom-lock (stick-to-bottom) state: while pinned, every list-height change
   // (late-measured widgets/iframes/images) re-sticks the view to the newest
   // message via `totalListHeightChanged`. Unpinned only by explicit upward user
@@ -436,25 +410,25 @@ export default function ChatView({
   const pinnedRef = useRef(true);
   // Render mirror of pinnedRef — gates the "back to bottom" button. While the
   // lock is engaged the button is meaningless (we're headed to the bottom), and
-  // Virtuoso transiently reports atBottom=false while mounting/measuring a
-  // freshly-switched conversation, which used to flash the button.
+  // a list still measuring late content can report atBottom=false for a moment,
+  // which would flash the button.
   const [pinned, setPinned] = useState(true);
   const updatePinned = useCallback((v: boolean) => {
     pinnedRef.current = v;
     setPinned(v);
   }, []);
-  // Mirrors Virtuoso's own atBottomStateChange callback. Geometry-sensitive
+  // Mirrors the list's own atBottomStateChange callback. Geometry-sensitive
   // exits update this from the real distance instead of forcing a stale value.
   const [isAtBottom, setIsAtBottom] = useState(true);
   // Active-turn geometry is intentionally transient and ref-backed. Streamed
-  // tokens can resize the final Virtuoso row several times per frame; mirroring
+  // tokens can resize the final list row several times per frame; mirroring
   // those measurements through React state would add another render/measure
-  // loop on top of Virtuoso's own one.
+  // loop on top of the list's own one.
   const turnAnchorRef = useRef<TurnScrollAnchor | null>(null);
-  // Render mirror of "the anchor holds", for Virtuoso's `followOutput` prop.
-  // Any value but a literal `false` keeps Virtuoso's own bottom-stick active
-  // (it scrolls the list end into view when it sees the list grow while not at
-  // its bottom), and a held turn keeps the list end above the viewport bottom.
+  // Render mirror of "the anchor holds", for the list's `followOutput` prop.
+  // Any value but a literal `false` lets the list scroll its end into view when
+  // rows are appended or the viewport shrinks at the bottom, and a held turn
+  // keeps the list end above the viewport bottom.
   const [turnAnchorHolds, setTurnAnchorHolds] = useState(false);
   const commitTurnAnchor = useCallback((anchor: TurnScrollAnchor | null) => {
     turnAnchorRef.current = anchor;
@@ -466,8 +440,8 @@ export default function ChatView({
   const firstMessageOfRef = useRef<string | null>(null);
   // The scrolled content holds the active turn's minimum height; the filler
   // after the list shows the part of that hold the list does not cover yet.
-  // Both sit outside Virtuoso: its root carries an explicit height from its
-  // own model, so anything inside it reaches scrollHeight a frame late.
+  // Both sit outside the list: its container carries an explicit height from
+  // the list's own size model, so the hold cannot live inside it.
   const turnContentElementRef = useRef<HTMLDivElement | null>(null);
   const turnSpacerElementRef = useRef<HTMLDivElement | null>(null);
   const turnMinContentHeightRef = useRef(0);
@@ -493,7 +467,7 @@ export default function ChatView({
 
     // Releasing the hold can clamp scrollTop immediately. Pair the DOM write
     // with an explicit scroll decision in this layout pass so no later
-    // Virtuoso height callback can deliver a one-frame hard jump.
+    // list height callback can deliver a one-frame hard jump.
     void element.scrollHeight;
     if (mode === 'sync-bottom') {
       element.scrollTop = element.scrollHeight;
@@ -662,15 +636,13 @@ export default function ChatView({
   const [railFits, setRailFits] = useState(true);
 
   // Imperative stick-to-bottom: raw scrollTop assignment on the scroll parent,
-  // deferred one frame. scrollToIndex is NOT reliable here — called during
-  // Virtuoso's measurement storm, its target gets clobbered by Virtuoso's own
-  // scroll compensation in the same cycle, and once measuring stops no further
-  // event re-corrects the position. Raw scrollTop = scrollHeight bypasses
-  // virtualization state entirely and always lands on the true bottom.
+  // deferred one frame. Raw scrollTop = scrollHeight bypasses the list's row
+  // targets entirely and always lands on the true bottom of the scrolled
+  // content, the footer and the turn filler included.
   const stickRafRef = useRef(0);
   const stickToBottom = useCallback((
     el: HTMLElement | null,
-    source: Exclude<ChatScrollFollowSource, 'virtuoso-follow-output'>,
+    source: Exclude<ChatScrollFollowSource, 'list-follow-output'>,
     totalListHeight?: number,
   ) => {
     if (!el) return;
@@ -689,7 +661,7 @@ export default function ChatView({
   const scrollToLatest = useCallback((behavior: 'smooth' | 'auto' = 'smooth') => {
     // Explicit "go to bottom" — re-engage the bottom lock.
     leaveTurnAnchor('explicit-latest');
-    virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior });
+    listRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior });
     // Optimistic — atBottomStateChange will confirm once the scroll settles.
     setIsAtBottom(true);
   }, [leaveTurnAnchor]);
@@ -774,14 +746,13 @@ export default function ChatView({
 
   // Scroll-spy for the chapter rail.
   //
-  // Virtuoso's `rangeChanged` looks like the signal for this and is not: it is
-  // derived from `listState.items`, the RENDERED range, which includes the
-  // 900px of overscan `increaseViewportBy` adds above the viewport. Any
-  // conversation shorter than viewport + 1800px therefore renders every row at
-  // once and reports startIndex 0 forever — the rail would pin to the first
-  // chapter and never move, whatever the user scrolled.
+  // The list's rendered range looks like the signal for this and is not: it
+  // includes the 900px the list mounts above the viewport. Any conversation
+  // shorter than viewport + 1800px therefore renders every row at once and
+  // starts at index 0 forever — the rail would pin to the first chapter and
+  // never move, whatever the user scrolled.
   //
-  // Real geometry instead. Virtuoso stamps `data-index` on every rendered row,
+  // Real geometry instead. The list stamps `data-index` on every rendered row,
   // and the row occupying the top of the viewport is by definition rendered,
   // so reading the last row whose top has passed the viewport's is exact at
   // any scroll speed — which an IntersectionObserver on chapter starts would
@@ -865,33 +836,25 @@ export default function ChatView({
   // Search-jump: when a full-text search hit is picked, scroll to and briefly
   // highlight the first message whose text matches the query. Waits until the
   // target conversation's messages are loaded (an LRU miss loads async), then
-  // consumes the pending jump exactly once.
+  // consumes the pending jump exactly once. A list mounted for this
+  // conversation already starts at the hit (`initialListLocation` below); the
+  // scroll here serves a hit in the conversation already in view.
   useEffect(() => {
     const jump = pendingSearchJump;
     if (!jump || jump.convId !== activeConvId) return;
     const conv = useChatStore.getState().conversations[activeConvId];
     if (!conv || conv.messages.length === 0) return; // not loaded yet — retry on next messageCount change
-    const q = jump.query.trim().toLowerCase();
-    const target = conv.messages.find(
-      (m) => (!m.isSystem || m.isRecoveryNotice)
-        && getMessageText(m.content).toLowerCase().includes(q),
-    );
     // Consume regardless of match so a missing target doesn't retry forever.
     useChatStore.getState().setPendingSearchJump(null);
-    if (!target) return;
-    const groups = groupMessagesByLoop(
-      conv.messages.filter((m) => !m.isSystem || m.isRecoveryNotice),
-    );
-    const index = groups.findIndex((g) => g.some((m) => m.id === target.id));
-    if (index < 0) return;
+    const shown = conv.messages.filter(isShownMessage);
+    const hit = searchJumpTarget(conv.messages, groupMessagesByLoop(shown), jump.query);
+    if (!hit) return;
     // Release the bottom lock so late height-measurements don't yank the view
     // from the hit back to the bottom.
     leaveTurnAnchor('search-jump');
-    setHighlightedMessageId(target.id);
-    // Defer a frame so Virtuoso (freshly remounted via `key`) is mounted and can
-    // resolve the index before we scroll.
+    setHighlightedMessageId(hit.messageId);
     requestAnimationFrame(() => {
-      virtuosoRef.current?.scrollToIndex({ index, align: 'center', behavior: 'auto' });
+      listRef.current?.scrollToIndex({ index: hit.groupIndex, align: 'center', behavior: 'auto' });
     });
     clearTimeout(highlightFadeTimerRef.current);
     highlightFadeTimerRef.current = setTimeout(() => setHighlightedMessageId(null), 2600);
@@ -1023,13 +986,14 @@ export default function ChatView({
     if (isNewConversation && !useSettingsStore.getState().sidebarCollapsed) {
       useSettingsStore.getState().toggleSidebar();
     }
-    // Re-enable follow + jump to the new message. Virtuoso measures the
-    // freshly-appended item on its own next render, so this doesn't need to
-    // wait for a DOM mutation callback the way the old MutationObserver did.
+    // Re-enable follow + jump to the new message. The list measures the
+    // freshly-appended row while it commits, so this doesn't need to wait for
+    // a DOM mutation callback.
     scrollToLatest('auto');
     // Suppress both legacy bottom-follow paths during the gap between dispatch
-    // and the new persisted user row mounting. Child Virtuoso layout effects
-    // can report the new total height before ChatView's parent layout effect
+    // and the new persisted user row mounting. The list's layout effects run
+    // before ChatView's and can report the new total height before ChatView's
+    // parent layout effect
     // has had a chance to arm the DOM anchor.
     announceChatTurnScrollIntent({ conversationId: convId, source: 'composer' });
     // Sent from the new-task page: the page changes once the runner has added the message.
@@ -1149,12 +1113,18 @@ export default function ChatView({
 
   // Message projection for the list. Computed above the early returns below
   // so the hooks that depend on it stay unconditional (rules-of-hooks).
-  // Filter out internal system prompts while retaining explicit crash
-  // recovery notices that explain an interrupted task to the user.
-  // Goal-round openers are internal rows too, but render as a round marker.
-  const visibleMessages = messages.filter(m => !m.isSystem || m.isRecoveryNotice || m.goalRound);
+  const visibleMessages = messages.filter(isShownMessage);
   const messageGroups = groupMessagesByLoop(visibleMessages);
   const lastGroupOfLoop = lastGroupIndexByLoop(messageGroups);
+  // Where the list stands when it mounts for this conversation: on the search
+  // hit when one is waiting for it, else at the newest message. The list reads
+  // it at mount only.
+  const searchHit = pendingSearchJump?.convId === activeConvId
+    ? searchJumpTarget(messages, messageGroups, pendingSearchJump.query)
+    : null;
+  const initialListLocation: ChatListLocation = searchHit
+    ? { index: searchHit.groupIndex, align: 'center' }
+    : { index: 'LAST', align: 'end' };
   useLayoutEffect(() => {
     if (!scrollParentEl || !activeConvId) return;
     const conversation = useChatStore.getState().conversations[activeConvId];
@@ -1245,11 +1215,12 @@ export default function ChatView({
     observer.observe(scrollParentEl);
     return () => observer.disconnect();
   }, [reconcileActiveTurnGeometry, scrollParentEl]);
-  // The bottom lock's last mile. `totalListHeightChanged` reports Virtuoso's
+  // The bottom lock's last mile. `totalListHeightChanged` reports the list's
   // own height model and its correction is deferred a frame, so content that
-  // reaches the scroller after that write — Virtuoso's final measurement
-  // settling once tokens stop — produces no further event and leaves a pinned
-  // reader parked a few pixels above the bottom for the rest of the turn.
+  // reaches the scroller after that write — the footer, the turn filler, a
+  // row's final measurement settling once tokens stop — produces no further
+  // list event and would leave a pinned reader parked a few pixels above the
+  // bottom for the rest of the turn.
   // Observing the scrolled content closes that race at its source: the
   // scroller's own geometry is the authority, and ResizeObserver runs after
   // layout and before paint, so the correction is invisible rather than the
@@ -1288,7 +1259,7 @@ export default function ChatView({
   useLayoutEffect(() => {
     if (scrollParentEl) reconcileActiveTurnGeometry(scrollParentEl);
   });
-  // Derived from the very array Virtuoso renders, so a chapter's groupIndex is
+  // Derived from the very array the list renders, so a chapter's groupIndex is
   // always a valid scroll target — deriving from `messages` instead would let
   // the two drift the next time grouping rules change.
   //
@@ -1310,7 +1281,7 @@ export default function ChatView({
   const jumpToChapter = useCallback((chapter: Chapter) => {
     leaveTurnAnchor('chapter-jump');
     setHighlightedMessageId(chapter.messageId);
-    virtuosoRef.current?.scrollToIndex({ index: chapter.groupIndex, align: 'start', behavior: 'auto' });
+    listRef.current?.scrollToIndex({ index: chapter.groupIndex, align: 'start', behavior: 'auto' });
     clearTimeout(highlightFadeTimerRef.current);
     highlightFadeTimerRef.current = setTimeout(() => setHighlightedMessageId(null), 2600);
   }, [leaveTurnAnchor]);
@@ -1342,7 +1313,7 @@ export default function ChatView({
   }, [activeConvId]);
 
   const handleFollowOutput = useCallback((atBottom: boolean) => {
-    emitChatScrollTrace('virtuoso-follow-output', 'decision', scrollParentEl, { atBottom });
+    emitChatScrollTrace('list-follow-output', 'decision', scrollParentEl, { atBottom });
     if (shouldSuppressLegacyFollow()) return false;
     return shouldFollowOutput(turnAnchorRef.current);
   }, [shouldSuppressLegacyFollow, scrollParentEl]);
@@ -1672,8 +1643,7 @@ export default function ChatView({
           only while scrolling, via the global is-scrolling toggle in main.tsx);
           overflow-y-scroll (not auto) keeps the transparent gutter always
           reserved so opening the preview panel doesn't flash a scrollbar and
-          shift the content. Both were lost in the Virtuoso-list merge — do not
-          drop them again. */}
+          shift the content. */}
       <div className="relative flex-1 min-h-0 overflow-y-scroll overlay-scroll" ref={setScrollParentEl}>
         {chapterNavVisible && railFits && (
           <ChapterRail chapters={chapters} currentIndex={currentChapter} onJump={jumpToChapter} />
@@ -1683,65 +1653,55 @@ export default function ChatView({
           data-chat-scroll-content
           className="flex flex-col w-full max-w-4xl mx-auto px-6 md:px-10 pt-5 pb-16 overflow-hidden"
         >
-          <Virtuoso
-            // Remount per conversation so `initialTopMostItemIndex` re-applies
-            // on every switch — the view lands at the newest message without a
-            // visible flash-then-jump.
+          {scrollParentEl && <ChatMessageList
+            // Remount per conversation: the list computes its first rows at
+            // `initialLocation` and scrolls there before the first paint, so a
+            // switch goes from the old transcript to the new one in one frame.
             key={activeConvId}
-            ref={virtuosoRef}
+            ref={listRef}
             data={messageGroups}
-            // Mount already scrolled to the last message, bottom-aligned.
-            initialTopMostItemIndex={{ index: 'LAST', align: 'end' }}
-            customScrollParent={scrollParentEl ?? undefined}
+            initialLocation={initialListLocation}
+            scrollParent={scrollParentEl}
             computeItemKey={(index, group) => group[0]?.id ?? index}
-            components={virtuosoComponents}
-            // Stick to bottom on new/growing content, but only while already
-            // at the bottom — Virtuoso pauses this itself once the user
-            // scrolls up. 'auto' (instant) rather than 'smooth': streamed
-            // text arrives in small, frequent chunks, so instant jumps read
-            // as continuous motion without fighting a CSS scroll animation
-            // that's still in flight when the next chunk lands.
+            itemClassName={CHAT_ROW_TRAILING_PAD}
+            // Follow appended rows, but only while already at the bottom.
+            // 'auto' (instant) rather than 'smooth': streamed text arrives in
+            // small, frequent chunks, so instant jumps read as continuous
+            // motion without fighting a CSS scroll animation that's still in
+            // flight when the next chunk lands.
             followOutput={turnAnchorHolds ? false : handleFollowOutput}
             atBottomStateChange={handleAtBottomStateChange}
-            atBottomThreshold={VIRTUOSO_AT_BOTTOM_THRESHOLD_PX}
+            atBottomThreshold={CHAT_AT_BOTTOM_THRESHOLD_PX}
             // The bottom lock: whenever late-measured content (widget iframes,
-            // images, charts) changes the total list height while the user is
-            // pinned, re-stick to the newest message. Event-driven — replaces
-            // any "scroll again after N ms" guesswork.
+            // images, charts, streamed tokens) changes the total list height
+            // while the user is pinned, re-stick to the newest message.
+            // Event-driven — replaces any "scroll again after N ms" guesswork.
             //
-            // Gated on an actual gap from the bottom: `followOutput="auto"`
-            // already re-sticks on ordinary content growth (e.g. streamed
-            // thinking/answer tokens, which fire this callback many times a
-            // second), so an unconditional raw `scrollTop = scrollHeight` here
-            // raced it every frame — two independent corrections computed from
-            // slightly different scrollHeight snapshots, which read as the
-            // answer pane jittering up/down while streaming. Only step in when
-            // followOutput hasn't already closed the gap (its actual target
-            // case: content whose size resolves after layout, like images/
-            // iframes finishing their own async measurement).
+            // Gated on an actual gap from the bottom: the content observer
+            // below already re-sticks in the same layout pass, so an
+            // unconditional raw `scrollTop = scrollHeight` here would race it —
+            // two independent corrections computed from slightly different
+            // scrollHeight snapshots, which read as the answer pane jittering
+            // up/down while streaming.
             totalListHeightChanged={handleTotalListHeightChanged}
-            // Keep ~one viewport of rows mounted above/below the visible window.
-            // Rows still virtualize (far-off messages stay unmounted), but this
-            // widens the live band so inline iframe widgets (HtmlWidgetBlock)
-            // survive the small scroll jitter of normal reading without the
-            // srcdoc reload + in-widget JS state reset that a bare unmount causes.
-            increaseViewportBy={{ top: 900, bottom: 900 }}
-            context={{
-              // Covers the gap before the next assistant placeholder is created.
-              // This occurs both on a normal send and when a staged queue item
-              // is consumed after earlier assistant turns already exist.
-              showTypingIndicator: shouldShowTypingIndicator(activeConv?.status, visibleMessages),
-              // AgentStatusStrip above the composer (always mounted for the
-              // active conversation) says 「正在重试」; the list keeps 「思考中」 so
-              // the sentence shows once.
-              retryingLabel: null,
-              // status.thinking ("思考中", no trailing ellipsis) — the same
-              // string the in-group placeholder shows and the TaskBlock active
-              // header reduces to (it strips the ellipsis). chat.thinking
-              // ("思考中…") here made the "…" blink out at the footer →
-              // placeholder hand-off, and reads odd before the animated dots.
-              thinkingLabel: t.status.thinking,
-            }}
+            footer={(
+              <TypingFooter
+                // Covers the gap before the next assistant placeholder is created.
+                // This occurs both on a normal send and when a staged queue item
+                // is consumed after earlier assistant turns already exist.
+                showTypingIndicator={shouldShowTypingIndicator(activeConv?.status, visibleMessages)}
+                // AgentStatusStrip above the composer (always mounted for the
+                // active conversation) says 「正在重试」; the list keeps 「思考中」 so
+                // the sentence shows once.
+                retryingLabel={null}
+                // status.thinking ("思考中", no trailing ellipsis) — the same
+                // string the in-group placeholder shows and the TaskBlock active
+                // header reduces to (it strips the ellipsis). chat.thinking
+                // ("思考中…") here made the "…" blink out at the footer →
+                // placeholder hand-off, and reads odd before the animated dots.
+                thinkingLabel={t.status.thinking}
+              />
+            )}
             itemContent={(index, group) =>
               group.length === 1 && isCompactBoundary(group[0]) ? (
                 <CompactDivider
@@ -1789,7 +1749,7 @@ export default function ChatView({
                 />
               )
             }
-          />
+          />}
 
           {/* Active-turn filler: takes the part of the turn's minimum content
               height that the list does not cover yet. */}
@@ -1801,8 +1761,8 @@ export default function ChatView({
 
         {/* Scroll-to-bottom button — only when the user has actually left the
             bottom (unpinned). While the lock is engaged we're headed to the
-            bottom anyway, and Virtuoso's transient atBottom=false during
-            mount/measure would otherwise flash the button on every switch. */}
+            bottom anyway, and a transient atBottom=false while late content
+            measures would otherwise flash the button. */}
         {!isAtBottom && !pinned && (
           <div className="pointer-events-none sticky bottom-3 z-sticky flex justify-center">
             <div className="pointer-events-auto rounded-control bg-raised shadow-float">

@@ -26,11 +26,37 @@ describe('usePresentFilesOnDisk', () => {
   });
 
   it('returns null until the check answers, then the files on disk in their order', async () => {
+    // A list this module has never checked; FILES may have been checked by another case.
+    const files = FILES.map((file) => ({ ...file, description: `${file.description ?? ''} first check` }));
+    const { result } = renderHook(() => usePresentFilesOnDisk(files, true));
+
+    expect(result.current.files).toBeNull();
+    await waitFor(() => expect(result.current.files).not.toBeNull());
+    expect(result.current.files?.map((file) => file.path)).toEqual(['/ws/a.md', '/ws/c.md']);
+  });
+
+  it('answers a list it checked before at once when mounted again, and checks it again', async () => {
+    const files = [{ path: '/ws/a.md', description: 'remount' }, { path: '/ws/b.md' }];
+    const first = renderHook(() => usePresentFilesOnDisk(files, true));
+    await waitFor(() => expect(first.result.current.files).toEqual([{ path: '/ws/a.md', description: 'remount' }]));
+    first.unmount();
+    const calls = exists.mock.calls.length;
+
+    onDisk.add('/ws/b.md');
+    const { result } = renderHook(() => usePresentFilesOnDisk(files, true));
+
+    expect(result.current.files).toEqual([{ path: '/ws/a.md', description: 'remount' }]);
+    expect(result.current.checked).toBe(false);
+    await waitFor(() => expect(result.current.files).toHaveLength(2));
+    expect(result.current.checked).toBe(true);
+    expect(exists.mock.calls.length).toBeGreaterThan(calls);
+  });
+
+  it('returns the files on disk in their declared order', async () => {
     const { result } = renderHook(() => usePresentFilesOnDisk(FILES, true));
 
-    expect(result.current).toBeNull();
-    await waitFor(() => expect(result.current).not.toBeNull());
-    expect(result.current).toEqual([
+    await waitFor(() => expect(result.current.files).not.toBeNull());
+    expect(result.current.files).toEqual([
       { path: '/ws/a.md', description: 'First' },
       { path: '/ws/c.md', description: 'Third' },
     ]);
@@ -39,7 +65,7 @@ describe('usePresentFilesOnDisk', () => {
   it('returns an empty list and checks nothing while disabled', async () => {
     const { result } = renderHook(() => usePresentFilesOnDisk(FILES, false));
 
-    expect(result.current).toEqual([]);
+    expect(result.current.files).toEqual([]);
     await act(async () => {});
     expect(exists).not.toHaveBeenCalled();
   });
@@ -47,33 +73,33 @@ describe('usePresentFilesOnDisk', () => {
   it('keeps the same result across renders with an equal list', async () => {
     const { result, rerender } = renderHook(() => usePresentFilesOnDisk(FILES.map((file) => ({ ...file })), true));
 
-    await waitFor(() => expect(result.current).not.toBeNull());
-    const first = result.current;
+    await waitFor(() => expect(result.current.checked).toBe(true));
+    const first = result.current.files;
     const calls = exists.mock.calls.length;
     rerender();
-    expect(result.current).toBe(first);
+    expect(result.current.files).toBe(first);
     expect(exists.mock.calls.length).toBe(calls);
   });
 
   it('checks again when the window regains focus', async () => {
     const { result } = renderHook(() => usePresentFilesOnDisk(FILES, true));
-    await waitFor(() => expect(result.current).toHaveLength(2));
+    await waitFor(() => expect(result.current.files).toHaveLength(2));
 
     onDisk.add('/ws/b.md');
     act(() => { window.dispatchEvent(new Event('focus')); });
 
-    await waitFor(() => expect(result.current).toHaveLength(3));
-    expect(result.current?.map((file) => file.path)).toEqual(['/ws/a.md', '/ws/b.md', '/ws/c.md']);
+    await waitFor(() => expect(result.current.files).toHaveLength(3));
+    expect(result.current.files?.map((file) => file.path)).toEqual(['/ws/a.md', '/ws/b.md', '/ws/c.md']);
   });
 
   it('drops a file that left the disk on the next focus check', async () => {
     const { result } = renderHook(() => usePresentFilesOnDisk(FILES, true));
-    await waitFor(() => expect(result.current).toHaveLength(2));
+    await waitFor(() => expect(result.current.files).toHaveLength(2));
 
     onDisk.delete('/ws/a.md');
     act(() => { window.dispatchEvent(new Event('focus')); });
 
-    await waitFor(() => expect(result.current).toEqual([{ path: '/ws/c.md', description: 'Third' }]));
+    await waitFor(() => expect(result.current.files).toEqual([{ path: '/ws/c.md', description: 'Third' }]));
   });
 
   it('answers null for a new list until its own check returns', async () => {
@@ -81,11 +107,11 @@ describe('usePresentFilesOnDisk', () => {
       ({ files }: { files: PresentedFile[] }) => usePresentFilesOnDisk(files, true),
       { initialProps: { files: FILES } },
     );
-    await waitFor(() => expect(result.current).toHaveLength(2));
+    await waitFor(() => expect(result.current.files).toHaveLength(2));
 
-    rerender({ files: [{ path: '/ws/c.md' }] });
-    expect(result.current).toBeNull();
-    await waitFor(() => expect(result.current).toEqual([{ path: '/ws/c.md' }]));
+    rerender({ files: [{ path: '/ws/c.md', description: 'new list' }] });
+    expect(result.current.files).toBeNull();
+    await waitFor(() => expect(result.current.files).toEqual([{ path: '/ws/c.md', description: 'new list' }]));
   });
 
   it('discards a result that arrives after the list changed', async () => {
@@ -100,15 +126,15 @@ describe('usePresentFilesOnDisk', () => {
     await waitFor(() => expect(pending).toHaveLength(1));
 
     rerender({ files: [{ path: '/ws/fast.md' }] });
-    await waitFor(() => expect(result.current).toEqual([{ path: '/ws/fast.md' }]));
+    await waitFor(() => expect(result.current.files).toEqual([{ path: '/ws/fast.md' }]));
     await act(async () => { pending[0](true); });
 
-    expect(result.current).toEqual([{ path: '/ws/fast.md' }]);
+    expect(result.current.files).toEqual([{ path: '/ws/fast.md' }]);
   });
 
   it('stops checking on focus after unmount', async () => {
     const { result, unmount } = renderHook(() => usePresentFilesOnDisk(FILES, true));
-    await waitFor(() => expect(result.current).not.toBeNull());
+    await waitFor(() => expect(result.current.files).not.toBeNull());
     const calls = exists.mock.calls.length;
 
     unmount();

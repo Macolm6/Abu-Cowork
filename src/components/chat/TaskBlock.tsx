@@ -26,6 +26,7 @@ import { blockFullText } from './toolResultTexts';
 import { StepToolView } from './toolViews/StepToolView';
 import { hasToolView, type ToolViewRecord } from './toolViews/toolViewRecords';
 import { useStepListScroll } from './useStepListScroll';
+import { useEntersAfterRowMount } from './rowMount';
 
 type StepGlyph = ComponentProps<typeof Icon>['icon'];
 
@@ -432,6 +433,7 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
   // that never showed (also react-hooks/refs forbids it).
   const [timelineEverOpened, setTimelineEverOpened] = useState(isOpen);
   if (isOpen && !timelineEverOpened) setTimelineEverOpened(true);
+  const timelineEnters = useEntersAfterRowMount(timelineEverOpened);
   const stepListRef = useRef<HTMLDivElement>(null);
   const { edges, onScroll } = useStepListScroll(stepListRef, isOpen, isActive);
 
@@ -464,6 +466,8 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
       {/* Flow Timeline. block-expand-enter animates the height open when this
           mounts mid-stream (the "思考中" dots swapping to the first thinking/
           tool step while pinned to the bottom must not land in one frame);
+          a timeline that shows together with its list row (switching to a
+          running conversation) is already open and does not animate.
           open/closed classes roll it up/down on later toggles — including the
           auto-collapse when the answer starts streaming — while the content
           stays mounted (inert + hidden from a11y when closed). */}
@@ -474,7 +478,7 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
           className={cn(
             'block-expand',
             isOpen ? 'block-expand-open' : 'block-expand-closed',
-            'block-expand-enter',
+            timelineEnters && 'block-expand-enter',
           )}
         >
           <div
@@ -659,6 +663,9 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t,
       didAutoCollapseThinking.current = true;
     }
   }, [isThinking, isCompleted, hasLaterToolStep]);
+  // The streaming pane grows open only when it appears inside a list row that
+  // was already there; shown together with its row it is simply open.
+  const thinkingPaneEnters = useEntersAfterRowMount(isThinking && isRunning && Boolean(step.detail));
 
   // Auto-scroll the streaming thinking pane to the bottom as new tokens arrive,
   // so the latest reasoning text stays in view instead of being clipped by max-height.
@@ -724,7 +731,7 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t,
           className={cn(
             'block-expand',
             panelOpen ? 'block-expand-open' : 'block-expand-closed',
-            isRunning && 'block-expand-enter',
+            isRunning && thinkingPaneEnters && 'block-expand-enter',
           )}
         >
           {/* The rolled-up grid row is the borderless wrapper: a bordered box

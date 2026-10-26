@@ -2,7 +2,7 @@ import type { Message } from '@/types';
 
 export const ANCHOR_TOLERANCE_PX = 2;
 export const CHAPTER_RAIL_BOTTOM_THRESHOLD_PX = 24;
-export const VIRTUOSO_AT_BOTTOM_THRESHOLD_PX = 100;
+export const CHAT_AT_BOTTOM_THRESHOLD_PX = 100;
 
 export interface TurnAnchorCandidate {
   conversationId: string;
@@ -15,8 +15,8 @@ export interface TurnAnchorCandidate {
  * The hold is a minimum height on the scrolled content: just tall enough that
  * the anchor's scroll position is reachable. A flex filler after the list takes
  * up whatever the list does not yet cover, so list growth replaces filler in
- * the same layout pass — including growth react-virtuoso applies to its own
- * explicitly sized root a frame after the DOM. Nothing is kept as a running
+ * the same layout pass — including growth the list applies to its own
+ * explicitly sized container when rows are measured. Nothing is kept as a running
  * ledger: every reconcile derives the hold from the geometry it reads.
  */
 export interface TurnScrollAnchor extends TurnAnchorCandidate {
@@ -144,7 +144,7 @@ export function isChapterRailAtBottom(
 }
 
 export function isAtBottomFromGeometry(distanceToBottom: number): boolean {
-  return distanceToBottom <= VIRTUOSO_AT_BOTTOM_THRESHOLD_PX;
+  return distanceToBottom <= CHAT_AT_BOTTOM_THRESHOLD_PX;
 }
 
 export function exitTurnScrollAnchor(

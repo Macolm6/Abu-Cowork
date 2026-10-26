@@ -3,11 +3,11 @@
 // numbers scattered across ChatView/MessageGroup. If you change either gap,
 // re-derive the compensation.
 
-/** Trailing padding under every virtualized row (ChatView's Virtuoso Item).
- *  Bottom padding instead of a margin/gap because react-virtuoso measures
- *  item heights from the wrapper box — see the comment at the Item component.
+/** Trailing padding under every row of ChatMessageList.
+ *  Bottom padding instead of a margin/gap because the list measures each row
+ *  from its own box, and a margin falls outside it.
  *  Visually this is the 20px gap BETWEEN message groups. */
-export const VIRTUOSO_ITEM_TRAILING_PAD = 'pb-5'; // 20px
+export const CHAT_ROW_TRAILING_PAD = 'pb-5'; // 20px
 
 /** Gap between rows INSIDE one message group (MessageGroup's root space-y). */
 export const GROUP_CONTENT_GAP = 'space-y-4'; // 16px

@@ -100,6 +100,18 @@ describe('MessageGroup file cards', () => {
   });
 
   describe('declared turn', () => {
+    it('shows its cards in the first render when the row mounts again (switching back to the conversation)', async () => {
+      const messages = turn([presentCall([{ path: '/ws/remounted-report.md' }])]);
+      setConversation(messages);
+      const first = render(<MessageGroup conversationId={CONVERSATION_ID} messages={messages} isLastGroup />);
+      await waitFor(() => expect(cardButtons()).toHaveLength(1));
+      first.unmount();
+
+      render(<MessageGroup conversationId={CONVERSATION_ID} messages={messages} isLastGroup />);
+
+      expect(cardButtons()).toHaveLength(1);
+    });
+
     it('shows four of six presented files, then all six, and no card for a file that was only written', async () => {
       const messages = turn([writeCall('/ws/draft.md'), presentCall(numberedFiles(6))]);
       setConversation(messages);
