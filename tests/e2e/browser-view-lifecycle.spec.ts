@@ -501,6 +501,32 @@ async function ourNativeViewState(
   return states.find((state) => state.url === fixtureUrl) ?? null;
 }
 
+/** Where the native view for `fixtureUrl` is painted, in window content coordinates. */
+async function ourNativeViewBounds(
+  electronApp: ElectronApplication,
+  fixtureUrl: string,
+): Promise<{ x: number; y: number; width: number; height: number } | null> {
+  return electronApp.evaluate(({ BrowserWindow }, url) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    if (!window || window.isDestroyed()) return null;
+    for (const child of window.contentView.children) {
+      const candidate = child as unknown as {
+        getBounds?: () => { x: number; y: number; width: number; height: number };
+        webContents?: { getURL: () => string; isDestroyed: () => boolean };
+      };
+      if (
+        typeof candidate.getBounds === 'function'
+        && candidate.webContents
+        && !candidate.webContents.isDestroyed()
+        && candidate.webContents.getURL() === url
+      ) {
+        return candidate.getBounds();
+      }
+    }
+    return null;
+  }, fixtureUrl);
+}
+
 async function configureBrowserAsking(page: Page) {
   await Promise.all([page.waitForEvent('load'), page.evaluate(() => {
     const value = JSON.parse(localStorage.getItem('abu-settings')!);
@@ -1686,6 +1712,96 @@ test.describe('Electron browser view lifecycle E2E', () => {
       async () => (await ourNativeViewState(app!, fixture!.url))?.visible ?? null,
       { timeout: READY_TIMEOUT },
     ).toBe(true);
+  });
+
+  test('keeps the divider between the chat and a browser tab out from under the native view', async () => {
+    const responseA = `abu-e2e-lifecycle-divider-complete-${randomUUID()}`;
+    fixture = await startFixturePage(`abu-e2e-lifecycle-divider-${randomUUID()}`);
+    dataRoot = createElectronDataRoot();
+
+    mock = await startOpenAiMock([
+      {
+        kind: 'tool-call',
+        arguments: {},
+        toolCallId: `call-get-tabs-${randomUUID()}`,
+        toolName: 'abu-browser__get_tabs',
+      },
+      (body) => ({
+        kind: 'tool-call',
+        arguments: { tabId: extractCurrentTabId(body), url: fixture!.url },
+        toolCallId: `call-navigate-${randomUUID()}`,
+        toolName: 'abu-browser__navigate',
+      }),
+      { kind: 'complete', responseText: responseA },
+    ]);
+
+    const launched = await launchAbuElectron(dataRoot);
+    app = launched.app;
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(page);
+    await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
+    await configureBrowserAsking(page);
+
+    await sendComposerMessage(page, mock, `abu-e2e-lc-d-${randomUUID().slice(0, 8)}`);
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
+    await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
+    await pressWhenSettled(browserAllowSiteButton(page));
+    await expect(page.getByText(responseA, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect.poll(
+      async () => (await ourNativeViewState(app!, fixture!.url))?.visible ?? null,
+      { timeout: READY_TIMEOUT },
+    ).toBe(true);
+
+    const layout = async () => {
+      const view = await ourNativeViewBounds(app!, fixture!.url);
+      const dom = await page.evaluate(() => {
+        const box = (selector: string) => {
+          const rect = document.querySelector(selector)!.getBoundingClientRect();
+          return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+        };
+        const handle = document.querySelector('div.cursor-col-resize')!;
+        return {
+          chat: box('[data-abu-panel-container] > main'),
+          panel: box('[data-abu-right-panel]'),
+          handle: box('div.cursor-col-resize'),
+          handleAppRegion: getComputedStyle(handle).getPropertyValue('-webkit-app-region'),
+        };
+      });
+      return { view, ...dom };
+    };
+
+    // The native view settles on the placeholder's rect a frame after the panel opens.
+    await expect.poll(async () => {
+      const { view, panel } = await layout();
+      return view ? view.x - Math.round(panel.left) : null;
+    }, { timeout: READY_TIMEOUT }).toBeGreaterThan(0);
+
+    const before = await layout();
+    // The handle spans the gap from the chat card to the panel's edge, and the
+    // native view starts where the handle ends, so no part of it is covered.
+    expect(before.handle.left).toBeCloseTo(before.chat.right, 0);
+    expect(before.handle.right).toBeGreaterThan(before.panel.left);
+    expect(before.view!.x).toBeGreaterThanOrEqual(Math.round(before.handle.right));
+    expect(before.handle.top).toBeLessThanOrEqual(before.view!.y);
+    expect(before.handle.bottom).toBeGreaterThanOrEqual(before.view!.y + before.view!.height - 1);
+    expect(before.handleAppRegion).toBe('no-drag');
+
+    // Drag from halfway down, beside the native view: the chat column widens and
+    // the native view follows the panel without reaching back over the handle.
+    const startX = (before.handle.left + before.handle.right) / 2;
+    const y = (before.view!.y + before.view!.y + before.view!.height) / 2;
+    await page.mouse.move(startX, y);
+    await page.mouse.down();
+    await page.mouse.move(startX + 60, y, { steps: 6 });
+    await page.mouse.up();
+
+    await expect.poll(async () => Math.round((await layout()).chat.right - before.chat.right), {
+      timeout: READY_TIMEOUT,
+    }).toBe(60);
+    await expect.poll(async () => {
+      const { view, handle } = await layout();
+      return view ? view.x - Math.round(handle.right) : null;
+    }, { timeout: READY_TIMEOUT }).toBeGreaterThanOrEqual(0);
   });
 
   /**
