@@ -42,18 +42,18 @@ import { effectiveRoleId } from '@/core/team/roleIdentity';
 import type { ExtensionSource } from '@/components/toolbox/extensionSource';
 import { useExtensionSourceStore } from '@/stores/extensionSourceStore';
 
-/** 市场 = shipped with the app. Everything else — the user's own experts and the ones their plugins brought — is 「我的」. */
+/**
+ * 市场 = shipped with the app OR brought in by a plugin; both are read-only
+ * here. 「我的」 is what this user wrote — a plugin's expert is someone else's
+ * work, and removing it is uninstalling the plugin, not deleting a file.
+ */
 function isSystemAgent(agent: SubagentDefinition): boolean {
-  return isBuiltinAgentPath(agent.filePath);
+  return isBuiltinAgentPath(agent.filePath) || isPluginOwnedAgent(agent);
 }
 
-/**
- * Editable = the user's own file. A plugin's expert sits under 「我的」 with a
- * provenance badge, but an edit would be overwritten by the next plugin
- * update and removing it belongs to uninstalling the plugin.
- */
+/** Editable = the user's own file, the only kind on 「我的」. */
 function isEditableAgent(agent: SubagentDefinition): boolean {
-  return !isSystemAgent(agent) && !isPluginOwnedAgent(agent);
+  return !isSystemAgent(agent);
 }
 
 
@@ -328,8 +328,8 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
     });
   }, [visibleAgents, extensionsSearchQuery]);
 
-  // Split into the two shelves: 「我的」 is what the user has (their own
-  // experts and the ones their plugins brought), 「市场」 what shipped with Abu.
+  // Split into the two shelves: 「我的」 is what the user wrote, 「市场」 what
+  // shipped with Abu or arrived with a plugin.
   const userAgents = filteredAgents
     .filter((a) => !isSystemAgent(a))
     // Newest first (user feedback 2026-08-31); agents predating the created

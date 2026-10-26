@@ -72,10 +72,10 @@ const menuButton = () => [...document.querySelectorAll('button')].find((b) =>
 );
 
 /** Render the section with `reviewer` discovered, then open its detail.
- *  A plugin's expert and a user's own both sit on 我的 — the user has them. */
+ *  A plugin's expert sits on 市场, a user's own on 我的. */
 async function openDetail(meta: SubagentMetadata) {
   useDiscoveryStore.setState({ agents: [meta], skills: [], isLoading: false });
-  render(<AgentsSection source="mine" />);
+  render(<AgentsSection source={meta.source?.kind === 'plugin' ? 'market' : 'mine'} />);
   fireEvent.click(screen.getByText('reviewer'));
   // The edit / delete entries live behind the header's "..." menu. A plugin's
   // expert has none at all, so there is nothing to open; the user's own MUST
@@ -106,7 +106,7 @@ describe('AgentsSection — plugin-contributed agent detail', () => {
       skills: [],
       isLoading: false,
     });
-    render(<AgentsSection source="mine" />);
+    render(<AgentsSection source="market" />);
     fireEvent.click(screen.getByText('reviewer'));
 
     expect(screen.getByTestId('agent-added-by').textContent).toBe(
@@ -184,7 +184,7 @@ describe('AgentsSection — installed-plugin hydration', () => {
       isLoading: false,
     });
 
-    render(<AgentsSection source="mine" />);
+    render(<AgentsSection source="market" />);
     fireEvent.click(screen.getByText('reviewer'));
 
     await waitFor(() => {

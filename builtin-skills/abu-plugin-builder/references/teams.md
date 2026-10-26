@@ -24,7 +24,7 @@ Expert references:
 
 A reference to an expert that does not exist fails validation. A package expert whose name is already taken by an existing expert is skipped at installation, and a team that references it is refused with an error naming the reference.
 
-Installed package teams appear under Experts → Teams → Mine with the plugin named on the card. The user cannot edit or delete them; uninstalling the plugin removes them.
+Installed package teams appear under Experts → Teams → Market, tagged "From a plugin". The user cannot edit or delete them; uninstalling the plugin removes them.
 
 Icon presets: icons `chart-bar`, `code`, `flask`, `pen`, `shield`, `users`, `search`, `database`, `palette`, `compass`, `wrench`, `book`, `megaphone`, `scale`, `sparkles`, `cpu`, `globe`, `camera`, `calculator`, `bot`; tints `blue`, `purple`, `teal`, `coral`, `amber`, `pink`.
 

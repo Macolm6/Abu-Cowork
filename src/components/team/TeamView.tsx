@@ -964,14 +964,14 @@ function TeamView() {
         // One shelf at a time — which one is the sub-nav's job to say, so the
         // group heading that used to name it here is gone. 「市场」 names
         // whoever is offering: the organization's teams in a bound client, the
-        // teams Abu ships otherwise. 「我的」 is the ones this user has:
-        // assembled themselves, or brought in by a plugin they installed
-        // (badged, read-only).
+        // teams Abu ships otherwise, and in both cases the teams a plugin
+        // brought (badged, read-only). 「我的」 is the ones this user assembled.
+        const fromPlugin = (team: Team) => pluginTeamOwner(team) !== null;
         const list = source === 'mine'
-          ? activeTeams.filter((team) => !isBuiltinTeam(team) && !team.managed)
+          ? activeTeams.filter((team) => !isBuiltinTeam(team) && !team.managed && !fromPlugin(team))
           : enterpriseBinding
-            ? activeTeams.filter((team) => !!team.managed)
-            : activeTeams.filter(isBuiltinTeam);
+            ? activeTeams.filter((team) => !!team.managed || fromPlugin(team))
+            : activeTeams.filter((team) => isBuiltinTeam(team) || fromPlugin(team));
         const card = (team: Team) => {
           const owner = pluginTeamOwner(team);
           const text = localizedTeam(team, locale);
