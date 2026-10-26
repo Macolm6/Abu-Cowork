@@ -698,6 +698,9 @@ describe('MessageGroup stopped terminal', () => {
     // Divider: elapsed = now(5s) - workStart(1s) = 4s, ticking every second.
     expect(screen.getByText('Working for 4s')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Working for/ })).toBeNull();
+    // It is there at its full height at once: no grow-in that would push the
+    // status line below it down over several frames.
+    expect(screen.getByText('Working for 4s').closest('.block-expand, .block-expand-enter')).toBeNull();
     act(() => {
       vi.advanceTimersByTime(2_000);
     });

@@ -18,10 +18,18 @@
  * MarkdownRenderer will automatically pick it up — no changes needed there.
  */
 import { lazy, type ComponentType } from 'react';
+import { recallDiagramHeight, recallWidgetHeight } from '@/stores/renderMemoryStore';
+import { wrapSvgAsHtml } from './transforms';
 
 export interface CodeBlockRenderer {
   /** Lazy-loaded component that renders the code block */
   component: React.LazyExoticComponent<ComponentType<{ code: string }>>;
+  /**
+   * The height the block had when this code was last shown, or undefined. The
+   * box shown while the component loads takes it, so a block that loads after
+   * the message is painted moves nothing below it.
+   */
+  recallHeight?: (code: string) => number | undefined;
 }
 
 const registry = new Map<string, CodeBlockRenderer>();
@@ -33,8 +41,9 @@ const registry = new Map<string, CodeBlockRenderer>();
 export function registerCodeBlockRenderer(
   language: string,
   component: React.LazyExoticComponent<ComponentType<{ code: string }>>,
+  recallHeight?: (code: string) => number | undefined,
 ) {
-  registry.set(language, { component });
+  registry.set(language, { component, ...(recallHeight ? { recallHeight } : {}) });
 }
 
 /** Look up a renderer for a code block language */
@@ -48,17 +57,20 @@ export function getCodeBlockRenderer(language: string): CodeBlockRenderer | unde
 registerCodeBlockRenderer(
   'mermaid',
   lazy(() => import('./MermaidBlock')),
+  (code) => recallDiagramHeight('mermaid', code),
 );
 
 // HTML widget: iframe sandbox, streaming preview, user-extensible via skills
 registerCodeBlockRenderer(
   'html',
   lazy(() => import('./HtmlWidgetBlock')),
+  recallWidgetHeight,
 );
 
 // SVG: thin wrapper → HtmlWidgetBlock (no scripts needed, just CSS)
 registerCodeBlockRenderer(
   'svg',
   lazy(() => import('./SvgHtmlBlock')),
+  (code) => recallWidgetHeight(wrapSvgAsHtml(code)),
 );
 

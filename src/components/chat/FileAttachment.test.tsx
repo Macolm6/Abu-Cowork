@@ -7,6 +7,7 @@ import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener';
 import { initLanguage } from '@/i18n';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { useToastStore } from '@/stores/toastStore';
+import { useRenderMemoryStore } from '@/stores/renderMemoryStore';
 import { OPEN_REFUSED_RUNS_BY_DEFAULT } from '@/utils/openWithDefaultApp';
 import { loadLocalImage } from '@/utils/pathUtils';
 
@@ -48,6 +49,7 @@ afterEach(() => {
   vi.mocked(openPath).mockReset().mockResolvedValue(undefined);
   vi.mocked(revealItemInDir).mockClear();
   useToastStore.setState({ toasts: [] });
+  useRenderMemoryStore.setState({ imageSizes: {} });
 });
 
 // Stands in for a finished message group that re-renders while a later reply streams:
@@ -94,8 +96,35 @@ describe('ImagePreviewCard', () => {
     render(<Group tick={0}><ImagePreviewCard filePath="/workspace/tall.png" /></Group>);
 
     const again = await screen.findByRole('img', { name: 'tall.png' });
-    expect(again.getAttribute('width')).toBe('67');
-    expect(again.getAttribute('height')).toBe('200');
+    // A style, since the base stylesheet's `height: auto` overrides size attributes.
+    expect(again.style.width).toBe('67px');
+    expect(again.style.height).toBe('200px');
+    expect(useRenderMemoryStore.getState().imageSizes['/workspace/tall.png']).toEqual({ w: 100, h: 300 });
+  });
+
+  it('sizes the placeholder from the size remembered in an earlier launch', () => {
+    useRenderMemoryStore.getState().rememberImageSize('/workspace/wide.png', { w: 400, h: 200 });
+    vi.mocked(loadLocalImage).mockImplementationOnce(() => new Promise<string>(() => {}));
+    render(<Group tick={0}><ImagePreviewCard filePath="/workspace/wide.png" /></Group>);
+
+    const placeholder = screen.getByTitle('Click to preview').firstElementChild as HTMLElement;
+    expect(placeholder.style.width).toBe('200px');
+    expect(placeholder.style.height).toBe('100px');
+  });
+
+  it('keeps the placeholder until the image is decoded', async () => {
+    let decoded: () => void = () => {};
+    const decode = vi.spyOn(HTMLImageElement.prototype, 'decode')
+      .mockImplementation(() => new Promise<void>((resolve) => { decoded = resolve; }));
+    try {
+      render(<Group tick={0}><ImagePreviewCard filePath="/workspace/slow.png" /></Group>);
+      await waitFor(() => expect(decode).toHaveBeenCalled());
+      expect(screen.queryByRole('img', { name: 'slow.png' })).toBeNull();
+      decoded();
+      expect(await screen.findByRole('img', { name: 'slow.png' })).not.toBeNull();
+    } finally {
+      decode.mockRestore();
+    }
   });
 
   it('reveals the file with the folder icon the file chip uses', async () => {

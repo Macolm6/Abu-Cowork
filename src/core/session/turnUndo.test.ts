@@ -839,9 +839,9 @@ describe('turnUndo', () => {
         deleted: 2,
         firstFile: 'new.md',
         files: [
-          { path: `${WS}/new.md`, display: 'new.md', status: 'created' },
-          { path: `${WS}/old.md`, display: 'old.md', status: 'deleted' },
-          { path: `${WS}/plan.md`, display: 'plan.md', status: 'modified' },
+          { path: `${WS}/new.md`, display: 'new.md', status: 'created', added: 1, deleted: 0 },
+          { path: `${WS}/old.md`, display: 'old.md', status: 'deleted', added: 0, deleted: 1 },
+          { path: `${WS}/plan.md`, display: 'plan.md', status: 'modified', added: 1, deleted: 1 },
         ],
         undone: true,
         undoneCount: 3,

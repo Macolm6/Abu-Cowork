@@ -2964,10 +2964,16 @@ export const useChatStore = create<ChatStore>()(
 
         try {
           const { loadMessages, replaceMessageById } = await import('../core/session/conversationStorage');
+          const { preloadTurnIndex } = await import('../hooks/useTurnChanges');
           // Strict: a record that is on disk and cannot be read rejects. A
           // record that is not on disk is an empty conversation and a damaged
           // line is skipped, as in a tolerant read.
-          const loadedMessages = await loadMessages(convId, { strictRead: true });
+          // The changes index is read alongside, so the transcript's first
+          // frame holds the cards of what each turn changed.
+          const [loadedMessages] = await Promise.all([
+            loadMessages(convId, { strictRead: true }),
+            preloadTurnIndex(convId),
+          ]);
           const messages = sanitizeLoadedMessages(loadedMessages);
           const meta = get().conversationIndex[convId];
           if (!meta) return;

@@ -6,7 +6,7 @@ import type { TranslationDict } from '@/i18n/types';
 import { useChatStore } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useToastStore } from '@/stores/toastStore';
-import { useTurnChangesDetail, useTurnChangesEntry, useTurnUndo, useTurnUndoRecord } from '@/hooks/useTurnChanges';
+import { useTurnChangesEntry, useTurnUndo, useTurnUndoRecord } from '@/hooks/useTurnChanges';
 import type { TurnChangedFile } from '@/core/session/turnChanges';
 import { TurnUndoRefusedError, type TurnUndoDirection, type TurnUndoPlan } from '@/core/session/turnUndo';
 import type { TurnUndoRecord } from '@/core/session/turnUndoRecord';
@@ -56,7 +56,8 @@ function rowMark(t: TranslationDict, record: TurnUndoRecord | null, path: string
 }
 
 /**
- * The files a turn changed, under its reply. Renders nothing while the record
+ * The files a turn changed, under its reply, from the conversation's changes
+ * index, which is read with the conversation. Renders nothing while the index
  * is being read and for a turn that changed no file. A turn with one file is
  * the title alone. The title and every row open the turn's changes tab.
  *
@@ -69,7 +70,6 @@ function ChangedFilesCard({ conversationId, loopId }: { conversationId: string; 
   const entry = useTurnChangesEntry(conversationId, loopId, true);
   const many = entry !== null && entry.total > 1;
   const restorable = (entry?.restorable ?? 0) > 0;
-  const detail = useTurnChangesDetail(conversationId, loopId, many);
   const record = useTurnUndoRecord(conversationId, loopId, restorable);
   // The record names the state once it is read, so the title and the button change together with the marks.
   const undone = restorable && (record ? record.state === 'undone' : entry?.undone === true);
@@ -84,7 +84,6 @@ function ChangedFilesCard({ conversationId, loopId }: { conversationId: string; 
   const planning = useRef(false);
 
   if (!entry) return null;
-  if (many && detail.status === 'loading') return null;
   if (undone && !record) return null;
 
   const tabTitle = many
@@ -92,10 +91,11 @@ function ChangedFilesCard({ conversationId, loopId }: { conversationId: string; 
     : format(t.panel.changesTabSingle, { name: entry.firstFile });
   const open = (fileIndex: number) => openTurnChanges({ conversationId, loopId, fileIndex, title: tabTitle });
 
-  const files = many ? detail.turn?.files ?? [] : [];
+  const files = many ? entry.files : [];
   const foldable = files.length > MAX_ROWS_SHOWN;
   const shown = foldable && !allShown ? files.slice(0, MAX_ROWS_SHOWN) : files;
-  const moreFiles = detail.turn?.moreFiles ?? 0;
+  // The index keeps as many files as the saved turn does; the rest are counted.
+  const moreFiles = many ? Math.max(0, entry.total - files.length) : 0;
 
   const restored = undone && record ? record.entries.filter((file) => file.last === 'done') : [];
   // An undone turn whose copies are gone has nothing to restore; the index keeps what its undo restored.

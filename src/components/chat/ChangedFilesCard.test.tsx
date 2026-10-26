@@ -58,7 +58,13 @@ function uncounted(display: string, status: TurnChangedFile['status']): TurnChan
 
 /** Saves one turn the way endTurn would: its file and its index entry. */
 function indexFilesOf(files: TurnChangedFile[]): TurnIndex[string]['files'] {
-  return files.map(({ path, display, status }) => ({ path, display, status }));
+  return files.map(({ path, display, status, added, deleted }) => ({
+    path,
+    display,
+    status,
+    ...(added !== undefined ? { added } : {}),
+    ...(deleted !== undefined ? { deleted } : {}),
+  }));
 }
 
 function saveTurn(files: TurnChangedFile[], extra: { total?: number; moreFiles?: number } = {}): TurnChanges {
@@ -272,27 +278,22 @@ describe('ChangedFilesCard', () => {
     expect(card()).toBeNull();
   });
 
-  it('renders nothing while the index or the files of the turn are being read', async () => {
-    let releaseTurn: (turn: TurnChanges) => void = () => {};
-    const turn = saveTurn([counted('a.md', 1, 0), counted('b.md', 1, 0)]);
-    mocks.readTurnChanges.mockReturnValue(new Promise<TurnChanges>((resolve) => { releaseTurn = resolve; }));
-
-    render(<ChangedFilesCard conversationId={CONVERSATION_ID} loopId={LOOP_ID} />);
-    expect(card()).toBeNull();
-    await waitFor(() => expect(mocks.readTurnChanges).toHaveBeenCalled());
-    expect(card()).toBeNull();
-
-    await act(async () => { releaseTurn(turn); });
-    expect(card()).not.toBeNull();
-  });
-
-  it('shows the title alone when the files of the turn cannot be read', async () => {
+  it('renders nothing while the index is being read, and the rows from the index once it is', async () => {
+    let releaseIndex: (index: TurnIndex) => void = () => {};
     saveTurn([counted('a.md', 1, 0), counted('b.md', 1, 0)]);
-    mocks.readTurnChanges.mockRejectedValue(new Error('EIO'));
-    render(<ChangedFilesCard conversationId={CONVERSATION_ID} loopId={LOOP_ID} />);
+    const index = await mocks.readTurnIndex.getMockImplementation()?.() as TurnIndex;
+    mocks.readTurnIndex.mockReturnValue(new Promise<TurnIndex>((resolve) => { releaseIndex = resolve; }));
 
-    await screen.findByRole('button', { name: /^已编辑 2 个文件/ });
-    expect(rows()).toHaveLength(0);
+    render(<ChangedFilesCard conversationId={CONVERSATION_ID} loopId={LOOP_ID} />);
+    expect(card()).toBeNull();
+    await waitFor(() => expect(mocks.readTurnIndex).toHaveBeenCalled());
+    expect(card()).toBeNull();
+
+    await act(async () => { releaseIndex(index); });
+    expect(card()).not.toBeNull();
+    expect(rows()).toHaveLength(2);
+    // The rows come with the index: the saved turn is not read for them.
+    expect(mocks.readTurnChanges).not.toHaveBeenCalled();
   });
 
   it('opens the changes tab on the first file from the title, named after the first file and the count', async () => {
