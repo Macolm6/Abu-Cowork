@@ -2,6 +2,7 @@ import { memo, useState, useEffect, useCallback } from 'react';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useToastStore } from '@/stores/toastStore';
+import { useRenderMemoryStore, type ImageSize } from '@/stores/renderMemoryStore';
 import { useI18n, format } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { loadLocalImage, getBaseName, isLocalFilePath } from '@/utils/pathUtils';
@@ -411,20 +412,11 @@ export function ImageThumbnail({ src }: { src: string }) {
 
 // The thumbnail box: `max-h-50 max-w-50` on the image below.
 const THUMBNAIL_MAX_PX = 200;
-const KNOWN_SIZES_LIMIT = 1000;
 
-// Image sizes seen before, by file. A card mounted again (switching back to a
-// conversation, scrolling it back into view) takes its final size at once, so
-// the image arriving a moment later does not push the transcript.
-const knownImageSizes = new Map<string, { w: number; h: number }>();
-
-function rememberImageSize(filePath: string, size: { w: number; h: number }): void {
-  knownImageSizes.delete(filePath);
-  knownImageSizes.set(filePath, size);
-  if (knownImageSizes.size > KNOWN_SIZES_LIMIT) {
-    const oldest = knownImageSizes.keys().next().value;
-    if (oldest !== undefined) knownImageSizes.delete(oldest);
-  }
+function decodeImage(url: string): Promise<void> {
+  const image = new Image();
+  image.src = url;
+  return image.decode();
 }
 
 /** The image's size in the thumbnail box: scaled down to fit, never up. */
@@ -441,16 +433,22 @@ export const ImagePreviewCard = memo(function ImagePreviewCard({ filePath }: { f
   const fileName = getBaseName(filePath);
   const [imgUrl, setImgUrl] = useState<string | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
-  const [dimensions, setDimensions] = useState<{ w: number; h: number } | null>(() => knownImageSizes.get(filePath) ?? null);
+  // The size the image had when it was last shown, across launches: the card
+  // has its final size in its first frame.
+  const [dimensions, setDimensions] = useState<ImageSize | null>(() => useRenderMemoryStore.getState().imageSizes[filePath] ?? null);
   const fitted = dimensions ? fitThumbnail(dimensions) : null;
 
   useEffect(() => {
     let cancelled = false;
     let blobUrl: string | null = null;
     loadLocalImage(filePath)
-      .then((url) => {
-        if (!cancelled) { blobUrl = url; setImgUrl(url); }
-        else URL.revokeObjectURL(url);
+      .then(async (url) => {
+        if (cancelled) { URL.revokeObjectURL(url); return; }
+        blobUrl = url;
+        // The thumbnail takes the placeholder's place once its pixels are
+        // ready, so no frame shows an empty box between the two.
+        await decodeImage(url);
+        if (!cancelled) setImgUrl(url);
       })
       .catch((err) => {
         console.error('[ImagePreviewCard] Failed to load:', filePath, err);
@@ -463,7 +461,7 @@ export const ImagePreviewCard = memo(function ImagePreviewCard({ filePath }: { f
     const img = e.currentTarget;
     if (img.naturalWidth && img.naturalHeight) {
       const size = { w: img.naturalWidth, h: img.naturalHeight };
-      rememberImageSize(filePath, size);
+      useRenderMemoryStore.getState().rememberImageSize(filePath, size);
       setDimensions(size);
     }
   }, [filePath]);
@@ -491,9 +489,10 @@ export const ImagePreviewCard = memo(function ImagePreviewCard({ filePath }: { f
           <img
             src={imgUrl}
             alt={fileName}
-            // A known size holds the box before the image decodes.
-            width={fitted?.width}
-            height={fitted?.height}
+            // A known size holds the box from the first frame. It is a style:
+            // the base stylesheet sets `height: auto` on every image, which
+            // overrides the `width` and `height` attributes.
+            style={fitted ? { width: fitted.width, height: fitted.height } : undefined}
             className="block max-h-50 w-auto max-w-50 object-contain"
             onLoad={handleImgLoad}
             onError={() => { setImgUrl(null); setLoadFailed(true); }}

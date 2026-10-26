@@ -2,9 +2,10 @@
 /// <reference types="@testing-library/jest-dom" />
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, cleanup, screen, fireEvent, act } from '@testing-library/react';
-import { Profiler, type ReactElement } from 'react';
+import { Profiler, lazy, type ReactElement } from 'react';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import MarkdownRenderer from './MarkdownRenderer';
+import { registerCodeBlockRenderer } from './codeBlockRenderers';
 
 const renderInProvider = (ui: ReactElement) => render(<DesignSystemProvider>{ui}</DesignSystemProvider>);
 
@@ -24,6 +25,19 @@ afterEach(() => {
 const CODE_BLOCK = ['```typescript', 'const answer: number = 42;', 'export function read() { return answer; }', '```'].join('\n');
 
 describe('MarkdownRenderer code block', () => {
+  it('gives the box shown while a renderer loads the height the block had last time', () => {
+    registerCodeBlockRenderer(
+      'never-loads',
+      lazy(() => new Promise<{ default: () => null }>(() => {})),
+      (code) => (code.includes('tall') ? 402 : undefined),
+    );
+    const fence = (body: string) => ['```never-loads', body, '```'].join('\n');
+    const tall = renderInProvider(<MarkdownRenderer content={fence('tall block')} />);
+    expect((tall.container.querySelector('.bg-code') as HTMLElement).style.minHeight).toBe('402px');
+    const fresh = renderInProvider(<MarkdownRenderer content={fence('new block')} />);
+    expect((fresh.container.querySelector('.bg-code') as HTMLElement).style.minHeight).toBe('');
+  });
+
   it('paints the code area with the code surface token', () => {
     const { container } = renderInProvider(<MarkdownRenderer content={CODE_BLOCK} />);
     const codeArea = container.querySelector<HTMLElement>('div[style*="--ds-code"]');

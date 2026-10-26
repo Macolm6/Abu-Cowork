@@ -46,6 +46,15 @@ interface PaintedSample {
   enterAnimations: number;
   /** The row holding the search target message intersects the viewport. */
   searchRowInView: boolean;
+  /**
+   * Where the element in the middle of the viewport when the new list first
+   * painted is now, from the top of the viewport; null before that frame and
+   * once the element has left the page (a box that stood in for a block still
+   * loading leaves with the block in its place).
+   */
+  anchorTop: number | null;
+  /** Where that element's row is now, from the top of the viewport; null before the first frame. */
+  rowTop: number | null;
 }
 
 function sseDelta(delta: Record<string, string>, finishReason: string | null = null): string {
@@ -175,15 +184,25 @@ async function recordSwitch(
     store.__switchSamples = samples;
     const listIds = store.__switchListIds ?? { ids: new WeakMap<Element, number>(), next: 1 };
     store.__switchListIds = listIds;
+    const listBefore = document.querySelector('[data-testid="chat-message-list"]');
+    let anchor: Element | null = null;
+    let anchorRow: Element | null = null;
     const measure = (): PaintedSample => {
       const scroller = document.querySelector<HTMLElement>('[data-chat-scroll-content]')?.parentElement ?? null;
       const list = document.querySelector('[data-testid="chat-message-list"]');
       if (list && !listIds.ids.has(list)) listIds.ids.set(list, listIds.next++);
       const ids = listIds.ids;
       if (!scroller) {
-        return { rowsInView: 0, listId: 0, scrollTop: 0, scrollHeight: 0, distanceToBottom: 0, enterAnimations: 0, searchRowInView: false };
+        return { rowsInView: 0, listId: 0, scrollTop: 0, scrollHeight: 0, distanceToBottom: 0, enterAnimations: 0, searchRowInView: false, anchorTop: null, rowTop: null };
       }
       const view = scroller.getBoundingClientRect();
+      if (list && list !== listBefore && !anchor) {
+        // The element in the middle of the viewport; a transcript shorter than
+        // the viewport has none there, and its last row stands in.
+        const middle = document.elementFromPoint(view.left + view.width / 2, view.top + view.height / 2);
+        anchor = middle && list.contains(middle) ? middle : [...list.querySelectorAll('[data-index]')].at(-1) ?? null;
+        anchorRow = anchor?.closest('[data-index]') ?? null;
+      }
       const intersects = (element: Element) => {
         const rect = element.getBoundingClientRect();
         return rect.height > 0 && rect.bottom > view.top && rect.top < view.bottom;
@@ -207,6 +226,8 @@ async function recordSwitch(
         distanceToBottom: Math.round(scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight),
         enterAnimations,
         searchRowInView: searchRow ? intersects(searchRow) : false,
+        anchorTop: anchor?.isConnected ? Math.round(anchor.getBoundingClientRect().top - view.top) : null,
+        rowTop: anchorRow?.isConnected ? Math.round(anchorRow.getBoundingClientRect().top - view.top) : null,
       };
     };
     let count = 0;
@@ -239,6 +260,24 @@ function expectNoEmptyFrameAndNoJump(after: PaintedSample[]): void {
   const landed = after[0].scrollTop;
   for (const sample of after) {
     expect(Math.abs(sample.scrollTop - landed), JSON.stringify(after.slice(0, 8))).toBeLessThanOrEqual(1);
+  }
+  expectContentInViewStays(after);
+}
+
+/**
+ * What was in the middle of the viewport in the first painted frame stays
+ * where it is: the element for as long as it is on the page, and its row
+ * throughout.
+ */
+function expectContentInViewStays(after: PaintedSample[]): void {
+  const trace = JSON.stringify(after.map(({ scrollTop, scrollHeight, anchorTop, rowTop }) => ({ scrollTop, scrollHeight, anchorTop, rowTop })));
+  const landed = after[0].anchorTop;
+  const landedRow = after[0].rowTop;
+  expect(landed, trace).not.toBeNull();
+  expect(landedRow, trace).not.toBeNull();
+  for (const sample of after) {
+    if (sample.anchorTop !== null) expect(Math.abs(sample.anchorTop - (landed ?? 0)), trace).toBeLessThanOrEqual(1);
+    expect(Math.abs((sample.rowTop ?? 0) - (landedRow ?? 0)), trace).toBeLessThanOrEqual(1);
   }
 }
 
@@ -342,7 +381,7 @@ test('switching conversations paints no empty message area and no jump; a runnin
   expectNoEmptyFrameAndNoJump(toHit.after);
 });
 
-test('a conversation whose chart is drawn after it first shows stays at its newest message in every frame', async () => {
+test('a conversation with a chart opens after a restart at its newest message, at its final height, and nothing in view moves', async () => {
   test.setTimeout(300_000);
   mock = await startSwitchMock();
   dataRoot = createElectronDataRoot();
@@ -359,6 +398,8 @@ test('a conversation whose chart is drawn after it first shows stays at its newe
 
   await startNewTask(page, `${CHART} TURN_1`);
   await expect(page.getByText('CHART_DONE')).toBeVisible({ timeout: READY_TIMEOUT });
+  // The chart is drawn in this run, so the height it is drawn at is known to the next.
+  await expect(page.locator('[data-chat-scroll-content] svg[id^="mermaid-"]')).toBeVisible({ timeout: READY_TIMEOUT });
   await showSidebar(page);
   const chartId = await activeConversationId(page);
   await startNewTask(page, `${SHORT} TURN_1`);
@@ -366,7 +407,7 @@ test('a conversation whose chart is drawn after it first shows stays at its newe
   await showSidebar(page);
   const shortId = await activeConversationId(page);
 
-  // A drawn chart is remembered for the rest of the run; a new run draws it again.
+  // A new run draws the chart again; the height it was drawn at is remembered across runs.
   await closeAbuElectron(app);
   app = (await launchAbuElectron(dataRoot)).app;
   page = await app.firstWindow({ timeout: READY_TIMEOUT });
@@ -378,13 +419,14 @@ test('a conversation whose chart is drawn after it first shows stays at its newe
 
   const toChart = await recordSwitch(page, page.locator(`[data-conversation-row="${chartId}"]`), 90);
   await expect(page.locator('[data-chat-scroll-content] svg[id^="mermaid-"]')).toBeVisible();
-  const frames = JSON.stringify(toChart.after.map(({ rowsInView, scrollTop, scrollHeight, distanceToBottom }) => (
-    { rowsInView, scrollTop, scrollHeight, distanceToBottom })));
-  // The reply grew while the frames were recorded: the chart was drawn after the transcript first showed.
+  const frames = JSON.stringify(toChart.after.map(({ rowsInView, scrollTop, scrollHeight, distanceToBottom, anchorTop }) => (
+    { rowsInView, scrollTop, scrollHeight, distanceToBottom, anchorTop })));
+  // The block held the chart's height while the chart was drawn again: the transcript never grew.
   const heights = toChart.after.map((sample) => sample.scrollHeight);
-  expect(Math.max(...heights) - heights[0], frames).toBeGreaterThan(100);
+  expect(Math.max(...heights) - Math.min(...heights), frames).toBeLessThanOrEqual(2);
   for (const sample of toChart.after) {
     expect(sample.rowsInView, frames).toBeGreaterThan(0);
     expect(sample.distanceToBottom, frames).toBeLessThanOrEqual(2);
   }
+  expectContentInViewStays(toChart.after);
 });

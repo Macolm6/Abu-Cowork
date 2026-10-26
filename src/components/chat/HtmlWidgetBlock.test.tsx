@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { act, cleanup, render } from '@testing-library/react';
 import { DesignSystemProvider } from '@/components/ds/provider';
+import { useRenderMemoryStore } from '@/stores/renderMemoryStore';
 import HtmlWidgetBlock, { buildFullHtml, buildReceiverHtml } from './HtmlWidgetBlock';
 
 describe('buildReceiverHtml — initial theme stamp (P3)', () => {
@@ -155,6 +156,7 @@ describe.each([
 describe('the inline frame', () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    useRenderMemoryStore.setState({ widgetHeights: {} });
   });
 
   afterEach(() => {
@@ -163,8 +165,9 @@ describe('the inline frame', () => {
     document.documentElement.classList.remove('dark');
   });
 
-  async function renderWidget() {
-    render(<DesignSystemProvider><HtmlWidgetBlock code="<p>fixture widget</p>" /></DesignSystemProvider>);
+  // Each case has its own code: the block keeps the heights it saw per code for the whole run.
+  async function renderWidget(code = '<p>fixture widget</p>') {
+    render(<DesignSystemProvider><HtmlWidgetBlock code={code} /></DesignSystemProvider>);
     await act(async () => { await vi.advanceTimersByTimeAsync(400); });
     return document.querySelector('iframe')!;
   }
@@ -188,5 +191,53 @@ describe('the inline frame', () => {
   it('keeps its content policy', async () => {
     const frame = await renderWidget();
     expect(frame.srcdoc).toContain("default-src 'none'; script-src 'unsafe-inline' https://cdnjs.cloudflare.com");
+  });
+
+  function report(frame: HTMLIFrameElement, height: number): void {
+    act(() => {
+      window.dispatchEvent(new MessageEvent('message', {
+        data: { type: 'abu-widget-resize', height, first: false },
+        source: frame.contentWindow,
+      }));
+    });
+  }
+
+  it('opens at the height it had in an earlier launch', async () => {
+    useRenderMemoryStore.getState().rememberWidgetHeight('<p>remembered widget</p>', 1664);
+    const frame = await renderWidget('<p>remembered widget</p>');
+    expect(frame.style.height).toBe('1664px');
+  });
+
+  it('holds a smaller report for a moment after opening at a known height, and takes a larger one at once', async () => {
+    useRenderMemoryStore.getState().rememberWidgetHeight('<p>held widget</p>', 1664);
+    const frame = await renderWidget('<p>held widget</p>');
+
+    // The document before its scripts have drawn: not yet.
+    report(frame, 32);
+    expect(frame.style.height).toBe('1664px');
+    // The drawn document: at once.
+    report(frame, 1700);
+    expect(frame.style.height).toBe('1700px');
+    // A smaller report with no larger one after it lands once the moment has passed.
+    report(frame, 900);
+    expect(frame.style.height).toBe('1700px');
+    await act(async () => { await vi.advanceTimersByTimeAsync(700); });
+    expect(frame.style.height).toBe('900px');
+  });
+
+  it('takes every report at once when it opened at the default height', async () => {
+    const frame = await renderWidget('<p>new widget</p>');
+    expect(frame.style.height).toBe('60px');
+    report(frame, 32);
+    expect(frame.style.height).toBe('32px');
+  });
+
+  it('remembers the reported height a moment after the last report', async () => {
+    const frame = await renderWidget('<p>reporting widget</p>');
+    report(frame, 300);
+    report(frame, 420);
+    expect(useRenderMemoryStore.getState().widgetHeights['<p>reporting widget</p>']).toBeUndefined();
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    expect(useRenderMemoryStore.getState().widgetHeights['<p>reporting widget</p>']).toBe(420);
   });
 });

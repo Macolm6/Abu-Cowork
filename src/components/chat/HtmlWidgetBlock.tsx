@@ -10,6 +10,7 @@ import {
 import { WIDGET_RECEIVER_DOM_JS } from './widgetReceiverDom';
 import { buildWidgetDesignCss } from '@/core/widget/designSystem';
 import { useChatStore } from '@/stores/chatStore';
+import { useRenderMemoryStore, widgetHeightKey } from '@/stores/renderMemoryStore';
 import { openWidgetLink } from './widgetLink';
 
 // ---------------------------------------------------------------------------
@@ -323,17 +324,40 @@ function unsubscribeFromThemeChanges(iframe: HTMLIFrameElement) {
   }
 }
 
-/** Height cache — survives component remount, prevents 0→actual height jump. */
+/**
+ * Height cache — survives component remount, prevents 0→actual height jump.
+ * The render memory keeps the height across launches; it is written a moment
+ * after the last report, since a widget reports on every change while it draws.
+ */
 const heightCache = new Map<string, number>();
 const HEIGHT_CACHE_MAX = 100;
-function hKey(code: string): string { return code.substring(0, 200); }
+const REMEMBER_HEIGHT_DELAY_MS = 250;
+const rememberTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const hKey = widgetHeightKey;
+function knownHeight(key: string): number | undefined {
+  return heightCache.get(key) ?? useRenderMemoryStore.getState().widgetHeights[key];
+}
 function setHeightCache(key: string, h: number) {
   if (heightCache.size >= HEIGHT_CACHE_MAX) {
     const first = heightCache.keys().next().value;
     if (first !== undefined) heightCache.delete(first);
   }
   heightCache.set(key, h);
+  clearTimeout(rememberTimers.get(key));
+  rememberTimers.set(key, setTimeout(() => {
+    rememberTimers.delete(key);
+    useRenderMemoryStore.getState().rememberWidgetHeight(key, h);
+  }, REMEMBER_HEIGHT_DELAY_MS));
 }
+
+/**
+ * A frame that opens at the height it had last time first reports the height
+ * of its document before its scripts have drawn. For this long after it is
+ * created, a smaller report waits for a larger one, and is applied when none
+ * comes.
+ */
+const SHRINK_HOLD_MS = 600;
+const shrinkHoldMap = new WeakMap<HTMLIFrameElement, ReturnType<typeof setTimeout>>();
 
 // ---------------------------------------------------------------------------
 // Sanitize — strip/truncate scripts for safe streaming preview
@@ -389,6 +413,8 @@ function getOrCreateIframe(container: HTMLDivElement, code: string): HTMLIFrameE
       listenerMap.delete(container);
     }
     unsubscribeFromThemeChanges(existing);
+    clearTimeout(shrinkHoldMap.get(existing));
+    shrinkHoldMap.delete(existing);
     iframeMap.delete(container);
   }
 
@@ -407,8 +433,9 @@ function getOrCreateIframe(container: HTMLDivElement, code: string): HTMLIFrameE
   // Initial height from cache (prevents 0→actual jump on remount).
   // Use a small default so partial HTML during streaming doesn't create
   // a large empty white area before content renders.
-  const cached = heightCache.get(hKey(code));
+  const cached = knownHeight(hKey(code));
   iframe.style.height = cached ? `${cached}px` : '60px';
+  const createdAt = cached ? Date.now() : null;
 
   // Height & link messages
   const onMessage = (e: MessageEvent) => {
@@ -416,11 +443,21 @@ function getOrCreateIframe(container: HTMLDivElement, code: string): HTMLIFrameE
     const d = e.data;
     if (d?.type === 'abu-widget-resize' && typeof d.height === 'number') {
       const h = Math.min(d.height, MAX_IFRAME_HEIGHT);
-      // No transition — instant height changes ensure scrollHeight is always
-      // up-to-date so auto-scroll can track content growth accurately.
-      iframe.style.transition = 'none';
-      iframe.style.height = `${h}px`;
-      setHeightCache(hKey(code), h);
+      const apply = () => {
+        shrinkHoldMap.delete(iframe);
+        // No transition — instant height changes ensure scrollHeight is always
+        // up-to-date so auto-scroll can track content growth accurately.
+        iframe.style.transition = 'none';
+        iframe.style.height = `${h}px`;
+        setHeightCache(hKey(code), h);
+      };
+      clearTimeout(shrinkHoldMap.get(iframe));
+      const sinceCreation = createdAt === null ? null : Date.now() - createdAt;
+      if (sinceCreation !== null && sinceCreation < SHRINK_HOLD_MS && h < parseFloat(iframe.style.height)) {
+        shrinkHoldMap.set(iframe, setTimeout(apply, SHRINK_HOLD_MS - sinceCreation));
+        return;
+      }
+      apply();
     }
     if (d?.type === 'abu-widget-link' && typeof d.url === 'string') {
       openWidgetLink(d.url);
@@ -562,7 +599,11 @@ function cleanupHtmlWidget(container: HTMLDivElement) {
     listenerMap.delete(container);
   }
   const iframe = iframeMap.get(container);
-  if (iframe) unsubscribeFromThemeChanges(iframe);
+  if (iframe) {
+    unsubscribeFromThemeChanges(iframe);
+    clearTimeout(shrinkHoldMap.get(iframe));
+    shrinkHoldMap.delete(iframe);
+  }
   errorHandlerMap.delete(container);
   iframeMap.delete(container);
 }
@@ -674,6 +715,9 @@ export default memo(function HtmlWidgetBlock({ code, title }: { code: string; ti
         return previewHtmlWidget(previewCode, container);
       },
     },
+    // The frame is created in an effect, after the row around it is measured
+    // for its first frame; the block holds the frame's last height until then.
+    heightMemory: { recall: (widget) => knownHeight(hKey(widget)) },
     i18n: {
       loading: t.chat.htmlWidgetLoading,
       renderError: t.chat.htmlWidgetRenderError,

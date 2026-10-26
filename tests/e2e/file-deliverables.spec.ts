@@ -138,6 +138,13 @@ function cardOf(page: Page, fileName: string): Locator {
   return fileCards(page).filter({ has: page.getByTitle(fileName, { exact: true }) });
 }
 
+/** Lists the project's tasks under its row; the row's name toggles the list. */
+async function expandProject(page: Page): Promise<void> {
+  const rows = page.locator('[data-conversation-row]');
+  if ((await rows.count()) === 0) await page.getByRole('button', { name: PROJECT_NAME, exact: true }).click();
+  await expect(rows.first()).toBeVisible();
+}
+
 async function regainWindowFocus(page: Page): Promise<void> {
   await page.evaluate(() => { window.dispatchEvent(new Event('focus')); });
 }
@@ -418,6 +425,139 @@ test('six presented files show four cards until all of them are asked for', asyn
   await expect(cardOf(page, 'chapter-6.md')).toBeVisible();
   await expect(page.getByRole('button', { name: '收起', exact: true })).toBeVisible();
   await expect(expand).toHaveCount(0);
+});
+
+/** A PNG of `size` pixels square, drawn by the page, with detail that takes the browser a moment to decode. */
+async function writeLargePng(page: Page, filePath: string, size: number): Promise<void> {
+  const dataUrl = await page.evaluate((side) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = side;
+    canvas.height = side;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('no 2d context');
+    const pixels = context.createImageData(side, side);
+    for (let i = 0; i < pixels.data.length; i += 1) pixels.data[i] = (i * 2654435761) >>> 24;
+    context.putImageData(pixels, 0, 0);
+    return canvas.toDataURL('image/png');
+  }, size);
+  fs.writeFileSync(filePath, Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64'));
+}
+
+interface OpenFrame {
+  listId: number;
+  distanceToBottom: number;
+  /** Where the first file card's top edge is in the message area, or null when none is on the page. */
+  firstCardTop: number | null;
+  /** The height of every file card, in page order. */
+  cardHeights: number[];
+  /** A changed-files card is on the page. */
+  changedCard: boolean;
+}
+
+/**
+ * Press `target` and return a sample of every painted frame that shows the
+ * message list mounted by the press. Each frame is read in a MessageChannel
+ * callback posted from requestAnimationFrame, which runs after the paint.
+ */
+async function recordOpen(page: Page, target: Locator, frames: number): Promise<OpenFrame[]> {
+  await page.evaluate((count) => {
+    const samples: OpenFrame[] = [];
+    const lists = new WeakMap<Element, number>();
+    let nextList = 1;
+    const measure = (): OpenFrame => {
+      const scroller = document.querySelector<HTMLElement>('[data-chat-scroll-content]')?.parentElement;
+      const list = document.querySelector('[data-testid="chat-message-list"]');
+      if (!scroller || !list) return { listId: 0, distanceToBottom: 0, firstCardTop: null, cardHeights: [], changedCard: false };
+      if (!lists.has(list)) lists.set(list, nextList++);
+      const cards = [...scroller.querySelectorAll('[title="点击预览"]')];
+      return {
+        listId: lists.get(list) ?? 0,
+        distanceToBottom: Math.round(scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight),
+        firstCardTop: cards.length ? Math.round(cards[0].getBoundingClientRect().top - scroller.getBoundingClientRect().top) : null,
+        cardHeights: cards.map((card) => Math.round(card.getBoundingClientRect().height)),
+        changedCard: scroller.querySelector('[data-testid="changed-files-card"]') !== null,
+      };
+    };
+    (window as Window & { __openFrames?: OpenFrame[] }).__openFrames = samples;
+    samples.push(measure());
+    let sampled = 0;
+    const frame = () => {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = () => samples.push(measure());
+      channel.port2.postMessage(0);
+      sampled += 1;
+      if (sampled < count) requestAnimationFrame(frame);
+    };
+    document.addEventListener('click', () => requestAnimationFrame(frame), { capture: true, once: true });
+  }, frames);
+  await target.click();
+  await expect.poll(() => page.evaluate(() => (window as Window & { __openFrames?: unknown[] }).__openFrames?.length ?? 0))
+    .toBeGreaterThanOrEqual(frames + 1);
+  const [before, ...painted] = await page.evaluate(() => (window as Window & { __openFrames?: OpenFrame[] }).__openFrames ?? []);
+  return painted.filter((sample) => sample.listId !== 0 && sample.listId !== before.listId);
+}
+
+test('a conversation with image cards and a changed-files card opens after a restart with both in its first frame, and nothing moves', async () => {
+  test.setTimeout(240_000);
+  const images = ['shot-1.png', 'shot-2.png', 'shot-3.png'];
+  const { page: firstPage, workspace } = await launchInProject((ws) => [
+    writeFileCall('call-write-notes', path.join(ws, 'notes.md'), '# 截图说明\n\n三张截图。\n'),
+    presentFilesCall('call-present-images', images.map((name) => ({ path: name }))),
+    finalReply(),
+    finalReply('第二个任务好了。'),
+  ]);
+  for (const name of images) await writeLargePng(firstPage, path.join(workspace, name), 1600);
+
+  await runTurn(firstPage);
+  for (const name of images) {
+    await expect(fileCards(firstPage).getByRole('img', { name, exact: true })).toBeVisible({ timeout: REPLY_TIMEOUT });
+  }
+  await expect(firstPage.getByTestId('changed-files-card')).toBeVisible({ timeout: RECORD_TIMEOUT });
+  const showSidebar = (page: Page) => page.getByRole('button', { name: '显示侧栏', exact: true });
+  if (await showSidebar(firstPage).count()) await showSidebar(firstPage).click();
+  const imagesId = await firstPage.locator('[data-conversation-row][aria-current="true"]').getAttribute('data-conversation-row');
+
+  await firstPage.getByRole('button', { name: PROJECT_NAME, exact: true })
+    .locator('xpath=..')
+    .getByRole('button', { name: '新任务', exact: true })
+    .click();
+  const composer = firstPage.getByPlaceholder(CHAT_PLACEHOLDER);
+  await composer.fill('再写一份');
+  await composer.press('Enter');
+  await expect(firstPage.getByText('第二个任务好了。')).toBeVisible({ timeout: REPLY_TIMEOUT });
+  if (await showSidebar(firstPage).count()) await showSidebar(firstPage).click();
+  const secondId = await firstPage.locator('[data-conversation-row][aria-current="true"]').getAttribute('data-conversation-row');
+
+  // A new run: the cards' files are checked again, the changes record is read
+  // again and the images are decoded again, and what was learned about them
+  // in the first run shapes the first frame.
+  await closeAbuElectron(app as ElectronApplication);
+  app = (await launchAbuElectron(dataRoot as ElectronDataRoot)).app;
+  const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+  await waitForApp(page);
+  if (await showSidebar(page).count()) await showSidebar(page).click();
+  // The project's tasks are listed under its row once it is expanded.
+  await expandProject(page);
+  await page.locator(`[data-conversation-row="${secondId}"]`).click();
+  await expect(page.getByText('第二个任务好了。')).toBeVisible({ timeout: READY_TIMEOUT });
+
+  // Whether an image is decoded before the first paint varies from one opening to the next.
+  for (let opening = 0; opening < 4; opening += 1) {
+    const frames = await recordOpen(page, page.locator(`[data-conversation-row="${imagesId}"]`), 30);
+    const trace = JSON.stringify(frames);
+    expect(frames.length, trace).toBeGreaterThan(0);
+    const landed = frames[0].firstCardTop;
+    expect(landed, trace).not.toBeNull();
+    for (const sample of frames) {
+      expect(sample.distanceToBottom, trace).toBeLessThanOrEqual(2);
+      expect(Math.abs((sample.firstCardTop ?? 0) - (landed ?? 0)), trace).toBeLessThanOrEqual(1);
+      // Each 1600px square image shows at 200px, from the first frame on.
+      expect(sample.cardHeights, trace).toEqual([200, 200, 200]);
+      expect(sample.changedCard, trace).toBe(true);
+    }
+    await page.locator(`[data-conversation-row="${secondId}"]`).click();
+    await expect(page.getByText('第二个任务好了。')).toBeVisible();
+  }
 });
 
 test('a file name in the reply opens the file the turn wrote in the side preview', async () => {
