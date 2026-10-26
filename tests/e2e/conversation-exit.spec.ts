@@ -60,6 +60,9 @@ for (const ending of ['stop', 'stop-close', 'stop-settled', 'complete'] as const
         await page.getByRole('combobox', { name: '关闭窗口时', exact: true }).press('Space');
         await page.getByRole('option', { name: '直接退出', exact: true }).click();
         await page.keyboard.press('Escape');
+        // The window hands the focus back to the account button as it leaves; an
+        // Enter that lands there opens the menu instead of sending the message.
+        await expect(page.locator('[data-abu-settings-dialog]')).toHaveCount(0);
       }
       await page.getByPlaceholder(CHAT_PLACEHOLDER).fill(prompt);
       await page.getByPlaceholder(CHAT_PLACEHOLDER).press('Enter');

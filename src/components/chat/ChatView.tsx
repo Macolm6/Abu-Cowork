@@ -1215,6 +1215,17 @@ export default function ChatView({
     observer.observe(scrollParentEl);
     return () => observer.disconnect();
   }, [reconcileActiveTurnGeometry, scrollParentEl]);
+  // Whether a height change in the transcript keeps a pinned reader at the
+  // bottom. A turn whose anchor has been announced but not yet armed, or is
+  // armed, is holding the bottom-pin off on purpose (see
+  // shouldSuppressLegacyFollow, whose callers "must agree" so one path cannot
+  // re-enable what another holds off). Reading the refs rather than calling
+  // that helper keeps these resize paths out of its suppression budget, which
+  // belongs to the list callbacks.
+  const keepsBottomPinned = useCallback(() =>
+    pinnedRef.current
+    && !pendingTurnAnchorRef.current
+    && turnAnchorRef.current?.phase !== 'armed', []);
   // The bottom lock's last mile. `totalListHeightChanged` reports the list's
   // own height model and its correction is deferred a frame, so content that
   // reaches the scroller after that write — the footer, the turn filler, a
@@ -1237,13 +1248,7 @@ export default function ChatView({
         reconcileActiveTurnGeometry(scrollParentEl);
         return;
       }
-      if (!pinnedRef.current) return;
-      // A turn whose anchor has been announced but not yet armed is holding the
-      // bottom-pin off on purpose (see shouldSuppressLegacyFollow, whose
-      // callers "must agree" so one path cannot re-enable what another holds
-      // off). Reading the ref rather than calling that helper keeps this
-      // observer out of its suppression budget, which belongs to the callbacks.
-      if (pendingTurnAnchorRef.current) return;
+      if (!keepsBottomPinned()) return;
       const distanceToBottom =
         scrollParentEl.scrollHeight - scrollParentEl.scrollTop - scrollParentEl.clientHeight;
       // Same dead zone the other writers use, so a settled scroller stays put
@@ -1255,7 +1260,7 @@ export default function ChatView({
     });
     observer.observe(content);
     return () => observer.disconnect();
-  }, [reconcileActiveTurnGeometry, scrollParentEl]);
+  }, [keepsBottomPinned, reconcileActiveTurnGeometry, scrollParentEl]);
   useLayoutEffect(() => {
     if (scrollParentEl) reconcileActiveTurnGeometry(scrollParentEl);
   });
@@ -1684,6 +1689,7 @@ export default function ChatView({
             // scrollHeight snapshots, which read as the answer pane jittering
             // up/down while streaming.
             totalListHeightChanged={handleTotalListHeightChanged}
+            keepsBottom={keepsBottomPinned}
             footer={(
               <TypingFooter
                 // Covers the gap before the next assistant placeholder is created.
