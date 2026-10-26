@@ -119,7 +119,8 @@ test('a pet message with the app home in view and no conversation open starts a 
 
     // The general shell, on the conversation the message started, which carries no app and no team.
     await expect(page.getByTestId('app-switcher-current')).toHaveText(/发现应用|Discover apps/, { timeout: READY_TIMEOUT });
-    await expect(page.getByRole('main').getByText(MESSAGE, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    // In the transcript: the title above it carries the same words.
+    await expect(page.getByTestId('chat-message-list').getByText(MESSAGE, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expect.poll(() => llm.requests.slice(before).some((request) => request.user.includes(MESSAGE)), { timeout: READY_TIMEOUT }).toBe(true);
     const run = llm.requests.slice(before).find((request) => request.user.includes(MESSAGE))!;
     expect(run.system).not.toContain('## App Context');
