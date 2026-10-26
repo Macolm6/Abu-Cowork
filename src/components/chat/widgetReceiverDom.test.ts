@@ -52,6 +52,7 @@ interface ReceiverDomApi {
     stack?: unknown,
   ) => void;
   stabilizeCanvas: () => void;
+  contentHeight: () => number;
 }
 
 const buildApi = new Function(`${WIDGET_RECEIVER_DOM_JS}
@@ -68,6 +69,7 @@ const buildApi = new Function(`${WIDGET_RECEIVER_DOM_JS}
     sendPrompt: abuSendPrompt,
     reportError: abuReportError,
     stabilizeCanvas: abuStabilizeCanvas,
+    contentHeight: abuContentHeight,
   };`) as () => ReceiverDomApi;
 const api = buildApi();
 
@@ -529,5 +531,38 @@ describe('abuStabilizeCanvas (zero-height-only)', () => {
     parent.style.minHeight = '999px';
     api.stabilizeCanvas();
     expect(parent.style.minHeight).toBe('999px');
+  });
+});
+
+describe('abuContentHeight', () => {
+  // happy-dom computes no layout, so each case stubs the two scroll heights on
+  // the instances and removes the stubs afterwards.
+  function stubScrollHeights(root: number, body: number): () => void {
+    Object.defineProperty(document.documentElement, 'scrollHeight', { configurable: true, value: root });
+    Object.defineProperty(document.body, 'scrollHeight', { configurable: true, value: body });
+    return () => {
+      delete (document.documentElement as unknown as Record<string, unknown>).scrollHeight;
+      delete (document.body as unknown as Record<string, unknown>).scrollHeight;
+    };
+  }
+
+  it('reports the height of the content when the frame is taller than it', () => {
+    // The root's scroll height is never below the frame's own height, so only
+    // the body's tells the host how tall the content is.
+    const restore = stubScrollHeights(3640, 1409);
+    try {
+      expect(api.contentHeight()).toBe(1409);
+    } finally {
+      restore();
+    }
+  });
+
+  it('reports the height of the content when it is taller than the frame', () => {
+    const restore = stubScrollHeights(1409, 1409);
+    try {
+      expect(api.contentHeight()).toBe(1409);
+    } finally {
+      restore();
+    }
   });
 });
