@@ -20,6 +20,12 @@ export const PREVIEW_MIN_WIDTH = 380;    // Preview column keeps at least this m
 // chat card (App.tsx) and the preview card (RightPanel.tsx). Reserved here so the
 // chat/preview widths never sum past the viewport and clip the right card.
 export const PANEL_GUTTERS = 24;
+// The divider between the chat card and the right panel spans the gap between the
+// two cards (the chat card's mr-1 in App.tsx) and the panel's own left edge. The
+// panel's native browser view is painted above the page and takes every pointer
+// event over its rect, so BrowserTab keeps it off that edge.
+export const PANEL_DIVIDER_GAP = 4;
+export const PANEL_DIVIDER_EDGE = 5;
 
 export function getViewportWidth(): number {
   return typeof window !== 'undefined' ? window.innerWidth : 1440;

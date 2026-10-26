@@ -19,6 +19,7 @@ import { isMacOS } from '@/utils/platform';
 import { hasElectronCommandHost } from '@/utils/electronHost';
 import { isTauriEnv } from '@/utils/tauriEnv';
 import { createDomElementReference, type BrowserElementPayload } from '@/types/chatReference';
+import { PANEL_DIVIDER_EDGE } from '@/components/panel/panelWidths';
 
 const browserLogger = createLogger('browser-tab');
 const BROWSER_CREATE_RETRY_DELAYS_MS = [250, 500, 1_000] as const;
@@ -692,8 +693,14 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
       {/* Placeholder the native webview is positioned over. When there's no URL
           yet, no webview exists, so this React start prompt is visible. While
           the native view is hidden for an overlay, the freeze-frame keeps the
-          last rendered page visible instead of a blank pane. */}
-      <div ref={containerRef} className="relative min-h-0 flex-1 bg-surface">
+          last rendered page visible instead of a blank pane. It starts one
+          divider edge in from the panel's left, which keeps the native view
+          off the divider between the chat and the panel. */}
+      <div
+        ref={containerRef}
+        className="relative min-h-0 flex-1 bg-surface"
+        style={{ marginLeft: PANEL_DIVIDER_EDGE }}
+      >
         {freezeFrame && committedUrl && (
           <img
             src={freezeFrame}

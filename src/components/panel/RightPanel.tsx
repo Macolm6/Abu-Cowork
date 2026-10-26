@@ -5,6 +5,8 @@ import { useChatStore } from '@/stores/chatStore';
 import { cn } from '@/lib/utils';
 import WorkspacePanel from './workspace/WorkspacePanel';
 import {
+  PANEL_DIVIDER_EDGE,
+  PANEL_DIVIDER_GAP,
   PREVIEW_MIN_WIDTH,
   clampChatWidth,
   clampNarrowPanelWidth,
@@ -256,48 +258,60 @@ function RightPanelImpl() {
   // Wide content: flex-fill the space the chat column leaves (chat owns width).
   // Summary / empty: fixed, resizable width.
   return (
-    <div
-      data-abu-right-panel
-      data-electron-no-drag
-      hidden={panelHidden}
-      className={cn(
-        // Raised content card floating on the canvas (matches dev's panel redesign):
-        // margins on 3 sides + rounded/border/shadow. No h-full — flex fills height
-        // minus the margins.
-        'bg-surface flex overflow-hidden relative',
-        'mt-2 mb-2 mr-2 rounded-panel shadow-panel',
-        hasWideContent ? 'flex-1 min-w-0' : 'shrink-0',
-        // The narrow width eases between sizes; a drag follows the pointer directly.
-        !hasWideContent && !isDragging && 'transition-[width,min-width,max-width] duration-base ease-enter',
-      )}
-      style={
-        // Inline `display: none` (not just the `hidden` attribute): the layout
-        // classes above set `display: flex`, which would otherwise win over the
-        // UA stylesheet's `[hidden] { display: none }`.
-        panelHidden
-          ? { display: 'none' }
-          : hasWideContent
-            ? { minWidth: PREVIEW_MIN_WIDTH }
-            : { width: currentWidth, minWidth: currentWidth, maxWidth: currentWidth }
-      }
-    >
-      {/* Drag handle on left edge */}
+    <>
+      {/* Drag handle between the chat card and the panel. It sits outside the
+          panel (whose overflow clip would cut it to the panel's own edge), takes
+          no width in the row (the negative margins) and paints over the gap and
+          the panel's left edge, so the gap is no window drag region here. */}
       <div
+        data-electron-no-drag
+        hidden={panelHidden}
         onPointerDown={handlePointerDown}
         onPointerMove={(e) => dragRef.current?.(e.clientX)}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
         onLostPointerCapture={endDrag}
         className={cn(
-          'absolute inset-y-0 left-0 z-sticky w-[5px] cursor-col-resize select-none transition-colors duration-fast hover:bg-control-border',
+          'relative z-sticky my-2 shrink-0 cursor-col-resize select-none transition-colors duration-fast hover:bg-control-border',
           isDragging && 'bg-control-border',
         )}
+        style={{
+          width: PANEL_DIVIDER_GAP + PANEL_DIVIDER_EDGE,
+          marginLeft: -PANEL_DIVIDER_GAP,
+          marginRight: -PANEL_DIVIDER_EDGE,
+        }}
       />
-      {/* Panel content — always the tabbed workspace (summary is the default tab) */}
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <WorkspacePanel />
+      <div
+        data-abu-right-panel
+        data-electron-no-drag
+        hidden={panelHidden}
+        className={cn(
+          // Raised content card floating on the canvas (matches dev's panel redesign):
+          // margins on 3 sides + rounded/border/shadow. No h-full — flex fills height
+          // minus the margins.
+          'bg-surface flex overflow-hidden relative',
+          'mt-2 mb-2 mr-2 rounded-panel shadow-panel',
+          hasWideContent ? 'flex-1 min-w-0' : 'shrink-0',
+          // The narrow width eases between sizes; a drag follows the pointer directly.
+          !hasWideContent && !isDragging && 'transition-[width,min-width,max-width] duration-base ease-enter',
+        )}
+        style={
+          // Inline `display: none` (not just the `hidden` attribute): the layout
+          // classes above set `display: flex`, which would otherwise win over the
+          // UA stylesheet's `[hidden] { display: none }`.
+          panelHidden
+            ? { display: 'none' }
+            : hasWideContent
+              ? { minWidth: PREVIEW_MIN_WIDTH }
+              : { width: currentWidth, minWidth: currentWidth, maxWidth: currentWidth }
+        }
+      >
+        {/* Panel content — always the tabbed workspace (summary is the default tab) */}
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <WorkspacePanel />
+        </div>
       </div>
-    </div>
+    </>
   );
 }
 
