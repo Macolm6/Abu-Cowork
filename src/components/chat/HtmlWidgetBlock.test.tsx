@@ -38,6 +38,18 @@ describe('buildReceiverHtml — initial theme stamp (P3)', () => {
   });
 });
 
+describe('buildReceiverHtml — height reports', () => {
+  it('reports the height of the content and never the scroll height of the root', () => {
+    const html = buildReceiverHtml(false);
+    expect(html).toContain('var h=abuContentHeight();');
+    expect(html).not.toContain('document.documentElement.scrollHeight');
+  });
+
+  it('measures again when the size of the content changes', () => {
+    expect(buildReceiverHtml(false)).toContain('new ResizeObserver(reportHeight).observe(document.body);');
+  });
+});
+
 describe('buildFullHtml — fullscreen wrapper', () => {
   it('injects the design system into the FRAGMENT-wrap branch', () => {
     // A widget styled inline with .w-*/--w-* must render identically

@@ -86,14 +86,14 @@ const RECEIVER_HTML_BODY_TAIL = `
 ${WIDGET_RECEIVER_DOM_JS}
   var lastH=0, first=true;
   function reportHeight(){
-    var h=document.documentElement.scrollHeight;
+    var h=abuContentHeight();
     if(h!==lastH){lastH=h;
       window.parent.postMessage({type:'abu-widget-resize',height:h,first:first},'*');
       first=false;
     }
   }
   new MutationObserver(reportHeight).observe(document.body,{childList:true,subtree:true,attributes:true,characterData:true});
-  new ResizeObserver(reportHeight).observe(document.documentElement);
+  new ResizeObserver(reportHeight).observe(document.body);
   window.addEventListener('load',reportHeight);
 
   document.addEventListener('click',function(e){

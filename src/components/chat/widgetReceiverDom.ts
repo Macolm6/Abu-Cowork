@@ -263,6 +263,14 @@ function abuReportError(post,message,source,line,col,stack){
   }catch(e){ /* swallow — error reporting must never itself throw */ }
 }
 
+// --- Height of the widget's content, which the host gives the frame. The
+// body's scroll height covers the body box and whatever overflows it. The
+// root's scroll height is never below the frame's own height, so a frame the
+// host has made taller than its content would keep that height for good.
+function abuContentHeight(){
+  return document.body.scrollHeight;
+}
+
 // --- Zero-height canvas guard (lib-agnostic). The real defect: a responsive
 // canvas (e.g. a Chart.js chart with no resolvable container height) renders
 // at ~0px inside the auto-height iframe, showing dead space or an invisible
