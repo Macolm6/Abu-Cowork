@@ -19,7 +19,6 @@ import { collectToolViewRecords } from './toolViews/toolViewRecords';
 import McpAppBlock from './McpAppBlock';
 import { resolveToolCallAppUi } from '@/core/mcp/appHost';
 import SmoothHeight from './SmoothHeight';
-import { useEntersAfterRowMount } from './rowMount';
 import BatchProgress from './BatchProgress';
 import MarkdownRenderer from './MarkdownRenderer';
 import FileAttachment, { ImagePreviewCard, ImageThumbnail, isImageFile } from './FileAttachment';
@@ -146,24 +145,18 @@ function useRunElapsedMs(startMs: number | undefined, active: boolean): number {
  * text, not a button — no fold exists until the run settles, when the fold
  * header button takes this exact slot as a 1:1 row swap.
  *
- * Grows in when it appears inside a list row that was already there (Codex
- * animates its "Working for" divider the same way); shown together with its
- * row (switching to a running conversation) it is simply there. The dots slot
- * is NOT this row's to take: when the first process
+ * It is there at its full height in the frame it appears, so the status line
+ * below it moves once, by one row, instead of being pushed down over several
+ * frames. The dots slot is NOT this row's to take: when the first process
  * segment lands, TaskBlock's own header row is the dots row's designated
- * same-slot successor (see ThinkingStatusLine), so at that commit the instant
- * height budget is already spent (dots out, TaskBlock header in, net zero) —
- * a non-animated divider on top was measured as the same one-frame +46px jump
- * as the original bug. Growing in keeps every frame continuous: the thinking
- * row slides down one row-height over 200ms instead of teleporting.
+ * same-slot successor (see ThinkingStatusLine). The row it adds to a reader
+ * at the bottom is taken up in the same frame by the list, which keeps the
+ * view at the bottom when a row's height changes.
  */
 function RunStatusDivider({ label }: { label: string }) {
-  const enters = useEntersAfterRowMount(true);
   return (
-    <div className={cn('block-expand block-expand-open', enters && 'block-expand-enter')}>
-      <div className="mb-2 text-ui text-label-secondary tabular-nums">
-        {label}
-      </div>
+    <div className="mb-2 text-ui text-label-secondary tabular-nums">
+      {label}
     </div>
   );
 }
@@ -1013,8 +1006,8 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     })
     : '';
   const foldHeaderLabel = batchAggregateLabel ? `${workLabel} · ${batchAggregateLabel}` : workLabel;
-  // Codex-aligned in-run status divider: appears (animated) with the first
-  // process segment, ticks every second, and is NOT interactive — collapse
+  // Codex-aligned in-run status divider: appears with the first process
+  // segment, ticks every second, and is NOT interactive — collapse
   // only exists once the run settles and the fold header takes this exact
   // slot ("已处理 Ns" → "用时 Ns" as a 1:1 row swap, no layout change).
   const hasProcessSegments = segments.some(
