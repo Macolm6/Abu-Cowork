@@ -6,6 +6,7 @@ import {
   CHAT_LIST_EXTEND_PX,
   extendRangeByPx,
   initialScrollOffset,
+  rowResizeMovesScroll,
   type ChatListLocation,
 } from './chatListRange';
 import RowMountProvider from './RowMountProvider';
@@ -35,6 +36,11 @@ interface ChatMessageListProps<T> {
   atBottomThreshold: number;
   atBottomStateChange: (atBottom: boolean) => void;
   totalListHeightChanged: (height: number) => void;
+  /**
+   * Asked when a row's measured height changes while the view is at the
+   * bottom; true keeps the view at the bottom in the same frame.
+   */
+  keepsBottom: () => boolean;
 }
 
 /**
@@ -65,6 +71,7 @@ export default function ChatMessageList<T>({
   atBottomThreshold,
   atBottomStateChange,
   totalListHeightChanged,
+  keepsBottom,
 }: ChatMessageListProps<T>) {
   const listRef = useRef<HTMLDivElement>(null);
   const [startLocation] = useState(initialLocation);
@@ -94,9 +101,9 @@ export default function ChatMessageList<T>({
   });
 
   // The owner's callbacks change between renders; the listeners below read the latest.
-  const latest = useRef({ followOutput, atBottomThreshold, atBottomStateChange, totalListHeightChanged });
+  const latest = useRef({ followOutput, atBottomThreshold, atBottomStateChange, totalListHeightChanged, keepsBottom });
   useLayoutEffect(() => {
-    latest.current = { followOutput, atBottomThreshold, atBottomStateChange, totalListHeightChanged };
+    latest.current = { followOutput, atBottomThreshold, atBottomStateChange, totalListHeightChanged, keepsBottom };
   });
 
   const atBottomRef = useRef(true);
@@ -107,6 +114,21 @@ export default function ChatMessageList<T>({
     atBottomRef.current = atBottom;
     latest.current.atBottomStateChange(atBottom);
   }, [scrollParent]);
+
+  // A row that grows after it is shown (a chart or widget finishing its render)
+  // keeps a reader at the bottom there in the frame it grows: the virtualizer
+  // moves the offset by the row's delta and re-renders synchronously inside its
+  // ResizeObserver callback, before the browser paints. The owner's own
+  // bottom-follow reacts to the new list height a frame later.
+  useLayoutEffect(() => {
+    virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => rowResizeMovesScroll({
+      keepsBottom: atBottomRef.current && latest.current.keepsBottom(),
+      firstMeasure: !instance.itemSizeCache.has(item.key),
+      row: item,
+      scrollOffset: instance.scrollOffset ?? 0,
+      scrollingBackward: instance.scrollDirection === 'backward',
+    });
+  }, [virtualizer]);
 
   // Where the list starts inside the scrolled content (the content's own top padding).
   useLayoutEffect(() => {

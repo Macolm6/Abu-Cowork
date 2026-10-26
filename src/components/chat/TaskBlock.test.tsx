@@ -229,8 +229,8 @@ describe('TaskBlock — expand-on-mount wrappers', () => {
 
 // The thinking pane's running and completed states share one skeleton so the
 // running → completed swap is a class mutation on mounted nodes, not a subtree
-// replacement — the old two-structure swap landed a ~24px height change
-// (toggle button + gap) in one frame, below SmoothHeight's threshold.
+// replacement — a two-structure swap would land a ~24px height change
+// (toggle button + gap) in one frame.
 describe('TaskBlock — thinking pane running → completed', () => {
   afterEach(() => cleanup());
 

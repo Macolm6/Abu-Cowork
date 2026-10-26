@@ -1,20 +1,18 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
 
-// Only height changes bigger than this animate. Streamed tokens grow content a
-// line (~20px) at a time and must stay instant — animating them would make the
-// text feel like it's lagging behind the stream. The threshold targets layout
-// *swaps*: the work-process fold replacing an expanded thinking/step block at
-// completion (-100~200px), or the user toggling that fold open.
-const THRESHOLD_PX = 40;
 // Matches claude.ai's collapsible-block transition duration (280ms ease-out),
 // which our expand-on-mount animation (.block-expand-enter, 200ms) sits just
 // under — swaps read slightly slower than streaming growth, deliberately.
 const DURATION_MS = 280;
 
+// appearance.ts writes the app's reduce-motion choice here (the design
+// preview can force it too), so the chat follows one switch app-wide.
+const reduceMotion = () => document.documentElement.dataset.motion === 'reduced';
+
 /**
- * Smooths abrupt height changes of its children: when the content's natural
- * height jumps by more than THRESHOLD_PX in one layout pass, the wrapper pins
- * its height and transitions to the new value instead of letting it land in a
+ * Smooths the height change of a layout swap among its children: when
+ * `swapKey` changes, the wrapper keeps the height it had before the swap and
+ * transitions to the new natural height instead of letting it land in a
  * single frame.
  *
  * Why this exists: with the chat pinned to the bottom, a one-frame shrink of
@@ -25,17 +23,27 @@ const DURATION_MS = 280;
  * CSS enter/exit animation on either component can bridge it. Animating the
  * measured height of the region that contains the swap can.
  *
+ * The old height is pinned in a layout effect, after the swapped children are
+ * in the DOM and before the browser lays them out, so the message row never
+ * reaches its new height in one layout pass. The chat list measures rows with
+ * its own ResizeObserver; a height it reads in the same pass that the wrapper
+ * then pins back would leave the list one row-delta taller than the row it
+ * holds, and the bottom-pinned view would show that empty space for a frame.
+ *
+ * Every other height change — streamed tokens, a chart or widget finishing
+ * its render, an image loading — is content arriving, and lands instantly.
+ * A change that arrives while a swap is animating retargets that animation.
+ *
  * Non-goals / guarantees:
- * - First measure after mount never animates — history rows remounting during
- *   virtualized scrolling must not dance.
- * - Small (≤ threshold) changes are untouched: height stays `auto`, streaming
- *   text follows instantly.
+ * - Nothing animates before the first measure after mount — history rows
+ *   remounting during virtualized scrolling must not dance.
  * - Honors the app's reduced motion (<html data-motion="reduced">); no-ops entirely without ResizeObserver
  *   (jsdom).
  */
 export default function SmoothHeight({
   children,
   enabled = true,
+  swapKey,
 }: {
   children: ReactNode;
   /**
@@ -47,53 +55,75 @@ export default function SmoothHeight({
    * state, e.g. iframe widgets).
    */
   enabled?: boolean;
+  /**
+   * Names the children's current layout state. A render that changes it is a
+   * swap, and the height change that swap causes animates.
+   */
+  swapKey: string;
 }) {
   const outerRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
   const lastHeightRef = useRef<number | null>(null);
   const animatingRef = useRef(false);
+  const armedRef = useRef(false);
+  const swapKeyRef = useRef(swapKey);
   const settleTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  const settle = useCallback(() => {
+    animatingRef.current = false;
+    armedRef.current = false;
+    const outer = outerRef.current;
+    if (!outer) return;
+    outer.style.height = '';
+    outer.style.overflow = '';
+    outer.style.transition = '';
+  }, []);
+  // Timer instead of transitionend: 'transitionend' is swallowed when the
+  // transition is retargeted or the element is display-toggled mid-flight, and
+  // a swap whose height did not change fires no resize at all; either would
+  // leave the height pinned forever.
+  const scheduleSettle = useCallback(() => {
+    clearTimeout(settleTimerRef.current);
+    settleTimerRef.current = setTimeout(settle, DURATION_MS + 50);
+  }, [settle]);
+
+  useLayoutEffect(() => {
+    if (swapKeyRef.current === swapKey) return;
+    swapKeyRef.current = swapKey;
+    const outer = outerRef.current;
+    const prev = lastHeightRef.current;
+    if (!enabled || !outer || prev == null || reduceMotion()) return;
+    armedRef.current = true;
+    // A swap during a running animation is picked up by the retarget below;
+    // the outer box is already pinned to its in-between height.
+    if (!animatingRef.current) {
+      outer.style.transition = 'none';
+      outer.style.height = `${prev}px`;
+      // Clip while pinned smaller than the content (grow direction).
+      outer.style.overflow = 'hidden';
+    }
+    scheduleSettle();
+  });
 
   useEffect(() => {
     if (!enabled) return;
     const outer = outerRef.current;
     const inner = innerRef.current;
     if (!outer || !inner || typeof ResizeObserver === 'undefined') return;
-    // appearance.ts writes the app's reduce-motion choice here (the design
-    // preview can force it too), so the chat follows one switch app-wide.
-    const reduceMotion = () => document.documentElement.dataset.motion === 'reduced';
-
-    const settle = () => {
-      animatingRef.current = false;
-      outer.style.height = '';
-      outer.style.overflow = '';
-      outer.style.transition = '';
-    };
 
     const ro = new ResizeObserver((entries) => {
       const newHeight =
         entries[entries.length - 1]?.contentRect.height ?? inner.offsetHeight;
-      const prev = lastHeightRef.current;
       lastHeightRef.current = newHeight;
-      // First measure = mount; never animate (virtualized remounts of old rows).
-      if (prev == null) return;
-      if (reduceMotion()) return;
-      // While an animation is in flight every change retargets it (the content
-      // may still be settling); otherwise only large jumps start one.
-      if (!animatingRef.current && Math.abs(newHeight - prev) <= THRESHOLD_PX) return;
-
-      // FLIP: pin the height the box had BEFORE this mutation, then transition
-      // to the new natural height. ResizeObserver fires after layout, so on a
-      // fresh trigger the auto-height outer has ALREADY snapped to the new
-      // size — measuring it here would return ≈newHeight and the epsilon check
-      // below would cancel the animation every time (jsdom's all-zero rects
-      // hid this from the unit tests). `prev` is the last recorded height,
-      // i.e. what the user was actually seeing. Mid-flight retargets DO
-      // measure: an explicit pinned height + transition is in effect, so the
-      // rect reflects the true in-between position to resume from.
-      const startHeight = animatingRef.current
-        ? outer.getBoundingClientRect().height
-        : prev;
+      if (!armedRef.current && !animatingRef.current) return;
+      armedRef.current = false;
+      if (reduceMotion()) {
+        settle();
+        return;
+      }
+      // The outer box is pinned (a fresh swap) or mid-transition, so its rect
+      // is the height the user is seeing right now.
+      const startHeight = outer.getBoundingClientRect().height;
       if (Math.abs(startHeight - newHeight) < 1) {
         settle();
         return;
@@ -101,18 +131,13 @@ export default function SmoothHeight({
       animatingRef.current = true;
       outer.style.transition = 'none';
       outer.style.height = `${startHeight}px`;
-      // Clip while pinned smaller than the content (grow direction).
       outer.style.overflow = 'hidden';
       // Commit the start height before enabling the transition, or the browser
       // coalesces both writes and nothing animates.
       void outer.offsetHeight;
       outer.style.transition = `height ${DURATION_MS}ms var(--ease-enter)`;
       outer.style.height = `${newHeight}px`;
-      // Timer instead of transitionend: 'transitionend' is swallowed when the
-      // transition is retargeted or the element is display-toggled mid-flight,
-      // which would leave the height pinned forever.
-      clearTimeout(settleTimerRef.current);
-      settleTimerRef.current = setTimeout(settle, DURATION_MS + 50);
+      scheduleSettle();
     });
     ro.observe(inner);
     return () => {
@@ -122,7 +147,7 @@ export default function SmoothHeight({
       // Re-enabling later must not animate the first measure it sees.
       lastHeightRef.current = null;
     };
-  }, [enabled]);
+  }, [enabled, scheduleSettle, settle]);
 
   return (
     <div ref={outerRef}>

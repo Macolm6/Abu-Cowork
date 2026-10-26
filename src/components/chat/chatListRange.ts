@@ -43,6 +43,33 @@ export function extendRangeByPx(
 }
 
 /**
+ * Whether a row whose measured height changed moves the scroll offset by the
+ * same amount, so what the reader sees stays where it is.
+ *
+ * A reader kept at the bottom stays at the bottom whichever row changed. Any
+ * other reader keeps the virtualizer's own rule: a first measure moves the
+ * offset for a row that starts above it; a later one only for a row that ends
+ * above it, and not while scrolling up.
+ */
+export function rowResizeMovesScroll({
+  keepsBottom,
+  firstMeasure,
+  row,
+  scrollOffset,
+  scrollingBackward,
+}: {
+  keepsBottom: boolean;
+  firstMeasure: boolean;
+  row: RowExtent;
+  scrollOffset: number;
+  scrollingBackward: boolean;
+}): boolean {
+  if (keepsBottom) return true;
+  if (firstMeasure) return row.start < scrollOffset;
+  return row.end <= scrollOffset && !scrollingBackward;
+}
+
+/**
  * The scroll offset the list computes its first range from, before any row is
  * measured: every row at the estimate, `location` placed as a scroll to it
  * would place it.

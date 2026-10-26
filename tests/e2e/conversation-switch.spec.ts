@@ -3,7 +3,9 @@
  * from the old transcript to the new one without a painted frame in between
  * that shows no message row, the new transcript stays where it first painted,
  * a running conversation does not replay the enter animation of its live turn,
- * and a search hit in another conversation is the first position painted.
+ * a search hit in another conversation is the first position painted, and a
+ * conversation whose chart is drawn after it first shows stays at its newest
+ * message in every frame while it grows.
  *
  * Every frame is sampled twice inside the page: in requestAnimationFrame and in
  * a MessageChannel callback posted from it, which runs after the frame is
@@ -28,6 +30,7 @@ import { CHAT_PLACEHOLDER, READY_TIMEOUT, classifyMockRequestPurpose } from './o
 const LONG = 'SWITCH_LONG';
 const SHORT = 'SWITCH_SHORT';
 const RUNNING = 'SWITCH_RUNNING';
+const CHART = 'SWITCH_CHART';
 const SEARCH_WORD = 'SWITCHSEARCHTARGET';
 const FRAMES = 40;
 
@@ -37,6 +40,7 @@ interface PaintedSample {
   /** Which list element was on the page (a new one after the switch). */
   listId: number;
   scrollTop: number;
+  scrollHeight: number;
   distanceToBottom: number;
   /** Running `block-expand-enter` animations inside the scroller. */
   enterAnimations: number;
@@ -67,6 +71,18 @@ function longReply(turn: string): string {
   return [...Array.from({ length: 24 }, (_, index) => paragraph(index)), `LONG_DONE_${turn}`].join('\n\n');
 }
 
+/** A tall reply whose last part is a chart: the chart is drawn after the reply is shown, and the reply grows. */
+function chartReply(): string {
+  const paragraph = (index: number) => `第 ${index + 1} 段：图表画好之前，这一轮先按占位的高度显示。`;
+  const chart = [
+    '```mermaid',
+    'flowchart TD',
+    ...Array.from({ length: 8 }, (_, index) => `  S${index}[第 ${index + 1} 步] --> S${index + 1}[第 ${index + 2} 步]`),
+    '```',
+  ].join('\n');
+  return [...Array.from({ length: 12 }, (_, index) => paragraph(index)), chart, 'CHART_DONE'].join('\n\n');
+}
+
 async function startSwitchMock(): Promise<{ baseUrl: string; close: () => Promise<void> }> {
   const activeResponses = new Set<ServerResponse>();
   const server = createServer(async (req, res) => {
@@ -91,7 +107,9 @@ async function startSwitchMock(): Promise<{ baseUrl: string; close: () => Promis
       return;
     }
     const turn = /TURN_(\d+)/.exec(text)?.[1];
-    const reply = text.includes(LONG) ? longReply(turn ?? '0') : text.includes(SHORT) ? 'SHORT_DONE' : '[]';
+    const reply = text.includes(LONG)
+      ? longReply(turn ?? '0')
+      : text.includes(CHART) ? chartReply() : text.includes(SHORT) ? 'SHORT_DONE' : '[]';
     res.write(sseDelta({ content: reply }));
     res.write(sseDelta({}, 'stop'));
     res.end('data: [DONE]\n\n');
@@ -143,7 +161,11 @@ async function startNewTask(page: Page, text: string): Promise<void> {
  * Press `target` and return the painted samples of the frames that follow,
  * from the first one that shows the list mounted after the press.
  */
-async function recordSwitch(page: Page, target: Locator): Promise<{ before: PaintedSample; after: PaintedSample[] }> {
+async function recordSwitch(
+  page: Page,
+  target: Locator,
+  frames = FRAMES,
+): Promise<{ before: PaintedSample; after: PaintedSample[] }> {
   await page.evaluate(({ frames, searchWord }) => {
     const samples: PaintedSample[] = [];
     const store = window as Window & {
@@ -159,7 +181,7 @@ async function recordSwitch(page: Page, target: Locator): Promise<{ before: Pain
       if (list && !listIds.ids.has(list)) listIds.ids.set(list, listIds.next++);
       const ids = listIds.ids;
       if (!scroller) {
-        return { rowsInView: 0, listId: 0, scrollTop: 0, distanceToBottom: 0, enterAnimations: 0, searchRowInView: false };
+        return { rowsInView: 0, listId: 0, scrollTop: 0, scrollHeight: 0, distanceToBottom: 0, enterAnimations: 0, searchRowInView: false };
       }
       const view = scroller.getBoundingClientRect();
       const intersects = (element: Element) => {
@@ -181,6 +203,7 @@ async function recordSwitch(page: Page, target: Locator): Promise<{ before: Pain
         rowsInView,
         listId: list ? ids.get(list) ?? 0 : 0,
         scrollTop: Math.round(scroller.scrollTop),
+        scrollHeight: scroller.scrollHeight,
         distanceToBottom: Math.round(scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight),
         enterAnimations,
         searchRowInView: searchRow ? intersects(searchRow) : false,
@@ -197,11 +220,11 @@ async function recordSwitch(page: Page, target: Locator): Promise<{ before: Pain
     // The first sample is the frame on screen before the press.
     samples.push(measure());
     document.addEventListener('click', () => requestAnimationFrame(frame), { capture: true, once: true });
-  }, { frames: FRAMES, searchWord: SEARCH_WORD });
+  }, { frames, searchWord: SEARCH_WORD });
   await target.click();
   await expect.poll(() => page.evaluate(() => (window as Window & { __switchSamples?: unknown[] }).__switchSamples?.length ?? 0), {
     timeout: READY_TIMEOUT,
-  }).toBeGreaterThanOrEqual(FRAMES + 1);
+  }).toBeGreaterThanOrEqual(frames + 1);
   const samples = await page.evaluate(() => (window as Window & { __switchSamples?: PaintedSample[] }).__switchSamples ?? []);
   const [before, ...painted] = samples;
   const firstNew = painted.findIndex((sample) => sample.listId !== 0 && sample.listId !== before.listId);
@@ -317,4 +340,51 @@ test('switching conversations paints no empty message area and no jump; a runnin
   expect(toHit.after[0].searchRowInView, JSON.stringify(toHit.after.slice(0, 4))).toBe(true);
   expect(toHit.after[0].distanceToBottom).toBeGreaterThan(1_000);
   expectNoEmptyFrameAndNoJump(toHit.after);
+});
+
+test('a conversation whose chart is drawn after it first shows stays at its newest message in every frame', async () => {
+  test.setTimeout(300_000);
+  mock = await startSwitchMock();
+  dataRoot = createElectronDataRoot();
+  app = (await launchAbuElectron(dataRoot)).app;
+  let page = await app.firstWindow({ timeout: READY_TIMEOUT });
+  await page.waitForLoadState('domcontentloaded');
+  await expect(page.getByPlaceholder(CHAT_PLACEHOLDER).first()).toBeVisible({ timeout: READY_TIMEOUT });
+  await configureLocalMockProvider(page, mock.baseUrl, {
+    contextWindowSize: 200_000,
+    maxOutputTokens: 8_192,
+    modelId: 'abu-conversation-switch-e2e',
+    supportsReasoning: true,
+  });
+
+  await startNewTask(page, `${CHART} TURN_1`);
+  await expect(page.getByText('CHART_DONE')).toBeVisible({ timeout: READY_TIMEOUT });
+  await showSidebar(page);
+  const chartId = await activeConversationId(page);
+  await startNewTask(page, `${SHORT} TURN_1`);
+  await expect(page.getByText('SHORT_DONE')).toBeVisible({ timeout: READY_TIMEOUT });
+  await showSidebar(page);
+  const shortId = await activeConversationId(page);
+
+  // A drawn chart is remembered for the rest of the run; a new run draws it again.
+  await closeAbuElectron(app);
+  app = (await launchAbuElectron(dataRoot)).app;
+  page = await app.firstWindow({ timeout: READY_TIMEOUT });
+  await page.waitForLoadState('domcontentloaded');
+  await expect(page.getByPlaceholder(CHAT_PLACEHOLDER).first()).toBeVisible({ timeout: READY_TIMEOUT });
+  await showSidebar(page);
+  await page.locator(`[data-conversation-row="${shortId}"]`).click();
+  await expect(page.getByText('SHORT_DONE')).toBeVisible({ timeout: READY_TIMEOUT });
+
+  const toChart = await recordSwitch(page, page.locator(`[data-conversation-row="${chartId}"]`), 90);
+  await expect(page.locator('[data-chat-scroll-content] svg[id^="mermaid-"]')).toBeVisible();
+  const frames = JSON.stringify(toChart.after.map(({ rowsInView, scrollTop, scrollHeight, distanceToBottom }) => (
+    { rowsInView, scrollTop, scrollHeight, distanceToBottom })));
+  // The reply grew while the frames were recorded: the chart was drawn after the transcript first showed.
+  const heights = toChart.after.map((sample) => sample.scrollHeight);
+  expect(Math.max(...heights) - heights[0], frames).toBeGreaterThan(100);
+  for (const sample of toChart.after) {
+    expect(sample.rowsInView, frames).toBeGreaterThan(0);
+    expect(sample.distanceToBottom, frames).toBeLessThanOrEqual(2);
+  }
 });

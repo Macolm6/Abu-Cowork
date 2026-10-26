@@ -499,11 +499,10 @@ export function buildRenderSegments(
 //
 // While the run is still in progress the fold does not exist at all (null):
 // the settled "用时 Xs" header is a completed-turn summary, and mounting the
-// header row mid-run inserted ~28px above the live thinking/step block — under
-// SmoothHeight's 40px threshold, so it landed as a one-frame jump. Deferring
-// the whole wrapper keeps the in-run row structure stable (the typing dots
-// swap 1:1 with TaskBlock's first row) and the header only appears together
-// with the completion collapse, which SmoothHeight bridges.
+// header row mid-run would insert ~28px above the live thinking/step block in
+// one frame. Deferring the whole wrapper keeps the in-run row structure stable
+// (the typing dots swap 1:1 with TaskBlock's first row) and the header only
+// appears together with the completion collapse, which SmoothHeight bridges.
 // eslint-disable-next-line react-refresh/only-export-components
 export function computeWorkProcessFold(segments: RenderSegment[], isDone: boolean): number | null {
   if (!isDone) return null;
@@ -1268,18 +1267,23 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
               </div>
             )}
 
-            {/* SmoothHeight bridges the layout SWAPS inside this region — most
-                importantly the completion fold: the expanded thinking/step
+            {/* SmoothHeight bridges the work-process fold SWAPS inside this
+                region: the completion fold, where the expanded thinking/step
                 block unmounts and the one-line "用时 Xs" header takes its
-                place in the same render, a -100~200px one-frame shrink that
-                (while pinned to the bottom) used to clamp scrollTop and jump
-                the whole view down. Streamed token growth stays instant (it's
-                under the wrapper's threshold); mount-direction growth is
-                handled by .block-expand-enter inside TaskBlock. Enabled only
-                for the last group — that's the only place the completion swap
-                happens; settled history groups keep the wrapper (stable DOM,
-                no child remounts when a new turn arrives) but observe nothing. */}
-            <SmoothHeight enabled={isLastGroupProp}>
+                place in the same render (a -100~200px one-frame shrink that,
+                while pinned to the bottom, would clamp scrollTop and jump the
+                whole view down), and the reader opening or closing that fold.
+                Every other height change here — streamed tokens, a chart or
+                widget finishing its render — lands instantly; mount-direction
+                growth is handled by .block-expand-enter inside TaskBlock.
+                Enabled only for the last group — that's the only place the
+                completion swap happens; settled history groups keep the
+                wrapper (stable DOM, no child remounts when a new turn arrives)
+                but observe nothing. */}
+            <SmoothHeight
+              enabled={isLastGroupProp}
+              swapKey={`${workFoldEnd ?? 'inline'}:${workExpanded ? 'expanded' : 'collapsed'}`}
+            >
             {/* Typing dots — shown while the current turn is streaming but has not
                 yet emitted any renderable content. Tracks the streaming message
                 itself, so a plan card from an earlier turn in the same group does

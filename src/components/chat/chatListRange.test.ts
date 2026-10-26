@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { extendRangeByPx, initialScrollOffset } from './chatListRange';
+import { extendRangeByPx, initialScrollOffset, rowResizeMovesScroll } from './chatListRange';
 
 // Six rows, 500px each: row i spans [i*500, i*500 + 500).
 const rows = Array.from({ length: 6 }, (_, i) => ({ start: i * 500, end: i * 500 + 500 }));
@@ -24,6 +24,35 @@ describe('chatListRange', () => {
 
     it('returns nothing for an empty list', () => {
       expect(extendRangeByPx([], 0, 0, 900)).toEqual([]);
+    });
+  });
+
+  describe('rowResizeMovesScroll', () => {
+    const at = (overrides: Partial<Parameters<typeof rowResizeMovesScroll>[0]>) => rowResizeMovesScroll({
+      keepsBottom: false,
+      firstMeasure: false,
+      row: { start: 1000, end: 1500 },
+      scrollOffset: 1200,
+      scrollingBackward: false,
+      ...overrides,
+    });
+
+    it('keeps a reader at the bottom there when the row they are reading grows (a chart finishing its render)', () => {
+      expect(at({ keepsBottom: true })).toBe(true);
+    });
+
+    it('leaves the offset alone for a re-measured row that reaches into the viewport', () => {
+      expect(at({})).toBe(false);
+    });
+
+    it('moves the offset for a re-measured row entirely above the viewport, except while scrolling up', () => {
+      expect(at({ scrollOffset: 1500 })).toBe(true);
+      expect(at({ scrollOffset: 1500, scrollingBackward: true })).toBe(false);
+    });
+
+    it('moves the offset on a first measure of a row that starts above the viewport', () => {
+      expect(at({ firstMeasure: true })).toBe(true);
+      expect(at({ firstMeasure: true, scrollOffset: 900 })).toBe(false);
     });
   });
 
