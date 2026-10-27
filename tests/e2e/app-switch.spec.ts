@@ -61,7 +61,7 @@ async function startLlmMock(): Promise<{ baseUrl: string; requests: MockRequest[
     const messages = body.messages ?? [];
     const system = messages.filter((m) => m.role === 'system').map((m) => String(m.content)).join('\n');
     const user = messages.filter((m) => m.role === 'user').map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content))).join('\n');
-    const background = system.includes('你是一个记忆提取助手') || user.includes('请将以下对话内容压缩为一段简洁的摘要');
+    const background = system.includes('你是一个记忆提取助手') || user.includes('Stop working on the task for a moment.');
     if (!background) requests.push({ system, user });
     res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' });
     const canDelegate = body.tools?.some((tool) => tool.function?.name === 'delegate_to_agent') === true;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { linesOmittedMarker, truncateToolResult } from '@/core/context/truncation';
+import { charsOmittedMarker, linesOmittedMarker } from '@/core/context/truncation';
 import { DURABLE_RESULT_OMITTED_NOTE } from '@/core/session/durableToolResultContent';
 import { fileReadView, type NumberedRow } from './fileReadView';
 
@@ -7,10 +7,10 @@ function numbers(rows: NumberedRow[] | null): Array<number | null | string> {
   return (rows ?? []).map((row) => (row.kind === 'line' ? row.number : `<${row.note}>`));
 }
 
-/** A whole read of 1000 lines of 300 characters, cut as the context at 90 % cuts it. */
+/** Historical bounded results retain their original line numbers. */
 function charCutWholeRead(): string {
   const lines = Array.from({ length: 1000 }, (_, index) => `line ${index + 1} `.padEnd(300, 'x'));
-  return truncateToolResult('read_file', lines.join('\n'), 90);
+  return [...lines.slice(0, 30), '', charsOmittedMarker(290_000), '', ...lines.slice(-10)].join('\n');
 }
 
 describe('fileReadView', () => {
@@ -44,8 +44,8 @@ describe('fileReadView', () => {
     expect(view.numbered![3]).toEqual({ kind: 'note', note: 'linesNotRead', count: 10 });
   });
 
-  it('numbers the rows after a chars-not-read note from the end', () => {
-    const text = charCutWholeRead();
+  it('numbers the rows after a chars-not-read note from the end', async () => {
+    const text = await charCutWholeRead();
     const view = fileReadView(text, { kind: 'text', startLine: 1, lineCount: 1000, totalLines: 1000, bodyStart: 0 });
     const rows = view.numbered!;
     const note = rows.findIndex((row) => row.kind === 'note' && row.note === 'charsNotRead');
@@ -57,8 +57,8 @@ describe('fileReadView', () => {
     expect(rows.slice(note + 1).every((row) => row.kind === 'line')).toBe(true);
   });
 
-  it('leaves the rows after a chars-not-read note unnumbered when the end was not saved', () => {
-    const text = `${charCutWholeRead()}\n\n${DURABLE_RESULT_OMITTED_NOTE}`;
+  it('leaves the rows after a chars-not-read note unnumbered when the end was not saved', async () => {
+    const text = `${await charCutWholeRead()}\n\n${DURABLE_RESULT_OMITTED_NOTE}`;
     const view = fileReadView(text, { kind: 'text', startLine: 1, lineCount: 1000, totalLines: 1000, bodyStart: 0 });
     const rows = view.numbered!;
     const note = rows.findIndex((row) => row.kind === 'note' && row.note === 'charsNotRead');

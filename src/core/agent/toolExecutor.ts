@@ -18,7 +18,8 @@ import type {
 import type { ConfirmationInfo } from '../tools/commandSafety';
 import type { FilePermissionCallback, ToolInvoker } from './ports/toolInvoker';
 import type { SettingsReader } from './ports/settingsReader';
-import { processToolResult } from '../session/sessionMemory';
+import { writeToolResultFile } from '../session/sessionMemory';
+import { boundToolResult } from '../context/toolResultSpill';
 import { evaluatePlanGate, getPlanMode } from './planMode';
 import { emitHook } from './lifecycleHooks';
 import type { PreToolCallEvent } from './lifecycleHooks';
@@ -44,7 +45,7 @@ import { isToolResultError } from './toolResultErrors';
 import { TOOL_RESULT_CANCELLED_MARKER, TOOL_RESULT_HOOK_BLOCKED_MARKER } from './toolResultMarkers';
 import { batchSummaryHasNonSuccess } from './batchTerminalSummary';
 import { getExecutionPort } from './ports/executionPort';
-import { firstImageContent } from '../tools/toolResultContent';
+import { firstImageContent, imageIdentities } from '../tools/toolResultContent';
 import { snapshotResultImage } from '../session/outputSnapshots';
 
 const logger = createLogger('toolExecutor');
@@ -111,8 +112,6 @@ export interface ToolBatchParams {
   settingsReader: SettingsReader;
   /** Whether the loop will continue (tool_use stop reason) */
   continueLoop: boolean;
-  /** Current context window usage (0-100). Scales tool result truncation under pressure. */
-  contextUsagePercent?: number;
   /**
    * The model profile's `capabilities.parallelToolCalls`. `false` runs every
    * call of the batch one after another, in the model's order, whatever the
@@ -164,7 +163,6 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     filePermCb,
     toolContext,
     continueLoop,
-    contextUsagePercent,
     toolInvoker,
     settingsReader,
   } = params;
@@ -311,7 +309,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         assistantMessageId: assistantMsgId,
         abortSignal: abortController.signal,
         reportMetadata: checkpointMetadata,
-      }, contextUsagePercent);
+      });
 
       // Foreground Stop keeps its long-standing responsive detach behavior.
       // A scoped/background run is an authority owner, however: its caller
@@ -635,17 +633,17 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         }
       }
 
-      // Offload large tool results to disk to reduce localStorage pressure
-      let storedResult = toolResult;
-      try {
-        const processed = await processToolResult(conversationId, id, toolResult);
-        storedResult = processed.stored;
-        if (processed.offloaded) {
-          logger.info('Tool result offloaded to disk', { toolName: matchedTc?.name, originalSize: toolResult.length });
-        }
-      } catch {
-        // Offload failed — store full result in memory (fallback)
-      }
+      // A result too long for the conversation keeps its beginning and end;
+      // the whole text goes to a file under the conversation.
+      const storedResult = matchedTc
+        ? await boundToolResult({
+            toolCallId: id,
+            toolName: matchedTc.name,
+            input: matchedTc.input,
+            result: toolResult,
+            writeFile: (toolCallId, text) => writeToolResultFile(conversationId, toolCallId, text),
+          })
+        : toolResult;
 
       // Snapshot any output files this tool produced so they survive original-file deletion.
       // Fire-and-forget: snapshot failures must never block the agent loop.
@@ -703,9 +701,9 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       const stepId = toolCallToStepId.get(id);
       if (stepId) {
         if (error) {
-          eventRouter.route({ type: 'step-error', loopId, stepId, error: toolResult });
+          eventRouter.route({ type: 'step-error', loopId, stepId, error: storedResult });
         } else {
-          eventRouter.route({ type: 'step-end', loopId, stepId, result: toolResult, resultContent });
+          eventRouter.route({ type: 'step-end', loopId, stepId, result: storedResult, resultContent });
         }
       }
     } else {
@@ -744,6 +742,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         name: toolCall?.name ?? 'unknown',
         input: toolCall?.input ?? {},
         result: result.value.result,
+        images: imageIdentities(result.value.resultContent),
         error: result.value.error,
       };
     }
@@ -751,6 +750,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       name: toolCall?.name ?? 'unknown',
       input: toolCall?.input ?? {},
       result: String(result.reason),
+      images: [],
       error: true,
     };
   });

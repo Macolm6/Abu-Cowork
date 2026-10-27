@@ -1,454 +1,244 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { Message } from '@/types';
-
-// ── Mock chatStore ──
-// Must be hoisted-compatible: use plain const objects since they start with "mock"
-
-const mockConversations: Record<
-  string,
-  { messages: Message[]; model?: { providerId: string; modelId: string } }
-> = {};
-const mockConversationIndex: Record<
-  string,
-  { model?: { providerId: string; modelId: string } }
-> = {};
-const mockAddMessage = vi.fn();
-const mockClearContextCache = vi.fn();
-const mockSetIsCompressing = vi.fn();
-
-vi.mock('@/stores/chatStore', () => ({
-  useChatStore: {
-    getState: () => ({
-      conversations: mockConversations,
-      conversationIndex: mockConversationIndex,
-      addMessage: mockAddMessage,
-      clearContextCache: mockClearContextCache,
-      setIsCompressing: mockSetIsCompressing,
-    }),
-  },
-}));
-
-// ── Mock settingsStore ──
-
-vi.mock('@/stores/settingsStore', () => ({
-  readConfirmedBrowserPermissionConfig: vi.fn(() => null),
-  useSettingsStore: { getState: () => ({}) },
-  getActiveProvider: vi.fn().mockReturnValue({ apiFormat: 'anthropic-compatible', baseUrl: undefined, models: [] }),
-  getActiveApiKey: vi.fn().mockReturnValue('test-api-key'),
-  getEffectiveModel: vi.fn().mockReturnValue('claude-haiku-4-5'),
-}));
-
-// ── Mock settingsReader port ──
-// The default in-process reader snapshots the (mocked, empty) settingsStore, so
-// pin a snapshot with a known global default model. Provider `p` lists every
-// model the tests pin; individual tests replace it to make the model unusable.
-
-function makeUsableProvider() {
-  return {
-    id: 'p',
-    enabled: true,
-    userAdded: true,
-    apiKey: 'test-api-key',
-    models: [{ id: 'global-model' }, { id: 'conv-model' }, { id: 'index-model' }],
-  };
-}
-const mockSnapshotProviders: unknown[] = [makeUsableProvider()];
-
-/** Replace the snapshot's provider list (model-usability tests). */
-function setProviders(...providers: unknown[]): void {
-  mockSnapshotProviders.splice(0, mockSnapshotProviders.length, ...providers);
-}
-
-vi.mock('@/core/agent/ports/settingsReader', () => ({
-  getSettingsReader: () => ({
-    getSnapshot: () => ({
-      activeModel: { providerId: 'p', modelId: 'global-model' },
-      providers: mockSnapshotProviders,
-      contextWindowSize: 200000,
-    }),
-  }),
-}));
-
-// 本地服务商的窗口询问，不发真实请求
-const { mockProbeContextWindow } = vi.hoisted(() => ({ mockProbeContextWindow: vi.fn() }));
-vi.mock('@/core/llm/contextWindowProbe', () => ({ probeContextWindow: mockProbeContextWindow }));
-
-// ── Mock enterprise llm-resolver ──
-
-vi.mock('@/core/enterprise/llm-resolver', () => ({
-  resolveEffectiveLlmCreds: vi.fn().mockReturnValue({
-    apiKey: 'resolved-api-key',
-    baseUrl: undefined,
-    forceOpenAiCompatible: false,
-  }),
-}));
-
-// ── Mock LLM adapters (just need constructors to not throw) ──
-
-vi.mock('@/core/llm/claude', () => ({
-  ClaudeAdapter: vi.fn().mockImplementation(function () { return { chat: vi.fn() }; }),
-}));
-
-vi.mock('@/core/llm/openai-compatible', () => ({
-  OpenAICompatibleAdapter: vi.fn().mockImplementation(function () { return { chat: vi.fn() }; }),
-}));
-
-// ── Mock contextCompressor (whole module) ──
-// Use a module-level vi.fn so we can spy on it from tests.
-
-vi.mock('@/core/context/contextCompressor', () => ({
-  summarizeConversation: vi.fn(),
-}));
-
-// ── Import after all mocks ──
-
-import * as contextCompressor from '@/core/context/contextCompressor';
-import * as settingsStore from '@/stores/settingsStore';
-import * as llmResolver from '@/core/enterprise/llm-resolver';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Conversation, Message } from '@/types';
+import type { ProviderInstance } from '@/types/provider';
+import { useChatStore } from '@/stores/chatStore';
+import { useSettingsStore } from '@/stores/settingsStore';
+import { useWorkspaceStore } from '@/stores/workspaceStore';
+import { registerBuiltinTools } from '@/core/tools/builtins';
+import { resolveEffectiveLlmCreds } from '@/core/enterprise/llm-resolver';
+import { LLMError, type LLMAdapter } from '@/core/llm/adapter';
 import { compactConversationManually } from './compactionService';
 import { isCompactBoundary } from './compactBoundary';
+import { computeInputBudget } from './contextManager';
+import { estimateMessageTokens, estimateTokens, estimateToolSchemaTokens } from './tokenEstimator';
 
-// Convenient alias
-const mockSummarize = contextCompressor.summarizeConversation as ReturnType<typeof vi.fn>;
+const mockChat = vi.fn<LLMAdapter['chat']>();
 
-// ── Helpers ──
+vi.mock('@/core/llm/claude', () => ({
+  ClaudeAdapter: class { chat = (...args: Parameters<LLMAdapter['chat']>) => mockChat(...args); },
+}));
+vi.mock('@/core/llm/openai-compatible', () => ({
+  OpenAICompatibleAdapter: class { chat = (...args: Parameters<LLMAdapter['chat']>) => mockChat(...args); },
+}));
+vi.mock('@/core/llm/ollama-native', () => ({
+  OllamaNativeAdapter: class { chat = (...args: Parameters<LLMAdapter['chat']>) => mockChat(...args); },
+}));
+vi.mock('@/core/enterprise/llm-resolver', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/core/enterprise/llm-resolver')>();
+  return { ...actual, resolveEffectiveLlmCreds: vi.fn(actual.resolveEffectiveLlmCreds) };
+});
 
-let _seq = 0;
+const CONV_ID = 'test-conv-123';
+const initialSettings = useSettingsStore.getState();
+const initialChat = useChatStore.getState();
+const initialWorkspace = useWorkspaceStore.getState();
 
-function makeMsg(role: 'user' | 'assistant'): Message {
-  _seq++;
+function provider(id: string): ProviderInstance {
   return {
-    id: `msg-${_seq}`,
-    role,
-    content: `content-${_seq}`,
-    timestamp: 1000 * _seq,
+    id, source: 'custom', name: id, enabled: true, apiFormat: 'openai-compatible',
+    baseUrl: `https://${id}.example.net/v1`, apiKey: `sk-${id}`,
+    models: [{ id: `${id}-model`, label: `${id}-model` }],
+    status: 'verified', sortOrder: 1, userAdded: true,
   };
 }
 
-/** Build N user+assistant round pairs (2N messages). Manual /compact keeps 1 recent
- *  round (WorkBuddy-aligned), so a non-null plan needs > 2 rounds (>=3); auto needs > 5. */
 function buildRounds(count: number): Message[] {
-  const messages: Message[] = [];
-  for (let i = 0; i < count; i++) {
-    messages.push(makeMsg('user'));
-    messages.push(makeMsg('assistant'));
-  }
-  return messages;
+  return Array.from({ length: count * 2 }, (_, index) => ({
+    id: `message-${index}`, role: index % 2 === 0 ? 'user' : 'assistant',
+    content: `content-${index}`, timestamp: index + 1,
+  }));
 }
 
-const CONV_ID = 'test-conv-123';
+function seedConversation(overrides: Partial<Conversation> = {}): Conversation {
+  const conversation: Conversation = {
+    id: CONV_ID, title: 'Task', messages: buildRounds(6), status: 'completed',
+    createdAt: 1, updatedAt: 2, workspacePath: '/task/workspace', ...overrides,
+  };
+  useChatStore.setState({ conversations: { [CONV_ID]: conversation }, activeConversationId: CONV_ID });
+  return conversation;
+}
+
+function storedConversation(): Conversation {
+  return useChatStore.getState().conversations[CONV_ID];
+}
 
 beforeEach(() => {
-  _seq = 0;
-  vi.mocked(contextCompressor.summarizeConversation).mockReset();
-  mockAddMessage.mockReset();
-  mockClearContextCache.mockReset();
-  mockSetIsCompressing.mockReset();
-  // The model-scope tests read `mock.calls.at(-1)` on these selectors; clear
-  // them so a call recorded by an earlier test can never satisfy a later one.
-  // mockClear (not mockReset) keeps the return values pinned in the vi.mock.
-  vi.mocked(settingsStore.getEffectiveModel).mockClear();
-  vi.mocked(settingsStore.getActiveProvider).mockClear();
-  vi.mocked(settingsStore.getActiveApiKey).mockClear();
-  vi.mocked(llmResolver.resolveEffectiveLlmCreds).mockReturnValue({
-    apiKey: 'resolved-api-key',
-    baseUrl: undefined,
-    forceOpenAiCompatible: false,
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-10-27T00:00:00Z'));
+  vi.spyOn(Math, 'random').mockReturnValue(0.123456);
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  mockChat.mockReset().mockImplementation(async (_messages, _options, onEvent) => {
+    onEvent({ type: 'text', text: 'A summary of the conversation.' });
+    onEvent({ type: 'done', stopReason: 'end_turn' });
   });
-  for (const key of Object.keys(mockConversations)) {
-    delete mockConversations[key];
-  }
-  for (const key of Object.keys(mockConversationIndex)) {
-    delete mockConversationIndex[key];
-  }
-  setProviders(makeUsableProvider());
-  mockProbeContextWindow.mockReset();
-  mockProbeContextWindow.mockResolvedValue(undefined);
+  vi.mocked(resolveEffectiveLlmCreds).mockImplementation((apiKey, baseUrl) => ({ apiKey, baseUrl, forceOpenAiCompatible: false }));
+  useSettingsStore.setState({
+    ...initialSettings,
+    providers: [provider('default'), provider('own')],
+    activeModel: { providerId: 'default', modelId: 'default-model' },
+    contextWindowSize: 200_000, maxOutputTokens: 4096, soulInitialized: false,
+  });
+  useChatStore.setState({ ...initialChat, conversations: {}, conversationIndex: {}, activeConversationId: null });
+  useWorkspaceStore.setState({ ...initialWorkspace, currentPath: '/another/task' });
+  registerBuiltinTools();
 });
 
-// ── Tests ──
+afterEach(() => {
+  useSettingsStore.setState(initialSettings);
+  useChatStore.setState(initialChat);
+  useWorkspaceStore.setState(initialWorkspace);
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
 
 describe('compactConversationManually', () => {
-  describe('no-conversation', () => {
-    it('returns no-conversation when convId is absent from store', async () => {
-      const result = await compactConversationManually(CONV_ID);
-      expect(result).toEqual({ compacted: false, reason: 'no-conversation' });
-    });
+  it.each([CONV_ID, ''])('returns no-conversation when the conversation is absent: %s', async (id) => {
+    expect(await compactConversationManually(id)).toEqual({ compacted: false, reason: 'no-conversation' });
+    expect(mockChat).not.toHaveBeenCalled();
+  });
 
-    it('returns no-conversation for empty string convId', async () => {
-      const result = await compactConversationManually('');
-      expect(result).toEqual({ compacted: false, reason: 'no-conversation' });
+  it.each([0, 1])('returns too-few for %s rounds', async (rounds) => {
+    seedConversation({ messages: buildRounds(rounds) });
+    expect(await compactConversationManually(CONV_ID)).toEqual({ compacted: false, reason: 'too-few' });
+    expect(mockChat).not.toHaveBeenCalled();
+    expect(storedConversation().isCompressing).toBe(false);
+  });
+
+  it('compacts two rounds through the real summary request and records a manual divider', async () => {
+    const conversation = seedConversation({ messages: buildRounds(2) });
+    expect(await compactConversationManually(CONV_ID)).toEqual({ compacted: true, reason: 'ok' });
+    const marker = storedConversation().messages.at(-1)!;
+    expect(isCompactBoundary(marker)).toBe(true);
+    expect(marker.loopId).toBeUndefined();
+    expect(marker.compactBoundary).toMatchObject({
+      version: 2, status: 'done', source: 'manual', summaryText: 'A summary of the conversation.',
+      summarizedToId: conversation.messages[2].id,
+      keptUserMessageIds: [conversation.messages[0].id, conversation.messages[2].id],
+    });
+    expect(mockChat.mock.calls[0][0].at(-1)?.content).toContain('Do not call any tools');
+  });
+
+  it('uses the conversation model and its own provider credentials', async () => {
+    seedConversation({ model: { providerId: 'own', modelId: 'own-model' } });
+    expect((await compactConversationManually(CONV_ID)).compacted).toBe(true);
+    expect(mockChat.mock.calls[0][1]).toMatchObject({
+      model: 'own-model', apiKey: 'sk-own', baseUrl: 'https://own.example.net/v1',
+      accounting: { source: 'compaction', conversationId: CONV_ID, providerInstanceId: 'own' },
     });
   });
 
-  describe('too-few', () => {
-    it('returns too-few when conversation has fewer rounds than threshold', async () => {
-      mockConversations[CONV_ID] = { messages: buildRounds(2) };
-      const result = await compactConversationManually(CONV_ID);
-      expect(result).toEqual({ compacted: false, reason: 'too-few' });
-      expect(mockSummarize).not.toHaveBeenCalled();
-    });
-
-    it('returns too-few for empty messages array', async () => {
-      mockConversations[CONV_ID] = { messages: [] };
-      const result = await compactConversationManually(CONV_ID);
-      expect(result).toEqual({ compacted: false, reason: 'too-few' });
-    });
-
-    it('compacts a 5-round conversation (manual keeps only 2 recent — the reported /compact case)', async () => {
-      // Regression: /compact on a 5-round conversation used to report "too short"
-      // because it inherited the auto path's keep=4 gate (needed >=6 rounds).
-      // Manual now keeps 2, so 5 rounds compacts.
-      mockConversations[CONV_ID] = { messages: buildRounds(5) };
-      mockSummarize.mockResolvedValueOnce('summary');
-      const result = await compactConversationManually(CONV_ID);
-      expect(result).toEqual({ compacted: true, reason: 'ok' });
-      expect(mockSummarize).toHaveBeenCalled();
-    });
+  it('uses the index model when the loaded conversation has no model', async () => {
+    seedConversation();
+    useChatStore.setState({ conversationIndex: {
+      [CONV_ID]: { id: CONV_ID, title: 'Task', createdAt: 1, updatedAt: 2, messageCount: 12, model: { providerId: 'own', modelId: 'own-model' } },
+    } });
+    expect((await compactConversationManually(CONV_ID)).compacted).toBe(true);
+    expect(mockChat.mock.calls[0][1]).toMatchObject({ model: 'own-model', apiKey: 'sk-own' });
   });
 
-  describe('summarize-failed', () => {
-    it('returns summarize-failed when summarizeConversation throws', async () => {
-      mockConversations[CONV_ID] = { messages: buildRounds(6) };
-      vi.mocked(contextCompressor.summarizeConversation).mockRejectedValueOnce(new Error('network error'));
-
-      const result = await compactConversationManually(CONV_ID);
-      expect(result).toEqual({ compacted: false, reason: 'summarize-failed' });
-      expect(mockAddMessage).not.toHaveBeenCalled();
-    });
-
-    it('returns summarize-failed when summary is empty string', async () => {
-      mockConversations[CONV_ID] = { messages: buildRounds(6) };
-      vi.mocked(contextCompressor.summarizeConversation).mockResolvedValueOnce('');
-
-      const result = await compactConversationManually(CONV_ID);
-      expect(result).toEqual({ compacted: false, reason: 'summarize-failed' });
-      expect(mockAddMessage).not.toHaveBeenCalled();
-    });
-
-    it('returns summarize-failed when summary is whitespace only', async () => {
-      mockConversations[CONV_ID] = { messages: buildRounds(6) };
-      vi.mocked(contextCompressor.summarizeConversation).mockResolvedValueOnce('   ');
-
-      const result = await compactConversationManually(CONV_ID);
-      expect(result).toEqual({ compacted: false, reason: 'summarize-failed' });
-      expect(mockAddMessage).not.toHaveBeenCalled();
-    });
+  it('uses the configured default for a conversation with no model', async () => {
+    seedConversation();
+    expect((await compactConversationManually(CONV_ID)).compacted).toBe(true);
+    expect(mockChat.mock.calls[0][1]).toMatchObject({ model: 'default-model', apiKey: 'sk-default' });
   });
 
-  describe('model scope', () => {
-    it('summarizes with the conversation model, not the global default (#545)', async () => {
-      mockConversations['conv-m'] = {
-        messages: buildRounds(6),
-        model: { providerId: 'p', modelId: 'conv-model' },
-      };
-      mockSummarize.mockResolvedValue('summary');
-      const result = await compactConversationManually('conv-m');
-      expect(result.compacted).toBe(true);
-      expect(settingsStore.getEffectiveModel).toHaveBeenCalledTimes(1);
-      const snapshotArg = vi.mocked(settingsStore.getEffectiveModel).mock.calls.at(-1)?.[0];
-      expect(snapshotArg?.activeModel).toEqual({ providerId: 'p', modelId: 'conv-model' });
-      // Provider identity (credentials + adapter) must follow the same model.
-      const keyArg = vi.mocked(settingsStore.getActiveApiKey).mock.calls.at(-1)?.[0];
-      expect(keyArg?.activeModel).toEqual({ providerId: 'p', modelId: 'conv-model' });
-      const providerArg = vi.mocked(settingsStore.getActiveProvider).mock.calls.at(-1)?.[0];
-      expect(providerArg?.activeModel).toEqual({ providerId: 'p', modelId: 'conv-model' });
-    });
-
-    it('falls back to the index entry model when the loaded conversation has none', async () => {
-      mockConversations[CONV_ID] = { messages: buildRounds(6) };
-      mockConversationIndex[CONV_ID] = { model: { providerId: 'p', modelId: 'index-model' } };
-      mockSummarize.mockResolvedValue('summary');
-      const result = await compactConversationManually(CONV_ID);
-      expect(result.compacted).toBe(true);
-      expect(settingsStore.getEffectiveModel).toHaveBeenCalledTimes(1);
-      const snapshotArg = vi.mocked(settingsStore.getEffectiveModel).mock.calls.at(-1)?.[0];
-      expect(snapshotArg?.activeModel).toEqual({ providerId: 'p', modelId: 'index-model' });
-    });
-
-    it('falls back to the global default when the conversation has no pinned model', async () => {
-      mockConversations[CONV_ID] = { messages: buildRounds(6) };
-      mockSummarize.mockResolvedValue('summary');
-      const result = await compactConversationManually(CONV_ID);
-      expect(result.compacted).toBe(true);
-      expect(settingsStore.getEffectiveModel).toHaveBeenCalledTimes(1);
-      const snapshotArg = vi.mocked(settingsStore.getEffectiveModel).mock.calls.at(-1)?.[0];
-      expect(snapshotArg?.activeModel).toEqual({ providerId: 'p', modelId: 'global-model' });
-    });
-
-    /** 快照与 settingsStore 的 getActiveProvider 给出同一个 Ollama 服务商。 */
-    function useOllamaProvider(models: Array<{ id: string; label: string; declaredCapabilities?: { maxInputTokens: number } }>) {
-      const ollama = {
-        id: 'ollama', source: 'builtin', name: 'Ollama', enabled: true, apiFormat: 'openai-compatible',
-        baseUrl: 'http://127.0.0.1:11434', apiKey: '', models, status: 'verified', sortOrder: 0,
-      };
-      mockSnapshotProviders.push(ollama);
-      vi.mocked(settingsStore.getActiveProvider).mockReturnValueOnce(ollama as never);
-      mockConversations[CONV_ID] = { messages: buildRounds(6), model: { providerId: 'ollama', modelId: 'llama3.2' } };
-      vi.mocked(settingsStore.getEffectiveModel).mockReturnValueOnce('llama3.2');
-    }
-
-    it('marks Ollama as a local server and asks it nothing when the user left the context length blank', async () => {
-      useOllamaProvider([{ id: 'llama3.2', label: 'llama3.2' }]);
-      mockSummarize.mockResolvedValue('summary');
-
-      const result = await compactConversationManually(CONV_ID);
-
-      expect(result.compacted).toBe(true);
-      // 用户没填「上下文长度」，Ollama 不会收到 num_ctx；手动整理不再问 /api/ps
-      const config = mockSummarize.mock.calls.at(-1)?.[1] as { requestedContextLength?: number };
-      expect(config).toMatchObject({ model: 'llama3.2', localServer: true });
-      expect(config.requestedContextLength).toBeUndefined();
-      expect(mockProbeContextWindow).not.toHaveBeenCalled();
-    });
-
-    it('passes on only the context length the user filled in for Ollama', async () => {
-      useOllamaProvider([{ id: 'llama3.2', label: 'llama3.2', declaredCapabilities: { maxInputTokens: 24576 } }]);
-      mockSummarize.mockResolvedValue('summary');
-
-      const result = await compactConversationManually(CONV_ID);
-
-      expect(result.compacted).toBe(true);
-      expect(mockSummarize.mock.calls.at(-1)?.[1]).toMatchObject({ model: 'llama3.2', requestedContextLength: 24576, localServer: true });
-      expect(mockProbeContextWindow).not.toHaveBeenCalled();
-    });
+  it('builds the shared prompt and tool settings for the conversation workspace without consuming onboarding', async () => {
+    seedConversation();
+    await compactConversationManually(CONV_ID);
+    const options = mockChat.mock.calls[0][1];
+    expect(options.systemPrompt).toContain('/task/workspace');
+    expect(options.systemPrompt).not.toContain('/another/task');
+    expect(options.systemPrompt).not.toContain('One-time Onboarding');
+    expect(options.systemPromptSections?.length).toBeGreaterThan(0);
+    expect(options.tools?.some((tool) => tool.name === 'read_file')).toBe(true);
+    expect(options.maxTokens).toBe(4096);
+    expect(useSettingsStore.getState().soulInitialized).toBe(false);
+    expect(useWorkspaceStore.getState().currentPath).toBe('/another/task');
   });
 
-  describe('model-unavailable', () => {
-    function pinConversation() {
-      mockConversations['conv-m'] = {
-        messages: buildRounds(6),
-        model: { providerId: 'p', modelId: 'conv-model' },
-      };
-      mockSummarize.mockResolvedValue('summary');
-    }
-
-    it.each([
-      ['provider removed', () => setProviders()],
-      ['provider turned off', () => setProviders({ ...makeUsableProvider(), enabled: false })],
-      ['model no longer listed', () => setProviders({ ...makeUsableProvider(), models: [{ id: 'global-model' }] })],
-    ])('never summarizes when the pinned model is unusable: %s', async (_label, breakModel) => {
-      pinConversation();
-      breakModel();
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const result = await compactConversationManually('conv-m');
-      expect(result).toEqual({ compacted: false, reason: 'model-unavailable' });
-      expect(mockSummarize).not.toHaveBeenCalled();
-      expect(mockAddMessage).not.toHaveBeenCalled();
-      expect(mockSetIsCompressing).toHaveBeenLastCalledWith('conv-m', false);
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('[compaction]'), expect.objectContaining({ providerId: 'p', modelId: 'conv-model' }));
-      warn.mockRestore();
-    });
-
-    it('does not check personal providers under the enterprise gateway', async () => {
-      pinConversation();
-      setProviders();
-      vi.mocked(llmResolver.resolveEffectiveLlmCreds).mockReturnValue({
-        apiKey: 'gateway-key',
-        baseUrl: 'https://gateway.example/v1',
-        forceOpenAiCompatible: true,
-      });
-      const result = await compactConversationManually('conv-m');
-      expect(result).toEqual({ compacted: true, reason: 'ok' });
-    });
-
-    it('does not check an enterprise-gateway pin against personal providers', async () => {
-      mockConversations['conv-g'] = {
-        messages: buildRounds(6),
-        model: { providerId: 'enterprise-gateway', modelId: 'gw-model' },
-      };
-      mockSummarize.mockResolvedValue('summary');
-      const result = await compactConversationManually('conv-g');
-      expect(result).toEqual({ compacted: true, reason: 'ok' });
-    });
+  it('fits the final summary request including instruction, system prompt and tools into the input budget', async () => {
+    const messages = buildRounds(2);
+    messages[1].content = 'large assistant result '.repeat(20_000);
+    seedConversation({ messages });
+    useSettingsStore.setState({ contextWindowSize: 30_000 });
+    expect((await compactConversationManually(CONV_ID)).compacted).toBe(true);
+    const [sent, options] = mockChat.mock.calls[0];
+    const used = estimateMessageTokens(sent) + estimateTokens(options.systemPrompt ?? '') + estimateToolSchemaTokens(options.tools ?? []);
+    expect(used).toBeLessThanOrEqual(computeInputBudget(30_000, options.maxTokens!).inputBudget);
+    expect(sent.at(-1)?.content).toContain('Do not call any tools');
+    expect(sent.filter((message) => message.role === 'user').map((message) => message.id))
+      .toEqual(['message-0', 'message-2', 'compaction-instruction']);
   });
 
-  describe('successful compaction', () => {
-    it('returns compacted:true and reason:ok on success', async () => {
-      mockConversations[CONV_ID] = { messages: buildRounds(6) };
-      vi.mocked(contextCompressor.summarizeConversation).mockResolvedValueOnce('Summary of the conversation.');
+  it('records a failed divider without sending a request when fixed user messages exceed the input budget', async () => {
+    const messages = buildRounds(2);
+    messages[0].content = 'fixed user requirements '.repeat(30_000);
+    seedConversation({ messages });
+    useSettingsStore.setState({ contextWindowSize: 30_000 });
+    expect(await compactConversationManually(CONV_ID)).toEqual({ compacted: false, reason: 'summarize-failed' });
+    expect(mockChat).not.toHaveBeenCalled();
+    expect(storedConversation().messages.at(-1)?.compactBoundary?.status).toBe('failed');
+  });
 
-      const result = await compactConversationManually(CONV_ID);
-      expect(result).toEqual({ compacted: true, reason: 'ok' });
+  it.each([undefined, 24576])('passes the configured local context length: %s', async (maxInputTokens) => {
+    useSettingsStore.setState({ providers: [{
+      ...provider('ollama'), source: 'builtin', baseUrl: 'http://127.0.0.1:11434', apiKey: '',
+      models: [{ id: 'llama3.2', label: 'llama3.2', declaredCapabilities: maxInputTokens === undefined ? undefined : { maxInputTokens } }],
+    }] });
+    seedConversation({ model: { providerId: 'ollama', modelId: 'llama3.2' } });
+    expect((await compactConversationManually(CONV_ID)).compacted).toBe(true);
+    expect(mockChat.mock.calls[0][1]).toMatchObject({ model: 'llama3.2', localServer: true, requestedContextLength: maxInputTokens });
+  });
+
+  it.each([
+    ['provider removed', []],
+    ['provider disabled', [{ ...provider('own'), enabled: false }]],
+    ['model removed', [{ ...provider('own'), models: [{ id: 'other-model', label: 'Other' }] }]],
+  ])('makes no request when the pinned model is unavailable: %s', async (_label, providers) => {
+    seedConversation({ model: { providerId: 'own', modelId: 'own-model' } });
+    useSettingsStore.setState({ providers: providers as ProviderInstance[] });
+    expect(await compactConversationManually(CONV_ID)).toEqual({ compacted: false, reason: 'model-unavailable' });
+    expect(mockChat).not.toHaveBeenCalled();
+    expect(storedConversation().messages).toHaveLength(12);
+    expect(storedConversation().isCompressing).toBe(false);
+  });
+
+  it('uses gateway credentials when the credential adapter requires the gateway', async () => {
+    seedConversation({ model: { providerId: 'own', modelId: 'own-model' } });
+    useSettingsStore.setState({ providers: [] });
+    vi.mocked(resolveEffectiveLlmCreds).mockReturnValue({
+      apiKey: 'gateway-key', baseUrl: 'https://gateway.example.net/v1', forceOpenAiCompatible: true,
     });
+    expect((await compactConversationManually(CONV_ID)).compacted).toBe(true);
+    expect(mockChat.mock.calls[0][1]).toMatchObject({ model: 'own-model', apiKey: 'gateway-key', baseUrl: 'https://gateway.example.net/v1' });
+  });
 
-    it('calls addMessage with a compact boundary marker', async () => {
-      mockConversations[CONV_ID] = { messages: buildRounds(6) };
-      vi.mocked(contextCompressor.summarizeConversation).mockResolvedValueOnce('A fine summary.');
+  it('accepts a conversation pinned to the gateway model', async () => {
+    seedConversation({ model: { providerId: 'enterprise-gateway', modelId: 'gateway-model' } });
+    expect((await compactConversationManually(CONV_ID)).compacted).toBe(true);
+    expect(mockChat.mock.calls[0][1].model).toBe('gateway-model');
+  });
 
-      await compactConversationManually(CONV_ID);
-
-      expect(mockAddMessage).toHaveBeenCalledOnce();
-      const [calledConvId, calledMarker] = mockAddMessage.mock.calls[0] as [string, Message];
-      expect(calledConvId).toBe(CONV_ID);
-      expect(isCompactBoundary(calledMarker)).toBe(true);
+  it('publishes the in-progress state during the request and clears it when finished', async () => {
+    seedConversation();
+    mockChat.mockImplementation(async (_messages, _options, onEvent) => {
+      expect(storedConversation().isCompressing).toBe(true);
+      onEvent({ type: 'text', text: 'Summary' });
+      onEvent({ type: 'done', stopReason: 'end_turn' });
     });
+    await compactConversationManually(CONV_ID);
+    expect(storedConversation().isCompressing).toBe(false);
+  });
 
-    it('marker has source === "manual"', async () => {
-      mockConversations[CONV_ID] = { messages: buildRounds(6) };
-      vi.mocked(contextCompressor.summarizeConversation).mockResolvedValueOnce('manual summary');
-
-      await compactConversationManually(CONV_ID);
-
-      const [, marker] = mockAddMessage.mock.calls[0] as [string, Message];
-      expect(marker.compactBoundary?.source).toBe('manual');
-    });
-
-    it('marker summaryText matches trimmed LLM output', async () => {
-      mockConversations[CONV_ID] = { messages: buildRounds(6) };
-      vi.mocked(contextCompressor.summarizeConversation).mockResolvedValueOnce('  The actual summary.  ');
-
-      await compactConversationManually(CONV_ID);
-
-      const [, marker] = mockAddMessage.mock.calls[0] as [string, Message];
-      expect(marker.compactBoundary?.summaryText).toBe('The actual summary.');
-    });
-
-    it('calls clearContextCache with the correct convId', async () => {
-      mockConversations[CONV_ID] = { messages: buildRounds(6) };
-      vi.mocked(contextCompressor.summarizeConversation).mockResolvedValueOnce('summary');
-
-      await compactConversationManually(CONV_ID);
-
-      expect(mockClearContextCache).toHaveBeenCalledOnce();
-      expect(mockClearContextCache).toHaveBeenCalledWith(CONV_ID);
-    });
-
-    it('clearContextCache is called AFTER addMessage', async () => {
-      const callOrder: string[] = [];
-      mockAddMessage.mockImplementation(function () { callOrder.push('addMessage'); });
-      mockClearContextCache.mockImplementation(function () { callOrder.push('clearContextCache'); });
-
-      mockConversations[CONV_ID] = { messages: buildRounds(6) };
-      vi.mocked(contextCompressor.summarizeConversation).mockResolvedValueOnce('summary');
-
-      await compactConversationManually(CONV_ID);
-
-      expect(callOrder).toEqual(['addMessage', 'clearContextCache']);
-    });
-
-    it('toggles the in-progress indicator: setIsCompressing(true) before, (false) after', async () => {
-      const order: string[] = [];
-      mockSetIsCompressing.mockImplementation((_id: string, v: boolean) => order.push(`compressing:${v}`));
-      vi.mocked(contextCompressor.summarizeConversation).mockImplementation(async () => {
-        order.push('summarize');
-        return 'summary';
-      });
-      mockConversations[CONV_ID] = { messages: buildRounds(6) };
-
-      await compactConversationManually(CONV_ID);
-
-      expect(order).toEqual(['compressing:true', 'summarize', 'compressing:false']);
-    });
-
-    it('resets the in-progress indicator even when summarize throws', async () => {
-      mockConversations[CONV_ID] = { messages: buildRounds(6) };
-      vi.mocked(contextCompressor.summarizeConversation).mockRejectedValueOnce(new Error('boom'));
-
-      const result = await compactConversationManually(CONV_ID);
-
-      expect(result.reason).toBe('summarize-failed');
-      expect(mockSetIsCompressing).toHaveBeenLastCalledWith(CONV_ID, false);
-    });
+  it.each(['request-failed', 'empty'])('records a failed divider and clears progress for %s', async (kind) => {
+    seedConversation();
+    if (kind === 'request-failed') mockChat.mockRejectedValue(new LLMError('rejected', 'invalid_request', { retryable: false }));
+    else mockChat.mockImplementation(async (_messages, _options, onEvent) => onEvent({ type: 'done', stopReason: 'end_turn' }));
+    expect(await compactConversationManually(CONV_ID)).toEqual({ compacted: false, reason: 'summarize-failed' });
+    const marker = storedConversation().messages.at(-1)!;
+    expect(isCompactBoundary(marker)).toBe(true);
+    expect(marker.compactBoundary?.status).toBe('failed');
+    expect(marker.loopId).toBeUndefined();
+    expect(storedConversation().isCompressing).toBe(false);
   });
 });

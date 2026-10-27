@@ -1209,6 +1209,25 @@ describe('subagentRunner', () => {
   });
 
   describe('tool.invoke reverse-channel handler', () => {
+    it('returns restoration read metadata and preserves the no-new-permission restriction', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const runPromise = runSubagent({ agent, task: 'read files' });
+      const outcome = { kind: 'text' as const, startLine: 1, lineCount: 1, totalLines: 1, bodyStart: 0 };
+      executeAnyToolMock.mockImplementationOnce(async (_name, _input, _confirm, _permission, context) => {
+        expect(context.allowPermissionPrompts).toBe(false);
+        context.reportMetadata({ fileReadOutcome: outcome });
+        return 'file body';
+      });
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const handler = onSidecarRequest.mock.calls.find((call) => call[0] === 'tool.invoke')![1] as (params: unknown) => Promise<unknown>;
+      expect(await handler({ runId, toolName: 'read_file', input: { path: '/workspace/a.txt' }, context: { allowPermissionPrompts: false } }))
+        .toEqual({ result: 'file body', metadata: { fileReadOutcome: outcome } });
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      await runPromise;
+    });
     it('threads the ORIGINAL session callbacks (commandConfirmCallback/filePermissionCallback) into executeAnyTool', async () => {
       getSidecarStatus.mockReturnValue('running');
       const d = deferred<unknown>();

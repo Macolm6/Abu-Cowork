@@ -1152,7 +1152,7 @@ describe('agentLoopHost', () => {
         'approval.check',
         expect.objectContaining({ toolName: 'show_widget', input: { title: 't' } }),
       );
-      expect(executeLocalToolMock).toHaveBeenCalledWith('show_widget', { title: 't' }, undefined, undefined);
+      expect(executeLocalToolMock).toHaveBeenCalledWith('show_widget', { title: 't' }, undefined);
       expect(sendRequestMock).not.toHaveBeenCalledWith('tool.invoke', expect.anything());
     });
 
@@ -1177,7 +1177,6 @@ describe('agentLoopHost', () => {
       expect(executeLocalToolMock).toHaveBeenCalledWith(
         'read_file',
         { path: '/canonical/workspace/report.md' },
-        undefined,
         undefined,
       );
       expect(sendRequestMock).not.toHaveBeenCalledWith('tool.invoke', expect.anything());

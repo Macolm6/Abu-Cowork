@@ -48,9 +48,18 @@ import { selectToolsForProfile } from '../tools/toolSelection';
 import { repairToolCallsForProfile } from './toolArgumentRepair';
 import { getCapsPort, type CapsPort } from './ports/capsPort';
 import { getWorkspaceReader, type WorkspaceReader } from './ports/workspaceReader';
-import { enforceContextBudget, trimOldScreenshots } from '../context/contextManager';
-import { estimateToolSchemaTokens } from '../context/tokenEstimator';
-import { compressContextIfNeeded } from '../context/contextCompressor';
+import { computeInputBudget, enforceContextBudget, trimOldScreenshots } from '../context/contextManager';
+import { estimateMessageTokens, estimateTokens, estimateToolSchemaTokens } from '../context/tokenEstimator';
+import { buildContextFromBoundary } from '../context/compactBoundary';
+import {
+  COMPACTION_TRIGGER_RATIO,
+  RETAINED_TAIL_RATIO,
+  compactHistory,
+  readFileThroughTool,
+} from '../context/compaction';
+import { measureInputTokens, usageContext, type UsageAnchor } from '../context/contextMeasure';
+import { boundToolResult } from '../context/toolResultSpill';
+import { writeToolResultFile } from '../session/sessionMemory';
 import { getMessageText } from '../context/contextUtils';
 import { withRetry } from './retry';
 import {
@@ -931,6 +940,8 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     // truncation with no tool call, re-prompt with an escalated budget rather than
     // ending the subagent on a single truncation. Reset on a normal tool_use turn.
     let maxOutputTokensRecoveryCount = 0;
+    // The last request whose usage the provider returned (contextMeasure.ts).
+    let usageAnchor: UsageAnchor | null = null;
     // Set when the previous turn was a recovery continuation, so the next turn's
     // text is stitched onto the buffer with no separator (resume mid-thought).
     let resumingFromTruncation = false;
@@ -1026,67 +1037,6 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         }
       }
 
-      // Step 1: Semantic compression for long subagent runs
-      // TODO: PR2 follow-up — wire isCompressing for subagent compressions
-      let messagesForContext = messages;
-      if (turn >= 3) { // Only attempt compression after a few turns
-        try {
-          const subCreds = resolveEffectiveLlmCreds(
-            getActiveApiKey(settings),
-            getActiveProvider(settings)?.baseUrl || undefined,
-          )
-          const compressionResult = await compressContextIfNeeded(
-            messages,
-            systemPrompt,
-            contextWindowSize,
-            maxOutputTokens,
-            {
-              adapter,
-              model: effectiveModelId,
-              apiKey: subCreds.apiKey,
-              baseUrl: subCreds.baseUrl,
-              signal,
-              conversationId: options.parentConversationId ?? null,
-              providerInstanceId: getActiveProvider(settings)?.id ?? 'unknown',
-              requestedContextLength,
-              localServer: isLocalServer,
-            }
-          );
-          if (compressionResult.compressed) {
-            messagesForContext = compressionResult.messages;
-          }
-        } catch {
-          // Continue with uncompressed messages
-        }
-      }
-
-      // Screenshot budget — same discipline as the main loop (agentLoop.ts's
-      // pre-send trim): tool results now retain their image blocks so a
-      // vision-capable subagent can SEE its own screenshots, which means the
-      // accumulation problem the main loop solved applies here too. No
-      // usagePercent is tracked for subagents → conservative default retention.
-      messagesForContext = trimOldScreenshots(messagesForContext);
-
-      // Step 2: Hard truncation as safety net
-      const toolSchemaTokens = estimateToolSchemaTokens(tools);
-      const budgetResult = enforceContextBudget(
-        messagesForContext,
-        systemPrompt,
-        contextWindowSize,
-        maxOutputTokens,
-        toolSchemaTokens,
-      );
-      const preparedMessages = budgetResult.messages;
-      if (budgetResult.strategy !== 'unchanged') {
-        logger.info('Context budget gate applied', {
-          tokensBefore: budgetResult.tokensBefore,
-          tokensAfter: budgetResult.tokensAfter,
-          inputBudget: budgetResult.inputBudget,
-          safetyMarginTokens: budgetResult.safetyMarginTokens,
-          strategy: budgetResult.strategy,
-        });
-      }
-
       // Resolve apiKey + baseUrl — enterprise gateway overrides personal creds.
       const subChatCreds = resolveEffectiveLlmCreds(
         getActiveApiKey(settings),
@@ -1120,6 +1070,84 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
           providerInstanceId: provider?.id ?? 'unknown',
         },
       };
+
+      // Compact before every request that would use 90 % of the input budget,
+      // the same rule as the main loop. The subagent's history lives in this
+      // run only, so its divider stays in `messages` and is never shown.
+      // Screenshots beyond the newest few are not sent (trimOldScreenshots),
+      // so the measurement does not count them either.
+      const toolSchemaTokens = estimateToolSchemaTokens(tools);
+      const { inputBudget } = computeInputBudget(contextWindowSize, maxOutputTokens);
+      const estimateView = (view: Message[]) => (
+        estimateTokens(systemPrompt) + toolSchemaTokens + estimateMessageTokens(trimOldScreenshots(view))
+      );
+      const measurementContext = () => usageContext(effectiveModelId, systemPrompt, tools, messages);
+      // Compaction shrinks only the history: when the system prompt and tools
+      // alone fill the budget, the budget gate below reports that instead.
+      if (
+        estimateTokens(systemPrompt) + toolSchemaTokens < inputBudget
+        && measureInputTokens(estimateView(buildContextFromBoundary(messages)), measurementContext(), usageAnchor)
+          >= inputBudget * COMPACTION_TRIGGER_RATIO
+      ) {
+        const marker = await compactHistory({
+          history: messages,
+          inputBudget,
+          retainTokens: Math.floor(inputBudget * RETAINED_TAIL_RATIO),
+          source: 'auto',
+          fitSummaryInput: (summaryMessages) => enforceContextBudget(
+            summaryMessages, systemPrompt, contextWindowSize, maxOutputTokens, toolSchemaTokens,
+          ).messages,
+          summary: {
+            adapter,
+            chatOptions,
+            conversationId: options.parentConversationId ?? null,
+            providerInstanceId: provider?.id ?? 'unknown',
+            signal,
+          },
+          readFile: readFileThroughTool(
+            async (input, context) => toolInvoker.toolResultToString(
+              await toolInvoker.executeAnyTool(TOOL_NAMES.READ_FILE, input, async () => false, async () => false, context),
+            ),
+            {
+              operationOwner: options.operationOwner,
+              workspacePath,
+              conversationId: options.parentConversationId,
+              agentRunId: options.agentRunId,
+              abortSignal: signal,
+            },
+          ),
+          now: () => Date.now(),
+        });
+        if (marker) {
+          messages.push(marker);
+          usageAnchor = null;
+        }
+      }
+      const view = buildContextFromBoundary(messages);
+
+      // Screenshot budget — same discipline as the main loop (agentLoop.ts's
+      // pre-send trim): tool results now retain their image blocks so a
+      // vision-capable subagent can SEE its own screenshots, which means the
+      // accumulation problem the main loop solved applies here too. No
+      // usagePercent is tracked for subagents → conservative default retention.
+      // Then the hard budget gate as the last check.
+      const budgetResult = enforceContextBudget(
+        trimOldScreenshots(view),
+        systemPrompt,
+        contextWindowSize,
+        maxOutputTokens,
+        toolSchemaTokens,
+      );
+      const preparedMessages = budgetResult.messages;
+      if (budgetResult.strategy !== 'unchanged') {
+        logger.info('Context budget gate applied', {
+          tokensBefore: budgetResult.tokensBefore,
+          tokensAfter: budgetResult.tokensAfter,
+          inputBudget: budgetResult.inputBudget,
+          safetyMarginTokens: budgetResult.safetyMarginTokens,
+          strategy: budgetResult.strategy,
+        });
+      }
 
       const eventHandler = (event: StreamEvent) => {
         switch (event.type) {
@@ -1171,26 +1199,38 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       // 请求抛出的那一次和 withRetry 重试的每一次都各自计入——消耗照样发生了。
       const chatFn = async () => {
         turnUsage.current = null;
+        const outboundMessages = await prepareDelegatedUserTurnForRequest(
+          preparedMessages,
+          signal,
+          options.delegatedUserTurn?.origin.conversationId ?? options.parentConversationId,
+        );
+        const sentMessages = enforceContextBudget(
+          outboundMessages, systemPrompt, contextWindowSize, maxOutputTokens, toolSchemaTokens,
+        ).messages;
+        let completed = false;
         try {
           await adapter.chat(
-            await prepareDelegatedUserTurnForRequest(
-              preparedMessages,
-              signal,
-              options.delegatedUserTurn?.origin.conversationId ?? options.parentConversationId,
-            ),
+            sentMessages,
             chatOptions,
             eventHandler,
           );
+          completed = true;
         } finally {
           // 事件回调里的赋值编译器看不见，这里按声明的类型读回来。
           const spent = turnUsage.current as TokenUsage | null;
           if (spent) {
             // 累加的是整段输入。Anthropic 的 inputTokens 不含缓存读写，要按协议换算。
-            totalInputTokens += promptTokensOf(usageProtocolFor(adapterKind), {
+            const promptTokens = promptTokensOf(usageProtocolFor(adapterKind), {
               ...spent,
               inputTokens: spent.inputTokens ?? 0,
             });
+            totalInputTokens += promptTokens;
+            usageAnchor = completed
+              ? { ...measurementContext(), promptTokens, estimatedTokens: estimateView(sentMessages) }
+              : null;
             totalOutputTokens += spent.outputTokens ?? 0;
+          } else {
+            usageAnchor = null;
           }
           turnUsage.current = null;
         }
@@ -1505,11 +1545,24 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         ? await Promise.allSettled(dispatchToolCalls.map(runToolCall))
         : await settleSequentially(dispatchToolCalls, runToolCall);
 
-      // Build tool result entries
-      const toolResultEntries = toolResults.map((r, i) => {
+      // Build tool result entries. A result too long for the context keeps
+      // its beginning and end; the whole text goes to a file under the parent
+      // conversation (same rule as the main loop's toolExecutor).
+      const toolResultEntries = await Promise.all(toolResults.map(async (r, i) => {
         const tc = collectedToolCalls[i];
         const result = r.status === 'fulfilled'
-          ? r.value.result
+          ? await boundToolResult({
+              toolCallId: tc.id,
+              toolName: tc.name,
+              input: tc.input,
+              result: r.value.result,
+              writeFile: (toolCallId, text) => {
+                if (!options.parentConversationId) {
+                  throw new Error('A long tool result of a subagent needs its parent conversation to be saved in');
+                }
+                return writeToolResultFile(options.parentConversationId, toolCallId, text);
+              },
+            })
           : `Error: ${r.reason}`;
         const resultContentToken = r.status === 'fulfilled' ? r.value.resultContentToken : undefined;
         const resultContent = activeRichResults.get(resultContentToken);
@@ -1520,7 +1573,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         const isError = r.status === 'rejected' || isToolResultError(result);
         onProgress?.({ type: 'tool-end', id: tc.id, toolName: tc.name, result, error: isError, resultContent });
         return { id: tc.id, name: tc.name, input: tc.input, result, resultContent, resultContentToken };
-      });
+      }));
 
       onProgress?.({
         type: 'turn-complete',

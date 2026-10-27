@@ -123,6 +123,22 @@ describe('ContextIndicator', () => {
     expect(indicator.querySelectorAll('circle').length).toBe(2);
   });
 
+  it('starts a reopened conversation from the prompt size the provider reported for its newest answer', () => {
+    // The raw history is about 50 000 tokens, but the request that produced
+    // the newest answer measured 1 500: a compaction had shrunk it.
+    setConv({
+      messages: [
+        { id: 'm1', role: 'user', content: 'y'.repeat(200_000), timestamp: 0 },
+        { id: 'm2', role: 'assistant', content: 'ok', timestamp: 0, usage: { inputTokens: 1_500, outputTokens: 1, promptTokens: 1_500 } },
+      ],
+      contextUsage: undefined,
+    });
+    render(<ContextIndicator conversationId="c1" />);
+    const label = screen.getByTestId('context-indicator').getAttribute('aria-label') || '';
+    expect(label).toMatch(/1\.5k/);
+    expect(label).not.toMatch(/5\d\.\dk/);
+  });
+
   it('sizes the fallback window from the conversation model, not the global default', () => {
     useSettingsStore.setState({ activeModel: { providerId: 'p', modelId: 'global-model' } });
     setConv({

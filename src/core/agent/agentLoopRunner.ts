@@ -1865,7 +1865,10 @@ async function handleMainLoopToolInvoke(rawParams: unknown): Promise<unknown> {
     {
       ...contextForSession(session, wireContext),
       reportMetadata: (next) => {
-        if (!trustedToolCallId) return;
+        if (!trustedToolCallId) {
+          if (next.fileReadOutcome) metadata = { ...metadata, fileReadOutcome: next.fileReadOutcome };
+          return;
+        }
         const normalized = normalizeTrustedToolMetadata(next, {
           conversationId: trustedConversationId,
           assistantMessageId: trustedAssistantMessageId,

@@ -7,6 +7,24 @@ function message(id: string, role: Message['role'], loopId?: string): Message {
 }
 
 describe('groupMessagesByLoop', () => {
+  it('keeps automatic summary markers and later steps in the same run', () => {
+    const messages = [
+      message('user-1', 'user', 'loop-1'),
+      message('assistant-1', 'assistant', 'loop-1'),
+      message('compact-boundary-1', 'system', 'loop-1'),
+      message('assistant-2', 'assistant', 'loop-1'),
+    ];
+    expect(groupMessagesByLoop(messages)).toEqual([messages]);
+  });
+
+  it('places manual summary markers between runs', () => {
+    const messages = [
+      message('assistant-1', 'assistant', 'loop-1'),
+      message('compact-boundary-manual', 'system'),
+      message('user-2', 'user', 'loop-2'),
+    ];
+    expect(groupMessagesByLoop(messages)).toEqual(messages.map((item) => [item]));
+  });
   it('keeps a normal user and its assistant turns in one loop group', () => {
     const messages = [
       message('user-1', 'user', 'loop-1'),

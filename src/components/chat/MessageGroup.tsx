@@ -14,6 +14,7 @@ import UserQuestionCard from './UserQuestionCard';
 import PlanStepsCard from './PlanStepsCard';
 import ShowWidgetCard from './ShowWidgetCard';
 import TaskBlock from './TaskBlock';
+import CompactDivider from './CompactDivider';
 import { collectToolResultTexts } from './toolResultTexts';
 import { collectToolViewRecords } from './toolViews/toolViewRecords';
 import McpAppBlock from './McpAppBlock';
@@ -66,10 +67,10 @@ interface MessageGroupProps {
   conversationId: string;
   messages: Message[];
   isLastGroup?: boolean;
-  // Whether this is the last group of its loopId. A loop spans two groups when
-  // a compaction marker falls inside it; the changed-files card belongs to the
-  // last one.
+  // Whether this is the last group of its loopId, including historical groups.
   isLastGroupOfLoop?: boolean;
+  expandedCompactIds?: ReadonlySet<string>;
+  onToggleCompactSummary?: (messageId: string) => void;
   // When set and this group contains that message, briefly ring-highlight the
   // group (search-hit jump target). Cleared by the parent after a timeout.
   highlightMessageId?: string | null;
@@ -254,11 +255,17 @@ export function stripLegacyStopMarker(text: string): string {
 
 type RenderSegment =
   | { kind: 'text'; text: string; message: Message; isLastTurn: boolean }
-  | { kind: 'steps'; executionSteps: ExecutionStep[]; legacySteps: WorkflowStep[]; isLastGroup: boolean; stepsMsgs: Message[] }
+  | { kind: 'steps'; executionSteps: ExecutionStep[]; legacySteps: WorkflowStep[]; isLastGroup: boolean; stepsMsgs: Message[]; compactRows?: CompactStepRow[] }
   | { kind: 'plan'; toolCall: ToolCall }
   | { kind: 'widget'; toolCall: ToolCall }
   | { kind: 'batch'; toolCall: ToolCall; message: Message }
   | { kind: 'user'; message: Message };
+
+interface CompactStepRow {
+  message: Message;
+  executionIndex: number;
+  legacyIndex: number;
+}
 
 function isBatchToolCall(toolCall: ToolCall): boolean {
   return toolCall.name === TOOL_NAMES.RUN_AGENT_BATCH;
@@ -342,19 +349,22 @@ export function buildRenderSegments(
   let pendingExecSteps: ExecutionStep[] = [];
   let pendingLegacySteps: WorkflowStep[] = [];
   let pendingStepsMsgs: Message[] = [];
+  let pendingCompactRows: CompactStepRow[] = [];
 
   const flushSteps = () => {
-    if (pendingExecSteps.length > 0 || pendingLegacySteps.length > 0) {
+    if (pendingExecSteps.length > 0 || pendingLegacySteps.length > 0 || pendingCompactRows.length > 0) {
       segments.push({
         kind: 'steps',
         executionSteps: pendingExecSteps,
         legacySteps: pendingLegacySteps,
         isLastGroup: false,
         stepsMsgs: pendingStepsMsgs,
+        ...(pendingCompactRows.length > 0 ? { compactRows: pendingCompactRows } : {}),
       });
       pendingExecSteps = [];
       pendingLegacySteps = [];
       pendingStepsMsgs = [];
+      pendingCompactRows = [];
     }
   };
 
@@ -366,6 +376,10 @@ export function buildRenderSegments(
   const claimedLegacyStepIndices = new Set<number>();
 
   for (const msg of messages) {
+    if (msg.compactBoundary || msg.id.startsWith('compressing-')) {
+      pendingCompactRows.push({ message: msg, executionIndex: pendingExecSteps.length, legacyIndex: pendingLegacySteps.length });
+      continue;
+    }
     if (msg.role === 'user') {
       if (!passedFirstAssistant) continue; // leading user → rendered by top bubble
       flushSteps();
@@ -538,7 +552,7 @@ export function streamingTurnHasRenderableContent(msg: Message | undefined): boo
  * User messages render standalone, assistant messages share one avatar.
  * Renders text → merged tool steps, with consecutive tool-only turns combined.
  */
-export default function MessageGroup({ conversationId, messages, isLastGroup: isLastGroupProp = false, isLastGroupOfLoop = false, highlightMessageId = null }: MessageGroupProps) {
+export default function MessageGroup({ conversationId, messages, isLastGroup: isLastGroupProp = false, isLastGroupOfLoop = false, highlightMessageId = null, expandedCompactIds, onToggleCompactSummary }: MessageGroupProps) {
   const { t } = useI18n();
   // Separate user and assistant messages
   const userMsg = messages.find((m) => m.role === 'user');
@@ -553,6 +567,28 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
 
   // Get loopId from messages (all messages in group share same loopId)
   const loopId = messages[0]?.loopId;
+  const compressingAtMessageCount = useChatStore((s) => {
+    const conversation = s.conversations[conversationId];
+    return conversation?.isCompressing && conversation.compressingLoopId === loopId && loopId
+      ? conversation.compressingAtMessageCount : undefined;
+  });
+  const [localExpandedCompactIds, setLocalExpandedCompactIds] = useState<ReadonlySet<string>>(() => new Set());
+  const renderCompact = (message: Message) => (
+    <CompactDivider
+      key={message.id}
+      message={message}
+      pending={!message.compactBoundary}
+      expanded={(expandedCompactIds ?? localExpandedCompactIds).has(message.id)}
+      onToggle={() => {
+        if (onToggleCompactSummary) onToggleCompactSummary(message.id);
+        else setLocalExpandedCompactIds((current) => {
+          const next = new Set(current);
+          if (next.has(message.id)) next.delete(message.id); else next.add(message.id);
+          return next;
+        });
+      }}
+    />
+  );
 
   // Try to get execution from TaskExecutionStore (new architecture)
   const execution = useTaskExecutionStore((s) => {
@@ -925,7 +961,17 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
 
   // Build render segments: text and merged step groups
   const segments = useMemo(
-    () => buildRenderSegments(messages, activeExecSteps, workflowSteps, (message, toolCall) => {
+    () => {
+      const renderMessages = [...messages];
+      if (compressingAtMessageCount !== undefined) {
+        const history = useChatStore.getState().conversations[conversationId]?.messages ?? [];
+        const nextMessageId = history[compressingAtMessageCount]?.id;
+        const nextIndex = nextMessageId ? renderMessages.findIndex((message) => message.id === nextMessageId) : -1;
+        renderMessages.splice(nextIndex >= 0 ? nextIndex : renderMessages.length, 0, {
+          id: `compressing-${loopId}`, role: 'system', content: '', timestamp: 0, loopId,
+        });
+      }
+      return buildRenderSegments(renderMessages, activeExecSteps, workflowSteps, (message, toolCall) => {
       const identity: BatchIdentity = {
         conversationId,
         assistantMessageId: message.id,
@@ -933,8 +979,9 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
       };
       return liveBatches[makeBatchKey(identity)] !== undefined
         || shouldRenderBatchProgressCard(toolCall, identity);
-    }),
-    [messages, activeExecSteps, workflowSteps, conversationId, liveBatches]
+      });
+    },
+    [messages, activeExecSteps, workflowSteps, conversationId, liveBatches, compressingAtMessageCount, loopId]
   );
   const batchSegments = useMemo(
     () => segments.filter((seg): seg is Extract<RenderSegment, { kind: 'batch' }> => seg.kind === 'batch'),
@@ -1189,9 +1236,10 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
 
     return (
       <div key={`steps-${segIdx}`}>
-        {hasExecSteps ? (
+        {hasExecSteps || seg.compactRows?.length ? (
           <TaskBlock
             executionSteps={seg.executionSteps}
+            steps={seg.legacySteps}
             isActive={execIsActive}
             isStopped={isStopped}
             onRetry={onRetry}
@@ -1199,6 +1247,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
             toolResults={toolResults}
             backgroundCommands={backgroundCommands}
             toolViewRecords={toolViewRecords}
+            compactRows={seg.compactRows?.map((row) => ({ index: hasExecSteps ? row.executionIndex : row.legacyIndex, content: renderCompact(row.message) }))}
           />
         ) : hasLegacySteps && (
           <TaskBlock
@@ -1336,6 +1385,9 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
                     .map((seg, i) => ({ seg, i }))
                     .filter(({ seg }) => seg.kind === 'widget' || seg.kind === 'text' || seg.kind === 'user')
                     .map(({ seg, i }) => renderSegment(seg, i))}
+              {workFoldEnd != null && !workExpanded && segments.slice(0, workFoldEnd).flatMap((seg) =>
+                seg.kind === 'steps' ? (seg.compactRows ?? []).map((row) => renderCompact(row.message)) : [],
+              )}
             </div>
             {workFoldEnd != null && segments.slice(workFoldEnd).map((seg, i) => renderSegment(seg, workFoldEnd + i))}
             </SmoothHeight>

@@ -695,7 +695,6 @@ export interface TranslationDict {
     /** Provider account balance/resource-package exhausted. */
     insufficientBalance: string;
     /** Streamed-inline notice while compacting an oversized context (includes markdown; ends with a paragraph break so the retried reply starts its own paragraph). */
-    compactingInlineNotice: string;
     /** Latest user message cannot fit within the model's safe context budget. */
     contextInputTooLarge: string;
     /** System prompt and tool definitions leave no safe room for user input; also used when the request is still too long after the conversation was condensed. */
@@ -800,6 +799,8 @@ export interface TranslationDict {
       jumpTo: string;
     };
     compactDivider: {
+      compressing: string;
+      failed: string;
       compacted: string;
       compactedManual: string;
       noSummary: string;

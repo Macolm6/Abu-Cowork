@@ -27,8 +27,8 @@ const PATH = '/Users/testuser/Projects/app/plan.md';
 
 const localToolInvoker: ToolInvoker = {
   getAllTools: () => [],
-  executeAnyTool: (name, input, _confirm, _filePermission, context, contextUsagePercent) =>
-    executeLocalTool(name, input, context, contextUsagePercent),
+  executeAnyTool: (name, input, _confirm, _filePermission, context) =>
+    executeLocalTool(name, input, context),
   toolResultToString: (result) => String(result),
 };
 

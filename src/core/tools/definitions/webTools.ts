@@ -3,7 +3,7 @@ import { getTauriFetch } from '../../llm/tauriFetch';
 import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
-import { scaledTruncationRule, truncateText } from '../../context/truncation';
+import { HTTP_FETCH_RULE, truncateText } from '../../context/truncation';
 
 /**
  * Extract article content from raw HTML using Mozilla Readability.
@@ -232,8 +232,7 @@ export const httpFetchTool: ToolDefinition = {
       // Cut the body here, so the recorded body range points into the result.
       const statusLine = `HTTP ${response.status} ${response.statusText}`;
       const withStatus = (pageBody: string): string => {
-        const rule = scaledTruncationRule(TOOL_NAMES.HTTP_FETCH, context?.contextUsagePercent);
-        const bodyText = truncateText(pageBody, { ...rule, maxChars: rule.maxChars - statusLine.length - 2 });
+        const bodyText = truncateText(pageBody, { ...HTTP_FETCH_RULE, maxChars: HTTP_FETCH_RULE.maxChars - statusLine.length - 2 });
         const bodyStart = statusLine.length + 2;
         context?.reportMetadata?.({
           httpFetchOutcome: {

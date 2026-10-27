@@ -148,7 +148,7 @@ function isCompressionRequest(body: unknown): boolean {
   return Array.isArray(messages) && messages.some((message) => {
     if (!message || typeof message !== 'object') return false;
     const content = (message as { content?: unknown }).content;
-    return typeof content === 'string' && content.includes('请将以下对话内容压缩为一段简洁的摘要');
+    return typeof content === 'string' && content.startsWith('Stop working on the task for a moment.');
   });
 }
 

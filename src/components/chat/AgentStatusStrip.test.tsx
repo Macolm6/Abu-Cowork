@@ -33,7 +33,7 @@ describe('AgentStatusStrip (Bug 1: 死寂可见)', () => {
       agentStates: new Map(),
     });
     render(<AgentStatusStrip conversationId="c1" />);
-    expect(screen.getByText(/Compacting|压缩/)).toBeInTheDocument();
+    expect(screen.getByText('Organizing earlier content…')).toBeInTheDocument();
   });
 
   it('shows "正在重试 N/M" while retrying', () => {
@@ -49,7 +49,7 @@ describe('AgentStatusStrip (Bug 1: 死寂可见)', () => {
     useChatStore.getState().setRetryInfo('c1', { attempt: 1, maxAttempts: 3, delayMs: 1000 });
     render(<AgentStatusStrip conversationId="c1" />);
     expect(screen.getByText(/retrying|重试/)).toBeInTheDocument();
-    expect(screen.queryByText(/Compacting|压缩/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Organizing earlier content…')).not.toBeInTheDocument();
   });
 
   it('shows its words inside the one design-system spinner', () => {
@@ -59,7 +59,7 @@ describe('AgentStatusStrip (Bug 1: 死寂可见)', () => {
     });
     const { container } = render(<AgentStatusStrip conversationId="c1" />);
     const status = screen.getByRole('status');
-    expect(status).toHaveTextContent(/Compacting|压缩/);
+    expect(status).toHaveTextContent('Organizing earlier content…');
     expect(status.querySelector('[data-ds-spinner]')).not.toBeNull();
     expect(container.querySelectorAll('[data-ds-spinner]')).toHaveLength(1);
     expect(container.querySelector('.animate-spin:not([data-ds-spinner])')).toBeNull();

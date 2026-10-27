@@ -1673,8 +1673,8 @@ describe('服务说内容太长后按真实上限恢复', () => {
         .filter((message) => message.role === 'assistant')
         .map((message) => typeof message.content === 'string' ? message.content : '')
         .join('\n');
-      // 提示单独成段，重试后的回答另起一段，markdown 的斜体才能闭合
-      expect(assistantText).toContain('*The conversation is long, tidying up the earlier part…*\n\nok');
+      // 回答正文只有重试后的回答，不写入整理的提示
+      expect(assistantText).toBe('ok');
     } finally {
       restore();
     }

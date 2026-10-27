@@ -356,8 +356,7 @@
  * `applyOSPermissionGuideIfNeeded` helper (the pure `osPermissionGuide` module,
  * shared with registry.ts's reverse path — importing it from registry.ts itself
  * would drag chatStore into the sidecar bundle, which the build guard forbids),
- * so both paths emit the identical guided message. Not
- * truncated when guided (the raw error is short), matching the reverse path.
+ * so both paths emit the identical guided message.
  */
 import type { ToolDefinition, ToolResult, ToolExecutionContext } from '@/types';
 import { showWidgetTool, readMeTool } from '@/core/tools/definitions/widgetTools';
@@ -375,7 +374,6 @@ import { processImageTool } from '@/core/tools/definitions/processImageTool';
 import { runCommandTool } from '@/core/tools/definitions/commandTools';
 import { getFileExtension, ARCHIVE_EXTENSIONS } from '@/core/tools/helpers/toolHelpers';
 import { isWindows } from '@/utils/platform';
-import { truncateToolResult } from '@/core/context/truncation';
 import { applyOSPermissionGuideIfNeeded } from '@/core/tools/osPermissionGuide';
 
 /**
@@ -560,7 +558,7 @@ function validateRequiredFields(tool: ToolDefinition, input: Record<string, unkn
 /**
  * Run a locally-registered tool. Mirrors `registry.ts`'s
  * `ToolRegistry.execute` (validate → try/catch `execute()` → error string
- * on throw) + `executeAnyTool`'s string-result truncation, for exactly the
+ * on throw) + `executeAnyTool`'s OS-permission guide, for exactly the
  * slice this covers (no permission/approval/policy checks — see the module
  * doc's "Known gap"; none of today's registered tools need them).
  *
@@ -583,7 +581,6 @@ export async function executeLocalTool(
   name: string,
   input: Record<string, unknown>,
   context: ToolExecutionContext | undefined,
-  contextUsagePercent: number | undefined,
 ): Promise<ToolResult> {
   const entry = LOCAL_TOOLS.get(name);
   if (!entry) {
@@ -595,10 +592,7 @@ export async function executeLocalTool(
 
   let result: ToolResult;
   try {
-    result = await entry.tool.execute(
-      input,
-      contextUsagePercent !== undefined ? { ...context, contextUsagePercent } : context,
-    );
+    result = await entry.tool.execute(input, context);
   } catch (err) {
     if (err instanceof LocalToolUnsupportedError) throw err;
     // Parity with the reverse path: there, a thrown error is stringified by
@@ -612,15 +606,9 @@ export async function executeLocalTool(
     );
   }
 
-  if (typeof result === 'string') {
-    // Parity with executeAnyTool (registry.ts): a locally-executed file tool
-    // that fails with an OS-permission error gets the same friendly grant-guide
-    // instead of a raw EACCES string. Closes the OS-permission-guide gap
-    // documented in this module's header. Not truncated when guided (the raw
-    // error is short) — matches the reverse path exactly.
-    const guided = applyOSPermissionGuideIfNeeded(name, result);
-    if (guided !== result) return guided;
-    return truncateToolResult(name, result, contextUsagePercent);
-  }
-  return result;
+  // Parity with executeAnyTool (registry.ts): a locally-executed file tool
+  // that fails with an OS-permission error gets the same friendly grant-guide
+  // instead of a raw EACCES string. Closes the OS-permission-guide gap
+  // documented in this module's header.
+  return typeof result === 'string' ? applyOSPermissionGuideIfNeeded(name, result) : result;
 }

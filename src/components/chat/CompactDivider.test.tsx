@@ -37,7 +37,7 @@ describe('CompactDivider', () => {
     const onToggle = renderDivider(makeMarker('auto'), true);
     const item = screen.getByText('keep the API stable');
     expect(item.tagName).toBe('LI');
-    const row = screen.getByRole('button', { name: /Context compacted/ });
+    const row = screen.getByRole('button', { name: /Earlier content organized/ });
     expect(row).toHaveAttribute('aria-expanded', 'true');
     await user.click(row);
     expect(onToggle).toHaveBeenCalledTimes(1);
@@ -46,19 +46,35 @@ describe('CompactDivider', () => {
   it('renders collapsed without the summary', () => {
     renderDivider(makeMarker('auto'), false);
     expect(screen.queryByText('keep the API stable')).toBeNull();
-    expect(screen.getByRole('button', { name: /Context compacted/ })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByRole('button', { name: /Earlier content organized/ })).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('renders a plain divider when the summary is empty', () => {
     renderDivider(makeMarker('auto', '   '), false);
-    expect(screen.queryByRole('button', { name: /Context compacted/ })).toBeNull();
-    expect(screen.getByText('Context compacted')).toBeVisible();
+    expect(screen.queryByRole('button', { name: /Earlier content organized/ })).toBeNull();
+    expect(screen.getByText('Earlier content organized')).toBeVisible();
     expect(screen.getByText('No summary')).toBeVisible();
   });
 
   it('keeps the manual title', () => {
     renderDivider(makeMarker('manual'), false);
-    expect(screen.getByText('Context compacted (manual)')).toBeInTheDocument();
+    expect(screen.getByText('Earlier content organized (manual)')).toBeInTheDocument();
+  });
+
+  it('shows progress with one spinner and no summary control', () => {
+    render(<CompactDivider message={makeMarker('auto')} pending expanded={false} onToggle={vi.fn()} />, { wrapper: DesignSystemProvider });
+    expect(screen.getByRole('status')).toHaveTextContent('Organizing earlier content');
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.queryByText('No summary')).toBeNull();
+  });
+
+  it('shows a failed summary request without a summary control', () => {
+    const message = makeMarker('auto');
+    message.compactBoundary!.status = 'failed';
+    renderDivider(message, true);
+    expect(screen.getByText('Earlier content could not be organized')).toBeVisible();
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.queryByText('keep the API stable')).toBeNull();
   });
 
   it('copies the summary', async () => {

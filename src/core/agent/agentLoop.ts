@@ -38,30 +38,36 @@ import { createEventRouter } from './eventRouter';
 // so this line carries zero runtime edge into the orchestrator graph.
 import type { RouteResult, IMContext } from './orchestrator';
 import type { PromptSection } from '../llm/promptSections';
-import { sectionsToString, mergeSections, orderSectionsForCaching } from '../llm/promptSections';
+import { sectionsToString, mergeSections } from '../llm/promptSections';
+import { composeRequestPromptSections } from './requestPrompt';
+import { resolveRequestBudget } from '../llm/requestBudget';
 import { joinPath } from '../../utils/pathUtils';
 import { matchesToolName, parseToolPatterns } from '../skill/toolFilter';
 import { notifyTaskCompleted, notifyTaskError } from '../../utils/notifications';
 import {
   ContextBudgetError,
+  computeInputBudget,
   enforceContextBudget,
   trimOldScreenshots,
 } from '../context/contextManager';
-import { compressContextIfNeeded, summarizeConversation } from '../context/contextCompressor';
 import {
   buildContextFromBoundary,
-  computeCompactionPlan,
-  createCompactBoundaryMarker,
+  createFailedCompactBoundaryMarker,
 } from '../context/compactBoundary';
-import { applyMicroCompaction } from '../context/microCompactor';
-import { AutoCompactTracker, getUsagePercent, getDisplayPercent } from '../context/autoCompact';
+import {
+  COMPACTION_TRIGGER_RATIO,
+  RETAINED_TAIL_RATIO,
+  compactHistory,
+  readFileThroughTool,
+} from '../context/compaction';
+import { measureInputTokens, usageContext, type UsageAnchor } from '../context/contextMeasure';
+import { getUsagePercent, getDisplayPercent } from '../context/autoCompact';
 import { estimateTokens, estimateMessageTokens, calibrateFromUsage, setActiveModel } from '../context/tokenEstimator';
 import {
   computeBreakdownWeights,
   computeToolBreakdownWeights,
   distributeWithConservation,
 } from '../context/usageBreakdown';
-import { identifyRounds, RECENT_ROUNDS_TO_KEEP } from '../context/contextUtils';
 import { isIntroductionMessage, introductionContext } from '../team/expertContact';
 import { withRetry } from './retry';
 import { extractParentConversationSummary } from './subagentLoop';
@@ -111,8 +117,7 @@ import { calculateTurnCost } from '../llm/costTracker';
 import { formatPlannedStepsForPrompt } from './plannedStepsPrompt';
 import { formatGoalForPrompt } from '../goal/goalPrompt';
 import { getBuiltinSearchConfig } from '../capabilities';
-import { resolveAgentModelCapabilities, resolveCapabilities, computeReasoningParams, type ModelCapabilities } from '../llm/modelCapabilities';
-import { positiveInteger, resolveContextWindow } from '../llm/contextWindow';
+import { resolveAgentModelCapabilities, resolveCapabilities, computeReasoningParams } from '../llm/modelCapabilities';
 import { probeContextWindow } from '../llm/contextWindowProbe';
 import { localServerKind } from '../llm/localProvider';
 import { adapterKindFor, usageProtocolFor } from '../llm/adapterKind';
@@ -150,14 +155,6 @@ import {
 } from './browserDenialTracker';
 
 const logger = createLogger('agentLoop');
-
-// Persistent compaction (long-conversation Part A): when the post-compression
-// payload is still this fraction of the input budget, land an append-only
-// compact-boundary marker so future turns read a compact context from the
-// marker (survives restart) instead of re-running the ephemeral 65% pass every
-// turn. Higher than the 65% send-only trigger — the ephemeral pass fires first;
-// only when it can't bring the payload down does a durable marker land.
-const PERSISTENT_COMPACTION_THRESHOLD = 0.85;
 
 /** MIME type to file extension mapping */
 const MIME_TO_EXT: Record<string, string> = {
@@ -482,22 +479,6 @@ export function resolveTools(
 }
 
 /** Build dynamic capabilities text describing currently available MCP tools */
-function buildDynamicCapabilities(tools: ToolDefinition[]): string {
-  const mcpTools = tools.filter(t => t.name.includes('__'));
-  if (mcpTools.length === 0) return '';
-
-  const byServer = new Map<string, string[]>();
-  for (const t of mcpTools) {
-    const [server, toolName] = t.name.split('__', 2);
-    if (!byServer.has(server)) byServer.set(server, []);
-    byServer.get(server)!.push(toolName);
-  }
-  const lines = Array.from(byServer.entries()).map(
-    ([server, toolNames]) => `- ${server}: ${toolNames.join(', ')}`
-  );
-  return `## Currently connected MCP tools\n${lines.join('\n')}`;
-}
-
 /**
  * Compose the per-turn volatile context tail (todos, relevant memories,
  * compression hint) that adapters append as an ephemeral user message AFTER
@@ -1699,7 +1680,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // the model a chance to recover.
   let consecutiveNoProgress = 0;
   const semanticToolHistory: ToolLoopObservation[] = [];
-  const autoCompactTracker = new AutoCompactTracker();
+  // The last request whose usage the provider returned (contextMeasure.ts).
+  let usageAnchor: UsageAnchor | null = null;
   let maxOutputTokensRecoveryCount = 0;
   const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
   const malformedToolCallGuard = createMalformedToolCallGuard();
@@ -1849,9 +1831,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       break;
     }
 
-    // Create a placeholder assistant message for streaming with loopId
-    const assistantMsgId = generateId();
-    chatDelta.addMessage(conversationId, {
+    // Create a placeholder assistant message for streaming with loopId.
+    // `let`: a compaction before the request puts its divider ahead of the
+    // placeholder by replacing the still-empty placeholder with a new one.
+    let assistantMsgId = generateId();
+    const addPlaceholder = () => chatDelta.addMessage(conversationId, {
       id: assistantMsgId,
       role: 'assistant',
       content: '',
@@ -1860,6 +1844,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       toolCalls: [],
       loopId,
     });
+    addPlaceholder();
 
     chatDelta.setAgentStatus(conversationId, 'thinking');
 
@@ -1968,7 +1953,6 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       toolContext.offeredToolNames = [...tools, ...deferredTools].map(tool => tool.name);
       const toolBreakdownWeights = computeToolBreakdownWeights(tools);
       const toolTokens = toolBreakdownWeights.tools + toolBreakdownWeights.mcp;
-      const dynamicCapabilities = buildDynamicCapabilities(tools);
       // 摘要取工具说明的首句，延后加载的工具同样按电脑操控档位换成对应版本
       const deferredToolsSummary = buildDeferredToolsSummary(
         deferredTools.map((tool) => adaptComputerToolForTier(tool, toolContext.computerUseTier, isWindows())),
@@ -1976,8 +1960,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       // Get current messages for this conversation
       const messages = getConversationReader().getConversation(conversationId)?.messages ?? [];
-      // Exclude the last empty assistant message we just added
-      const historyMessages = messages.slice(0, -1);
+      // Exclude the last empty assistant message we just added. Re-read after
+      // a compaction adds its divider.
+      let historyMessages = messages.slice(0, -1);
 
       // Resolve model capabilities: registry baseline, then overlay any
       // runtime-discovered limits (e.g. from a previous max_tokens-too-large
@@ -1996,52 +1981,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const discoveredCaps = activeProvider
         ? getCapsPort().get(activeProvider.id, effectiveModelId)
         : undefined;
-      const effectiveModelMaxOutput = discoveredCaps?.maxOutputTokens ?? modelCaps.maxOutputTokens;
-      const effectiveModelContext = discoveredCaps?.contextWindow ?? modelCaps.contextWindow;
-      // True output ceiling (distinct from the conservative request budget in
-      // maxOutputTokens). max_tokens-recovery escalation may climb toward this.
-      const effectiveModelCeiling = discoveredCaps?.maxOutputTokens ?? modelCaps.outputCeiling ?? modelCaps.maxOutputTokens;
-
-      // Resolve budget + reasoning-control params. Overlay runtime-discovered
-      // limits onto the static caps, then let computeReasoningParams reserve a
-      // content floor for reasoning models so reasoning can't starve the answer
-      // (empty reply + finish_reason=length). Non-reasoning models are clamped to
-      // the model's real ceiling to avoid a guaranteed 400.
-      const effectiveCaps: ModelCapabilities = {
-        ...modelCaps,
-        maxOutputTokens: effectiveModelMaxOutput,
-        contextWindow: effectiveModelContext,
-        // A model observed reasoning despite the registry saying otherwise → can't
-        // bound it; treat as uncontrollable so it gets the full budget + reactive net.
-        // Exception: if the user explicitly declared supportsReasoning=false for this
-        // provider, respect that declaration and never flip thinking back on.
-        ...(discoveredCaps?.isReasoningModel && modelCaps.thinking === false
-            && modelDeclared?.supportsReasoning !== false
-          ? { thinking: 'uncontrollable' as const }
-          : {}),
-      };
-      // 窗口按四级优先级取值：用户填写 > 服务报告与超长报错学到的值取小 > 按名字估计
-      const resolvedContextWindow = resolveContextWindow({
-        modelId: effectiveModelId,
-        userSetting: modelDeclared?.maxInputTokens,
-        probed: runProbedContextWindow
-          ?? activeProvider?.models.find((model) => model.id === effectiveModelId)?.contextWindow,
-        discovered: discoveredCaps?.contextWindow,
-        discoveredProbe: discoveredCaps?.contextWindowProbe,
-        isLocal: localServerKind(activeProvider) !== null,
-        ceiling: freshSettings.contextWindowSize,
-      });
-      const contextWindowSize = resolvedContextWindow.size;
-      // 回答预留按模型自己的窗口算，全局上限只约束输入
-      const reserveWindowSize = resolvedContextWindow.uncappedSize;
-      // 交给适配器的两项：本地服务首次回答前等 10 分钟且超时不重试；只有用户填写的长度才让 Ollama 按它运行
-      const isLocalServer = localServerKind(activeProvider) !== null;
-      const requestedContextLength = positiveInteger(modelDeclared?.maxInputTokens);
-      const requestedMaxOutputTokens = modelDeclared?.maxOutputTokens ?? freshSettings.maxOutputTokens ?? effectiveModelMaxOutput;
-      const reasoningParams = computeReasoningParams(
-        effectiveCaps,
-        requestedMaxOutputTokens,
-        reserveWindowSize,
+      const { effectiveCaps, contextWindowSize, reserveWindowSize, reasoningParams, requestedMaxOutputTokens, requestedContextLength, localServer, outputCeiling: effectiveModelCeiling } = resolveRequestBudget(
+        effectiveModelId, modelCaps, activeProvider, freshSettings, discoveredCaps, runProbedContextWindow,
       );
       let maxOutputTokens = reasoningParams.maxTokens;
 
@@ -2071,116 +2012,55 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       //   buildVolatileContextTail below).
       const todoState = formatPlannedStepsForPrompt(conversationId);
       const goalState = formatGoalForPrompt(conversationId, loopId);
-      const dynamicSections: PromptSection[] = [];
-      if (dynamicCapabilities) {
-        dynamicSections.push({ name: 'mcp-capabilities', text: dynamicCapabilities, cacheable: true });
-      }
-      if (deferredToolsSummary) {
-        dynamicSections.push({ name: 'deferred-tools', text: deferredToolsSummary, cacheable: true });
-      }
       // Re-partition after appending per-turn dynamic sections: volatile
       // sections must stay behind the last cacheable one (cache-prefix
       // stability) and the pinned safety anchor must return to the absolute
       // end (recency). Kept UNMERGED here so section identity (pinToEnd)
       // survives the compression-hint append below; merging happens once at
       // the send boundary.
-      const allSections = orderSectionsForCaching([...systemPromptSections, ...dynamicSections]);
+      const allSections = composeRequestPromptSections(systemPromptSections, tools, deferredToolsSummary);
       // String form for token estimation and context management
       const effectiveSystemPrompt = sectionsToString(allSections);
 
-      const maxInputTokens = contextWindowSize - maxOutputTokens;
+      const { inputBudget } = computeInputBudget(contextWindowSize, maxOutputTokens);
 
-      // Step 1: Semantic compression — use cached summary or auto-compact based on warning level
-      // Compression triggers when: enough turns AND (cached result available OR warning level triggers compaction)
-      let messagesForContext = historyMessages;
-      let compressionApplied = false;
-      // Long-conversation Part A: honour a persistent compact-boundary marker if
-      // one exists. buildContextFromBoundary returns the compact view (firstRound
-      // + summary + recent, markers stripped) when the LAST marker is present,
-      // else the SAME array reference. A marker takes over → skip the ephemeral
-      // 65% cache path below; otherwise fall through to the existing send-only
-      // compression. The marker itself is NEVER sent to the LLM.
-      const boundaryView = buildContextFromBoundary(historyMessages);
-      if (boundaryView !== historyMessages) {
-        messagesForContext = boundaryView;
-        compressionApplied = true;
-      } else if (turnCount >= 3) {
-        const convForCache = getConversationReader().getConversation(conversationId);
-        const cache = convForCache?.contextCache;
+      // Resolve apiKey + baseUrl for the provider this conversation is bound to.
+      const effectiveCreds = resolveEffectiveLlmCreds(
+        getActiveApiKey(settingsForModel),
+        getActiveProvider(settingsForModel)?.baseUrl || undefined,
+      )
 
-        if (cache && cache.messageCountAtCompression <= historyMessages.length) {
-          // Reuse cached compression: firstRound + summary + messages after summarized range
-          const rounds = identifyRounds(historyMessages);
-          const firstRound = rounds[0] ?? [];
-          const newMessages = historyMessages.slice(cache.summarizedRange[1]);
-          messagesForContext = [...firstRound, cache.summaryMessage, ...newMessages];
-          compressionApplied = true;
-        } else if (!autoCompactTracker.isDisabled()) {
-          // No valid cache AND the auto-compact circuit breaker is not tripped —
-          // attempt compression. When the breaker IS tripped (repeated provider
-          // failures/timeouts), skip the LLM call entirely; the deterministic
-          // context budget gate below still guarantees the request
-          // fits, so a doomed provider can't re-stall every turn.
-          chatDelta.setIsCompressing(conversationId, true);
-          try {
-            const compressionCreds = resolveEffectiveLlmCreds(
-              getActiveApiKey(settingsForModel),
-              getActiveProvider(settingsForModel)?.baseUrl || undefined,
-            )
-            const compressionResult = await compressContextIfNeeded(
-              historyMessages,
-              effectiveSystemPrompt,
-              contextWindowSize,
-              maxOutputTokens,
-              {
-                adapter,
-                model: effectiveModelId,
-                apiKey: compressionCreds.apiKey,
-                baseUrl: compressionCreds.baseUrl,
-                signal: abortController.signal,
-                conversationId,
-                providerInstanceId: activeProvider?.id ?? 'unknown',
-                requestedContextLength,
-                localServer: isLocalServer,
-              },
-              toolTokens
-            );
-            if (compressionResult.compressed) {
-              messagesForContext = compressionResult.messages;
-              compressionApplied = true;
-              autoCompactTracker.recordSuccess();
-              // Cache the compression result for future turns
-              const summaryMsg = compressionResult.messages.find(m => m.id.startsWith('context-summary-'));
-              if (summaryMsg) {
-                const rounds = identifyRounds(historyMessages);
-                const recentMsgCount = rounds.slice(-RECENT_ROUNDS_TO_KEEP).flat().length;
-                const endIdx = historyMessages.length - recentMsgCount;
-                chatDelta.setContextCache(conversationId, {
-                  summaryMessage: summaryMsg,
-                  summarizedRange: [rounds[0].length, endIdx],
-                  messageCountAtCompression: historyMessages.length,
-                });
-              }
-            } else if (compressionResult.failed) {
-              // Summarization timed out or errored (returned gracefully, not
-              // thrown) — record against the circuit breaker so repeated failures
-              // trip it and stop re-attempting the doomed LLM call every turn.
-              autoCompactTracker.recordFailure(compressionResult.failureCode);
-            }
-          } catch {
-            // Defensive: compressContextIfNeeded no longer throws, but keep the
-            // circuit-breaker record in case an unexpected error escapes.
-            autoCompactTracker.recordFailure();
-          } finally {
-            chatDelta.setIsCompressing(conversationId, false);
-          }
-        }
-      }
+      // The options this step's model request and a compaction summary share,
+      // so the summary request carries the conversation's cached prefix.
+      const baseChatOptions = {
+        model: effectiveModelId,
+        apiKey: effectiveCreds.apiKey,
+        baseUrl: effectiveCreds.baseUrl,
+        systemPrompt: effectiveSystemPrompt,
+        // Merge at the send boundary only — merging earlier would fuse the
+        // pinned safety anchor into the volatile tail and lose its identity
+        // across re-partitions.
+        systemPromptSections: mergeSections(allSections),
+        tools: tools.length > 0 ? tools : undefined,
+        maxTokens: maxOutputTokens,
+        requestedContextLength,
+        localServer,
+        signal: abortController.signal,
+        enableThinking: reasoningParams.enableThinking,
+        thinkingBudget: reasoningParams.thinkingBudget,
+        reasoningEffort: reasoningParams.reasoningEffort,
+        supportsVision: modelCaps.vision,
+        declaredCapabilities: modelDeclared,
+        // Capabilities this model rejected earlier in the session: the adapter
+        // may run in another process, so the loop's memory travels with the call.
+        capabilityOverrides: [...rejectedCapabilities(activeProvider?.id, effectiveModelId)],
+        builtinWebSearch,
+      };
 
-      // Step 1.5: Micro-compaction — truncate oversized tool results from older messages
-      // This prevents single large tool outputs (e.g. grep returning 10KB) from bloating context.
-      // Only affects toolCallsForContext (sent to LLM), not toolCalls (shown in UI).
-      messagesForContext = applyMicroCompaction(messagesForContext);
+      // What the model sees: the history as the last compaction left it. The
+      // divider itself is never sent.
+      let boundaryView = buildContextFromBoundary(historyMessages);
+      const measurementContext = () => usageContext(effectiveModelId, effectiveSystemPrompt, tools, historyMessages);
 
       // Per-turn volatile context (todos, relevant memories, compression hint)
       // travels as an EPHEMERAL tail message appended after the whole history
@@ -2189,132 +2069,128 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // chatStore (so rounds/recovery/UI semantics are untouched). Adapters
       // append it AFTER placing the history cache breakpoint, so the stored
       // prefix stays fully cached and only this small tail is re-billed.
-      const volatileContextTail = buildVolatileContextTail({
+      const volatileTailFor = (view: Message[]) => buildVolatileContextTail({
         goalState,
         todoState,
         relevantMemoriesSection,
-        compressionApplied,
+        compressionApplied: view !== historyMessages,
       });
+      // The local estimate of a request over `sentMessages`, by the categories
+      // the context ring shows. One pass over prompt, tools and history; a
+      // step makes one, and a second only when what is sent differs from
+      // what was measured.
+      const estimateRequest = (sentMessages: Message[]) => {
+        const weights = computeBreakdownWeights({
+          allSections,
+          toolWeights: toolBreakdownWeights,
+          deferredToolsSummary,
+          messagesForContext: sentMessages,
+          volatileContextTail: volatileTailFor(boundaryView),
+        });
+        const total = Object.values(weights).reduce((sum, value) => sum + value, 0);
+        return { sentMessages, weights, total };
+      };
+      // Screenshots beyond the newest few are not sent (trimOldScreenshots),
+      // so the measurement that decides compaction does not count them.
+      const measureView = () => estimateRequest(trimOldScreenshots(boundaryView));
 
-      // Step 2: Trim old screenshots dynamically based on context usage
-      // The breakdown is the single estimation pass for the published payload.
-      // Deriving the total from these same weights prevents the header and its
-      // categories from drifting while avoiding a second full prompt/history scan.
-      const breakdownWeights = computeBreakdownWeights({
-        allSections,
-        toolWeights: toolBreakdownWeights,
-        deferredToolsSummary,
-        messagesForContext,
-        volatileContextTail,
-      });
-      const postCompressionTokens = Object.values(breakdownWeights)
-        .reduce((sum, value) => sum + value, 0);
-      const usagePercent = getUsagePercent(postCompressionTokens, maxInputTokens);
-      // NOTE: usage MUST be published on post-compression tokens. Pre-compression
-      // tokens stay critically high in long conversations even after cache-hit
-      // compression brings the actual payload below the threshold, which
-      // previously left the UI stuck in the red Critical state.
-      // Update tracker (its lastLevel may be read elsewhere downstream)
-      autoCompactTracker.updateLevel(postCompressionTokens, maxInputTokens);
-      // Publish usage to chatStore for UI consumption.
-      // tokensMax uses the FULL contextWindow (not the maxInputTokens budget)
-      // so the denominator the user sees matches the model's published context
-      // window (e.g. 200k for Claude / mimo-v2.5-pro), which is the mental
-      // model users have. The maxInputTokens budget (contextWindow - output
-      // reservation) is an internal compression-trigger detail.
-      // messageCountAtPublish anchors this snapshot to a position in the
-      // conversation: `tokensUsed` accounts for messages[0 .. historyMessages.length-1]
-      // AS COMPRESSED. The indicator estimates only the messages after that index
-      // (the assistant reply currently streaming), so it stays live without
-      // re-counting — and thereby un-compressing — the history behind the anchor.
-      const breakdown = distributeWithConservation(breakdownWeights, postCompressionTokens);
-      chatDelta.setContextUsage(conversationId, {
-        percent: getDisplayPercent(postCompressionTokens, contextWindowSize),
-        tokensUsed: postCompressionTokens,
-        tokensMax: contextWindowSize,
-        messageCountAtPublish: historyMessages.length,
-        breakdown: { version: 1, ...breakdown },
-      });
-
-      // Step 2.1: Persistent compaction (long-conversation Part A). When the
-      // payload is still critically large after the send-only pass, land an
-      // append-only compact-boundary marker so future turns read a compact
-      // context from the marker (survives restart; no re-summarizing every turn).
-      // Gating: computeCompactionPlan gets the token estimator so it only returns
-      // a plan when there is enough NEW content the LAST marker doesn't already
-      // cover (delta guard) — prevents divider-spam / a blocking summarize call
-      // every turn while the conversation stays large. autoCompactTracker (shared
-      // with the 65% path) is the failure circuit breaker. No per-turn latch: the
-      // marker lands immediately so the next iteration already sees it.
-      if (
-        turnCount >= 3 &&
-        postCompressionTokens >= maxInputTokens * PERSISTENT_COMPACTION_THRESHOLD &&
-        !autoCompactTracker.isDisabled()
-      ) {
-        const plan = computeCompactionPlan(historyMessages, { estimateTokens: estimateMessageTokens });
-        if (plan) {
-          const compactionCreds = resolveEffectiveLlmCreds(
-            getActiveApiKey(settingsForModel),
-            getActiveProvider(settingsForModel)?.baseUrl || undefined,
-          );
-          let summaryText = '';
-          try {
-            summaryText = await summarizeConversation(plan.middleMessages, {
+      // A compaction's divider goes before this step's still-empty placeholder,
+      // so it sits between the steps it separates.
+      const placeBeforePlaceholder = (marker: Message) => {
+        const tail = getConversationReader().getConversation(conversationId)?.messages.at(-1);
+        if (tail?.id !== assistantMsgId) {
+          throw new Error('Compaction expected the step placeholder to be the last message');
+        }
+        chatDelta.deleteMessagesFrom(conversationId, assistantMsgId);
+        chatDelta.addMessage(conversationId, marker);
+        assistantMsgId = generateId();
+        addPlaceholder();
+      };
+      const readRestoredFile = readFileThroughTool(
+        async (input, context) => toolInvoker.toolResultToString(
+          await toolInvoker.executeAnyTool(TOOL_NAMES.READ_FILE, input, async () => false, async () => false, context),
+        ),
+        { ...toolContext, abortSignal: abortController.signal },
+      );
+      // Summarize everything before the newest `retainTokens` of steps. The
+      // summary request is held to `budgetWindowSize` and uses the output and
+      // reasoning budgets of the request it makes room for; it fails loudly,
+      // and a failed attempt leaves a failed divider behind (unless the user
+      // stopped).
+      const compactBeforeRequest = async (
+        budgetWindowSize: number,
+        requestOptions: Pick<typeof baseChatOptions, 'maxTokens' | 'enableThinking' | 'thinkingBudget' | 'reasoningEffort'>,
+        retainTokens: number,
+      ): Promise<boolean> => {
+        const reserveForOutput = requestOptions.maxTokens;
+        const budget = computeInputBudget(budgetWindowSize, reserveForOutput).inputBudget;
+        chatDelta.setIsCompressing(conversationId, true, loopId);
+        let marker: Message | null;
+        try {
+          marker = await compactHistory({
+            history: historyMessages,
+            inputBudget: budget,
+            retainTokens,
+            source: 'auto',
+            loopId,
+            summary: {
               adapter,
-              model: effectiveModelId,
-              apiKey: compactionCreds.apiKey,
-              baseUrl: compactionCreds.baseUrl,
-              signal: abortController.signal,
+              chatOptions: { ...baseChatOptions, ...requestOptions },
               conversationId,
               providerInstanceId: activeProvider?.id ?? 'unknown',
-              requestedContextLength,
-              localServer: isLocalServer,
-            });
-          } catch (err) {
-            // Defensive: summarizeConversation is contractually no-throw (it
-            // swallows timeout/error and returns ''), but keep this in case an
-            // unexpected error escapes. The empty-string path below is the real
-            // failure recorder.
-            logger.warn('[persistentCompaction] summarize threw unexpectedly', { error: String(err) });
+              signal: abortController.signal,
+            },
+            fitSummaryInput: (summaryMessages) => enforceContextBudget(
+              summaryMessages,
+              effectiveSystemPrompt,
+              budgetWindowSize,
+              reserveForOutput,
+              toolTokens,
+            ).messages,
+            readFile: readRestoredFile,
+            now: () => Date.now(),
+          });
+        } catch (err) {
+          if (!abortController.signal.aborted) {
+            placeBeforePlaceholder(createFailedCompactBoundaryMarker({ source: 'auto', loopId, timestamp: Date.now() }));
           }
-          if (summaryText.trim()) {
-            // Append-only: create a marker and add it as the new last message. No
-            // existing message is mutated — the rewrite data-loss class cannot
-            // occur. buildContextFromBoundary picks it up next turn. (Known minor:
-            // when this fires mid tool-use loop the divider can visually split
-            // that loop's group — cosmetic.)
-            const marker = createCompactBoundaryMarker({
-              summaryText,
-              summarizedFromId: plan.summarizedFromId,
-              summarizedToId: plan.summarizedToId,
-              source: 'auto',
-              timestamp: Date.now(),
-            });
-            chatDelta.addMessage(conversationId, marker);
-            // Clear the now-stale ephemeral 65% cache (a marker supersedes it),
-            // mirroring the manual /compact path so the two land paths stay
-            // symmetric.
-            chatDelta.clearContextCache(conversationId);
-            autoCompactTracker.recordSuccess();
-            logger.info('[persistentCompaction] landed compact-boundary marker', {
-              from: plan.summarizedFromId,
-              to: plan.summarizedToId,
-              summarizedCount: plan.middleMessages.length,
-            });
-          } else {
-            // Empty return = timeout / error / empty summary. Record against the
-            // SHARED circuit breaker: when a marker is already active this Step
-            // 2.1 call is the ONLY compaction path (buildContextFromBoundary
-            // short-circuits the 65% path that otherwise records failures), so
-            // without this a provider that keeps timing out would re-issue a
-            // blocking summarize every turn with no breaker relief — the "死寂"
-            // stall class the breaker exists to prevent.
-            autoCompactTracker.recordFailure();
-          }
+          throw err;
+        } finally {
+          chatDelta.setIsCompressing(conversationId, false);
         }
-      }
+        if (!marker) return false;
+        usageAnchor = null;
+        placeBeforePlaceholder(marker);
+        historyMessages = (getConversationReader().getConversation(conversationId)?.messages ?? []).slice(0, -1);
+        boundaryView = buildContextFromBoundary(historyMessages);
+        logger.info('[compaction] summarized earlier steps', {
+          to: marker.compactBoundary?.summarizedToId,
+          keptUserMessages: marker.compactBoundary?.keptUserMessageIds?.length ?? 0,
+          restoredFiles: marker.compactBoundary?.restoredFiles?.length ?? 0,
+        });
+        return true;
+      };
 
-      const trimmedMessages = trimOldScreenshots(messagesForContext, usagePercent);
+      // Compact before every request that would use 90 % of the input budget,
+      // the first request of a run included. Compaction shrinks only the
+      // history: when the system prompt and tools alone fill the budget, the
+      // budget gate below reports that instead.
+      // The fixed part is everything but the conversation category.
+      const fixedPartOf = (estimate: ReturnType<typeof estimateRequest>) => estimate.total - estimate.weights.conversation;
+      let requestEstimate = measureView();
+      if (
+        fixedPartOf(requestEstimate) < inputBudget
+        && measureInputTokens(requestEstimate.total, measurementContext(), usageAnchor) >= inputBudget * COMPACTION_TRIGGER_RATIO
+        && await compactBeforeRequest(contextWindowSize, baseChatOptions, Math.floor(inputBudget * RETAINED_TAIL_RATIO))
+      ) {
+        requestEstimate = measureView();
+      }
+      const measuredTokens = measureInputTokens(requestEstimate.total, measurementContext(), usageAnchor);
+      const volatileContextTail = volatileTailFor(boundaryView);
+
+      // Step 2: Trim old screenshots dynamically based on context usage
+      const usagePercent = getUsagePercent(measuredTokens, inputBudget);
+      const trimmedMessages = trimOldScreenshots(boundaryView, usagePercent);
 
       // Step 3: Hard truncation as safety net
       const initialBudgetResult = enforceContextBudget(
@@ -2327,6 +2203,40 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       let preparedMessages = initialBudgetResult.messages;
       let lastProviderMessages = preparedMessages;
       let primaryBudgetGateLogged = false;
+
+      // The context ring shows the size of what is sent: the messages that
+      // passed the budget gate, measured as the provider's count of the last
+      // request plus the estimated change since (or, once this request's usage
+      // arrives, that count itself). tokensMax is the FULL context window (not
+      // the input budget), the number users know the model by.
+      // messageCountAtPublish anchors this snapshot to a position in the
+      // conversation: the indicator estimates only the messages after that
+      // index (the assistant reply currently streaming), so it stays live
+      // without re-counting — and thereby un-compressing — the history behind
+      // the anchor. The categories are the local estimate, scaled to the total.
+      let sentEstimate = requestEstimate;
+      const estimateSent = () => {
+        if (sentEstimate.sentMessages !== lastProviderMessages) {
+          // Request preparation may allocate an array while preserving every message.
+          const changed = sentEstimate.sentMessages.length !== lastProviderMessages.length
+            || sentEstimate.sentMessages.some((message, index) => message !== lastProviderMessages[index]);
+          sentEstimate = changed
+            ? estimateRequest(lastProviderMessages)
+            : { ...sentEstimate, sentMessages: lastProviderMessages };
+        }
+        return sentEstimate;
+      };
+      const publishContextUsage = (tokensUsed: number, windowSize: number) => {
+        chatDelta.setContextUsage(conversationId, {
+          percent: getDisplayPercent(tokensUsed, windowSize),
+          tokensUsed,
+          tokensMax: windowSize,
+          messageCountAtPublish: historyMessages.length,
+          breakdown: { version: 1, ...distributeWithConservation(estimateSent().weights, tokensUsed) },
+        });
+      };
+      const sentTokens = () => measureInputTokens(estimateSent().total, measurementContext(), usageAnchor);
+      publishContextUsage(sentTokens(), contextWindowSize);
 
       const buildProviderAttemptMessages = async (
         baseMessages: Message[],
@@ -2366,21 +2276,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         return budgetResult;
       };
 
-      // Resolve apiKey + baseUrl for the provider this conversation is bound to.
-      const effectiveCreds = resolveEffectiveLlmCreds(
-        getActiveApiKey(settingsForModel),
-        getActiveProvider(settingsForModel)?.baseUrl || undefined,
-      )
-
       const chatOptions = {
-        model: effectiveModelId,
-        apiKey: effectiveCreds.apiKey,
-        baseUrl: effectiveCreds.baseUrl,
-        systemPrompt: effectiveSystemPrompt,
-        // Merge at the send boundary only — merging earlier would fuse the
-        // pinned safety anchor into the volatile tail and lose its identity
-        // across re-partitions.
-        systemPromptSections: mergeSections(allSections),
+        ...baseChatOptions,
         volatileContextTail,
         metadata: { conversationId },
         // 记账身份随请求一起进 adapter：页面按 source 分组，用户才能自己解释
@@ -2393,20 +2290,6 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             : (getConversationReader().getConversation(conversationId)?.activeSkills?.[0] ?? null),
           providerInstanceId: activeProvider?.id ?? 'unknown',
         },
-        tools: tools.length > 0 ? tools : undefined,
-        maxTokens: maxOutputTokens,
-        requestedContextLength,
-        localServer: isLocalServer,
-        signal: abortController.signal,
-        enableThinking: reasoningParams.enableThinking,
-        thinkingBudget: reasoningParams.thinkingBudget,
-        reasoningEffort: reasoningParams.reasoningEffort,
-        supportsVision: modelCaps.vision,
-        declaredCapabilities: modelDeclared,
-        // Capabilities this model rejected earlier in the session: the adapter
-        // may run in another process, so the loop's memory travels with the call.
-        capabilityOverrides: [...rejectedCapabilities(activeProvider?.id, effectiveModelId)],
-        builtinWebSearch,
         // When the adapter's max_tokens auto-retry succeeds, persist the
         // discovered limit so the next request uses it pre-emptively.
         onMaxTokensLimitDiscovered: activeProvider
@@ -2423,6 +2306,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       const chatFn = async () => {
         const providerBudgetResult = await buildProviderAttemptMessages(preparedMessages, contextWindowSize, maxOutputTokens);
+        publishContextUsage(sentTokens(), contextWindowSize);
         if (!primaryBudgetGateLogged && (
           initialBudgetResult.strategy !== 'unchanged'
           || providerBudgetResult.strategy !== 'unchanged'
@@ -2699,83 +2583,22 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             recoveryReserveWindowSize,
           );
           const recoveryMaxOutputTokens = recoveryReasoningParams.maxTokens;
-          // 水位环的分母换成刚学到的真实值
-          chatDelta.setContextUsage(conversationId, {
-            percent: getDisplayPercent(postCompressionTokens, recoveryContextWindowSize),
-            tokensUsed: postCompressionTokens,
-            tokensMax: recoveryContextWindowSize,
-            messageCountAtPublish: historyMessages.length,
-            breakdown: { version: 1, ...breakdown },
-          });
-
-          chatDelta.appendText(
-            conversationId,
-            getI18n().chat.compactingInlineNotice,
-            assistantMsgId
-          );
-
-          let recovered = false;
-
-          // Stage 1: 按新上限做语义压缩
-          if (!autoCompactTracker.isDisabled()) {
-            try {
-              const recoveryCreds = resolveEffectiveLlmCreds(
-                getActiveApiKey(settingsForModel),
-                getActiveProvider(settingsForModel)?.baseUrl || undefined,
-              )
-              // Use boundaryView (marker-free compact view if a marker exists,
-              // else raw history) so recovery never re-feeds a marker to the LLM
-              // and reuses the existing summary instead of re-summarizing full raw
-              // history.
-              const compressionResult = await compressContextIfNeeded(
-                boundaryView,
-                effectiveSystemPrompt,
-                recoveryContextWindowSize,
-                recoveryMaxOutputTokens,
-                {
-                  adapter,
-                  model: effectiveModelId,
-                  apiKey: recoveryCreds.apiKey,
-                  baseUrl: recoveryCreds.baseUrl,
-                  signal: abortController.signal,
-                  conversationId,
-                  providerInstanceId: activeProvider?.id ?? 'unknown',
-                  requestedContextLength,
-                  localServer: isLocalServer,
-                },
-                toolTokens
-              );
-              if (compressionResult.compressed) {
-                preparedMessages = enforceContextBudget(
-                  compressionResult.messages,
-                  effectiveSystemPrompt,
-                  recoveryContextWindowSize,
-                  recoveryMaxOutputTokens,
-                  toolTokens
-                ).messages;
-                autoCompactTracker.recordSuccess();
-                recovered = true;
-                logger.info('Context recovered via semantic compression');
-              }
-            } catch {
-              autoCompactTracker.recordFailure();
-            }
+          const recoveryRequestOptions = {
+            maxTokens: recoveryMaxOutputTokens,
+            enableThinking: recoveryReasoningParams.enableThinking,
+            thinkingBudget: recoveryReasoningParams.thinkingBudget,
+            reasoningEffort: recoveryReasoningParams.reasoningEffort,
+          };
+          // 按新上限整理：只原样保留最近一步；没有可以整理的步骤时不整理。之后按新上限重发一次，
+          // 回答预留按新上限变小，发送前的检查也按新上限裁剪
+          const recoveryBudget = computeInputBudget(recoveryContextWindowSize, recoveryMaxOutputTokens).inputBudget;
+          if (
+            fixedPartOf(requestEstimate) < recoveryBudget
+            && await compactBeforeRequest(recoveryContextWindowSize, recoveryRequestOptions, 0)
+          ) {
+            logger.info('Context recovered via compaction');
           }
-
-          // Stage 2: 截断，保留第一轮加最后两轮
-          if (!recovered) {
-            logger.info('Attempting hard truncation recovery');
-            const emergencyRounds = identifyRounds(boundaryView);
-            if (emergencyRounds.length > 3) {
-              const firstRound = emergencyRounds[0];
-              const lastTwoRounds = emergencyRounds.slice(-2);
-              preparedMessages = [...firstRound, ...lastTwoRounds.flat()];
-            } else {
-              const lastTwoRounds = emergencyRounds.slice(-2);
-              preparedMessages = lastTwoRounds.flat();
-            }
-            recovered = true;
-          }
+          preparedMessages = trimOldScreenshots(boundaryView, usagePercent);
 
           const recoveryBudgetResult = await buildProviderAttemptMessages(
             preparedMessages,
@@ -2790,18 +2613,18 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             safetyMarginTokens: recoveryBudgetResult.safetyMarginTokens,
             strategy: recoveryBudgetResult.strategy,
           });
+          // 水位环的分母换成刚学到的真实值
+          publishContextUsage(sentTokens(), recoveryContextWindowSize);
           const recoveryChatOptions = {
             ...chatOptions,
-            maxTokens: recoveryMaxOutputTokens,
-            enableThinking: recoveryReasoningParams.enableThinking,
-            thinkingBudget: recoveryReasoningParams.thinkingBudget,
-            reasoningEffort: recoveryReasoningParams.reasoningEffort,
+            ...recoveryRequestOptions,
+            volatileContextTail: volatileTailFor(boundaryView),
           };
           try {
             await adapter.chat(preparedMessages, recoveryChatOptions, eventHandler);
           } catch (retryErr2) {
             if (retryErr2 instanceof LLMError && retryErr2.code === 'context_too_long') {
-              logger.error('Context recovery failed after both compression and truncation');
+              logger.error('Context recovery failed after compaction');
             }
             throw retryErr2;
           }
@@ -2857,15 +2680,25 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       // Update usage on message if available
       if (finalUsage) {
-        chatDelta.updateMessageUsage(conversationId, finalUsage, assistantMsgId);
-        // Calibrate token estimator with actual API usage
-        const estimatedInput = estimateTokens(effectiveSystemPrompt) + estimateMessageTokens(lastProviderMessages) + toolTokens;
         // 校准要的是整段提示词的大小。Anthropic 的 inputTokens 不含缓存读写，
         // 开了提示缓存之后它可以只有几百，直接拿去校准会把估算比例拉到接近零。
-        calibrateFromUsage(
-          estimatedInput,
-          promptTokensOf(usageProtocolFor(adapterKind), finalUsage),
-        );
+        // 消息上一并记下整段输入数，重启后打开对话时上下文圆环从它开始算。
+        const promptTokens = promptTokensOf(usageProtocolFor(adapterKind), finalUsage);
+        chatDelta.updateMessageUsage(conversationId, { ...finalUsage, promptTokens }, assistantMsgId);
+        // Calibrate token estimator with actual API usage
+        const estimatedInput = estimateTokens(effectiveSystemPrompt) + estimateMessageTokens(lastProviderMessages) + toolTokens;
+        calibrateFromUsage(estimatedInput, promptTokens);
+        // The next measurement starts from this request's real size. Its
+        // estimate is taken after calibration, at the ratio the next
+        // measurement will use.
+        usageAnchor = {
+          ...measurementContext(),
+          promptTokens,
+          estimatedTokens: estimateRequest(lastProviderMessages).total,
+        };
+        publishContextUsage(promptTokens, contextWindowSize);
+      } else {
+        usageAnchor = null;
       }
 
       let semanticLoopReason: SemanticToolLoopReason | null = null;
@@ -2913,7 +2746,6 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           filePermCb,
           toolContext,
           continueLoop,
-          contextUsagePercent: usagePercent,
           toolInvoker,
           settingsReader: entrySettingsReader,
           parallelToolCalls: modelProfile.capabilities.parallelToolCalls,

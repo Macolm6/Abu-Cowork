@@ -588,23 +588,14 @@ describe('agent.start history: the wire snapshot and the ledger view agree (#549
   });
 
   /**
-   * Why a positional index one run computed still points at the same rows in
-   * the next one. `contextCache.summarizedRange` is a pair of indices into the
-   * message list (`agentLoop.ts:1982` slices by it), and the list a run reads
-   * on the ledger form is the sanitised ledger prefix, which drops
-   * non-substantive assistant rows. Two facts keep the indices meaningful, and
-   * both are asserted here:
-   *
-   *  1. a dispatch clears the conversation's `contextCache` before the snapshot
-   *     the sidecar receives is taken (`chatStore.ts` `updateUserMessageRun`,
-   *     which `buildAgentRunParams` calls just before reading the conversation),
-   *     so no range ever crosses a dispatch at all;
-   *  2. even if one did, the ledger view of a dispatch is a positional prefix
-   *     of the next dispatch's — the ledger is append-only, the fold keeps a
-   *     revised row in place, and a row the sanitiser drops is dropped at every
-   *     watermark, so nothing shifts under an index.
+   * Why a position one run saw still holds the same row in the next one. The
+   * list a run reads on the ledger form is the sanitised ledger prefix, which
+   * drops non-substantive assistant rows. The ledger view of a dispatch is a
+   * positional prefix of the next dispatch's — the ledger is append-only, the
+   * fold keeps a revised row in place, and a row the sanitiser drops is
+   * dropped at every watermark, so nothing shifts under an index.
    */
-  it('a later dispatch sees the earlier one\'s history position for position, and carries no context cache', async () => {
+  it('a later dispatch sees the earlier one\'s history position for position', async () => {
     const h = await freshHarness();
     const actions = h.store.useChatStore.getState();
     const convId = actions.createConversation();
@@ -618,18 +609,7 @@ describe('agent.start history: the wire snapshot and the ledger view agree (#549
     });
     await h.storage.flushWrites();
 
-    const summary: Message = { id: 'context-summary-1', role: 'user', content: '摘要', timestamp: T0 + 3 };
-    actions.setContextCache(convId, {
-      summaryMessage: summary,
-      summarizedRange: [1, 2],
-      messageCountAtCompression: 2,
-    });
-
     const first = await dispatchRow(h, convId, 'run-10', '第二问');
-    // Fact 1: the routed rewrite every dispatch performs clears the cache, so
-    // `conversationSnapshot.contextCache` is undefined in the params that carry
-    // this run — on either form.
-    expect(h.store.useChatStore.getState().conversations[convId].contextCache).toBeUndefined();
     const { ledger: firstView } = await expectEquivalent(h, convId, first);
     expect(firstView.map((m) => m.id)).toEqual(['u1', 'a1', first]);
 
@@ -640,7 +620,7 @@ describe('agent.start history: the wire snapshot and the ledger view agree (#549
     const second = await dispatchRow(h, convId, 'run-11', '第三问');
     const { ledger: secondView } = await expectEquivalent(h, convId, second);
 
-    // Fact 2: position for position, the second run's history opens with the
+    // Position for position, the second run's history opens with the
     // first run's — the ghost row shifts nothing and the revised user row kept
     // its place.
     expect(secondView.map((m) => m.id).slice(0, firstView.length)).toEqual(firstView.map((m) => m.id));

@@ -22,7 +22,6 @@ const mockEnforceContextBudget = vi.hoisted(() => vi.fn((msgs: unknown[]) => ({
   safetyMarginTokens: 1000,
   strategy: 'unchanged',
 })));
-const mockCompressContextIfNeeded = vi.hoisted(() => vi.fn().mockResolvedValue({ compressed: false, messages: [] }));
 
 vi.mock('../../stores/workspaceStore', () => ({
   useWorkspaceStore: { getState: () => ({ currentPath: '/tmp/project' }), subscribe: vi.fn() },
@@ -46,14 +45,12 @@ vi.mock('../memdir/scan', () => ({
   loadMemoryIndex: vi.fn().mockResolvedValue(null),
 }));
 
-vi.mock('../context/contextManager', () => ({
+vi.mock('../context/contextManager', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../context/contextManager')>(),
   enforceContextBudget: (...args: unknown[]) => mockEnforceContextBudget(...args),
   // Pass-through — the real screenshot-budget behavior is covered by
   // contextManager.test.ts; here it must simply not disturb the pipeline.
   trimOldScreenshots: vi.fn((msgs: unknown[]) => msgs),
-}));
-vi.mock('../context/contextCompressor', () => ({
-  compressContextIfNeeded: (...args: unknown[]) => mockCompressContextIfNeeded(...args),
 }));
 vi.mock('../observability/langfuse', () => ({ startSubagentSpan: vi.fn().mockReturnValue({ end: vi.fn() }) }));
 
@@ -158,8 +155,6 @@ describe('subagent max_tokens recovery (integration)', () => {
       safetyMarginTokens: 1000,
       strategy: 'unchanged',
     }));
-    mockCompressContextIfNeeded.mockReset();
-    mockCompressContextIfNeeded.mockResolvedValue({ compressed: false, messages: [] });
   });
 
   it('consumes an instruction arriving during the final streamed answer before terminating (F5)', async () => {
@@ -716,44 +711,49 @@ describe('subagent max_tokens recovery (integration)', () => {
     expect(result.text).toContain('invalid envelope');
   });
 
-  it('does not re-inject delegated media after compression while re-reading refs per provider request', async () => {
-    const imageBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 5]);
-    mockReadDelegatedMedia.mockResolvedValue(imageBytes);
-    mockCompressContextIfNeeded.mockResolvedValue({
-      compressed: true,
-      messages: [{ id: 'sub-user-0', role: 'user', content: 'compressed without media', timestamp: 1 }],
-    });
-    const toolTurn = emits([
-      { type: 'tool_use', id: 'tool-1', name: 'noop', input: {} } as StreamEvent,
-      { type: 'done', stopReason: 'tool_use' } as StreamEvent,
-    ]);
-    mockClaudeChat
-      .mockImplementationOnce(toolTurn)
-      .mockImplementationOnce(toolTurn)
-      .mockImplementationOnce(toolTurn)
-      .mockImplementationOnce(emits([
-        { type: 'text', text: 'done' } as StreamEvent,
-        { type: 'done', stopReason: 'end_turn' } as StreamEvent,
-      ]));
-
-    const result = await runSubagentLoop({
-      agent,
-      task: 'Describe the image.',
-      delegatedUserTurn: {
-        schemaVersion: 1,
-        origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' },
-        content: [
-          { type: 'image', attachment: { id: 'attachment_opaque_1', sha256: 'a'.repeat(64), mediaType: 'image/png', bytes: 9 } },
-        ],
-      },
-      ...trustedDelegatedOrigin,
+  it('compacts a long run mid-task: the task stays verbatim, earlier steps become the summary', async () => {
+    // A 40 000-token window: a few long tool results pass 90 % of the input budget.
+    mockGetActiveProvider.mockReturnValue({
+      id: 'p1',
+      apiFormat: 'anthropic',
+      baseUrl: undefined,
+      models: [{ id: 'claude-opus-4-8', label: 'claude-opus-4-8', contextWindow: 40_000 }],
     } as never);
+    mockExecuteAnyTool.mockResolvedValue(`listing ${'x'.repeat(20_000)}`);
+    let workRequests = 0;
+    mockClaudeChat.mockImplementation(async (msgs: Array<{ content: unknown }>, _opts: unknown, onEvent: (e: StreamEvent) => void) => {
+      const last = msgs[msgs.length - 1];
+      if (typeof last.content === 'string' && last.content.startsWith('Stop working on the task')) {
+        onEvent({ type: 'text', text: 'SUMMARY-OF-EARLIER-STEPS' } as StreamEvent);
+        onEvent({ type: 'done', stopReason: 'end_turn' } as StreamEvent);
+        return;
+      }
+      workRequests += 1;
+      if (workRequests <= 8) {
+        onEvent({ type: 'tool_use', id: `tool-${workRequests}`, name: 'noop', input: {} } as StreamEvent);
+        onEvent({ type: 'done', stopReason: 'tool_use' } as StreamEvent);
+        return;
+      }
+      onEvent({ type: 'text', text: 'done' } as StreamEvent);
+      onEvent({ type: 'done', stopReason: 'end_turn' } as StreamEvent);
+    });
+
+    const result = await runSubagentLoop({ agent, task: 'List the folder eight times.', ...trustedDelegatedOrigin } as never);
 
     expect(result.text).toBe('done');
-    expect(mockReadDelegatedMedia).toHaveBeenCalledTimes(3);
-    expect(mockCompressContextIfNeeded).toHaveBeenCalled();
-    const fourthSend = mockClaudeChat.mock.calls[3][0] as Array<{ id: string; content: unknown }>;
-    expect(fourthSend[0]).toMatchObject({ id: 'sub-user-0', content: 'compressed without media' });
+    const calls = mockClaudeChat.mock.calls.map((call) => call[0] as Array<{ id: string; role: string; content: unknown }>);
+    const summaryIndex = calls.findIndex((msgs) => {
+      const last = msgs[msgs.length - 1];
+      return typeof last.content === 'string' && last.content.startsWith('Stop working on the task');
+    });
+    expect(summaryIndex).toBeGreaterThan(0);
+    // The request after the summary: the task verbatim, then the summary, then the newest steps.
+    const afterSummary = calls[summaryIndex + 1];
+    expect(JSON.stringify(afterSummary[0].content)).toContain('List the folder eight times.');
+    expect(afterSummary.some((m) => typeof m.content === 'string' && m.content.includes('SUMMARY-OF-EARLIER-STEPS'))).toBe(true);
+    expect(afterSummary.length).toBeLessThan(calls[summaryIndex - 1].length);
+    // The summary request carries the task and the steps it condenses.
+    expect(JSON.stringify(calls[summaryIndex][0].content)).toContain('List the folder eight times.');
   });
 
   it('informs subagents that their tool and permission boundary is fixed', async () => {

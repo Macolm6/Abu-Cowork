@@ -52,7 +52,7 @@ export interface PortFrame {
 // contract — see executionPort.ts's/scratchpadPort.ts's `applyXWithId` doc
 // comments).
 
-/** All 31 ChatDelta methods (chatDelta.ts) — every one is fire-and-forget/void, so generic reflection dispatch is safe for all of them. */
+/** All 30 ChatDelta methods (chatDelta.ts) — every one is fire-and-forget/void, so generic reflection dispatch is safe for all of them. */
 const CHAT_METHODS = new Set<string>([
   'appendText',
   'setLastMessageContent',
@@ -80,8 +80,6 @@ const CHAT_METHODS = new Set<string>([
   'setCurrentUsage',
   'setRetryInfo',
   'setContextUsage',
-  'setContextCache',
-  'clearContextCache',
   'setIsCompressing',
   'setConversationModel',
   'setPendingProposalSignal',

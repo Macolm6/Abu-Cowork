@@ -34,6 +34,21 @@ let app: ElectronApplication | undefined;
 let dataRoot: ElectronDataRoot | undefined;
 let mock: OpenAiMock | undefined;
 let ollama: OllamaMock | undefined;
+let readingFixtureDirectory: string | undefined;
+
+function createReadingFixtureDirectory(runId: string): string {
+  readingFixtureDirectory = path.join(process.cwd(), '.agent', 'model-compat-fixtures', runId);
+  fs.mkdirSync(readingFixtureDirectory, { recursive: true });
+  return readingFixtureDirectory;
+}
+
+async function allowFileRead(page: Page, filePath: string): Promise<void> {
+  const dialog = page.getByRole('alertdialog', { name: '文件读取权限' });
+  await expect(dialog).toBeVisible({ timeout: READY_TIMEOUT });
+  await expect(dialog).toContainText(filePath);
+  await pressWhenSettled(dialog.getByRole('button', { name: '允许本次会话', exact: true }));
+  await expect(dialog).toBeHidden();
+}
 
 interface ChatRequestBody {
   max_tokens?: number;
@@ -147,13 +162,19 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
       removeElectronDataRoot(dataRoot);
       dataRoot = undefined;
     }
+    if (readingFixtureDirectory) {
+      fs.rmSync(readingFixtureDirectory, { recursive: true });
+      readingFixtureDirectory = undefined;
+    }
   });
 
   test('learns the real context size from a llama.cpp overflow, tidies up and finishes', async () => {
     const runId = randomUUID();
     const answer = `abu-e2e-context-recovered-${runId}`;
     const nextAnswer = `abu-e2e-context-next-round-${runId}`;
+    const seedAnswers = [`abu-e2e-context-first-${runId}`, `abu-e2e-context-second-${runId}`];
     const page = await openChat([
+      ...seedAnswers.map((responseText) => ({ kind: 'complete' as const, responseText })),
       {
         kind: 'http-error',
         status: 400,
@@ -171,34 +192,38 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
       { kind: 'complete', responseText: nextAnswer },
     ], { contextWindowSize: null });
 
+    for (const [index, seedAnswer] of seedAnswers.entries()) {
+      await send(page, `abu-e2e-context-seed-${index}-${runId}`);
+      await expect(page.getByText(seedAnswer, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+      await expectRunEnded(page);
+    }
     await send(page, `abu-e2e-context-overflow-${runId}`);
     await expect(page.getByText(answer, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
-    await expect(page.getByText('对话较长，正在整理前面的内容…')).toBeVisible();
-    // 提示按斜体显示，星号不作为文字出现
-    await expect(page.getByText('*对话较长')).toHaveCount(0);
+    await expect(page.locator('[data-compact-status="done"]')).toHaveCount(1);
+    expect(compressionRequests(mock!)).toHaveLength(1);
     await expect(page.getByText('exceeds the available context size')).toHaveCount(0);
 
     const requests = taskRequests(mock!);
-    expect(requests).toHaveLength(2);
+    expect(requests).toHaveLength(4);
     // 本机地址按名字估计封顶 32768，回答预留 25% = 8192；学到 30720 后预留 7680
-    expect((requests[0].body as { max_tokens?: number }).max_tokens).toBe(8192);
-    expect((requests[1].body as { max_tokens?: number }).max_tokens).toBe(7680);
+    expect((requests[2].body as { max_tokens?: number }).max_tokens).toBe(8192);
+    expect((requests[3].body as { max_tokens?: number }).max_tokens).toBe(7680);
 
     await page.getByTestId('context-indicator').click();
     await expect(page.getByTestId('context-breakdown-header')).toContainText('/ 30.7k');
     await page.keyboard.press('Escape');
     await expectRunEnded(page);
 
-    // 下一轮直接按学到的上限计算，服务不再报超长，也不再出现整理提示
+    // The next request uses the learned window and keeps the existing divider.
     await send(page, `abu-e2e-context-next-${runId}`);
     await expect(page.getByText(nextAnswer, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expectRunEnded(page);
     const allRequests = taskRequests(mock!);
-    expect(allRequests).toHaveLength(3);
-    expect((allRequests[2].body as { max_tokens?: number }).max_tokens)
-      .toBe((allRequests[1].body as { max_tokens?: number }).max_tokens);
-    expect((allRequests[2].body as { max_tokens?: number }).max_tokens).toBe(7680);
-    await expect(page.getByText('对话较长，正在整理前面的内容…')).toHaveCount(1);
+    expect(allRequests).toHaveLength(5);
+    expect((allRequests[4].body as { max_tokens?: number }).max_tokens)
+      .toBe((allRequests[3].body as { max_tokens?: number }).max_tokens);
+    expect((allRequests[4].body as { max_tokens?: number }).max_tokens).toBe(7680);
+    await expect(page.locator('[data-compact-status="done"]')).toHaveCount(1);
     await expect(page.getByText('Error:')).toHaveCount(0);
   });
 
@@ -207,7 +232,7 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
     const answer = `abu-e2e-invoke-answer-${runId}`;
     const marker = `abu-e2e-invoke-fixture-${runId}`;
     dataRoot = createElectronDataRoot();
-    const fixtureDir = path.join(dataRoot.rootDir, 'owned-invoke-fixtures');
+    const fixtureDir = createReadingFixtureDirectory(runId);
     const fixturePath = path.join(fixtureDir, 'invoke-fixture.txt');
     fs.mkdirSync(fixtureDir, { recursive: true });
     fs.writeFileSync(fixturePath, marker);
@@ -228,6 +253,7 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
     ], { supportsTools: true, permissionMode: 'standard' });
 
     await send(page, `请读取 ${fixturePath}`);
+    await allowFileRead(page, fixturePath);
     await expect(page.getByText(answer, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(page.getByText('我先读一下文件。')).toBeVisible();
     await expect(page.getByText('<invoke')).toHaveCount(0);
@@ -298,11 +324,11 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
   test('P1-1 tidies up the earlier conversation before reaching the 32K length and finishes', async () => {
     test.setTimeout(120_000);
     const runId = randomUUID();
-    // 语义整理要求保留第一轮与最近四轮之外还有可整理的轮次，所以先聊六轮
+    // Six completed turns supply the history for the long file-reading task.
     const turnAnswers = Array.from({ length: 6 }, (_, index) => `abu-e2e-lmstudio-turn-${index}-${runId}`);
     const finalAnswer = `abu-e2e-lmstudio-after-tidy-${runId}`;
     dataRoot = createElectronDataRoot();
-    const fixtureDir = path.join(dataRoot.rootDir, 'owned-lmstudio-fixtures');
+    const fixtureDir = createReadingFixtureDirectory(runId);
     const fixtures = ['first', 'second'].map((name) => ({
       marker: `abu-e2e-lmstudio-fixture-${name}-${runId}`,
       path: path.join(fixtureDir, `${name}.txt`),
@@ -330,6 +356,7 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
       await expect(input).toBeEditable({ timeout: READY_TIMEOUT });
     }
     await send(page, `请依次读取 ${fixtures[0].path} 和 ${fixtures[1].path}`);
+    for (const fixture of fixtures) await allowFileRead(page, fixture.path);
     await expect(page.getByText(finalAnswer, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expectRunEnded(page);
 

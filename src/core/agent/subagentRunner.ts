@@ -74,7 +74,7 @@ import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
  * once a tool request is accepted, or a valid successful response arrives) and
  * is reported on the terminal trace event so a failure can be classified.
  */
-import type { ToolDefinition, ToolExecutionContext, UpstreamErrorDetails } from '../../types';
+import type { ToolDefinition, ToolExecutionContext, ToolExecutionMetadata, UpstreamErrorDetails } from '../../types';
 import {
   getSidecarStatus,
   request as sidecarRequest,
@@ -583,21 +583,25 @@ async function handleToolInvoke(rawParams: unknown): Promise<unknown> {
   }
 
   const invoker = getToolInvoker(); // shell-side in-process default — registry-backed, same as any in-process subagent run.
+  let metadata: ToolExecutionMetadata | undefined;
   const result = await session.resourceSettlement.run(() => invoker.executeAnyTool(
     toolName,
     (params.input as Record<string, unknown>) ?? {},
     session.options.commandConfirmCallback,
     session.options.filePermissionCallback,
-    buildTrustedSubagentToolContext(
-      session,
-      params.context as ToolExecutionContext | undefined,
-    ),
+    {
+      ...buildTrustedSubagentToolContext(session, params.context as ToolExecutionContext | undefined),
+      reportMetadata: (next) => {
+        if (next.fileReadOutcome) metadata = { fileReadOutcome: next.fileReadOutcome };
+      },
+    },
   ));
-  return prepareToolResultForSidecarWire(
+  const wireResult = await prepareToolResultForSidecarWire(
     session.options.parentConversationId,
     result,
     session.options.signal,
   );
+  return metadata ? { result: wireResult, metadata } : wireResult;
 }
 
 /**

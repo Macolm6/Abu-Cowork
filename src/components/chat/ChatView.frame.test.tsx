@@ -144,11 +144,11 @@ function setupCompactedConversation(
 }
 
 function compactRows() {
-  return screen.getAllByRole('button', { name: /Context compacted/ });
+  return screen.getAllByRole('button', { name: /Earlier content organized/ });
 }
 
 function compactRow() {
-  return screen.getByRole('button', { name: /Context compacted/ });
+  return screen.getByRole('button', { name: /Earlier content organized/ });
 }
 
 function setupUser() {
@@ -316,7 +316,7 @@ describe('ChatView frame', () => {
       harness.unmountedRowIds.add(markerId);
       harness.refreshList?.();
     });
-    expect(screen.queryByRole('button', { name: /Context compacted/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Earlier content organized/ })).toBeNull();
 
     act(() => {
       harness.unmountedRowIds.delete(markerId);
@@ -361,7 +361,7 @@ describe('ChatView frame', () => {
 
     const otherId = setupConversation();
     act(() => useChatStore.setState({ activeConversationId: otherId }));
-    expect(screen.queryByRole('button', { name: /Context compacted/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Earlier content organized/ })).toBeNull();
     act(() => useChatStore.setState({ activeConversationId: conversationId }));
 
     expect(compactRow()).toHaveAttribute('aria-expanded', 'false');

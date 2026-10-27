@@ -1,130 +1,28 @@
 /**
- * Tool Result Truncation — intelligent truncation by tool type
- *
- * Prevents context window overflow by truncating long tool results
- * while preserving the most useful information.
+ * Head-and-tail cuts that run_command and http_fetch apply to their own
+ * output inside `execute`, so the positions they record stay valid in the
+ * result. Every other tool result is bounded by `toolResultSpill.ts`, which
+ * writes a result too long for the conversation to a file.
  */
-
-import { TOOL_NAMES } from '../tools/toolNames';
 
 export interface TruncationRule {
   headLines: number;
   tailLines: number;
   maxChars: number;
-  /**
-   * 'end': the first `headLines` lines are a fixed header that is always kept,
-   * and the rest is cut from its start, so the most recent lines stay.
-   * `tailLines` is unused; context pressure scales `maxChars` only.
-   */
-  keep?: 'end';
 }
 
-const TRUNCATION_RULES: Record<string, TruncationRule> = {
-  [TOOL_NAMES.READ_FILE]: { headLines: 150, tailLines: 20, maxChars: 15000 },
-  [TOOL_NAMES.LIST_DIRECTORY]: { headLines: 100, tailLines: 0, maxChars: 8000 },
-  [TOOL_NAMES.RUN_COMMAND]: { headLines: 150, tailLines: 30, maxChars: 15000 },
-  // `formatOutput` in backgroundCommandTools.ts starts every result with four
-  // lines before any output line: id, command, status, then the exit code, the
-  // dropped-output note or the output heading. The last output lines (a final
-  // error) matter most.
-  [TOOL_NAMES.BACKGROUND_COMMAND_OUTPUT]: { headLines: 4, tailLines: 0, maxChars: 15000, keep: 'end' },
-  [TOOL_NAMES.SEARCH_FILES]: { headLines: 50, tailLines: 0, maxChars: 8000 },
-  [TOOL_NAMES.FIND_FILES]: { headLines: 100, tailLines: 0, maxChars: 8000 },
-  [TOOL_NAMES.WEB_SEARCH]: { headLines: 0, tailLines: 0, maxChars: 8000 },
-  // The chat reads the presented paths back out of this result line by line,
-  // so it has to arrive whole. The tool caps it at 8 paths; the budget covers
-  // 8 maximum-length paths even at the strongest context-pressure scale.
-  [TOOL_NAMES.PRESENT_FILES]: { headLines: 0, tailLines: 0, maxChars: 200000 },
-};
+/** run_command's stdout and stderr together. */
+export const COMMAND_OUTPUT_RULE: TruncationRule = { headLines: 150, tailLines: 30, maxChars: 15000 };
 
-const DEFAULT_RULE: TruncationRule = { headLines: 0, tailLines: 0, maxChars: 3500 };
+/** http_fetch's response body. */
+export const HTTP_FETCH_RULE: TruncationRule = { headLines: 0, tailLines: 0, maxChars: 3500 };
 
-/**
- * Tools whose result is never cut here, at any context pressure. `run_command`
- * and `http_fetch` cut their own output in `execute` (see `commandTools.ts`
- * and `webTools.ts`), so the positions they record stay valid in the result.
- * `use_skill` returns the skill's instructions: the model has to follow all
- * of them, and a cut drops rules silently.
- */
-const UNTRUNCATED_TOOLS = new Set<string>([TOOL_NAMES.RUN_COMMAND, TOOL_NAMES.HTTP_FETCH, TOOL_NAMES.USE_SKILL]);
-
-/**
- * Per-tool overrides for MCP servers, matched on the tool suffix of a
- * `server__tool` name.
- *
- * Why this exists: `TRUNCATION_RULES` is keyed by builtin tool names, so every
- * MCP tool — browser or otherwise — fell through to `DEFAULT_RULE` and had its
- * result cut at 3500 characters by character count. For a tool that returns
- * structured data that is not a size limit, it is corruption: the JSON stops
- * being parseable and the caller cannot tell what was dropped.
- *
- * These tools bound their own output at the source, with a message saying what
- * was cut and how to ask for less (see `takeSnapshot`'s truncation message).
- * The budget here only has to be wide enough not to re-cut that already-bounded
- * payload behind its back. Context pressure still scales it down, so a full
- * context window is not held open by one page read.
- */
-const MCP_TOOL_RULES: Record<string, TruncationRule> = {
-  snapshot: { headLines: 0, tailLines: 0, maxChars: 32000 },
-  // `find` bounds its own payload to this exact number (`MAX_FIND_CHARS` in
-  // `abu-chrome-extension/src/content/index.ts`) by binary search on the real
-  // serialized size, so the character slicer below never gets to shred that
-  // JSON. Changing this without changing that one re-opens the gap.
-  find: { headLines: 0, tailLines: 0, maxChars: 16000 },
-  // Same arrangement as `find`, and for a sharper version of the same reason:
-  // a batch envelope carries up to 25 step results, each of which can itself
-  // be a whole `find` or `extract_text` payload. `MAX_BATCH_CHARS` in
-  // `abu-browser-bridge/src/batch.ts` trims the envelope to this exact number
-  // (dropping the oldest step results, with a message) so the character slicer
-  // below never has to. Changing one without the other re-opens the gap.
-  batch: { headLines: 0, tailLines: 0, maxChars: 32000 },
-  query_js: { headLines: 0, tailLines: 0, maxChars: 32000 },
-  extract_text: { headLines: 0, tailLines: 0, maxChars: 20000 },
-  extract_table: { headLines: 0, tailLines: 0, maxChars: 20000 },
-  get_tabs: { headLines: 0, tailLines: 0, maxChars: 8000 },
-};
-
-/** Servers whose tools are covered by `MCP_TOOL_RULES`. */
-const BROWSER_MCP_SERVERS = new Set(['abu-browser', 'abu-browser-bridge']);
-
-/**
- * Resolve the rule for a tool name, which may be a builtin name or a
- * namespaced `server__tool` MCP name.
- */
-function resolveRule(toolName: string): TruncationRule {
-  const builtin = TRUNCATION_RULES[toolName];
-  if (builtin) return builtin;
-
-  const separator = toolName.indexOf('__');
-  if (separator !== -1 && BROWSER_MCP_SERVERS.has(toolName.slice(0, separator))) {
-    const rule = MCP_TOOL_RULES[toolName.slice(separator + 2)];
-    if (rule) return rule;
-  }
-
-  return DEFAULT_RULE;
-}
-
-/**
- * Scale factor for truncation limits based on context pressure.
- * Returns a multiplier (0.0–1.0) that shrinks the truncation budget
- * when context is tight.
- *
- * @param contextUsagePercent - 0-100, how full the context window is
- */
-export function getContextPressureScale(contextUsagePercent?: number): number {
-  if (contextUsagePercent === undefined) return 1.0;
-  if (contextUsagePercent < 50) return 1.0;  // plenty of room
-  if (contextUsagePercent < 70) return 0.7;  // moderate pressure
-  if (contextUsagePercent < 85) return 0.4;  // high pressure
-  return 0.25;                                // critical — aggressive truncation
-}
-
-/** The line `truncateToolResult` writes where it dropped lines from the middle. */
+/** The line `truncateText` writes where it dropped lines from the middle. */
 export function linesOmittedMarker(count: number): string {
   return `[... ${count} lines omitted ...]`;
 }
 
-/** The line `truncateToolResult` writes where it dropped characters from the middle. */
+/** The line written where characters were dropped from the middle. */
 export function charsOmittedMarker(count: number): string {
   return `[... ${count} characters omitted ...]`;
 }
@@ -134,42 +32,7 @@ export const LINES_OMITTED_LINE = /^\[\.\.\. (\d+) lines omitted \.\.\.\]$/;
 /** A whole line written by `charsOmittedMarker`, its count captured. */
 export const CHARS_OMITTED_LINE = /^\[\.\.\. (\d+) characters omitted \.\.\.\]$/;
 
-/**
- * Truncate a tool result based on the tool type.
- *
- * @param toolName - Name of the tool that produced the result
- * @param result - Raw result string
- * @param contextUsagePercent - Optional context usage (0-100). When provided,
- *   truncation limits are scaled down under context pressure, keeping more room
- *   for conversation history.
- */
-export function truncateToolResult(toolName: string, result: string, contextUsagePercent?: number): string {
-  if (!result) return result;
-  if (UNTRUNCATED_TOOLS.has(toolName)) return result;
-
-  const rule = scaledTruncationRule(toolName, contextUsagePercent);
-  if (rule.keep === 'end') {
-    return result.length <= rule.maxChars ? result : keepHeaderAndEnd(result, rule.headLines, rule.maxChars);
-  }
-  return truncateText(result, rule);
-}
-
-/** The rule for a tool at the current context pressure: the scaling truncateToolResult applies today. */
-export function scaledTruncationRule(toolName: string, contextUsagePercent?: number): TruncationRule {
-  const baseRule = resolveRule(toolName);
-  const scale = getContextPressureScale(contextUsagePercent);
-  if (scale >= 1.0) return baseRule;
-  const maxChars = Math.max(1500, Math.floor(baseRule.maxChars * scale));
-  // A kept header stays whole; only the room for the end shrinks.
-  if (baseRule.keep === 'end') return { ...baseRule, maxChars };
-  return {
-    headLines: Math.max(20, Math.floor(baseRule.headLines * scale)),
-    tailLines: Math.max(5, Math.floor(baseRule.tailLines * scale)),
-    maxChars,
-  };
-}
-
-/** Head and tail lines, then head and tail characters: the cut truncateToolResult applies to one text. */
+/** Head and tail lines, then head and tail characters. */
 export function truncateText(text: string, rule: TruncationRule): string {
   // If within char limit, no truncation needed
   if (text.length <= rule.maxChars) return text;
@@ -213,38 +76,4 @@ function charTruncate(text: string, maxChars: number): string {
   const omitted = text.length - headChars - tailChars;
 
   return `${head}\n\n${charsOmittedMarker(omitted)}\n\n${tail}`;
-}
-
-/** Longest header line kept whole by `keepHeaderAndEnd` (a long command line is cut). */
-const HEADER_LINE_MAX_CHARS = 200;
-/** Room for the two omission lines `keepHeaderAndEnd` may write. */
-const OMISSION_LINES_CHARS = 100;
-
-/**
- * Keep the first `headerLines` lines and as many of the last lines as fit in
- * `maxChars`. A last line longer than the room left keeps its end.
- */
-function keepHeaderAndEnd(text: string, headerLines: number, maxChars: number): string {
-  const lines = text.split('\n');
-  const header = lines.slice(0, headerLines).flatMap((line) => (
-    line.length <= HEADER_LINE_MAX_CHARS
-      ? [line]
-      : [line.slice(0, HEADER_LINE_MAX_CHARS), charsOmittedMarker(line.length - HEADER_LINE_MAX_CHARS)]
-  ));
-  const body = lines.slice(headerLines);
-  const room = Math.max(0, maxChars - header.join('\n').length - OMISSION_LINES_CHARS);
-
-  let first = body.length;
-  let used = 0;
-  while (first > 0 && used + body[first - 1].length + 1 <= room) {
-    used += body[first - 1].length + 1;
-    first -= 1;
-  }
-  if (first === 0) return [...header, ...body].join('\n');
-  if (first < body.length) return [...header, linesOmittedMarker(first), ...body.slice(first)].join('\n');
-
-  const last = body[body.length - 1];
-  const kept = last.slice(last.length - room);
-  const omitted = body.length > 1 ? [linesOmittedMarker(body.length - 1)] : [];
-  return [...header, ...omitted, charsOmittedMarker(last.length - kept.length), kept].join('\n');
 }

@@ -1,275 +1,52 @@
 import { describe, it, expect } from 'vitest';
-import { truncateToolResult, truncateText, scaledTruncationRule } from './truncation';
+import {
+  CHARS_OMITTED_LINE,
+  COMMAND_OUTPUT_RULE,
+  HTTP_FETCH_RULE,
+  LINES_OMITTED_LINE,
+  charsOmittedMarker,
+  linesOmittedMarker,
+  truncateText,
+} from './truncation';
 
-describe('truncation', () => {
-  // ── No truncation needed ──
-  describe('no truncation needed', () => {
-    it('returns empty string as-is', () => {
-      expect(truncateToolResult('read_file', '')).toBe('');
-    });
-
-    it('returns a present_files result of eight maximum-length paths whole under full context pressure', () => {
-      const longPath = `/${'d'.repeat(4000)}/report.md`;
-      const result = Array.from({ length: 8 }, () => `Presented ${longPath}`).join('\n');
-      expect(truncateToolResult('present_files', result, 99)).toBe(result);
-    });
-
-    it('returns short result as-is for read_file', () => {
-      const short = 'Hello world\nLine 2';
-      expect(truncateToolResult('read_file', short)).toBe(short);
-    });
-
-    it('returns short result as-is for unknown tool', () => {
-      const short = 'Short result';
-      expect(truncateToolResult('unknown_tool', short)).toBe(short);
-    });
-
-    it('never cuts use_skill instructions, even under critical context pressure', () => {
-      const instructions = `### docx\n${'rule line\n'.repeat(5000)}`;
-      expect(truncateToolResult('use_skill', instructions)).toBe(instructions);
-      expect(truncateToolResult('use_skill', instructions, 95)).toBe(instructions);
-    });
-
-    it('returns result within maxChars as-is', () => {
-      // read_file maxChars = 15000, this is under that
-      const text = 'x'.repeat(14999);
-      expect(truncateToolResult('read_file', text)).toBe(text);
-    });
+describe('truncateText', () => {
+  it('returns a text within the limit as it is', () => {
+    const text = 'short output';
+    expect(truncateText(text, COMMAND_OUTPUT_RULE)).toBe(text);
+    expect(truncateText('', COMMAND_OUTPUT_RULE)).toBe('');
   });
 
-  // ── Line-based truncation (read_file) ──
-  // read_file: headLines=150, tailLines=20, maxChars=15000
-  describe('line-based truncation — read_file', () => {
-    it('truncates with head and tail lines when exceeding maxChars', () => {
-      // 500 lines × 100 chars each = 50000 chars (exceeds maxChars=15000)
-      const lines = Array.from({ length: 500 }, (_, i) => `Line ${i + 1}: ${'x'.repeat(90)}`);
-      const result = truncateToolResult('read_file', lines.join('\n'));
-      expect(result).toContain('Line 1:');
-      // Line-based truncation creates head(150)+omission+tail(20) → still > 15000 chars
-      // Then char-level truncation kicks in, so we check for the omission message
-      expect(result).toContain('omitted');
-      expect(result.length).toBeLessThan(lines.join('\n').length);
-    });
+  it('keeps the head and tail lines of long command output, with the omission line between', () => {
+    const lines = Array.from({ length: 400 }, (_, i) => `line ${i} ${'x'.repeat(40)}`);
+    const result = truncateText(lines.join('\n'), COMMAND_OUTPUT_RULE);
+
+    expect(result.length).toBeLessThanOrEqual(COMMAND_OUTPUT_RULE.maxChars);
+    expect(result.startsWith('line 0 ')).toBe(true);
+    expect(result).toContain('line 149 ');
+    expect(result).not.toContain('line 150 ');
+    expect(result).toContain('line 399 ');
+    expect(result.split('\n').some((line) => LINES_OMITTED_LINE.test(line))).toBe(true);
   });
 
-  // ── Line-based truncation (list_directory) ──
-  // list_directory: headLines=100, tailLines=0, maxChars=8000
-  describe('line-based truncation — list_directory', () => {
-    it('truncates with headLines only (no tail)', () => {
-      // 300 lines × 40 chars = 12000 chars (exceeds maxChars=8000)
-      const lines = Array.from({ length: 300 }, (_, i) => `file_${i}.txt${'_'.repeat(25)}`);
-      const result = truncateToolResult('list_directory', lines.join('\n'));
-      expect(result).toContain('file_0.txt');
-      expect(result).toContain('file_99.txt'); // headLines = 100
-      expect(result).toContain('lines omitted');
-    });
+  it('falls back to a character cut when the kept lines are still too long', () => {
+    const lines = Array.from({ length: 400 }, (_, i) => `line ${i} ${'y'.repeat(400)}`);
+    const result = truncateText(lines.join('\n'), COMMAND_OUTPUT_RULE);
+    expect(result.length).toBeLessThanOrEqual(COMMAND_OUTPUT_RULE.maxChars);
+    expect(result.split('\n').some((line) => CHARS_OMITTED_LINE.test(line))).toBe(true);
   });
 
-  // ── Line-based truncation (run_command) ──
-  // run_command: headLines=150, tailLines=30, maxChars=15000
-  describe('line-based truncation — run_command', () => {
-    it('truncates command output with head and tail', () => {
-      // 400 lines × 80 chars = 32000 chars (exceeds maxChars=15000)
-      const lines = Array.from({ length: 400 }, (_, i) => `Output line ${i + 1}: ${'y'.repeat(60)}`);
-      const result = truncateText(lines.join('\n'), scaledTruncationRule('run_command'));
-      expect(result).toContain('Output line 1:');
-      expect(result).toContain('Output line 150:'); // headLines = 150
-      expect(result).toContain('lines omitted');
-      expect(result).toContain('Output line 400:'); // tailLines = 30
-    });
-  });
-
-  // ── background_command_output: header lines and the end of the output ──
-  describe('background_command_output', () => {
-    const status = [
-      'id: bg-0a1b2c3d',
-      'command: npm run build',
-      'status: failed (exit code 1)',
-      'exit code: 1',
-    ];
-    const header = [...status, 'output (last 200 of 950 lines):'];
-
-    it('keeps the status lines and the final error of 200 output lines', () => {
-      const output = Array.from({ length: 199 }, (_, i) => `build step ${i + 1}: ${'z'.repeat(64)}`);
-      const raw = [...header, ...output, 'Error: Cannot find module "./missing"'].join('\n');
-      expect(raw.length).toBeGreaterThan(15000);
-
-      const result = truncateToolResult('background_command_output', raw);
-
-      expect(result.length).toBeLessThanOrEqual(15000);
-      expect(result.startsWith(`${status.join('\n')}\n[... `)).toBe(true);
-      expect(result.endsWith('build step 199: ' + 'z'.repeat(64) + '\nError: Cannot find module "./missing"')).toBe(true);
-      expect(result).toContain('lines omitted');
-      expect(result).not.toContain('build step 1:');
-    });
-
-    it('keeps the status lines and the end of a single long output line', () => {
-      for (const lead of [status, ['id: bg-0a1b2c3d', 'command: npm run dev', 'status: running', 'output:']]) {
-        const raw = [...lead, `${'x'.repeat(20000)}FATAL at the end`].join('\n');
-
-        const result = truncateToolResult('background_command_output', raw);
-
-        expect(result.length).toBeLessThanOrEqual(15000);
-        expect(result.startsWith(`${lead.join('\n')}\n`)).toBe(true);
-        expect(result.endsWith('FATAL at the end')).toBe(true);
-        expect(result).toContain('characters omitted');
-      }
-    });
-
-    it('keeps the header and the final error under the strongest context pressure', () => {
-      const output = Array.from({ length: 199 }, (_, i) => `build step ${i + 1}: ${'z'.repeat(64)}`);
-      const raw = [...header, ...output, 'Error: Cannot find module "./missing"'].join('\n');
-
-      const result = truncateToolResult('background_command_output', raw, 99);
-
-      expect(result.length).toBeLessThanOrEqual(3750);
-      expect(result.startsWith(`${status.join('\n')}\n`)).toBe(true);
-      expect(result.endsWith('Error: Cannot find module "./missing"')).toBe(true);
-    });
-
-    it('cuts a long command line in the header and still keeps the status lines', () => {
-      const raw = [
-        'id: bg-0a1b2c3d',
-        `command: node -e "${'a'.repeat(5000)}"`,
-        'status: running',
-        'output:',
-        ...Array.from({ length: 300 }, (_, i) => `tick ${i + 1}: ${'q'.repeat(60)}`),
-      ].join('\n');
-
-      const result = truncateToolResult('background_command_output', raw, 99);
-
-      expect(result.length).toBeLessThanOrEqual(3750);
-      expect(result).toContain('status: running');
-      expect(result).toContain('characters omitted');
-      expect(result.endsWith(`tick 300: ${'q'.repeat(60)}`)).toBe(true);
-    });
-
-    it('leaves the list results as they are', () => {
-      const none = 'No background commands in this conversation.';
-      expect(truncateToolResult('background_command_output', none)).toBe(none);
-      const list = 'Background commands in this conversation:\n- bg-0a1b2c3d · running · 3m42s · npm run dev';
-      expect(truncateToolResult('background_command_output', list)).toBe(list);
-    });
-  });
-
-  // ── Character-based truncation (default rule) ──
-  // default: headLines=0, tailLines=0, maxChars=3500
-  describe('character-based truncation — default', () => {
-    it('truncates long result for unknown tool', () => {
-      const longText = 'x'.repeat(5000);
-      const result = truncateToolResult('unknown_tool', longText);
-      expect(result.length).toBeLessThan(5000);
-      expect(result).toContain('characters omitted');
-    });
-
-    it('preserves head and tail in char truncation', () => {
-      const text = 'HEAD' + 'x'.repeat(5000) + 'TAIL';
-      const result = truncateToolResult('unknown_tool', text);
-      expect(result).toContain('HEAD');
-      expect(result).toContain('TAIL');
-    });
-  });
-
-  // ── Search tools ──
-  // search_files: headLines=50, tailLines=0, maxChars=8000
-  // find_files: headLines=100, tailLines=0, maxChars=8000
-  describe('search tools', () => {
-    it('truncates search_files results', () => {
-      // 200 lines × 60 chars = 12000 chars (exceeds maxChars=8000)
-      const lines = Array.from({ length: 200 }, (_, i) => `match_${i}: found ${'_'.repeat(40)}`);
-      const result = truncateToolResult('search_files', lines.join('\n'));
-      expect(result).toContain('match_0');
-      expect(result).toContain('lines omitted');
-    });
-
-    it('truncates find_files results', () => {
-      // 200 lines × 60 chars = 12000 chars
-      const lines = Array.from({ length: 200 }, (_, i) => `/path/to/project/file_${i}.ts${'_'.repeat(30)}`);
-      const result = truncateToolResult('find_files', lines.join('\n'));
-      expect(result).toContain('file_0');
-      expect(result).toContain('lines omitted');
-    });
-  });
-
-  // ── Further char truncation after line truncation ──
-  describe('combined truncation', () => {
-    it('applies char truncation if line-truncated result still exceeds maxChars', () => {
-      // read_file maxChars = 15000, headLines = 150
-      // Create 250 lines of 200 chars each → head 200 lines = 40000 chars → exceeds maxChars
-      const lines = Array.from({ length: 250 }, () => 'x'.repeat(200));
-      const result = truncateToolResult('read_file', lines.join('\n'));
-      expect(result.length).toBeLessThanOrEqual(21000); // maxChars + some overhead
-      expect(result).toContain('characters omitted');
-    });
+  it('cuts an http_fetch body by characters, keeping its head and tail', () => {
+    const body = `BEGIN${'b'.repeat(10_000)}END`;
+    const result = truncateText(body, HTTP_FETCH_RULE);
+    expect(result.length).toBeLessThanOrEqual(HTTP_FETCH_RULE.maxChars);
+    expect(result.startsWith('BEGIN')).toBe(true);
+    expect(result.endsWith('END')).toBe(true);
   });
 });
 
-describe('MCP tool results', () => {
-  const bigJson = (chars: number) => JSON.stringify({ elements: 'x'.repeat(chars) }, null, 2);
-
-  it('does not blind-cut a browser snapshot at the generic 3500-char default', () => {
-    const result = truncateToolResult('abu-browser-bridge__snapshot', bigJson(20000));
-    expect(result.length).toBeGreaterThan(20000);
-    expect(result).not.toContain('characters omitted');
-  });
-
-  it('applies the same rule to the built-in browser server', () => {
-    const result = truncateToolResult('abu-browser__snapshot', bigJson(20000));
-    expect(result).not.toContain('characters omitted');
-  });
-
-  it('does not blind-cut query_js results after the source-bounded 30000-char budget', () => {
-    const result = truncateToolResult('abu-browser-bridge__query_js', bigJson(28000));
-    expect(result.length).toBeGreaterThan(28000);
-    expect(result).not.toContain('characters omitted');
-  });
-
-  it('applies the query_js budget to the built-in browser server too', () => {
-    const result = truncateToolResult('abu-browser__query_js', bigJson(28000));
-    expect(result).not.toContain('characters omitted');
-  });
-
-  it('still bounds a snapshot that blew past its own in-page budget', () => {
-    const result = truncateToolResult('abu-browser-bridge__snapshot', bigJson(80000));
-    expect(result.length).toBeLessThan(80000);
-    expect(result).toContain('characters omitted');
-  });
-
-  it('leaves unrelated MCP servers on the conservative default', () => {
-    // Widening the browser budget must not silently widen every MCP tool:
-    // an unknown server can return anything, and context is shared.
-    const result = truncateToolResult('some-other-server__snapshot', bigJson(20000));
-    expect(result).toContain('characters omitted');
-  });
-
-  it('leaves un-ruled browser tools on the default', () => {
-    const result = truncateToolResult('abu-browser-bridge__execute_js', bigJson(20000));
-    expect(result).toContain('characters omitted');
-  });
-
-  it('still scales the browser budget down under context pressure', () => {
-    const roomy = truncateToolResult('abu-browser-bridge__snapshot', bigJson(40000), 10);
-    const squeezed = truncateToolResult('abu-browser-bridge__snapshot', bigJson(40000), 95);
-    expect(squeezed.length).toBeLessThan(roomy.length);
-  });
-});
-
-describe('tools that bound their own output', () => {
-  const longText = Array.from({ length: 400 }, (_, i) => `${String(i).padStart(4, '0')} ${'z'.repeat(95)}`).join('\n');
-
-  it('leaves run_command and http_fetch results to their tools', () => {
-    expect(truncateToolResult('run_command', longText, 90)).toBe(longText);
-    expect(truncateToolResult('http_fetch', longText, 90)).toBe(longText);
-  });
-
-  it('cuts one text the way truncateToolResult cuts a read_file result', () => {
-    const expected = truncateToolResult('read_file', longText, 60);
-    expect(expected).not.toBe(longText);
-    expect(truncateText(longText, scaledTruncationRule('read_file', 60))).toBe(expected);
-  });
-
-  it('scales the run_command rule under context pressure', () => {
-    expect(scaledTruncationRule('run_command', 90)).toEqual({ headLines: 37, tailLines: 7, maxChars: 3750 });
-    expect(scaledTruncationRule('run_command')).toEqual({ headLines: 150, tailLines: 30, maxChars: 15000 });
+describe('omission markers', () => {
+  it('are whole lines the step view can recognize, with their counts', () => {
+    expect(LINES_OMITTED_LINE.exec(linesOmittedMarker(12))?.[1]).toBe('12');
+    expect(CHARS_OMITTED_LINE.exec(charsOmittedMarker(3456))?.[1]).toBe('3456');
   });
 });

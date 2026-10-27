@@ -210,7 +210,7 @@ describe('background_command_output', () => {
     expect(result).toContain('(no output)');
   });
 
-  it('keeps the final error of 200 long output lines after the result is truncated', async () => {
+  it('returns 200 long output lines whole, with the status lines and the final error', async () => {
     const id = await startInConversation('conv-a', 'npm run build');
     const lines = Array.from({ length: 199 }, (_, i) => `build step ${i + 1}: ${'z'.repeat(64)}`);
     write(id, `${lines.join('\n')}\nError: Cannot find module "./missing"\n`);
@@ -221,11 +221,12 @@ describe('background_command_output', () => {
     expect(result).toContain(`id: ${id}`);
     expect(result).toContain('status: failed (exit code 1)');
     expect(result).toContain('exit code: 1');
-    expect(result).toContain('lines omitted');
+    expect(result).toContain('build step 1: ');
+    expect(result).toContain('build step 199: ');
     expect(result.endsWith('Error: Cannot find module "./missing"')).toBe(true);
   });
 
-  it('writes a multi-line command on one line, so a truncated result keeps its status and exit code', async () => {
+  it('writes a multi-line command on one line, so the header keeps its status and exit code lines', async () => {
     const command = 'npm run build \\\n  --verbose\r\nnode -e "\nprocess.exit(1)\n"';
     const id = await startInConversation('conv-a', command);
     const lines = Array.from({ length: 199 }, (_, i) => `build step ${i + 1}: ${'z'.repeat(64)}`);
@@ -237,7 +238,6 @@ describe('background_command_output', () => {
     expect(result).toContain('command: npm run build \\\\n  --verbose\\nnode -e "\\nprocess.exit(1)\\n"\n');
     expect(result).toContain('status: failed (exit code 1)');
     expect(result).toContain('exit code: 1');
-    expect(result).toContain('lines omitted');
     expect(result.endsWith('Error: Cannot find module "./missing"')).toBe(true);
 
     const listed = String(await executeAnyTool('background_command_output', {}, undefined, undefined, context('conv-a')));

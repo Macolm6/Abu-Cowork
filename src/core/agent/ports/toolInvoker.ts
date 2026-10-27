@@ -55,8 +55,6 @@ export interface ToolInvoker {
     onRequireConfirmation?: CommandConfirmCallback,
     onRequireFilePermission?: FilePermissionCallback,
     toolContext?: ToolExecutionContext,
-    /** Current context window usage (0-100). Scales truncation limits under pressure. */
-    contextUsagePercent?: number
   ): Promise<ToolResult>;
   /** Mirrors registry.ts's `toolResultToString`. */
   toolResultToString(result: ToolResult): string;
@@ -70,8 +68,8 @@ export interface ToolInvoker {
 export function createInProcessToolInvoker(): ToolInvoker {
   return {
     getAllTools: () => getAllTools(),
-    executeAnyTool: (name, input, onRequireConfirmation, onRequireFilePermission, toolContext, contextUsagePercent) =>
-      executeAnyTool(name, input, onRequireConfirmation, onRequireFilePermission, toolContext, contextUsagePercent),
+    executeAnyTool: (name, input, onRequireConfirmation, onRequireFilePermission, toolContext) =>
+      executeAnyTool(name, input, onRequireConfirmation, onRequireFilePermission, toolContext),
     toolResultToString: (result) => toolResultToString(result),
   };
 }

@@ -1,18 +1,21 @@
 /**
- * Context Window Manager — prevent context overflow
+ * Context Window Manager — the last check before a request is sent.
  *
- * Strategy:
- * 1. Always keep system prompt
- * 2. Keep the first user message while the normal compression tiers still fit
- * 3. Keep the most recent complete conversation rounds
- * 4. Older messages: keep user messages, compress assistant to summary
- * 5. Enforce a final hard invariant, preferring the latest user instruction
- *    when only one message can fit safely
+ * Compaction (compactionService.ts) keeps a long task under the budget; this
+ * gate only acts when what is about to be sent still does not fit. It cuts
+ * by the same unit as compaction, the step (one assistant message with all of
+ * its tool calls and results):
+ * 1. Always keep the system prompt and every user message.
+ * 2. Drop whole steps from the oldest, always keeping the newest step, and
+ *    say in their place how many were dropped.
+ * 3. Preserve every user and system message, cutting the newest step's
+ *    fields to the length that fits.
+ * 4. Keep the fixed messages alone when necessary; throw if they cannot fit.
  */
 
-import type { Message, ToolCallForContext, ToolResultContent } from '../../types';
+import type { Message, ToolResultContent } from '../../types';
 import { estimateTokens, estimateMessageTokens } from './tokenEstimator';
-import { getMessageText, identifyRounds, RECENT_ROUNDS_TO_KEEP } from './contextUtils';
+import { getMessageText } from './contextUtils';
 import { createLogger } from '../logging/logger';
 
 const logger = createLogger('contextManager');
@@ -21,13 +24,12 @@ const ASSISTANT_SUMMARY_MAX_CHARS = 200;
 const CONTEXT_SAFETY_MARGIN_RATIO = 0.02;
 const CONTEXT_SAFETY_MARGIN_MAX_TOKENS = 4096;
 const CONTEXT_TRUNCATION_MARKER = '[Content truncated to fit the context budget]';
+const DROPPED_STEPS_ID = 'context-dropped-steps';
 
 export type ContextBudgetStrategy =
   | 'unchanged'
-  | 'compressed_middle'
-  | 'recent_rounds'
-  | 'last_two_rounds'
-  | 'last_round_compacted'
+  | 'dropped_steps'
+  | 'latest_step_compacted'
   | 'latest_user_only';
 
 export interface ContextBudgetResult {
@@ -54,7 +56,7 @@ export class ContextBudgetError extends Error {
     inputBudget: number,
   ) {
     const subject = code === 'INPUT_TOO_LARGE'
-      ? 'The latest user input'
+      ? 'The fixed conversation messages'
       : 'The system prompt and tool definitions';
     super(`${code}: ${subject} requires an estimated ${estimatedTokens} input tokens, but the safe input budget is ${inputBudget}.`);
     this.name = 'ContextBudgetError';
@@ -63,14 +65,6 @@ export class ContextBudgetError extends Error {
     this.inputBudget = inputBudget;
   }
 }
-
-/**
- * If the first round is older than this, treat it as stale and include it
- * in the compressible middle rounds instead of preserving it unconditionally.
- * This prevents very old "task context" from wasting tokens in long-lived
- * IM sessions where the original topic is no longer relevant.
- */
-const FIRST_ROUND_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 /**
  * Dynamic screenshot retention based on context usage.
@@ -243,37 +237,6 @@ function sanitizeToolPairs(messages: Message[]): Message[] {
   });
 }
 
-/**
- * Compress an assistant message to a brief summary
- */
-function compressAssistantMessage(msg: Message): Message {
-  const text = getMessageText(msg.content);
-  const truncatedText = text.length > ASSISTANT_SUMMARY_MAX_CHARS
-    ? text.slice(0, ASSISTANT_SUMMARY_MAX_CHARS) + '...'
-    : text;
-
-  // Summarize tool calls
-  const toolSummary = msg.toolCallsForContext?.map(
-    (tc: ToolCallForContext) => `[${tc.name}]`
-  ).join(', ') || msg.toolCalls?.filter(
-    (tc) => !tc.fromSubagent
-  ).map(
-    (tc) => `[${tc.name}]`
-  ).join(', ') || '';
-
-  const compressed = toolSummary
-    ? `${toolSummary}\n${truncatedText}`
-    : truncatedText;
-
-  return {
-    ...msg,
-    content: compressed,
-    thinking: undefined,
-    toolCalls: undefined,
-    toolCallsForContext: undefined,
-  };
-}
-
 function calculateSafetyMargin(rawInputBudget: number, contextWindowSize: number): number {
   if (rawInputBudget <= 0) return 0;
   return Math.min(
@@ -334,33 +297,53 @@ function compactHistoricalMessage(message: Message, maxCharsPerField: number): M
   };
 }
 
-function fitLastRoundToBudget(
+/** The newest user message that is the user's own words, else the newest user message. */
+function latestUserMessage(messages: Message[]): Message | undefined {
+  const users = messages.filter((message) => message.role === 'user');
+  return [...users].reverse().find((message) => !message.isSystem) ?? users.at(-1);
+}
+
+/** Every message except the oldest `count` steps, with one note where they were. */
+function withoutOldestSteps(messages: Message[], stepIndices: number[], count: number): Message[] {
+  const dropped = new Set(stepIndices.slice(0, count));
+  const result: Message[] = [];
+  messages.forEach((message, index) => {
+    if (index === stepIndices[0]) {
+      result.push({
+        id: DROPPED_STEPS_ID,
+        role: 'user',
+        content: `[${count} earlier step(s) were removed here to fit the context window]`,
+        timestamp: message.timestamp,
+        isSystem: true,
+      });
+    }
+    if (!dropped.has(index)) result.push(message);
+  });
+  return result;
+}
+
+function fitLatestStepToBudget(
   messages: Message[],
   fixedTokens: number,
   inputBudget: number,
 ): { messages: Message[]; strategy: ContextBudgetStrategy } {
-  const rounds = identifyRounds(messages);
-  const lastRound = rounds.at(-1) ?? [];
-  const latestUser = [...messages].reverse().find((message) => message.role === 'user');
-
-  if (!latestUser) {
-    return { messages: [], strategy: 'latest_user_only' };
+  const latestStep = [...messages].reverse().find((message) => message.role === 'assistant');
+  const kept = messages.filter((message) => message.role !== 'assistant' || message === latestStep);
+  const fixedMessages = kept.filter((message) => message !== latestStep);
+  const fixedMessageTokens = fixedTokens + estimateMessageTokens(fixedMessages);
+  if (fixedMessageTokens > inputBudget) {
+    throw new ContextBudgetError('INPUT_TOO_LARGE', fixedMessageTokens, inputBudget);
   }
 
-  const latestUserTokens = fixedTokens + estimateMessageTokens([latestUser]);
-  if (latestUserTokens > inputBudget) {
-    throw new ContextBudgetError('INPUT_TOO_LARGE', latestUserTokens, inputBudget);
-  }
-
-  const compactRound = (maxCharsPerField: number): Message[] => stripOldThinking(sanitizeToolPairs(
-    lastRound.map((message) => (
-      message === latestUser
-        ? message
-        : compactHistoricalMessage(message, maxCharsPerField)
+  const compactStep = (maxCharsPerField: number): Message[] => stripOldThinking(sanitizeToolPairs(
+    kept.map((message) => (
+      message === latestStep
+        ? compactHistoricalMessage(message, maxCharsPerField)
+        : message
     )),
   ));
 
-  const maxChars = lastRound.reduce((largest, message) => {
+  const maxChars = kept.reduce((largest, message) => {
     const candidates = [getMessageText(message.content).length, message.thinking?.length ?? 0];
     for (const toolCall of message.toolCalls ?? []) {
       candidates.push(
@@ -388,7 +371,7 @@ function fitLastRoundToBudget(
   let best: Message[] | null = null;
   while (low <= high) {
     const midpoint = Math.floor((low + high) / 2);
-    const candidate = compactRound(midpoint);
+    const candidate = compactStep(midpoint);
     const candidateTokens = fixedTokens + estimateMessageTokens(candidate);
     if (candidateTokens <= inputBudget) {
       best = candidate;
@@ -399,10 +382,20 @@ function fitLastRoundToBudget(
   }
 
   if (best) {
-    return { messages: best, strategy: 'last_round_compacted' };
+    return { messages: best, strategy: 'latest_step_compacted' };
   }
 
-  return { messages: [latestUser], strategy: 'latest_user_only' };
+  return { messages: fixedMessages, strategy: 'latest_user_only' };
+}
+
+/** Input budget of a request: window minus output reserve minus a safety margin. */
+export function computeInputBudget(
+  contextWindowSize: number,
+  reserveForOutput: number,
+): { inputBudget: number; safetyMarginTokens: number } {
+  const rawInputBudget = contextWindowSize - reserveForOutput;
+  const safetyMarginTokens = calculateSafetyMargin(rawInputBudget, contextWindowSize);
+  return { inputBudget: Math.max(0, rawInputBudget - safetyMarginTokens), safetyMarginTokens };
 }
 
 /**
@@ -421,9 +414,7 @@ export function enforceContextBudget(
   reserveForOutput: number,
   toolSchemaTokens?: number
 ): ContextBudgetResult {
-  const rawInputBudget = contextWindowSize - reserveForOutput;
-  const safetyMarginTokens = calculateSafetyMargin(rawInputBudget, contextWindowSize);
-  const inputBudget = Math.max(0, rawInputBudget - safetyMarginTokens);
+  const { inputBudget, safetyMarginTokens } = computeInputBudget(contextWindowSize, reserveForOutput);
   const systemTokens = estimateTokens(systemPrompt);
   const fixedTokens = systemTokens + (toolSchemaTokens ?? 0);
 
@@ -458,106 +449,59 @@ export function enforceContextBudget(
     usagePercent,
   });
 
-  const rounds = identifyRounds(messages);
-
-  const finalize = (
-    candidate: Message[],
-    strategy: ContextBudgetStrategy,
-  ): ContextBudgetResult => {
-    const sanitized = stripOldThinking(sanitizeToolPairs(candidate));
-    const candidateTokens = fixedTokens + estimateMessageTokens(sanitized);
-    if (candidateTokens <= inputBudget) {
-      return {
-        messages: sanitized,
-        tokensBefore: totalTokens,
-        tokensAfter: candidateTokens,
-        inputBudget,
-        safetyMarginTokens,
-        strategy,
-      };
-    }
-
-    const fitted = fitLastRoundToBudget(messages, fixedTokens, inputBudget);
-    const fittedTokens = fixedTokens + estimateMessageTokens(fitted.messages);
+  const result = (candidate: Message[], strategy: ContextBudgetStrategy): ContextBudgetResult => {
+    const tokensAfter = fixedTokens + estimateMessageTokens(candidate);
     logger.info('Context budget enforced', {
       tokensBefore: totalTokens,
-      tokensAfter: fittedTokens,
+      tokensAfter,
       inputBudget,
       safetyMarginTokens,
-      strategy: fitted.strategy,
+      strategy,
     });
     return {
-      messages: fitted.messages,
+      messages: candidate,
       tokensBefore: totalTokens,
-      tokensAfter: fittedTokens,
+      tokensAfter,
       inputBudget,
       safetyMarginTokens,
-      strategy: fitted.strategy,
+      strategy,
     };
   };
 
-  if (rounds.length <= 1) {
-    return finalize(messages, 'last_round_compacted');
+  const latestUser = latestUserMessage(messages);
+  if (!latestUser) {
+    return result([], 'latest_user_only');
+  }
+  const latestUserTokens = fixedTokens + estimateMessageTokens([latestUser]);
+  if (latestUserTokens > inputBudget) {
+    throw new ContextBudgetError('INPUT_TOO_LARGE', latestUserTokens, inputBudget);
   }
 
-  // Keep first round only if it's recent enough to be relevant context.
-  // In long-lived IM sessions, the first round from weeks ago is stale noise.
-  const firstRoundAge = Date.now() - (rounds[0]?.[0]?.timestamp ?? Date.now());
-  const keepFirstRound = firstRoundAge < FIRST_ROUND_MAX_AGE_MS;
-
-  const firstRound = keepFirstRound ? rounds[0] : [];
-  const recentRounds = rounds.slice(-RECENT_ROUNDS_TO_KEEP);
-  const middleStart = keepFirstRound ? 1 : 0;
-  const middleRounds = rounds.slice(middleStart, rounds.length - RECENT_ROUNDS_TO_KEEP);
-
-  // If no middle rounds, we can only return what we have
-  if (middleRounds.length === 0) {
-    return finalize(messages, 'recent_rounds');
-  }
-
-  // Step 1: Compress middle assistant messages, keep user messages
-  const compressedMiddle: Message[] = [];
-  for (const round of middleRounds) {
-    for (const msg of round) {
-      if (msg.role === 'user') {
-        compressedMiddle.push(msg);
-      } else if (msg.role === 'assistant') {
-        compressedMiddle.push(compressAssistantMessage(msg));
-      }
+  // Drop the fewest oldest steps that make it fit, never the newest step.
+  const stepIndices = messages.flatMap((message, index) => (message.role === 'assistant' ? [index] : []));
+  const fits = (count: number): Message[] | null => {
+    const candidate = stripOldThinking(withoutOldestSteps(messages, stepIndices, count));
+    return fixedTokens + estimateMessageTokens(candidate) <= inputBudget ? candidate : null;
+  };
+  let low = 1;
+  let high = stepIndices.length - 1;
+  let best: Message[] | null = null;
+  while (low <= high) {
+    const midpoint = Math.floor((low + high) / 2);
+    const candidate = fits(midpoint);
+    if (candidate) {
+      best = candidate;
+      high = midpoint - 1;
+    } else {
+      low = midpoint + 1;
     }
   }
-
-  const result1 = [
-    ...firstRound,
-    ...compressedMiddle,
-    ...recentRounds.flat(),
-  ];
-
-  const tokens1 = systemTokens + (toolSchemaTokens ?? 0) + estimateMessageTokens(sanitizeToolPairs(result1));
-  if (tokens1 <= inputBudget) {
-    return finalize(result1, 'compressed_middle');
+  if (best) {
+    return result(best, 'dropped_steps');
   }
 
-  // Step 2: Drop middle entirely, keep first + recent
-  const result2 = [
-    ...firstRound,
-    ...recentRounds.flat(),
-  ];
-
-  const tokens2 = systemTokens + (toolSchemaTokens ?? 0) + estimateMessageTokens(sanitizeToolPairs(result2));
-  if (tokens2 <= inputBudget) {
-    return finalize(result2, 'recent_rounds');
-  }
-
-  // Step 3: Aggressive — keep first user message (if recent) + last 2 rounds
-  const lastTwoRounds = rounds.slice(-2);
-  if (keepFirstRound) {
-    const firstUserMsg = messages.find((m) => m.role === 'user');
-    if (firstUserMsg) {
-      return finalize([firstUserMsg, ...lastTwoRounds.flat()], 'last_two_rounds');
-    }
-  }
-  return finalize(lastTwoRounds.flat(), 'last_two_rounds');
+  const fitted = fitLatestStepToBudget(messages, fixedTokens, inputBudget);
+  return result(fitted.messages, fitted.strategy);
 }
 
 export function prepareContextMessages(

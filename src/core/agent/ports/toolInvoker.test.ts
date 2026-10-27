@@ -51,7 +51,6 @@ describe('createInProcessToolInvoker', () => {
       onRequireConfirmation,
       onRequireFilePermission,
       toolContext,
-      42,
     );
 
     expect(out).toBe(result);
@@ -61,7 +60,6 @@ describe('createInProcessToolInvoker', () => {
       onRequireConfirmation,
       onRequireFilePermission,
       toolContext,
-      42,
     );
   });
 
@@ -70,7 +68,7 @@ describe('createInProcessToolInvoker', () => {
     const invoker = createInProcessToolInvoker();
     const out = await invoker.executeAnyTool('read_file', { path: '/x' });
     expect(out).toBe('done');
-    expect(mockExecuteAnyTool).toHaveBeenCalledWith('read_file', { path: '/x' }, undefined, undefined, undefined, undefined);
+    expect(mockExecuteAnyTool).toHaveBeenCalledWith('read_file', { path: '/x' }, undefined, undefined, undefined);
   });
 
   it('toolResultToString() forwards to registry.toolResultToString', () => {

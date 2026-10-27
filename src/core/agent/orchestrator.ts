@@ -352,6 +352,7 @@ export async function buildSystemPromptSections(
   turnCount?: number,
   toolContext?: ToolExecutionContext,
   profile?: PromptVariantSource,
+  purpose: 'run' | 'compaction' = 'run',
 ): Promise<PromptSection[]> {
   const sections: PromptSection[] = [];
   const isSkillMode = route.type === 'skill' && route.skillContent;
@@ -375,7 +376,7 @@ export async function buildSystemPromptSections(
       route.skill.skillDir,
       conversationId,
     );
-    if (settings.allowSkillCommands) {
+    if (purpose === 'run' && settings.allowSkillCommands) {
       processedSkillContent = await executeInlineCommands(
         processedSkillContent,
         route.skill.skillDir,
@@ -490,7 +491,7 @@ export async function buildSystemPromptSections(
   // Soul bootstrap: one-time personality introduction prompt
   // Triggers after user has had at least one deep conversation (≥3 user messages)
   const settings = getSettingsReader().getSnapshot();
-  if (!settings.soulInitialized && !isForkContext && !isSkillMode && !route.team) {
+  if (purpose === 'run' && !settings.soulInitialized && !isForkContext && !isSkillMode && !route.team) {
     const chatMod = await import('../../stores/chatStore');
     const conversations = Object.values(chatMod.useChatStore.getState().conversations);
     const hasDeep = conversations.some(c =>
@@ -587,7 +588,7 @@ You are replying in an IM chat. Follow this style:
     // Their trusted tool context owns the workspace snapshot; they must never
     // inherit the mutable foreground workspace merely because IM is absent.
     const headless = toolContext?.interactionMode === 'background';
-    workspacePath = headless
+    workspacePath = headless || purpose === 'compaction'
       ? (toolContext?.workspacePath ?? null)
       : getWorkspaceReader().getCurrentPath();
 
@@ -601,7 +602,7 @@ You can use file tools to read and write files in this directory. When the user 
       // runs (which reach this else-branch because it's gated only on imContext)
       // must NOT auto-create/bind a ~/Abu workspace, so they fall back to the
       // hidden app-data session output dir just as before.
-      const suggested = headless ? null : await prepareSuggestedWorkspace(conversationId);
+      const suggested = headless || purpose === 'compaction' ? null : await prepareSuggestedWorkspace(conversationId);
       const defaultDir = suggested ?? (await getSessionOutputDir(conversationId));
       sections.push({ name: 'workspace-hint', text: `\n## Workspace Notice
 No workspace folder is bound yet.${defaultDir ? `

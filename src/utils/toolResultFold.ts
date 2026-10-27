@@ -1,4 +1,5 @@
 import { CHARS_OMITTED_LINE, LINES_OMITTED_LINE } from '@/core/context/truncation';
+import { isSpillNoteLine } from '@/core/context/toolResultSpill';
 import { DURABLE_RESULT_OMITTED_NOTE } from '@/core/session/durableToolResultContent';
 
 /** Appended by electron/commandHost.cjs when a command's output passes its 2 MB buffer. */
@@ -44,12 +45,19 @@ function noteOf(line: string): ToolResultRow | null {
 /**
  * A tool result as rows: its own lines, and one note row for each line Abu's
  * code wrote where content was left out. The blank line written on each side
- * of such a line belongs to the note.
+ * of such a line belongs to the note. The line telling the model where a long
+ * result's full text is (toolResultSpill.ts) is no row at all: the note on the
+ * left-out middle already shows the user what is missing.
  */
 export function toResultRows(text: string): ToolResultRow[] {
   const lines = text.split('\n');
   const rows: ToolResultRow[] = [];
   for (let index = 0; index < lines.length; index++) {
+    if (isSpillNoteLine(lines[index])) {
+      const previous = rows.at(-1);
+      if (previous?.kind === 'text' && previous.text === '') rows.pop();
+      continue;
+    }
     const note = noteOf(lines[index]);
     if (!note) {
       rows.push({ kind: 'text', text: lines[index] });
