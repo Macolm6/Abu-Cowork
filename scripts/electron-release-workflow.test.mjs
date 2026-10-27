@@ -555,6 +555,49 @@ test('Electron build uses native runners for all three release targets', () => {
   );
 });
 
+test('Intel notarization uses an isolated PF anchor before packaging and keeps native validation', () => {
+  const steps = workflow('electron-build.yml').jobs['build-mac'].steps;
+  const configure = steps.find((step) => step.name === 'Configure Intel notarization transport');
+  assert.ok(configure, 'Intel notarization transport must be configured');
+  assert.equal(configure.if, "${{ matrix.runner == 'macos-15-intel' }}");
+  assert.equal(configure.shell, 'bash');
+  assert.notEqual(configure['continue-on-error'], true);
+  assert.match(configure.run, /^set -euo pipefail/m);
+  assert.match(configure.run, /PF_ANCHOR="com\.apple\/abu-ci-stapler"/);
+  assert.match(configure.run, /sudo pfctl -s rules/);
+  assert.match(configure.run, /grep -F 'anchor "com\.apple\/\*"'/);
+  const load = 'sudo pfctl -a "$PF_ANCHOR" -f "$PF_RULES"';
+  assert.ok(configure.run.indexOf('grep -F') < configure.run.indexOf(load));
+  assert.ok(configure.run.includes('sudo pfctl -n -a "$PF_ANCHOR" -f "$PF_RULES"'));
+  assert.ok(configure.run.includes(load));
+  assert.match(configure.run, /sudo pfctl -E/);
+  assert.match(configure.run, /sudo pfctl -s info \| grep -E '\^Status: Enabled'/);
+  assert.doesNotMatch(configure.run, /pfctl -(?:f|F|d)\b|\|\|\s*true/);
+  assert.equal(
+    fs.readFileSync(path.join(root, '.github', 'macos-stapler.pf.conf'), 'utf8').trim(),
+    'block return out quick proto udp from any to any port 443 label "abu-ci-stapler"'
+  );
+  const packageStep = steps.find((step) => step.name === 'Build, sign, and notarize Electron');
+  const validation = steps.find((step) => step.name === 'Locate, staple, and verify the packaged app');
+  assert.ok(steps.indexOf(configure) < steps.indexOf(packageStep));
+  assert.ok(steps.indexOf(packageStep) < steps.indexOf(validation));
+  for (const required of [
+    'xcrun stapler staple "$APP"',
+    'xcrun stapler staple "$DMG"',
+    'xcrun stapler validate "$APP"',
+    'xcrun stapler validate "$DMG"',
+    'spctl -a -vvv --type execute "$APP"',
+    'codesign --verify --deep --strict "$APP"',
+  ]) {
+    assert.ok(validation.run.includes(required), `native validation must retain ${required}`);
+  }
+  const counters = steps.find((step) => step.name === 'Inspect Intel notarization transport');
+  assert.equal(counters.if, configure.if);
+  assert.equal(counters.run, 'sudo pfctl -a com.apple/abu-ci-stapler -vvsr');
+  assert.ok(steps.indexOf(counters) > steps.indexOf(validation));
+  assert.ok(steps.some((step) => step.run === 'npm run smoke:electron:packaged'));
+});
+
 test('Electron build provisions the browser automation runtime before the host-ui gate', () => {
   // browserHost.cjs loads abu-chrome-extension/dist/content.js and deliberately
   // has no fallback to the committed src-tauri/browser-extension/ copy
