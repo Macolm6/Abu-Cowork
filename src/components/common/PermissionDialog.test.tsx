@@ -14,7 +14,7 @@ import { passSettleInterval } from '@/test/dsWindows';
 
 // The grant window for a path or a folder: a grant lets Abu read or write there for a session,
 // for a day or for good. These cases pin what each control answers; the stores that record a
-// grant are exercised where the window is mounted (ChatView, ChatInput, WorkspaceSection).
+// grant are exercised where the window is mounted (ChatView, ChatInput, WorkspaceFilesSection).
 //
 // The window takes no pointer press for a moment after it appears; the keyboard is never held.
 // These cases are about what each control answers, so the window has been read when they begin:

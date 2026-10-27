@@ -120,7 +120,8 @@ describe('ChangedFilesSection', () => {
     mocks.readTurnIndex.mockResolvedValue({} satisfies TurnIndex);
     renderSection();
 
-    expect(await screen.findByText('阿布改过的文件会列在这里')).toBeInTheDocument();
+    // Centred, as the progress section's empty line is.
+    expect(await screen.findByText('阿布改过的文件会列在这里')).toHaveClass('text-center');
     expect(rows()).toHaveLength(0);
   });
 

@@ -169,65 +169,10 @@ describe('previewStore', () => {
     });
   });
 
-  describe('openFiles', () => {
-    beforeEach(() => {
-      usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
-    });
-
-    it('opens the file list after the other tabs, makes it active and expands the panel', () => {
-      usePreviewStore.getState().openSummary();
-      useSettingsStore.getState().setRightPanelCollapsed(true);
-
-      const id = usePreviewStore.getState().openFiles();
-
-      const state = usePreviewStore.getState();
-      expect(state.tabs.map((tab) => tab.kind)).toEqual(['summary', 'files']);
-      expect(state.tabs[1]).toEqual({ id, kind: 'files', ownerConversationId: 'conv-a' });
-      expect(state.activeTabId).toBe(id);
-      expect(useSettingsStore.getState().rightPanelCollapsed).toBe(false);
-    });
-
-    it('returns to the open file list and adds no second one', () => {
-      const first = usePreviewStore.getState().openFiles();
-      usePreviewStore.getState().openPreview('/work/a.md');
-      useSettingsStore.getState().setRightPanelCollapsed(true);
-
-      const second = usePreviewStore.getState().openFiles();
-
-      const state = usePreviewStore.getState();
-      expect(second).toBe(first);
-      expect(state.tabs.filter((tab) => tab.kind === 'files')).toHaveLength(1);
-      expect(state.activeTabId).toBe(first);
-      expect(useSettingsStore.getState().rightPanelCollapsed).toBe(false);
-    });
-
-    it('keeps one file list per conversation', () => {
-      const ofA = usePreviewStore.getState().openFiles();
-      usePreviewStore.getState().closeTabsForConversationSwitch('conv-b');
-      expect(getVisibleTabs()).toEqual([]);
-
-      const ofB = usePreviewStore.getState().openFiles();
-
-      expect(ofB).not.toBe(ofA);
-      expect(getVisibleTabs().map((tab) => tab.id)).toEqual([ofB]);
-      usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
-      expect(getVisibleTabs().map((tab) => tab.id)).toEqual([ofA]);
-      expect(usePreviewStore.getState().activeTabId).toBe(ofA);
-    });
-
-    it('leaves the previewed file unset: the list is no preview', () => {
-      usePreviewStore.getState().openPreview('/work/a.md');
-      usePreviewStore.getState().openFiles();
-
-      expect(usePreviewStore.getState().previewFilePath).toBeNull();
-    });
-  });
-
   describe('isWideTab', () => {
-    it('keeps the summary and the file list narrow and every other tab wide', () => {
+    it('keeps the summary narrow and every other tab wide', () => {
       const tabs: WorkspaceTab[] = [
         { id: 's', kind: 'summary' },
-        { id: 'f', kind: 'files' },
         { id: 'p', kind: 'preview', filePath: '/work/a.md' },
         { id: 'b', kind: 'browser', url: '' },
         { id: 't', kind: 'terminal' },

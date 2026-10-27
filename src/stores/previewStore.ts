@@ -80,8 +80,6 @@ function expandRightPanel(): void {
  */
 export type WorkspaceTab = (
   | { id: string; kind: 'summary' }
-  // The file list of the conversation's workspace folder; one per conversation.
-  | { id: string; kind: 'files' }
   // `line` is the 1-based line the latest open request asked the source view to show;
   // `lineRequest` counts the requests that named a line, so the same line asked for
   // again is a new request.
@@ -126,12 +124,12 @@ export function isTabVisibleFor(tab: WorkspaceTab, conversationId: string | null
 }
 
 /**
- * Whether `tab` asks for the wide panel. The task summary and the workspace
- * file list are columns of details and keep the narrow, resizable width; every
- * other tab shows content that fills the space the chat leaves.
+ * Whether `tab` asks for the wide panel. The task summary is a column of
+ * details and keeps the narrow, resizable width; every other tab shows content
+ * that fills the space the chat leaves.
  */
 export function isWideTab(tab: WorkspaceTab): boolean {
-  return tab.kind !== 'summary' && tab.kind !== 'files';
+  return tab.kind !== 'summary';
 }
 
 export function visibleTabsFor(tabs: WorkspaceTab[], conversationId: string | null): WorkspaceTab[] {
@@ -247,11 +245,9 @@ interface PreviewState {
   reloadNonce: number;
 
   // Open (or activate an existing) the singleton "task summary" tab — the
-  // default right-panel tab (progress / workspace files / context). Created at
+  // default right-panel tab (progress / changed files / all files). Created at
   // the FRONT so it stays leftmost.
   openSummary: () => void;
-  // Open (or activate an existing) the workspace file list of this conversation.
-  openFiles: () => string;
   // Show the panel of the current conversation although it has no message and
   // no tab yet. No-op without a current conversation.
   showEmptyPanel: () => void;
@@ -449,20 +445,6 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
     // Summary is the default tab — put it first so it stays leftmost.
     const nextTabs: WorkspaceTab[] = [{ id, kind: 'summary', ...ownerScope() }, ...tabs];
     commitTabs(nextTabs, id);
-  },
-
-  openFiles: () => {
-    const { tabs } = get();
-    const existing = visibleNow().find((t) => t.kind === 'files');
-    if (existing) {
-      commitTabs(tabs, existing.id);
-      expandRightPanel();
-      return existing.id;
-    }
-    const id = genId();
-    commitTabs([...tabs, { id, kind: 'files', ...ownerScope() }], id);
-    expandRightPanel();
-    return id;
   },
 
   showEmptyPanel: () => {

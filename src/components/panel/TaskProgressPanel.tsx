@@ -1,8 +1,4 @@
-import { useState } from 'react';
-import { cn } from '@/lib/utils';
-import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
-import { Pressable } from '@/components/ds/pressable';
 import { Spinner } from '@/components/ds/spinner';
 import { Steps, type Step, type StepStatus } from '@/components/ds/steps';
 import { Tag } from '@/components/ds/tag';
@@ -10,6 +6,7 @@ import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useI18n } from '@/i18n';
 import type { PlannedStep } from '@/types/execution';
+import SummarySection from './SummarySection';
 
 const EMPTY_STEPS: PlannedStep[] = [];
 
@@ -29,7 +26,6 @@ function toStepStatus(status: string): StepStatus {
  * Shows high-level business steps (not tool calls)
  */
 export default function TaskProgressPanel() {
-  const [expanded, setExpanded] = useState(true);
   // Get execution scoped to the current active conversation
   const activeConversationId = useChatStore((s) => s.activeConversationId);
   // Stable selector: the latest execution WITH planned steps for this
@@ -106,52 +102,36 @@ export default function TaskProgressPanel() {
     ),
   }));
 
-  return (
-    <div className="border-b border-separator pb-5">
-      {/* Header: the one spinner of the progress area sits here while the run is live */}
-      <Pressable
-        onClick={() => setExpanded(!expanded)}
-        aria-expanded={expanded}
-        className="flex w-full items-center justify-between text-left"
-      >
-        <span className="flex items-center gap-2">
-          <Icon icon={AppIcons.plan} className="text-label-secondary" />
-          <span className="text-ui font-medium text-label">{t.panel.progress}</span>
-          {hasPlannedSteps && (
-            <span className="text-caption text-label-tertiary">
-              {plannedSteps.filter((s) => s.status === 'completed').length}/{plannedSteps.length}
-            </span>
-          )}
-          {isLive && <Spinner size="sm" labelHidden label={t.task.running} />}
+  // The one spinner of the progress area sits in the title row while the run is live.
+  const meta = (
+    <>
+      {hasPlannedSteps && (
+        <span className="text-caption text-label-tertiary">
+          {plannedSteps.filter((s) => s.status === 'completed').length}/{plannedSteps.length}
         </span>
-        <Icon
-          icon={AppIcons.expand}
-          size="sm"
-          className={cn('text-label-tertiary transition-transform duration-fast', !expanded && '-rotate-90')}
-        />
-      </Pressable>
+      )}
+      {isLive && <Spinner size="sm" labelHidden label={t.task.running} />}
+    </>
+  );
 
-      {/* Content */}
-      {expanded && (
-        <div className="mt-3">
-          {hasPlannedSteps ? (
-            <Steps label={t.panel.progress} steps={steps} />
-          ) : (
-            <div className="flex flex-col items-center py-4 text-center">
-              <div className="mb-2 flex items-center gap-1">
-                <span className="h-2 w-2 rounded-full border border-control-border" />
-                <span className="h-px w-4 bg-separator" />
-                <span className="h-2 w-2 rounded-full border border-control-border" />
-                <span className="h-px w-4 bg-separator" />
-                <span className="h-2 w-2 rounded-full border border-control-border" />
-              </div>
-              <p className="text-ui-sm text-label-tertiary">
-                {t.panel.progressEmptyHint}
-              </p>
-            </div>
-          )}
+  return (
+    <SummarySection icon={AppIcons.plan} title={t.panel.progress} meta={meta}>
+      {hasPlannedSteps ? (
+        <Steps label={t.panel.progress} steps={steps} />
+      ) : (
+        <div className="flex flex-col items-center py-4 text-center">
+          <div className="mb-2 flex items-center gap-1">
+            <span className="h-2 w-2 rounded-full border border-control-border" />
+            <span className="h-px w-4 bg-separator" />
+            <span className="h-2 w-2 rounded-full border border-control-border" />
+            <span className="h-px w-4 bg-separator" />
+            <span className="h-2 w-2 rounded-full border border-control-border" />
+          </div>
+          <p className="text-ui-sm text-label-tertiary">
+            {t.panel.progressEmptyHint}
+          </p>
         </div>
       )}
-    </div>
+    </SummarySection>
   );
 }

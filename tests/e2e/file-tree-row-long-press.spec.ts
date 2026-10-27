@@ -18,7 +18,7 @@ import {
   createElectronDataRoot,
   dismissFirstRunOverlays,
   launchAbuElectron,
-  openWorkspaceFilesOfProject,
+  openTaskSummaryOfProject,
   removeElectronDataRoot,
   type LaunchedApp,
 } from './electronHelpers';
@@ -67,7 +67,7 @@ test('a touch held on a file row opens the menu of that file after another file 
     }, { ws: workspace, name: PROJECT_NAME, version: persistedStoreVersion('abu-projects') });
     await dismissFirstRunOverlays(page);
 
-    await openWorkspaceFilesOfProject(page, PROJECT_NAME);
+    await openTaskSummaryOfProject(page, PROJECT_NAME);
 
     const firstRow = page.getByRole('button', { name: FIRST_FILE, exact: true });
     const secondRow = page.getByRole('button', { name: SECOND_FILE, exact: true });

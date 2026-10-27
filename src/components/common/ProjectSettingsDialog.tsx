@@ -17,6 +17,8 @@ import { useMCPStore } from '@/stores/mcpStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import type { Project } from '@/types/project';
+import InstructionsEditModal from './InstructionsEditModal';
+import MemoryViewModal from './MemoryViewModal';
 
 interface ProjectSettingsDialogProps {
   open: boolean;
@@ -93,6 +95,9 @@ export default function ProjectSettingsDialog({ open, onClose, projectId }: Proj
   const change = (part: Partial<ProjectForm>) => setForm((current) => (current ? { ...current, ...part } : current));
 
   const [iconPanelOpen, setIconPanelOpen] = useState(false);
+  // The two windows of the project's own knowledge open over this one and close back to it.
+  const [instructionsOpen, setInstructionsOpen] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
   const nameId = useId();
   const descriptionId = useId();
 
@@ -180,6 +185,22 @@ export default function ProjectSettingsDialog({ open, onClose, projectId }: Proj
         </>
       )}
     >
+      {/* Rendered inside this window, so they open over it and it stays open under them. */}
+      {shown && (
+        <>
+          <InstructionsEditModal
+            open={isOpen && instructionsOpen}
+            onClose={() => setInstructionsOpen(false)}
+            workspacePath={shown.workspacePath}
+          />
+          <MemoryViewModal
+            open={isOpen && memoryOpen}
+            onClose={() => setMemoryOpen(false)}
+            scope="project"
+            workspacePath={shown.workspacePath}
+          />
+        </>
+      )}
       {shown && form && (
         <div className="flex flex-col gap-5">
           {/* === Basic Info === */}
@@ -296,6 +317,25 @@ export default function ProjectSettingsDialog({ open, onClose, projectId }: Proj
             </div>
           </div>
 
+          {/* === Project instructions and memory === */}
+          <div className="flex flex-col gap-3">
+            <h3 className={`${GROUP_TITLE} text-label-tertiary`}>{t.project.knowledgeSection}</h3>
+            <KnowledgeRow
+              icon={AppIcons.file}
+              title={t.panel.instructionsTitle}
+              description={t.panel.instructionsDesc}
+              action={t.project.editInstructions}
+              onAction={() => setInstructionsOpen(true)}
+            />
+            <KnowledgeRow
+              icon={AppIcons.thinking}
+              title={t.panel.memoryTitle}
+              description={t.panel.memoryDesc}
+              action={t.project.viewMemory}
+              onAction={() => setMemoryOpen(true)}
+            />
+          </div>
+
           {/* === Danger Zone === */}
           <div className="flex flex-col items-start gap-3">
             <h3 className={`${GROUP_TITLE} text-danger`}>{t.project.dangerZone}</h3>
@@ -306,5 +346,25 @@ export default function ProjectSettingsDialog({ open, onClose, projectId }: Proj
         </div>
       )}
     </Dialog>
+  );
+}
+
+// One line of the project's own knowledge: what it is, and the button that opens its window.
+function KnowledgeRow({ icon, title, description, action, onAction }: {
+  icon: typeof AppIcons.file;
+  title: string;
+  description: string;
+  action: string;
+  onAction: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-3 rounded-control border border-separator px-3 py-2">
+      <Icon icon={icon} size="sm" className="shrink-0 text-label-secondary" />
+      <div className="min-w-0 flex-1">
+        <div className="text-ui-sm font-medium text-label">{title}</div>
+        <div className="truncate text-caption text-label-tertiary">{description}</div>
+      </div>
+      <Button variant="secondary" size="sm" onClick={onAction}>{action}</Button>
+    </div>
   );
 }

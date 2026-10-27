@@ -31,9 +31,6 @@ vi.mock('./BrowserTab', () => ({
 vi.mock('./SummaryBody', () => ({
   default: () => <div>Summary body</div>,
 }));
-vi.mock('./FilesTab', () => ({
-  default: () => <div>Files body</div>,
-}));
 vi.mock('./ChangesTab', () => ({
   default: (props: { tabId: string; conversationId: string; loopId: string; fileIndex: number }) => (
     <div>Changes tab {props.tabId} {props.conversationId} {props.loopId} {props.fileIndex}</div>
@@ -196,43 +193,32 @@ describe('WorkspacePanel', () => {
     expect(screen.getByText('Running')).toBeInTheDocument();
   });
 
-  it('offers the four things the panel can open when every tab is closed', () => {
+  it('offers the three things the panel can open when every tab is closed', () => {
     renderPanel();
 
     expect(screen.getByText('Start from here')).toBeInTheDocument();
     expect(screen.queryByRole('tabpanel')).toBeNull();
-    const launchers = ['Task Summary', 'Workspace Files', 'Browser', 'Terminal'].map((name) => (
+    const launchers = ['Task Summary', 'Browser', 'Terminal'].map((name) => (
       screen.getByRole('button', { name: new RegExp(`^${name}`) })
     ));
-    expect(launchers).toHaveLength(4);
+    expect(launchers).toHaveLength(3);
     // In the order the page lists them.
     const buttons = screen.getAllByRole('button');
     expect(launchers.map((launcher) => buttons.indexOf(launcher))).toEqual(
       launchers.map((launcher) => buttons.indexOf(launcher)).sort((a, b) => a - b),
     );
 
-    fireEvent.click(launchers[3]);
+    fireEvent.click(launchers[2]);
 
     expect(usePreviewStore.getState().tabs.map((tab) => tab.kind)).toEqual(['terminal']);
     expect(screen.queryByText('Start from here')).toBeNull();
     expect(screen.getByText(/^Terminal /)).toBeInTheDocument();
   });
 
-  it('opens the workspace file list from the launcher, in a tab named after it', () => {
-    renderPanel();
-
-    fireEvent.click(screen.getByRole('button', { name: /^Workspace Files/ }));
-
-    expect(usePreviewStore.getState().tabs.map((tab) => tab.kind)).toEqual(['files']);
-    expect(screen.queryByText('Start from here')).toBeNull();
-    expect(screen.getByRole('tab', { name: 'Workspace Files' })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByRole('tabpanel', { name: 'Workspace Files' })).toHaveTextContent('Files body');
-  });
-
-  it('keeps the file list mounted behind the preview of a file opened from it', () => {
+  it('keeps the summary mounted behind the preview of a file opened from it', () => {
     usePreviewStore.setState({
       tabs: [
-        { id: 'files-tab', kind: 'files' },
+        { id: 'summary-tab', kind: 'summary' },
         { id: 'preview-tab', kind: 'preview', filePath: '/work/a.md' },
       ],
       activeTabId: 'preview-tab',
@@ -241,24 +227,24 @@ describe('WorkspacePanel', () => {
 
     const { container } = renderPanel();
 
-    const filesPanel = container.querySelector(`#${workspaceTabPanelId('files-tab')}`);
-    expect(filesPanel).toHaveAttribute('hidden');
-    expect(filesPanel).toHaveTextContent('Files body');
+    const summaryPanel = container.querySelector(`#${workspaceTabPanelId('summary-tab')}`);
+    expect(summaryPanel).toHaveAttribute('hidden');
+    expect(summaryPanel).toHaveTextContent('Summary body');
   });
 
-  it('mounts no file list body for a tab another conversation owns', () => {
+  it('mounts no summary body for a tab another conversation owns', () => {
     usePreviewStore.setState({
       currentConversationId: 'conversation-in-view',
       tabs: [
-        { id: 'files-other', kind: 'files', ownerConversationId: 'another-conversation' },
-        { id: 'files-own', kind: 'files', ownerConversationId: 'conversation-in-view' },
+        { id: 'summary-other', kind: 'summary', ownerConversationId: 'another-conversation' },
+        { id: 'summary-own', kind: 'summary', ownerConversationId: 'conversation-in-view' },
       ],
-      activeTabId: 'files-own',
+      activeTabId: 'summary-own',
     });
 
     renderPanel();
 
-    expect(screen.getAllByText('Files body')).toHaveLength(1);
+    expect(screen.getAllByText('Summary body')).toHaveLength(1);
     expect(screen.getAllByRole('tab')).toHaveLength(1);
   });
 });

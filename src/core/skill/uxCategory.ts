@@ -2,17 +2,16 @@
  * Source-to-UX-category mapping.
  *
  * The Toolbox shows 3 top-level skill buckets (`SkillUXCategory`), split by
- * what the user OWNS versus what they can still get:
+ * whose work a skill is:
  *
- *   - **mine** — what the user has: skills they or Abu wrote
- *     (user/standard/project/project-standard/workspace-auto), skills a plugin
- *     they installed brought in, and skills the organization pushed. Origin
- *     stays visible per row (sourceBadge / the plugin badge); a plugin's skill
- *     is read-only there and leaves with its plugin.
+ *   - **mine** — skills the user or Abu wrote for them
+ *     (user/standard/project/project-standard/workspace-auto), and skills the
+ *     organization pushed (badged).
  *   - **agent-evolved** — draft only. Pending agent proposals awaiting
  *     user review. Shown via SkillDraftsPanel when draftsCount > 0.
- *   - **builtin** — the 市场 bucket: what ships with the app and can be
- *     used without installing anything.
+ *   - **market** — the 市场 bucket: what ships with the app, and what a
+ *     plugin brought in (badged, read-only, leaves with its plugin). Both
+ *     are someone else's work, as on the experts and teams pages.
  *
  * All Toolbox grouping goes through this function, so the enum-to-
  * bucket mapping stays in one place and it's hard to forget a new
@@ -35,13 +34,13 @@ export function sourceToUXCategory(source: SkillSource | undefined): SkillUXCate
       // Pushed to this user by their organization: theirs to use, badged.
       return 'mine';
     case 'plugin':
-      // Installed by this user through a plugin: theirs, badged with the
-      // plugin, read-only, and removed by uninstalling the plugin.
-      return 'mine';
+      // Brought in by a plugin: badged with it, read-only, and removed by
+      // uninstalling the plugin.
+      return 'market';
     case 'draft':
       return 'agent-evolved';
     case 'builtin':
-      return 'builtin';
+      return 'market';
     case undefined:
       // Legacy skills loaded before `source` was populated. Treat as
       // "mine" — matches historical behavior for un-tagged files.
