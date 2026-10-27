@@ -214,25 +214,23 @@ try {
   if ($expectMigration) {
     $legacyConvergenceDeadline = [DateTime]::UtcNow.AddSeconds(15)
     $legacySystemComponent = $null
+    $legacyTransitionMarker = $null
     while ([DateTime]::UtcNow -lt $legacyConvergenceDeadline) {
-      # The value is intentionally absent until the migrated main window is
-      # ready. Get-ItemPropertyValue treats that normal transient state as an
-      # error under PowerShell 7, so inspect the optional property instead of
-      # aborting the convergence poll on its first iteration.
+      # The migrated app writes these values through two registry operations.
+      # Read both optional properties until the complete transition is visible.
       $legacyEntry = Get-ItemProperty -Path $tauriLegacyUninstallKey -ErrorAction Stop
       $legacySystemComponent = $legacyEntry.SystemComponent
-      if ($legacySystemComponent -eq 1) {
+      $legacyTransitionMarker = $legacyEntry.$tauriTransitionHiddenMarker
+      if ($legacySystemComponent -eq 1 -and $legacyTransitionMarker -eq 1) {
         break
       }
       Start-Sleep -Milliseconds 250
     }
     if ($legacySystemComponent -ne 1) {
-      throw "Electron did not hide the recognized legacy Tauri uninstall entry"
+      throw "Electron did not hide the recognized legacy Tauri uninstall entry; SystemComponent=$legacySystemComponent; transitionMarker=$legacyTransitionMarker"
     }
-    $legacyTransitionMarker = Get-ItemPropertyValue -Path $tauriLegacyUninstallKey `
-      -Name $tauriTransitionHiddenMarker -ErrorAction SilentlyContinue
     if ($legacyTransitionMarker -ne 1) {
-      throw "Electron did not record how to restore the legacy Tauri uninstall entry"
+      throw "Electron did not record how to restore the legacy Tauri uninstall entry; SystemComponent=$legacySystemComponent; transitionMarker=$legacyTransitionMarker"
     }
     $migratedFile = Join-Path $electronFixture "messages.jsonl"
     $migrationDeadline = [DateTime]::UtcNow.AddSeconds(45)

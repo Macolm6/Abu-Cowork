@@ -489,6 +489,11 @@ test('Electron build uses native runners for all three release targets', () => {
   assert.match(installedSmoke, /AbuElectronTransitionHidden/);
   assert.match(
     installedSmoke,
+    /\$legacyTransitionMarker = \$legacyEntry\.\$tauriTransitionHiddenMarker\s+if \(\$legacySystemComponent -eq 1 -and \$legacyTransitionMarker -eq 1\) \{\s+break/
+  );
+  assert.match(installedSmoke, /if \(\$legacyTransitionMarker -ne 1\) \{\s+throw/);
+  assert.match(
+    installedSmoke,
     /Electron uninstall did not clear the legacy Tauri transition marker/
   );
   assert.match(
