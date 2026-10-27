@@ -1,6 +1,5 @@
 import { expect, test } from '@playwright/test';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import type { ElectronApplication, Page } from 'playwright';
 import {
@@ -52,7 +51,9 @@ const INSTALLED_EMPTY = /还没有安装任何插件|No plugins installed yet/;
 
 /** A self-contained marketplace + plugin written to a temp dir for this run. */
 function seedMarketplace(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-e2e-market-'));
+  const fixtureParent = path.join(REPO_ROOT, '.agent', 'e2e');
+  fs.mkdirSync(fixtureParent, { recursive: true });
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(fixtureParent, 'market-')));
   const pkg = path.join(dir, 'plugins', 'e2e-weather');
 
   fs.mkdirSync(path.join(dir, '.claude-plugin'), { recursive: true });
