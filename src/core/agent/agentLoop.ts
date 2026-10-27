@@ -88,10 +88,14 @@ import {
   shouldContinueTruncatedToolCalls,
   detectSemanticToolLoop,
   minimizeToolLoopObservation,
+  MAX_SEMANTIC_LOOP_RESCUES,
+  SEMANTIC_LOOP_RESCUE_MESSAGE,
+  semanticLoopReasonPhrase,
   SEMANTIC_TOOL_LOOP_WINDOW,
   type SemanticToolLoopReason,
   type ToolLoopObservation,
 } from './loopGuards';
+import { buildFailoverChain, createFailoverState, failoverModelLabel, isFailoverWorthyError, nextFailoverCandidate } from './modelFailover';
 import { createMaxTurnsNoticeMessage, deriveMaxTurnsStreak } from './maxTurnsNotice';
 import { createMalformedToolCallGuard, MALFORMED_TOOL_CALL_NUDGE } from './malformedToolCallGuard';
 import {
@@ -933,7 +937,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   const pinnedConv = getConversationReader().getConversation(conversationId);
   const settingsForModel = settingsForConversation(conversationId, settings);
   const baseModel = settingsForModel.activeModel;
-  const entrySettingsReader: SettingsReader = { getSnapshot: () => settingsForModel };
+  // `runSettings` differs from `settingsForModel` only after a quota failover
+  // has rebound `activeModel` to a candidate mid-run; run-phase reads go through
+  // it so the switch takes effect on the next turn.
+  const entrySettingsReader: SettingsReader = { getSnapshot: () => runSettings };
 
   // Generate a unique loopId for this agent loop - all messages in this loop share it.
   // Shell dispatch (P1-3B-3B) can override via options.loopId — see that
@@ -1219,7 +1226,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // entryOrchestration.ts's precomputeOrchestration and the shell
   // dispatcher's buildAgentRunParams — single source, see that module's
   // doc); setActiveModel's side effect stays uniquely here.
-  const { effectiveModelId, entryModelDeclared } = resolveEntryModel(route, settingsForModel);
+  // `effectiveModelId` is rebindable: a quota failover mid-run switches the run
+  // to a candidate model and the next turn rebuilds every model-bound input
+  // from it (see the retry-catch's failover branch).
+  const { effectiveModelId: entryEffectiveModelId, entryModelDeclared } = resolveEntryModel(route, settingsForModel);
+  let effectiveModelId = entryEffectiveModelId;
+  // Run-scoped settings view; differs from `settingsForModel` only after a
+  // failover has rebound `activeModel` to the candidate.
+  let runSettings = settingsForModel;
   // Set active model for per-model token calibration
   setActiveModel(effectiveModelId);
 
@@ -1288,8 +1302,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // selectChatAdapter routes through the sidecar transport when it's healthy
   // ('running'), else falls back to the local in-process adapter — the
   // kind-choosing condition itself is unchanged (P1-1).
-  const adapterKind: AdapterKind = adapterKindFor(getActiveProvider(settingsForModel), isEnterpriseGatewayMode);
-  const adapter: LLMAdapter = selectChatAdapter(adapterKind);
+  let adapterKind: AdapterKind = adapterKindFor(getActiveProvider(runSettings), isEnterpriseGatewayMode);
+  let adapter: LLMAdapter = selectChatAdapter(adapterKind);
 
   // Validate required tools are available (blocking check — one-time at start)
   if (route.type === 'skill' && route.skill?.requiredTools) {
@@ -1680,9 +1694,24 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // the model a chance to recover.
   let consecutiveNoProgress = 0;
   const semanticToolHistory: ToolLoopObservation[] = [];
+  // Semantic-loop rescue budget for this run (see MAX_SEMANTIC_LOOP_RESCUES):
+  // how many times the guard may inject the skip-and-continue prompt before it
+  // falls back to the hard stop.
+  let semanticLoopRescuesUsed = 0;
   // The last request whose usage the provider returned (contextMeasure.ts).
   let usageAnchor: UsageAnchor | null = null;
   let maxOutputTokensRecoveryCount = 0;
+  // Quota failover: candidates the run may switch to when the current model's
+  // budget is spent. Run-scoped (see modelFailover.ts); the user's activeModel
+  // setting is not written back.
+  const failoverGuardOn = resolveModelProfile({
+    modelId: entryEffectiveModelId,
+    provider: entryProvider,
+    declared: entryModelDeclared,
+  }).harness.guards.quotaFailover;
+  const failoverState = createFailoverState(
+    failoverGuardOn ? buildFailoverChain(settingsForModel, { providerId: entryProvider?.id ?? '', modelId: entryEffectiveModelId }) : [],
+  );
   const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
   const malformedToolCallGuard = createMalformedToolCallGuard();
   // 只说不做的续推：计数随本次运行重置，开关按每轮的模型档案读取
@@ -1807,7 +1836,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // Hitting the turn cap means every LLM call succeeded (a failed call throws
       // to the catch) → provider is healthy; record it so a prior config-failure
       // is cleared even when the run ends via the cap rather than end_turn.
-      recordProviderCallOutcome(getActiveProvider(settingsForModel)?.id, { ok: true, at: Date.now() });
+      recordProviderCallOutcome(getActiveProvider(runSettings)?.id, { ok: true, at: Date.now() });
       // C: report the cap to callers (scheduler/trigger) instead of 'completed'.
       exitReason = 'max_turns';
       // Same terminal cleanup as the normal end_turn path — now that the cap is
@@ -1870,7 +1899,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // ("deepseek endpoint, model mimo-v2.5-pro"). freshSettings below is only
       // for non-identity, mid-loop-tunable knobs (computerUse, maxOutputTokens,
       // contextWindowSize).
-      const activeProvider = getActiveProvider(settingsForModel);
+      const activeProvider = getActiveProvider(runSettings);
       const modelDeclared = resolveModelDeclared(activeProvider, effectiveModelId);
       const builtinWebSearch = activeProvider
         ? getBuiltinSearchConfig(activeProvider.capabilities, true)
@@ -2026,8 +2055,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       // Resolve apiKey + baseUrl for the provider this conversation is bound to.
       const effectiveCreds = resolveEffectiveLlmCreds(
-        getActiveApiKey(settingsForModel),
-        getActiveProvider(settingsForModel)?.baseUrl || undefined,
+        getActiveApiKey(runSettings),
+        getActiveProvider(runSettings)?.baseUrl || undefined,
       )
 
       // The options this step's model request and a compaction summary share,
@@ -2628,6 +2657,36 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             }
             throw retryErr2;
           }
+        } else if (isFailoverWorthyError(retryErr) && !abortController.signal.aborted) {
+          // Quota/rate-limit failover: switch the run to the next candidate
+          // model for its remaining turns. The user's activeModel setting is
+          // not written back — this is a run-scoped rescue, not a preference.
+          const candidate = nextFailoverCandidate(failoverState);
+          if (!candidate) throw retryErr;
+          logger.warn('Quota failover: switching model for the rest of this run', {
+            from: `${activeProvider?.id ?? 'unknown'}/${effectiveModelId}`,
+            to: `${candidate.providerId}/${candidate.modelId}`,
+            code: retryErr.code,
+          });
+          chatDelta.flushTokens(conversationId, assistantMsgId);
+          chatDelta.setLastMessageContent(conversationId, '', assistantMsgId);
+          chatDelta.setMessageStreamingFlag(conversationId, assistantMsgId, false);
+          chatDelta.appendText(
+            conversationId,
+            format(getI18n().chat.modelFailoverSwitched, {
+              from: failoverModelLabel({ providerId: activeProvider?.id ?? 'unknown', modelId: effectiveModelId }),
+              to: failoverModelLabel(candidate),
+            }),
+            assistantMsgId,
+          );
+          chatDelta.finishStreaming(conversationId, assistantMsgId);
+          runSettings = { ...settingsForModel, activeModel: candidate };
+          effectiveModelId = candidate.modelId;
+          adapterKind = adapterKindFor(getActiveProvider(runSettings), isEnterpriseGatewayMode);
+          adapter = selectChatAdapter(adapterKind);
+          // 探测到的窗口属于旧模型，不能带给新模型
+          runProbedContextWindow = undefined;
+          continueLoop = true;
         } else if (retryErr instanceof LLMError && retryErr.capabilityRejection) {
           // 服务说不认识请求里的某项能力：记进本会话的拒绝记忆，按关掉该项的档案重发同一请求一次。
           // 同一个模型的同一类别只重试一次，第二次仍被拒绝就按普通错误报告。
@@ -2912,14 +2971,53 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // override below, so a present user can still rescue the loop by typing.
       let noProgressAborted = false;
       if (semanticLoopReason && !awaitingUserRecovery) {
-        continueLoop = false;
-        noProgressAborted = true;
-        logger.warn('Semantic tool loop stopped', {
-          conversationId,
-          loopId,
-          reason: semanticLoopReason,
-          observationCount: semanticToolHistory.length,
-        });
+        // First response: spend one rescue — inject a system prompt asking the
+        // model to mark the current unit of work SKIPPED and move on, so one
+        // degenerate case (e.g. a browser test hitting an unresponsive page)
+        // doesn't end a batch run with its remaining cases still queued. The
+        // reset below gives the guard a fresh window after the skip. Once the
+        // budget is gone the guard stops the run exactly as before.
+        if (
+          semanticLoopRescuesUsed < MAX_SEMANTIC_LOOP_RESCUES
+          && !abortController.signal.aborted
+        ) {
+          semanticLoopRescuesUsed++;
+          logger.info('Semantic tool loop rescue', {
+            conversationId,
+            loopId,
+            reason: semanticLoopReason,
+            attempt: semanticLoopRescuesUsed,
+            limit: MAX_SEMANTIC_LOOP_RESCUES,
+          });
+          chatDelta.appendText(
+            conversationId,
+            `\n\n${format(getI18n().chat.semanticLoopCaseSkipped, { reason: getI18n().chat.semanticLoopReasons[semanticLoopReason] })}`,
+            assistantMsgId,
+          );
+          chatDelta.addMessage(conversationId, {
+            id: generateId(),
+            role: 'user' as const,
+            content: format(SEMANTIC_LOOP_RESCUE_MESSAGE, { reason: semanticLoopReasonPhrase(semanticLoopReason) }),
+            timestamp: Date.now(),
+            loopId,
+            isSystem: true as const,
+          });
+          // A fresh directive is a fresh start (mirrors the queued-input reset
+          // below): restore the guard's full window so the next degenerate
+          // case trips the guard on its own evidence, not the old history.
+          semanticToolHistory.length = 0;
+          consecutiveNoProgress = 0;
+          continueLoop = true;
+        } else {
+          continueLoop = false;
+          noProgressAborted = true;
+          logger.warn('Semantic tool loop stopped', {
+            conversationId,
+            loopId,
+            reason: semanticLoopReason,
+            observationCount: semanticToolHistory.length,
+          });
+        }
       } else if (allToolsUnparseable(collectedToolCalls)) {
         consecutiveNoProgress++;
         if (consecutiveNoProgress >= MAX_NO_PROGRESS_TURNS) {
@@ -3025,7 +3123,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         logger.info('Agent loop ended', { conversationId, loopId, turnCount, reason: endReason });
         // Reaching this point means no LLM call threw, so ok:true is correct
         // regardless of endReason (no_progress / max_tokens_exhausted / end_turn).
-        recordProviderCallOutcome(getActiveProvider(settingsForModel)?.id, { ok: true, at: Date.now() });
+        recordProviderCallOutcome(getActiveProvider(runSettings)?.id, { ok: true, at: Date.now() });
         // Complete the TaskExecution
         eventRouter.route({ type: 'done', loopId, reason: endReason });
         persistExecutionSnapshot(conversationId, loopId);
@@ -3242,7 +3340,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         error: errorMessage,
         code: errorCode,
         model: effectiveModelId,
-        providerId: getActiveProvider(settingsForModel)?.id,
+        providerId: getActiveProvider(runSettings)?.id,
         status: err instanceof LLMError ? err.upstream?.status : undefined,
         error_type: err instanceof LLMError ? err.upstream?.error_type : undefined,
         traceId: err instanceof LLMError ? err.upstream?.traceId : undefined,
@@ -3256,7 +3354,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // limit / 5xx / network blip, and not a non-LLM agent crash) should mark
         // this provider unhealthy for the diagnostic.
         if (isConfigFailureCode(err.code)) {
-          recordProviderCallOutcome(getActiveProvider(settingsForModel)?.id, { ok: false, code: err.code, at: Date.now() });
+          recordProviderCallOutcome(getActiveProvider(runSettings)?.id, { ok: false, code: err.code, at: Date.now() });
         }
       } else {
         reportError('agent_crash', errorCode ?? 'unknown', undefined, effectiveModelId, errorMessage);
@@ -3281,11 +3379,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const isInsufficientBalanceError = /余额不足|无可用资源包/.test(errorMessage);
       const managedProviderUnreachable = describeManagedProviderUnreachable(
         getI18n().chat,
-        getActiveProvider(settingsForModel),
+        getActiveProvider(runSettings),
         errorCode,
       );
       const isContextBudgetError = err instanceof ContextBudgetError;
-      const contextTooSmall = contextTooSmallMessage(getI18n().chat, localServerKind(getActiveProvider(settingsForModel)));
+      const contextTooSmall = contextTooSmallMessage(getI18n().chat, localServerKind(getActiveProvider(runSettings)));
       // 窗口放不下说明（含超长恢复后仍放不下）时给用户的是一句普通说明，不加错误前缀
       const showsContextTooSmall = !managedProviderUnreachable
         && !(isContextBudgetError && err.code === 'INPUT_TOO_LARGE')

@@ -1045,7 +1045,10 @@ describe('Agent Pipeline Integration', () => {
       expect(conversationText).not.toContain('could not be parsed');
     });
 
-    it('stops a well-formed repeated tool loop after three unchanged observations', async () => {
+    it('stops a well-formed repeated tool loop after the rescue budget is spent', async () => {
+      // Three identical firings of the guard: trips 1-2 are rescued (budget 2,
+      // history reset each time), trip 3 fires with the budget spent and stops
+      // the run with the existing semanticLoopStopped marker.
       let calls = 0;
       mockClaudeChat.mockImplementation(
         async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
@@ -1070,7 +1073,12 @@ describe('Agent Pipeline Integration', () => {
           error: false,
         }],
       };
-      vi.mocked(executeToolBatch)
+      vi.mocked(executeToolBatch).mockResolvedValueOnce(repeatedBatch)
+        .mockResolvedValueOnce(repeatedBatch)
+        .mockResolvedValueOnce(repeatedBatch)
+        .mockResolvedValueOnce(repeatedBatch)
+        .mockResolvedValueOnce(repeatedBatch)
+        .mockResolvedValueOnce(repeatedBatch)
         .mockResolvedValueOnce(repeatedBatch)
         .mockResolvedValueOnce(repeatedBatch)
         .mockResolvedValueOnce(repeatedBatch);
@@ -1079,7 +1087,82 @@ describe('Agent Pipeline Integration', () => {
       const result = await runAgentLoop(convId, 'operate the computer');
 
       expect(result.reason).toBe('no_progress');
-      expect(calls).toBe(3);
+      // 3 observations per trip × (2 rescued trips + 1 final trip).
+      expect(calls).toBe(9);
+      const visible = useChatStore.getState().conversations[convId].messages
+        .filter((m) => m.role === 'assistant')
+        .map((m) => String(m.content))
+        .join('');
+      expect(visible).toContain(getI18n().chat.semanticLoopStopped);
+      // One visible skip marker per rescue, with the localized reason
+      // (repeated_call — three identical observations trip before meta_only).
+      const marker = getI18n().chat.semanticLoopCaseSkipped
+        .replace('{reason}', getI18n().chat.semanticLoopReasons.repeated_call);
+      expect(visible.split(marker).length - 1).toBe(2);
+    });
+
+    it('spends one rescue on a semantic loop: marks the skip visibly and keeps the run going', async () => {
+      // Turns 1-3 push the same unchanged tool_search observation; the third
+      // trips the guard, which now injects the rescue prompt (budget 2)
+      // instead of ending the run. Turn 4 answers with plain text (the model
+      // marked the case skipped and moved on) and the run completes like a
+      // normal end_turn.
+      let calls = 0;
+      const sent: unknown[] = [];
+      mockClaudeChat.mockImplementation(
+        async (messages: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          sent.push(messages);
+          if (calls < 4) {
+            onEvent({
+              type: 'tool_use',
+              id: `search-${calls}`,
+              name: 'tool_search',
+              input: { query: 'computer' },
+            });
+            onEvent({ type: 'done', stopReason: 'tool_use' });
+          } else {
+            onEvent({ type: 'text', text: 'case 1 skipped; case 2 done' });
+            onEvent({ type: 'done', stopReason: 'end_turn' });
+          }
+        },
+      );
+      const repeatedBatch = {
+        mcpChanged: false,
+        requiresUserRecovery: false,
+        observations: [{
+          name: 'tool_search',
+          input: { query: 'computer' },
+          result: 'no deferred tools',
+          images: [],
+          error: false,
+        }],
+      };
+      vi.mocked(executeToolBatch)
+        .mockResolvedValueOnce(repeatedBatch)
+        .mockResolvedValueOnce(repeatedBatch)
+        .mockResolvedValueOnce(repeatedBatch);
+
+      const convId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(convId, 'operate the computer');
+
+      // The run survived the loop instead of dying at turn 3.
+      expect(result.reason).toBe('completed');
+      expect(calls).toBe(4);
+      // The rescue prompt reached the model as a system message.
+      expect(JSON.stringify(sent[3])).toContain('Semantic loop detected');
+      const messages = useChatStore.getState().conversations[convId].messages;
+      const rescue = messages.find((m) => String(m.content).includes('Semantic loop detected'));
+      expect(rescue?.isSystem).toBe(true);
+      // The visible skip marker carries the localized reason.
+      const visible = messages
+        .filter((m) => m.role === 'assistant')
+        .map((m) => String(m.content))
+        .join('');
+      expect(visible).toContain(getI18n().chat.semanticLoopCaseSkipped
+        .replace('{reason}', getI18n().chat.semanticLoopReasons.repeated_call));
+      // The rescue prompt itself never shows to the user.
+      expect(visible).not.toContain('Semantic loop detected');
     });
 
     it('promotes only after a successful tool_search observation in the loop process', async () => {
