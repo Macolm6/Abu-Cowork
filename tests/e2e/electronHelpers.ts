@@ -8,7 +8,6 @@
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { expect } from '@playwright/test';
 import { _electron as electron, type ElectronApplication, type Locator, type Page } from 'playwright';
@@ -73,7 +72,9 @@ export interface WindowShowRecord {
  * again after closing its first app instance.
  */
 export function createElectronDataRoot(): ElectronDataRoot {
-  const rootDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `abu-e2e-${randomUUID().slice(0, 8)}-`)));
+  const temporaryRoot = path.join(REPO_ROOT, '.agent', 'e2e');
+  fs.mkdirSync(temporaryRoot, { recursive: true });
+  const rootDir = fs.realpathSync(fs.mkdtempSync(path.join(temporaryRoot, 'run-')));
   return {
     rootDir,
     userDataDir: path.join(rootDir, 'user-data'),
@@ -112,6 +113,9 @@ function buildLaunchEnv(
   }
   env.NO_PROXY = '127.0.0.1,localhost';
   env.no_proxy = '127.0.0.1,localhost';
+  env.TMPDIR = dataRoot.rootDir;
+  env.TEMP = dataRoot.rootDir;
+  env.TMP = dataRoot.rootDir;
   env[E2E_APP_DATA_ROOT_ENV] = dataRoot.appDataDir;
   env[E2E_SIDECAR_CRASH_TOKEN_ENV] = dataRoot.sidecarCrashToken;
   // Native modal dialogs cannot be driven by Playwright. On hosts where
@@ -171,6 +175,9 @@ export async function launchAbuElectron(
     env: withoutLiveEvalCredential(buildLaunchEnv(dataRoot, options.extraEnv)),
     timeout: 60_000,
   });
+  await app.evaluate(({ app }, temporaryRoot) => {
+    app.setPath('temp', temporaryRoot);
+  }, dataRoot.rootDir);
   // Spread FIRST: a caller relaunching with a previous LaunchedApp (which the
   // doc above invites, and which already carries an `app` key) would otherwise
   // have the stale, already-exited app spread over the new one — producing an

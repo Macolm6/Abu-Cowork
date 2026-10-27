@@ -314,7 +314,7 @@ test.describe.serial('Electron run_command approval E2E', () => {
     mock = await startOpenAiMock([
       {
         kind: 'tool-call',
-        arguments: { command },
+        arguments: { command, cwd: dataRoot.rootDir },
         toolCallId,
         toolName: 'run_command',
       },
@@ -362,7 +362,7 @@ test.describe.serial('Electron run_command approval E2E', () => {
     mock = await startOpenAiMock([
       {
         kind: 'tool-call',
-        arguments: { command },
+        arguments: { command, cwd: dataRoot.rootDir },
         toolCallId,
         toolName: 'run_command',
       },
@@ -446,7 +446,7 @@ test.describe.serial('Electron run_command approval E2E', () => {
     mock = await startOpenAiMock([
       {
         kind: 'tool-call',
-        arguments: { command },
+        arguments: { command, cwd: dataRoot.rootDir },
         toolCallId,
         toolName: 'run_command',
       },
@@ -524,7 +524,7 @@ test.describe.serial('Electron run_command approval E2E', () => {
     mock = await startOpenAiMock([
       { kind: 'complete', responseText: firstResponse },
       // Late enough for the press on the page below to land before the approval arrives.
-      { kind: 'tool-call', arguments: { command }, delayMs: 2_000, toolCallId, toolName: 'run_command' },
+      { kind: 'tool-call', arguments: { command, cwd: dataRoot.rootDir }, delayMs: 2_000, toolCallId, toolName: 'run_command' },
       { kind: 'complete', responseText: response },
       // The summary the app asks for by itself after a second exchange.
       { kind: 'complete', responseText: `abu-e2e-skill-tag-summary-${randomUUID()}` },
@@ -612,7 +612,7 @@ test.describe.serial('Electron run_command approval E2E', () => {
     mock = await startOpenAiMock([
       {
         kind: 'tool-call',
-        arguments: { command },
+        arguments: { command, cwd: dataRoot.rootDir },
         toolCallId,
         toolName: 'run_command',
       },
@@ -664,7 +664,7 @@ test.describe.serial('Electron run_command approval E2E', () => {
       },
       {
         kind: 'tool-call',
-        arguments: { command },
+        arguments: { command, cwd: dataRoot.rootDir },
         delayMs: 1_500,
         toolCallId: commandToolCallId,
         toolName: 'run_command',
