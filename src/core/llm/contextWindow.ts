@@ -19,6 +19,7 @@ export function estimateContextWindow(modelId: string, isLocal: boolean): number
  * 128000 同时是 1024 的倍数（125 × 1024），所以先认整千。整百万与 1048576 的倍数显示为 M。
  */
 export function formatContextLength(tokens: number): string {
+  if (tokens < 1000) return String(tokens);
   if (tokens % 1_000_000 === 0) return `${tokens / 1_000_000}M`;
   if (tokens % 1_048_576 === 0) return `${tokens / 1_048_576}M`;
   if (tokens % 1000 === 0) return `${tokens / 1000}K`;

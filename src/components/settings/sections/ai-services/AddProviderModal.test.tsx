@@ -26,6 +26,9 @@ import { Button } from '@/components/ds/button';
 import { Dialog } from '@/components/ds/dialog';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { useSettingsStore, PROVIDER_CONFIGS } from '@/stores/settingsStore';
+import { useDiscoveredCapsStore } from '@/stores/discoveredCapabilitiesStore';
+import { resolveCapabilities } from '@/core/llm/modelCapabilities';
+import { resolveRequestBudget } from '@/core/llm/requestBudget';
 import { getI18n, setLanguage } from '@/i18n';
 import type { ProviderInstance } from '@/types/provider';
 
@@ -2509,7 +2512,7 @@ describe('AddProviderModal — failure text of model fetch and Ollama check', ()
   });
 });
 
-describe('AddProviderModal — 上下文长度 placeholder', () => {
+describe('AddProviderModal — context length', () => {
   beforeEach(() => {
     setLanguage('en-US');
     useSettingsStore.setState({
@@ -2518,13 +2521,15 @@ describe('AddProviderModal — 上下文长度 placeholder', () => {
       failedSecretKeys: [],
       contextWindowSize: 200000,
     });
+    useDiscoveredCapsStore.setState({ capabilities: {} });
   });
 
   afterEach(() => {
     unmountWindow();
+    useDiscoveredCapsStore.setState({ capabilities: {} });
   });
 
-  /** 选自定义 API、填地址、手动加一个模型并展开它的高级配置 */
+  /** Add a custom model and expand its advanced configuration. */
   function openAdvancedFor(baseUrl: string, modelId: string): HTMLInputElement {
     renderWindow(<AddProviderModal open={true} onClose={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: /select provider/i }));
@@ -2542,16 +2547,136 @@ describe('AddProviderModal — 上下文长度 placeholder', () => {
     return screen.getByRole('textbox', { name: 'Context length' }) as HTMLInputElement;
   }
 
-  it('caps the estimate at the global context-window limit the runtime uses', () => {
-    // qwen3-max 按名字估计 262144，高于全局上限 200000
+  it('shows model capacity separately from the default limit the runtime uses', () => {
     const input = openAdvancedFor('https://api.example.com/v1', 'qwen3-max');
-    expect(input).toHaveAttribute('placeholder', 'Not detected; blank means 200K is assumed');
+    expect(input).toHaveAttribute('placeholder', 'Leave blank to use 200K');
+    expect(screen.getByText('Estimated capacity 256K')).toBeInTheDocument();
+    expect(screen.getByText('Currently using 200K (default)')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '1M' }));
+    expect(input).toHaveValue('1000000');
+    expect(screen.getByText('Currently using 1M')).toBeInTheDocument();
+    expect(screen.getByText('Estimated capacity 256K')).toBeInTheDocument();
   });
 
   it('follows the address: a local server gets the local estimate, a cloud one the name-based one', () => {
     const input = openAdvancedFor('http://127.0.0.1:8080/v1', 'qwen3-vl-8b');
-    expect(input).toHaveAttribute('placeholder', 'Not detected; blank means 32K is assumed');
+    expect(input).toHaveAttribute('placeholder', 'Leave blank to use 32K');
+    expect(screen.getByText('Estimated capacity 32K')).toBeInTheDocument();
     fireEvent.change(screen.getByPlaceholderText('https://...'), { target: { value: 'https://api.example.com/v1' } });
-    expect(contextLengthInput()).toHaveAttribute('placeholder', 'Not detected; blank means 128K is assumed');
+    expect(contextLengthInput()).toHaveAttribute('placeholder', 'Leave blank to use 128K');
+    expect(screen.getByText('Estimated capacity 128K')).toBeInTheDocument();
+  });
+
+  it('preserves the per-model choice through saving, reopening, and clearing', () => {
+    const provider: ProviderInstance = {
+      id: 'context-service', source: 'custom', name: 'Context service', enabled: true,
+      apiFormat: 'openai-compatible', baseUrl: 'https://example.com/v1', apiKey: '',
+      models: [{ id: 'model-one', label: 'Model one', contextWindow: 1_000_000 }],
+      status: 'unchecked', sortOrder: 0, userAdded: true,
+    };
+    useSettingsStore.setState({ providers: [provider] });
+    const openEditor = (current: ProviderInstance) => {
+      renderWindow(<AddProviderModal open={true} editProvider={current} onClose={vi.fn()} />);
+      fireEvent.click(screen.getByRole('button', { name: t().settings.advancedConfig }));
+    };
+    openEditor(provider);
+    expect(screen.getByText('Model supports 1M')).toBeInTheDocument();
+    expect(screen.getByText('Currently using 200K (default)')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '1M' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    const saved = useSettingsStore.getState().providers[0];
+    expect(saved.models[0].declaredCapabilities?.maxInputTokens).toBe(1_000_000);
+    unmountWindow();
+    openEditor(saved);
+    expect(contextLengthInput()).toHaveValue('1000000');
+    expect(screen.getByText('Model supports 1M')).toBeInTheDocument();
+    expect(screen.getByText('Currently using 1M')).toBeInTheDocument();
+    fireEvent.change(contextLengthInput(), { target: { value: '' } });
+    expect(screen.getByText('Currently using 200K (default)')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(useSettingsStore.getState().providers[0].models[0].declaredCapabilities?.maxInputTokens).toBeUndefined();
+  });
+
+  it.each([
+    { reported: 1_000_000, learned: 128000, learnedProbe: 1_000_000, supported: '128K', current: '128K' },
+    { reported: 1_000_000, learned: 128000, learnedProbe: 256000, supported: '1M', current: '200K' },
+  ])('uses the same learned-limit validity as runtime: $supported / $current', ({ reported, learned, learnedProbe, supported, current }) => {
+    const provider: ProviderInstance = {
+      id: 'context-service', source: 'custom', name: 'Context service', enabled: true,
+      apiFormat: 'openai-compatible', baseUrl: 'https://example.com/v1', apiKey: '',
+      models: [{ id: 'model-one', label: 'Model one', contextWindow: reported }],
+      status: 'unchecked', sortOrder: 0, userAdded: true,
+    };
+    useDiscoveredCapsStore.setState({ capabilities: {
+      'context-service:model-one': {
+        contextWindow: learned, contextWindowProbe: learnedProbe, source: 'error-derived', updatedAt: 1,
+      },
+    } });
+    useSettingsStore.setState({ providers: [provider] });
+    renderWindow(<AddProviderModal open={true} editProvider={provider} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: t().settings.advancedConfig }));
+    expect(screen.getByText(`Model supports ${supported}`)).toBeInTheDocument();
+    expect(screen.getByText(`Currently using ${current} (default)`)).toBeInTheDocument();
+  });
+
+  it('clears an inherited context limit while preserving every other model and endpoint option', () => {
+    const provider: ProviderInstance = {
+      id: 'context-service', source: 'custom', name: 'Context service', enabled: true,
+      apiFormat: 'openai-compatible', baseUrl: 'https://example.com/v1', apiKey: '',
+      declaredCapabilities: { maxInputTokens: 65536, maxOutputTokens: 8192, thinkingFormat: 'qwen', useRawUrl: true },
+      models: [
+        { id: 'model-one', label: 'Model one', contextWindow: 1_000_000, declaredCapabilities: { maxInputTokens: 65536 } },
+        { id: 'model-two', label: 'Model two', contextWindow: 1_000_000 },
+        { id: 'model-three', label: 'Model three', contextWindow: 1_000_000, declaredCapabilities: { maxInputTokens: 500000 } },
+      ],
+      status: 'unchecked', sortOrder: 0, userAdded: true,
+    };
+    useSettingsStore.setState({ providers: [provider] });
+    renderWindow(<AddProviderModal open={true} editProvider={provider} onClose={vi.fn()} />);
+    fireEvent.click(screen.getAllByRole('button', { name: t().settings.advancedConfig })[0]);
+    expect(contextLengthInput()).toHaveValue('65536');
+    expect(screen.getByText('Currently using 64K')).toBeInTheDocument();
+    fireEvent.change(contextLengthInput(), { target: { value: '' } });
+    expect(screen.getByText('Currently using 200K (default)')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    const saved = useSettingsStore.getState().providers[0];
+    expect(saved.declaredCapabilities).toEqual({ maxOutputTokens: 8192, thinkingFormat: 'qwen', useRawUrl: true });
+    const limits = saved.models.map(({ id }) => resolveRequestBudget(
+      id, resolveCapabilities(id), saved, useSettingsStore.getState(),
+    ).contextWindowSize);
+    expect(limits).toEqual([200000, 65536, 500000]);
+    unmountWindow();
+    renderWindow(<AddProviderModal open={true} editProvider={saved} onClose={vi.fn()} />);
+    fireEvent.click(screen.getAllByRole('button', { name: t().settings.advancedConfig })[0]);
+    expect(contextLengthInput()).toHaveValue('');
+    expect(screen.getByText('Currently using 200K (default)')).toBeInTheDocument();
+  });
+
+  it('uses the saved service identity when adding a built-in provider again', () => {
+    const provider: ProviderInstance = {
+      id: 'openrouter', source: 'builtin', name: 'OpenRouter', enabled: false,
+      apiFormat: 'openai-compatible', baseUrl: 'https://openrouter.ai/api/v1', apiKey: '',
+      models: [], status: 'unchecked', sortOrder: 0, userAdded: false,
+    };
+    useSettingsStore.setState({ providers: [provider] });
+    useDiscoveredCapsStore.setState({ capabilities: {
+      'openrouter:qwen3-max': { contextWindow: 128000, source: 'error-derived', updatedAt: 1 },
+    } });
+    renderWindow(<AddProviderModal open={true} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /select provider/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'OpenRouter' }));
+    fireEvent.click(screen.getByRole('button', { name: /add model/i }));
+    const modelInput = screen.getByPlaceholderText('Enter model ID');
+    fireEvent.change(modelInput, { target: { value: 'qwen3-max' } });
+    fireEvent.keyDown(modelInput, { key: 'Enter' });
+    fireEvent.click(screen.getByRole('button', { name: t().settings.advancedConfig }));
+    expect(screen.getByText('Model supports 128K')).toBeInTheDocument();
+    expect(screen.getByText('Currently using 128K (default)')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    const saved = useSettingsStore.getState().providers[0];
+    expect(resolveRequestBudget(
+      'qwen3-max', resolveCapabilities('qwen3-max'), saved, useSettingsStore.getState(),
+      useDiscoveredCapsStore.getState().get(saved.id, 'qwen3-max'),
+    ).contextWindowSize).toBe(128000);
   });
 });

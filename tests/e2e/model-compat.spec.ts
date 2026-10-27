@@ -546,6 +546,111 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
     expect(fs.existsSync(sentinel)).toBe(true);
   });
 
+  test('shows supported and current context lengths, saves 1M, and restores the default in model settings', async () => {
+    const models = [
+      { id: 'context-large', contextLength: 1_000_000 },
+      { id: 'context-small', contextLength: 128000 },
+    ];
+    const page = await openChat([], { keepOtherProviders: true }, {
+      getRoutes: {
+        '/v1/models': { object: 'list', data: models.map(({ id }) => ({ id, object: 'model' })) },
+        '/api/v0/models': {
+          object: 'list',
+          data: models.map(({ id, contextLength }) => ({
+            id, object: 'model', type: 'llm', state: 'loaded',
+            max_context_length: contextLength, loaded_context_length: contextLength,
+          })),
+        },
+      },
+    });
+    await app!.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0].setContentSize(900, 720);
+    });
+    const sidebarToggle = page.locator('[data-window-control="sidebar"]').first();
+    if (/^显示/.test((await sidebarToggle.getAttribute('aria-label')) ?? '')) await sidebarToggle.click();
+    await page.getByRole('button', { name: /^(我|登录 \/ 注册)$/ }).first().click();
+    await page.getByText('设置', { exact: true }).last().click();
+    const settings = page.locator('[data-abu-settings-dialog]');
+    await expect(settings).toBeVisible({ timeout: READY_TIMEOUT });
+    await settings.getByText('模型', { exact: true }).first().click();
+    await settings.getByRole('button', { name: '添加', exact: true }).first().click();
+    await page.getByRole('button', { name: '选择供应商' }).click();
+    await page.getByRole('button', { name: 'LM Studio', exact: true }).click();
+    await page.getByPlaceholder('http://127.0.0.1:1234/v1').fill(mock!.baseUrl);
+    await page.getByRole('button', { name: '获取模型列表' }).click();
+    await expect(page.getByText('获取到 2 个模型')).toBeVisible({ timeout: READY_TIMEOUT });
+    const largeRow = page.getByText('context-large', { exact: true }).locator('../..');
+    await largeRow.getByRole('button', { name: '高级配置', exact: true }).click();
+    const input = largeRow.getByRole('textbox', { name: '上下文长度', exact: true });
+    await expect(input).toHaveValue('');
+    await expect(largeRow.getByText('模型支持 1M', { exact: true })).toBeVisible();
+    await expect(largeRow.getByText('当前使用 200K（默认）', { exact: true })).toBeVisible();
+    await largeRow.getByRole('button', { name: '1M', exact: true }).click();
+    await expect(input).toHaveValue('1000000');
+    await expect(largeRow.getByText('当前使用 1M', { exact: true })).toBeVisible();
+    await expect(largeRow.getByRole('button', { name: '1M', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    expect(await largeRow.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    const inputBox = await input.boundingBox();
+    const outputBox = await largeRow.getByRole('textbox', { name: '最大输出 Token', exact: true }).boundingBox();
+    expect(inputBox).not.toBeNull();
+    expect(outputBox).not.toBeNull();
+    expect(inputBox!.y).toBe(outputBox!.y);
+    await largeRow.screenshot({ path: path.join(process.cwd(), '.agent', 'context-settings-1m.png') });
+    const smallRow = page.getByText('context-small', { exact: true }).locator('../..');
+    await smallRow.getByRole('button', { name: '高级配置', exact: true }).click();
+    await expect(smallRow.getByText('模型支持 128K', { exact: true })).toBeVisible();
+    await expect(smallRow.getByText('当前使用 128K（默认）', { exact: true })).toBeVisible();
+    await expect(smallRow.getByRole('textbox', { name: '上下文长度', exact: true })).toHaveValue('');
+    await page.getByRole('button', { name: '保存', exact: true }).click();
+
+    const providerCard = settings.getByRole('switch', { name: 'LM Studio', exact: true }).locator('../../..');
+    await providerCard.hover();
+    await providerCard.getByRole('button', { name: '编辑', exact: true }).click();
+    await largeRow.getByRole('button', { name: '高级配置', exact: true }).click();
+    await expect(input).toHaveValue('1000000');
+    await expect(largeRow.getByText('模型支持 1M', { exact: true })).toBeVisible();
+    await expect(largeRow.getByText('当前使用 1M', { exact: true })).toBeVisible();
+    await input.fill('500000');
+    await expect(largeRow.getByText('当前使用 500K', { exact: true })).toBeVisible();
+    await input.clear();
+    await expect(largeRow.getByText('当前使用 200K（默认）', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: '保存', exact: true }).click();
+    await providerCard.hover();
+    await providerCard.getByRole('button', { name: '编辑', exact: true }).click();
+    await largeRow.getByRole('button', { name: '高级配置', exact: true }).click();
+    await expect(input).toHaveValue('');
+    await expect(largeRow.getByText('当前使用 200K（默认）', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: '保存', exact: true }).click();
+    await page.locator('[data-abu-settings-close]').click();
+    await expect(settings).toHaveCount(0);
+
+    await Promise.all([page.waitForEvent('load'), page.evaluate(async () => {
+      await navigator.locks.request('abu-browser-permission-config-v2', () => {
+        const persisted = JSON.parse(localStorage.getItem('abu-settings')!) as { state: Record<string, unknown>; version: number };
+        persisted.state.language = 'en-US';
+        persisted.state.theme = 'dark';
+        localStorage.setItem('abu-settings', JSON.stringify(persisted));
+        location.reload();
+      });
+    })]);
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en-US', { timeout: READY_TIMEOUT });
+    await expect(page.locator('html')).toHaveClass(/dark/);
+    await page.getByRole('button', { name: /^(Me|Sign in \/ Sign up)$/ }).first().click();
+    await page.getByRole('menuitem', { name: 'Settings', exact: true }).click();
+    await settings.getByText('Models', { exact: true }).first().click();
+    await providerCard.hover();
+    await providerCard.getByRole('button', { name: 'Edit', exact: true }).click();
+    await largeRow.getByRole('button', { name: 'Advanced', exact: true }).click();
+    await expect(largeRow.getByText('Model supports 1M', { exact: true })).toBeVisible();
+    await expect(largeRow.getByText('Currently using 200K (default)', { exact: true })).toBeVisible();
+    await expect(largeRow.getByRole('textbox', { name: 'Context length', exact: true })).toHaveValue('');
+    expect(await largeRow.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await largeRow.getByRole('button', { name: '1M', exact: true }).focus();
+    await page.keyboard.press('Enter');
+    await expect(largeRow.getByText('Currently using 1M', { exact: true })).toBeVisible();
+    await largeRow.screenshot({ path: path.join(process.cwd(), '.agent', 'context-settings-en-dark.png') });
+  });
+
   test('P1-7 ticks 能看图 for an LM Studio vision model and gives it the screenshot playbook', async () => {
     const visionModel = 'qwen3-vl-8b';
     const answer = `abu-e2e-vision-answer-${randomUUID()}`;

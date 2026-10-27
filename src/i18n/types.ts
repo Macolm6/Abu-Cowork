@@ -2009,10 +2009,13 @@ export interface TranslationDict {
     effortHigh: string;
     capContextLength: string;
     capContextLengthHint: string;
-    /** Placeholder when the service reported the length. {size} */
+    /** Supported context length reported by the service. {size} */
     capContextLengthDetected: string;
-    /** Placeholder when nothing was reported. {size} */
+    /** Estimated supported context length. {size} */
     capContextLengthEstimated: string;
+    capContextLengthPlaceholder: string;
+    capContextLengthCurrent: string;
+    capContextLengthCurrentDefault: string;
     capMaxOutput: string;
     capTokenDefault: string;
     capPerModelHint: string;

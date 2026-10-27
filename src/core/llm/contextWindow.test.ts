@@ -81,6 +81,11 @@ describe('resolveContextWindow', () => {
 });
 
 describe('formatContextLength', () => {
+  it('keeps small manual values readable while typing', () => {
+    expect(formatContextLength(1)).toBe('1');
+    expect(formatContextLength(999)).toBe('999');
+    expect(formatContextLength(1000)).toBe('1K');
+  });
   it('prints lengths the way local model apps do', () => {
     expect(formatContextLength(8192)).toBe('8K');
     expect(formatContextLength(16384)).toBe('16K');

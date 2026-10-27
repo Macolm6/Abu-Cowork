@@ -3,7 +3,7 @@ import { format, useI18n } from '@/i18n';
 import { Button } from '@/components/ds/button';
 import { Checkbox } from '@/components/ds/checkbox';
 import { TextField } from '@/components/ds/text-field';
-import { formatContextLength } from '@/core/llm/contextWindow';
+import { formatContextLength, positiveInteger, type ResolvedContextWindow } from '@/core/llm/contextWindow';
 import { toggleEffort } from './providerCapabilities';
 import type { ApiFormat } from '@/types';
 import type { ModelDeclaredCapabilities } from '@/types/provider';
@@ -17,20 +17,19 @@ export default function AdvancedCapabilitiesFields({
   declared,
   setDeclared,
   apiFormat,
-  detectedContextWindow,
-  estimatedContextWindow,
+  contextWindow,
 }: {
   declared: ModelDeclaredCapabilities;
   setDeclared: Dispatch<SetStateAction<ModelDeclaredCapabilities>>;
   apiFormat: ApiFormat;
-  /** 获取模型时服务报告的长度；没有就是 undefined */
-  detectedContextWindow?: number;
-  /** 留空时阿布按名字估计的长度 */
-  estimatedContextWindow: number;
+  /** Model capacity and the default limit, resolved without the user's override. */
+  contextWindow: ResolvedContextWindow;
 }) {
   const { t } = useI18n();
   const fieldId = useId();
   const isAnthropic = apiFormat === 'anthropic';
+  const customContextLength = positiveInteger(declared.maxInputTokens);
+  const currentContextLength = customContextLength ?? contextWindow.size;
   return (
     <div className="space-y-2">
       <div className="text-ui-sm font-medium text-label">
@@ -74,27 +73,35 @@ export default function AdvancedCapabilitiesFields({
           </div>
         )}
         <div className="grid grid-cols-2 gap-2 pt-1">
-          <div className="space-y-1">
+          <div className="min-w-0 space-y-1.5">
             <label htmlFor={`${fieldId}-input`} className="block text-ui text-label">{t.settings.capContextLength}</label>
-            <div id={`${fieldId}-input-hint`} className="text-ui-sm text-label-tertiary">{t.settings.capContextLengthHint}</div>
             <TextField
               id={`${fieldId}-input`}
-              aria-describedby={`${fieldId}-input-hint`}
+              aria-describedby={`${fieldId}-input-hint ${fieldId}-input-summary`}
               inputMode="numeric"
-              placeholder={detectedContextWindow !== undefined
-                ? format(t.settings.capContextLengthDetected, { size: formatContextLength(detectedContextWindow) })
-                : format(t.settings.capContextLengthEstimated, { size: formatContextLength(estimatedContextWindow) })}
+              placeholder={format(t.settings.capContextLengthPlaceholder, { size: formatContextLength(contextWindow.size) })}
               value={declared.maxInputTokens ?? ''}
               onChange={e => { const raw = e.target.value.replace(/[^0-9]/g, ''); setDeclared(d => ({ ...d, maxInputTokens: raw === '' ? undefined : Number(raw) })); }}
             />
+            <div id={`${fieldId}-input-hint`} className="text-ui-sm text-label-tertiary">{t.settings.capContextLengthHint}</div>
             <div className="flex flex-wrap gap-1">
-              {[8192, 16384, 32768, 65536, 131072, 262144].map(v => (
+              {[8192, 16384, 32768, 65536, 131072, 262144, 1_000_000].map(v => (
                 <Button key={v} variant="plain" size="sm"
+                  aria-pressed={customContextLength === v}
+                  className="aria-pressed:bg-fill-selected aria-pressed:hover:bg-fill-selected"
                   onClick={() => setDeclared(d => ({ ...d, maxInputTokens: v }))}>{formatContextLength(v)}</Button>
               ))}
             </div>
+            <div id={`${fieldId}-input-summary`} className="space-y-0.5 text-ui-sm text-label-secondary" aria-live="polite" aria-atomic="true">
+              <div>{format(contextWindow.source === 'estimate'
+                ? t.settings.capContextLengthEstimated
+                : t.settings.capContextLengthDetected, { size: formatContextLength(contextWindow.uncappedSize) })}</div>
+              <div className="font-medium text-label">{format(customContextLength === undefined
+                ? t.settings.capContextLengthCurrentDefault
+                : t.settings.capContextLengthCurrent, { size: formatContextLength(currentContextLength) })}</div>
+            </div>
           </div>
-          <div className="space-y-1">
+          <div className="min-w-0 space-y-1.5">
             <label htmlFor={`${fieldId}-output`} className="block text-ui text-label">{t.settings.capMaxOutput}</label>
             <TextField
               id={`${fieldId}-output`}

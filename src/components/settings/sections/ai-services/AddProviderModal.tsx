@@ -24,6 +24,7 @@ import { isKnownModel } from '@/core/llm/modelCapabilities';
 import { resolveContextWindow } from '@/core/llm/contextWindow';
 import { localServerKind } from '@/core/llm/localProvider';
 import { useSettingsStore, PROVIDER_CONFIGS } from '@/stores/settingsStore';
+import { useDiscoveredCapsStore } from '@/stores/discoveredCapabilitiesStore';
 import { PROVIDER_GUIDES } from './providerGuides';
 import { computeShowAdvanced, defaultModelDeclaredCapabilities } from './providerCapabilities';
 import { toModelInfo, withContextWindows } from './modelInfoUtil';
@@ -261,6 +262,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
   const removeProvider = useSettingsStore((s) => s.removeProvider);
   const selectModel = useSettingsStore((s) => s.selectModel);
   const contextWindowCeiling = useSettingsStore((s) => s.contextWindowSize);
+  const discoveredCapabilities = useDiscoveredCapsStore((s) => s.capabilities);
   // The page clears `editProvider` in the same update that closes the window. While the window
   // fades out it keeps showing the provider it was opened for.
   const [heldProvider, setHeldProvider] = useState(editProvider);
@@ -641,6 +643,8 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
   // user typed / models Ollama reported): the expand button and the abilities under it are
   // gated identically everywhere: showAdvanced && isSelected. ──
   const renderModelCapsPanel = (modelId: string) => {
+    const providerId = shownProvider?.id ?? (isCustom ? undefined : selectedOption?.provider);
+    const discovered = providerId ? discoveredCapabilities[`${providerId}:${modelId}`] : undefined;
     return (
       <div className="mt-2 space-y-2 border-l border-separator pl-3">
         <p className="text-caption text-label-tertiary">{t.settings.capPerModelHint}</p>
@@ -652,13 +656,14 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
           // (design doc §7b), and `selectedOption.format` never changes for
           // it — only `effectiveFormat` (which follows `activePlan`) does.
           apiFormat={effectiveFormat}
-          detectedContextWindow={detectedContextWindowFor(modelId)}
-          // 与运行时同一算法：只有名字估计这一级，再按全局上限封顶
-          estimatedContextWindow={resolveContextWindow({
+          contextWindow={resolveContextWindow({
             modelId,
+            probed: detectedContextWindowFor(modelId),
+            discovered: discovered?.contextWindow,
+            discoveredProbe: discovered?.contextWindowProbe,
             isLocal: localServerKind({ id: selectedOption?.provider ?? '', source: isCustom ? 'custom' : 'builtin', baseUrl }) !== null,
             ceiling: contextWindowCeiling,
-          }).size}
+          })}
         />
       </div>
     );
@@ -896,12 +901,8 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
       //  - never forces `enabled: true` (must not silently re-enable a
       //    provider the user deliberately disabled — `enabled` is simply
       //    omitted from the patch so the existing value is left untouched);
-      //  - only touches provider-level `declaredCapabilities` when
-      //    `showAdvanced` is shown, and even then preserves the existing
-      //    object (`{ ...editProvider.declaredCapabilities, useRawUrl }`)
-      //    instead of replacing it, so fields outside this modal's advanced
-      //    section (thinkingFormat, maxTokensField, requiresToolResultName,
-      //    max*Tokens, legacy supports* flags, …) survive a save.
+      //  - preserves endpoint-level capabilities and legacy shared fields;
+      //    context limits are saved per model so clearing one restores its default.
       const editPatch: Partial<ProviderInstance> = {
         name: serviceName.trim(),
         apiKey,
@@ -913,6 +914,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
       };
       if (showAdvanced) {
         editPatch.declaredCapabilities = { ...editProvider.declaredCapabilities, useRawUrl };
+        delete editPatch.declaredCapabilities.maxInputTokens;
       }
       updateProvider(editProvider.id, editPatch);
       providerId = editProvider.id;
@@ -1076,7 +1078,10 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
     // Per-model declared capabilities, keyed by model id.
     const declaredMap: Record<string, ModelDeclaredCapabilities> = {};
     for (const m of p.models) {
-      if (m.declaredCapabilities) declaredMap[m.id] = m.declaredCapabilities;
+      const maxInputTokens = m.declaredCapabilities?.maxInputTokens ?? p.declaredCapabilities?.maxInputTokens;
+      if (m.declaredCapabilities || maxInputTokens !== undefined) {
+        declaredMap[m.id] = { ...m.declaredCapabilities, maxInputTokens };
+      }
     }
     setPerModelDeclared(declaredMap);
     setExpandedModelIds(new Set());
