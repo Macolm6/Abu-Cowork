@@ -73,7 +73,7 @@ export interface WindowShowRecord {
  * again after closing its first app instance.
  */
 export function createElectronDataRoot(): ElectronDataRoot {
-  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), `abu-e2e-${randomUUID().slice(0, 8)}-`));
+  const rootDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `abu-e2e-${randomUUID().slice(0, 8)}-`)));
   return {
     rootDir,
     userDataDir: path.join(rootDir, 'user-data'),
@@ -283,17 +283,18 @@ export async function dismissFirstRunOverlays(page: Page, options: { apps?: bool
 }
 
 /**
- * Open the 工作区文件 tab of a new task in a sidebar project: 新任务 on the project row, the
- * title bar's panel button (the task has no message yet), then 工作区文件 on the launcher.
- * No model is asked anything.
+ * Open the 任务摘要 tab of a new task in a sidebar project, whose 所有文件 section lists the
+ * project folder: 新任务 on the project row, the title bar's panel button (the task has no
+ * message yet), then 任务摘要 on the launcher. No model is asked anything.
  */
-export async function openWorkspaceFilesOfProject(page: Page, projectName: string): Promise<void> {
+export async function openTaskSummaryOfProject(page: Page, projectName: string): Promise<void> {
   await page.getByRole('group', { name: projectName, exact: true })
     .getByRole('button', { name: '新任务', exact: true }).click();
   await page.getByRole('button', { name: '显示面板', exact: true }).click();
   await expect(page.getByText('从这里开始', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
-  await page.getByRole('button', { name: /^工作区文件/ }).click();
-  await expect(page.getByRole('tab', { name: '工作区文件', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await page.getByRole('button', { name: /^任务摘要/ }).click();
+  await expect(page.getByRole('tab', { name: '任务摘要', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('region', { name: '所有文件', exact: true })).toBeVisible();
 }
 
 export interface LocalMockProviderOptions {

@@ -15,6 +15,7 @@ import enUS from '@/i18n/locales/en-US';
 import { useChatStore } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useToastStore } from '@/stores/toastStore';
+import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { passSettleInterval } from '@/test/dsWindows';
 import WorkspaceFileTree from './WorkspaceFileTree';
 
@@ -51,14 +52,14 @@ vi.mock('@tauri-apps/plugin-opener', () => ({
 // What the tree's menus were given, to drive a menu the way Radix does when it is opened
 // again before its close hook ran (happy-dom has no animations), plus the renders of each
 // row, the right-click menus that are mounted and the close hooks that have run.
-const HEADER_MENU = vi.hoisted(() => 'header menu');
+const FOLDER_MENU = vi.hoisted(() => 'folder menu');
 const ROW_MENU = vi.hoisted(() => 'row menu');
 const rowMenus = vi.hoisted(() => ({
   renders: [] as string[],
   instances: new Set<string>(),
   closeHooks: [] as string[],
   closeHooksSeen: new Map<string, number>(),
-  headerRenders: { count: 0 },
+  folderMenuRenders: { count: 0 },
   fieldsRendered: [] as string[],
   rowMenuOpenChange: { current: undefined as ((open: boolean) => void) | undefined },
   itemSelect: new Map<string, ((event: Event) => void) | undefined>(),
@@ -112,12 +113,12 @@ vi.mock('@/components/ds/menu', async (importOriginal) => {
   return {
     ...actual,
     Menu: (props: ComponentProps<typeof actual.Menu>) => {
-      rowMenus.headerRenders.count += 1;
+      rowMenus.folderMenuRenders.count += 1;
       return actual.Menu({
         ...props,
         onCloseAutoFocus: (event) => {
           props.onCloseAutoFocus?.(event);
-          rowMenus.closeHooks.push(HEADER_MENU);
+          rowMenus.closeHooks.push(FOLDER_MENU);
         },
       });
     },
@@ -169,11 +170,15 @@ function patchTree(overrides: Partial<UseWorkspaceTreeResult>) {
 }
 
 const onSelectWorkspace = vi.fn();
+const onSwitchFolder = vi.fn();
+const folderNeedsAccess = vi.fn((_path: string) => false);
+// The folders the workspace folder's menu lists beside the one in view.
+const OTHER = '/work/other';
 
 function renderTree() {
   return render(
     <DesignSystemProvider>
-      <WorkspaceFileTree onSelectWorkspace={onSelectWorkspace} />
+      <WorkspaceFileTree onSelectWorkspace={onSelectWorkspace} onSwitchFolder={onSwitchFolder} folderNeedsAccess={folderNeedsAccess} />
     </DesignSystemProvider>,
   );
 }
@@ -188,12 +193,17 @@ async function chooseFromRowMenu(user: UserEvent, entry: WorkspaceTreeEntry, lab
   await user.click(await screen.findByText(label));
 }
 
-async function chooseFromHeaderMenu(user: UserEvent, label: string) {
-  await user.click(screen.getByRole('button', { name: copy.moreActions }));
-  await user.click(await screen.findByText(label));
+function menuItemNames() {
+  return within(screen.getByRole('menu')).getAllByRole('menuitem').map((item) => item.textContent);
 }
 
-// Waits until a close hook of a menu (ROW_MENU or HEADER_MENU) has run since the last
+// The 「更多操作」 button of the workspace folder's own row.
+async function chooseFromFolderMenu(user: UserEvent, label: string) {
+  await user.click(screen.getByRole('button', { name: copy.moreActions }));
+  await user.click(await screen.findByRole('menuitem', { name: label }));
+}
+
+// Waits until a close hook of a menu (ROW_MENU or FOLDER_MENU) has run since the last
 // call for that menu, and whatever it started has rendered.
 async function closeHookRan(menu: string) {
   const seen = rowMenus.closeHooksSeen.get(menu) ?? 0;
@@ -235,11 +245,15 @@ beforeEach(() => {
   usePreviewStore.setState({ previewFilePath: null, openPreview, closePreviewTabsForPath, retargetPreviewPath });
   useChatStore.setState({ activeConversationId: null, addPendingAttachment });
   useToastStore.setState({ toasts: [] });
+  useWorkspaceStore.setState({ currentPath: ROOT, recentPaths: [ROOT, OTHER] });
+  onSelectWorkspace.mockClear();
+  onSwitchFolder.mockClear();
+  folderNeedsAccess.mockReset().mockReturnValue(false);
   rowMenus.renders.length = 0;
   rowMenus.instances.clear();
   rowMenus.closeHooks.length = 0;
   rowMenus.closeHooksSeen.clear();
-  rowMenus.headerRenders.count = 0;
+  rowMenus.folderMenuRenders.count = 0;
   rowMenus.fieldsRendered.length = 0;
   rowMenus.rowMenuOpenChange.current = undefined;
   rowMenus.itemSelect.clear();
@@ -613,12 +627,12 @@ describe('WorkspaceFileTree file operations', () => {
     });
   });
 
-  describe('the header menu', () => {
+  describe('the workspace folder menu', () => {
     it('creates a folder in the workspace folder', async () => {
       const user = userEvent.setup();
       renderTree();
 
-      await chooseFromHeaderMenu(user, copy.newFolder);
+      await chooseFromFolderMenu(user, copy.newFolder);
       await user.type(await screen.findByPlaceholderText(copy.newFolderPlaceholder), ' archive {Enter}');
 
       await waitFor(() => expect(mkdir).toHaveBeenCalledTimes(1));
@@ -632,7 +646,7 @@ describe('WorkspaceFileTree file operations', () => {
       vi.mocked(exists).mockResolvedValue(true);
       renderTree();
 
-      await chooseFromHeaderMenu(user, copy.newFolder);
+      await chooseFromFolderMenu(user, copy.newFolder);
       await user.type(await screen.findByPlaceholderText(copy.newFolderPlaceholder), 'docs{Enter}');
 
       await waitFor(() => expect(toasts()).toEqual([{ type: 'error', title: copy.newFolderFailed, message: copy.alreadyExists }]));
@@ -643,11 +657,11 @@ describe('WorkspaceFileTree file operations', () => {
       const user = userEvent.setup();
       renderTree();
 
-      await chooseFromHeaderMenu(user, copy.newFolder);
+      await chooseFromFolderMenu(user, copy.newFolder);
       await user.type(await screen.findByPlaceholderText(copy.newFolderPlaceholder), '{Enter}');
       await waitFor(() => expect(screen.queryByPlaceholderText(copy.newFolderPlaceholder)).not.toBeInTheDocument());
 
-      await chooseFromHeaderMenu(user, copy.newFolder);
+      await chooseFromFolderMenu(user, copy.newFolder);
       await user.type(await screen.findByPlaceholderText(copy.newFolderPlaceholder), 'archive{Escape}');
       await waitFor(() => expect(screen.queryByPlaceholderText(copy.newFolderPlaceholder)).not.toBeInTheDocument());
 
@@ -663,7 +677,7 @@ describe('WorkspaceFileTree file operations', () => {
       vi.mocked(exists).mockImplementation(async (path) => path === '/work/site/notes.md' || path === '/work/site/notes (1).md');
       renderTree();
 
-      await chooseFromHeaderMenu(user, copy.addFile);
+      await chooseFromFolderMenu(user, copy.addFile);
 
       await waitFor(() => expect(copyFile).toHaveBeenCalledTimes(2));
       expect(openFileDialog).toHaveBeenCalledWith({ multiple: true });
@@ -676,39 +690,173 @@ describe('WorkspaceFileTree file operations', () => {
       const user = userEvent.setup();
       renderTree();
 
-      await chooseFromHeaderMenu(user, copy.addFile);
+      await chooseFromFolderMenu(user, copy.addFile);
 
       await waitFor(() => expect(openFileDialog).toHaveBeenCalledTimes(1));
       expect(copyFile).not.toHaveBeenCalled();
       expect(refresh).not.toHaveBeenCalled();
     });
 
-    it('names the workspace folder in the header', () => {
-      setTree({ rootPath: '/work/quarterly-report' });
+    it('opens the file picker after the workspace menu has closed', async () => {
+      const user = userEvent.setup();
+      let menuOpenWhenPickerOpened: boolean | null = null;
+      vi.mocked(openFileDialog).mockImplementation(async () => {
+        menuOpenWhenPickerOpened = document.querySelector('[role="menu"]') !== null;
+        return null;
+      });
       renderTree();
 
-      expect(screen.getByRole('heading', { name: 'quarterly-report' })).toBeInTheDocument();
-      expect(screen.queryByRole('heading', { name: copy.title })).not.toBeInTheDocument();
+      await chooseFromFolderMenu(user, copy.addFile);
+
+      await waitFor(() => expect(openFileDialog).toHaveBeenCalledTimes(1));
+      expect(menuOpenWhenPickerOpened).toBe(false);
     });
 
-    it('has no header menu without a workspace', () => {
-      setTree({ rootPath: null, rootEntries: [] });
-      renderTree();
-
-      expect(screen.getByRole('heading', { name: copy.title })).toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: copy.moreActions })).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: copy.refresh })).not.toBeInTheDocument();
-      expect(screen.getByText(copy.noWorkspace)).toBeInTheDocument();
-    });
-
-    it('re-reads the folder from the refresh button', () => {
+    it('re-reads the folder and reveals it in the file manager', async () => {
+      const user = userEvent.setup();
       const refresh = vi.fn();
       setTree({ refresh });
       renderTree();
 
-      fireEvent.click(screen.getByRole('button', { name: copy.refresh }));
-
+      await chooseFromFolderMenu(user, copy.refresh);
       expect(refresh).toHaveBeenCalledTimes(1);
+
+      await chooseFromFolderMenu(user, enUS.panel.openInFinder);
+      await waitFor(() => expect(revealItemInDir).toHaveBeenCalledWith(ROOT));
+    });
+  });
+
+  // The workspace folder is the first row of the tree; its entries sit one level in.
+  describe('the workspace folder row', () => {
+    const folderRow = () => screen.getByRole('button', { name: 'site' });
+
+    it('comes first, open, with its entries one level in, and folds them away', async () => {
+      const user = userEvent.setup();
+      const { container } = renderTree();
+
+      expect(folderRow()).toHaveAttribute('aria-expanded', 'true');
+      expect(folderRow()).not.toHaveAttribute('title');
+      const text = container.textContent ?? '';
+      expect(text.indexOf('site')).toBeLessThan(text.indexOf('docs'));
+      expect(folderRow().style.paddingLeft).toBe('6px');
+      expect(row(DOCS).style.paddingLeft).toBe('20px');
+
+      await user.click(folderRow());
+
+      expect(folderRow()).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.queryByTitle(DOCS.path)).not.toBeInTheDocument();
+      expect(screen.queryByTitle(NOTES.path)).not.toBeInTheDocument();
+
+      await user.click(folderRow());
+      expect(row(DOCS)).toBeInTheDocument();
+    });
+
+    it('is not there without a workspace, where the folder choice is the only button', () => {
+      setTree({ rootPath: null, rootEntries: [] });
+      renderTree();
+
+      expect(screen.getAllByRole('button').map((button) => button.textContent)).toEqual([enUS.panel.selectWorkspace]);
+    });
+
+    it('keeps its row above a folder that is gone, empty or cannot be read', () => {
+      setTree({ rootMissing: true, rootEntries: [] });
+      renderTree();
+
+      expect(folderRow()).toBeInTheDocument();
+      expect(screen.getByText(copy.folderDeleted)).toBeInTheDocument();
+    });
+
+    it('has a menu of the folder: re-read, file manager, new folder, add files and another workspace', async () => {
+      const user = userEvent.setup();
+      renderTree();
+
+      const more = screen.getByRole('button', { name: copy.moreActions });
+      expect(more).not.toHaveAttribute('title');
+      await user.click(more);
+
+      expect(menuItemNames()).toEqual([copy.refresh, enUS.panel.openInFinder, copy.newFolder, copy.addFile, copy.changeFolder]);
+    });
+
+    it('offers the same menu on a right-click of the folder row', async () => {
+      renderTree();
+
+      fireEvent.contextMenu(folderRow());
+
+      expect(menuItemNames()).toEqual([copy.refresh, enUS.panel.openInFinder, copy.newFolder, copy.addFile, copy.changeFolder]);
+    });
+
+    describe('changing the workspace', () => {
+      async function openChangeList(user: UserEvent) {
+        await user.click(screen.getByRole('button', { name: copy.moreActions }));
+        screen.getByRole('menuitem', { name: copy.changeFolder }).focus();
+        await user.keyboard('{ArrowRight}');
+        const menus = await screen.findAllByRole('menu');
+        return menus[menus.length - 1];
+      }
+
+      it('lists the full path, then the recent folders as radio items with the folder in view checked, then the picker', async () => {
+        const user = userEvent.setup();
+        renderTree();
+
+        const list = await openChangeList(user);
+
+        expect(within(list).getAllByText(/./)[0]).toHaveTextContent(ROOT);
+        const items = within(list).getAllByRole('menuitemradio');
+        expect(items.map((item) => item.textContent)).toEqual(['site', 'other']);
+        expect(within(list).getByRole('menuitemradio', { name: 'site' })).toHaveAttribute('aria-checked', 'true');
+        expect(within(list).getByRole('menuitem', { name: enUS.panel.selectOtherFolder })).toBeInTheDocument();
+      });
+
+      it('offers the picker alone when no folder was used before', async () => {
+        const user = userEvent.setup();
+        useWorkspaceStore.setState({ recentPaths: [] });
+        renderTree();
+
+        const list = await openChangeList(user);
+
+        expect(within(list).queryAllByRole('menuitemradio')).toEqual([]);
+        expect(within(list).getByRole('menuitem', { name: enUS.panel.selectOtherFolder })).toBeInTheDocument();
+      });
+
+      it('switches to a folder that has access once the menu has closed', async () => {
+        const user = userEvent.setup();
+        renderTree();
+
+        const list = await openChangeList(user);
+        await user.click(within(list).getByRole('menuitemradio', { name: 'other' }));
+
+        await waitFor(() => expect(onSwitchFolder).toHaveBeenCalledWith(OTHER));
+        expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+        expect(folderNeedsAccess).toHaveBeenCalledWith(OTHER);
+      });
+
+      it('opens the system folder picker only after the menu has closed', async () => {
+        const user = userEvent.setup();
+        let menuOpenWhenPickerOpened: boolean | null = null;
+        onSelectWorkspace.mockImplementation(() => {
+          menuOpenWhenPickerOpened = document.querySelector('[role="menu"]') !== null;
+        });
+        renderTree();
+
+        const list = await openChangeList(user);
+        await user.click(within(list).getByRole('menuitem', { name: enUS.panel.selectOtherFolder }));
+
+        await waitFor(() => expect(onSelectWorkspace).toHaveBeenCalledTimes(1));
+        expect(menuOpenWhenPickerOpened).toBe(false);
+        expect(onSwitchFolder).not.toHaveBeenCalled();
+      });
+
+      it('leaves the folder alone when the menu is dismissed with Escape', async () => {
+        const user = userEvent.setup();
+        renderTree();
+
+        await openChangeList(user);
+        await user.keyboard('{Escape}{Escape}');
+
+        await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
+        expect(onSwitchFolder).not.toHaveBeenCalled();
+        expect(onSelectWorkspace).not.toHaveBeenCalled();
+      });
     });
   });
 
@@ -790,12 +938,13 @@ describe('WorkspaceFileTree file operations', () => {
       expect(order).toEqual([DOCS.path, GUIDE.path, NOTES.path, PLAN.path]);
     });
 
-    it('keeps the indentation of each level', () => {
+    it('keeps the indentation of each level, under the workspace folder row', () => {
       setTree({ expandedPaths: new Set([DOCS.path]), childrenByPath: new Map([[DOCS.path, [GUIDE]]]) });
       renderTree();
 
-      expect(row(DOCS).style.paddingLeft).toBe('6px');
-      expect(row(GUIDE).style.paddingLeft).toBe('20px');
+      expect(screen.getByRole('button', { name: 'site' }).style.paddingLeft).toBe('6px');
+      expect(row(DOCS).style.paddingLeft).toBe('20px');
+      expect(row(GUIDE).style.paddingLeft).toBe('34px');
       expect(row(GUIDE).style.paddingRight).toBe('6px');
     });
 
@@ -820,7 +969,6 @@ describe('WorkspaceFileTree file operations', () => {
     });
 
     const emptyStates: Array<[string, Partial<UseWorkspaceTreeResult>, string]> = [
-      ['no workspace', { rootPath: null, rootEntries: [] }, copy.noWorkspace],
       ['a deleted folder', { rootMissing: true, rootEntries: [] }, copy.folderDeleted],
       ['a folder that cannot be read', { rootError: 'denied', rootEntries: [] }, copy.loadError],
       ['a folder still loading', { isRootLoading: true, rootEntries: [] }, copy.loading],
@@ -848,10 +996,7 @@ describe('WorkspaceFileTree file operations', () => {
       setTree({ rootError: 'denied', rootEntries: [], refresh });
       renderTree();
 
-      // The header's button and the one beside the explanation.
-      const buttons = screen.getAllByRole('button', { name: copy.refresh });
-      expect(buttons).toHaveLength(2);
-      fireEvent.click(buttons[1]);
+      fireEvent.click(screen.getByRole('button', { name: copy.refresh }));
 
       expect(refresh).toHaveBeenCalledTimes(1);
     });
@@ -861,9 +1006,6 @@ describe('WorkspaceFileTree file operations', () => {
 // The tree on the design system: one right-click menu per row, a confirmation dialog
 // for delete, and rows that stay put while the rest of the tree changes.
 describe('WorkspaceFileTree menus and rows', () => {
-  function menuItemNames() {
-    return within(screen.getByRole('menu')).getAllByRole('menuitem').map((item) => item.textContent);
-  }
 
   describe('the right-click menu', () => {
     it('offers the file actions for a file', () => {
@@ -1025,7 +1167,7 @@ describe('WorkspaceFileTree menus and rows', () => {
       expect(invoke).not.toHaveBeenCalled();
     });
 
-    it('forgets a Delete when the header menu opens before the row menu has gone', async () => {
+    it('forgets a Delete when the workspace folder menu opens before the row menu has gone', async () => {
       // The open row menu blocks the pointer outside it; the press still reaches the button.
       const user = userEvent.setup({ pointerEventsCheck: 0 });
       renderTree();
@@ -1041,7 +1183,7 @@ describe('WorkspaceFileTree menus and rows', () => {
 
       await user.keyboard('{Escape}');
 
-      await closeHookRan(HEADER_MENU);
+      await closeHookRan(FOLDER_MENU);
       expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
       expect(invoke).not.toHaveBeenCalled();
     });
@@ -1354,18 +1496,7 @@ describe('WorkspaceFileTree menus and rows', () => {
     });
   });
 
-  describe('the header menu', () => {
-    it('is a named icon button without a native hint, and its items are menu items', async () => {
-      const user = userEvent.setup();
-      renderTree();
-
-      const more = screen.getByRole('button', { name: copy.moreActions });
-      expect(more).not.toHaveAttribute('title');
-      await user.click(more);
-
-      expect(menuItemNames()).toEqual([copy.newFolder, copy.addFile]);
-    });
-
+  describe('the workspace folder menu', () => {
     it('closes before the folder name field appears, and the field has the focus', async () => {
       const user = userEvent.setup();
       renderTree();
@@ -1385,7 +1516,7 @@ describe('WorkspaceFileTree menus and rows', () => {
       await user.click(screen.getByRole('button', { name: copy.moreActions }));
       act(() => rowMenus.itemSelect.get(copy.newFolder)?.(new Event('select')));
       fireEvent.contextMenu(row(NOTES));
-      await closeHookRan(HEADER_MENU);
+      await closeHookRan(FOLDER_MENU);
       await user.keyboard('{Escape}');
       await closeHookRan(ROW_MENU);
 
@@ -1404,8 +1535,8 @@ describe('WorkspaceFileTree menus and rows', () => {
       expect(notes.tagName).toBe('BUTTON');
     });
 
-    // Each mounted menu listens for every key press on the document, so the tree has
-    // one right-click menu however many files it shows.
+    // Each mounted menu listens for every key press on the document, so the files share
+    // one right-click menu however many there are; the workspace folder's row has its own.
     it('share one right-click menu, and a right-click leaves the row in place', async () => {
       const user = userEvent.setup();
       renderTree();
@@ -1418,7 +1549,7 @@ describe('WorkspaceFileTree menus and rows', () => {
         await closeHookRan(ROW_MENU);
       }
 
-      expect(rowMenus.instances.size).toBe(1);
+      expect(rowMenus.instances.size).toBe(2);
       expect(row(NOTES)).toBe(notes);
       expect(row(PLAN)).toBe(plan);
     });
@@ -1514,20 +1645,20 @@ describe('WorkspaceFileTree menus and rows', () => {
       expect([...rowMenus.renders].sort()).toEqual([DOCS.path, GUIDE.path].sort());
     });
 
-    it('renders neither the rows nor the header menu when the sidebar around the tree renders again', () => {
+    it('renders neither the rows nor the workspace folder menu when the panel around the tree renders again', () => {
       const view = renderTree();
       rowMenus.renders.length = 0;
-      const headerRenders = rowMenus.headerRenders.count;
-      expect(headerRenders).toBeGreaterThan(0);
+      const folderMenuRenders = rowMenus.folderMenuRenders.count;
+      expect(folderMenuRenders).toBeGreaterThan(0);
 
       view.rerender(
         <DesignSystemProvider>
-          <WorkspaceFileTree onSelectWorkspace={onSelectWorkspace} />
+          <WorkspaceFileTree onSelectWorkspace={onSelectWorkspace} onSwitchFolder={onSwitchFolder} folderNeedsAccess={folderNeedsAccess} />
         </DesignSystemProvider>,
       );
 
       expect(rowMenus.renders).toEqual([]);
-      expect(rowMenus.headerRenders.count).toBe(headerRenders);
+      expect(rowMenus.folderMenuRenders.count).toBe(folderMenuRenders);
     });
   });
 

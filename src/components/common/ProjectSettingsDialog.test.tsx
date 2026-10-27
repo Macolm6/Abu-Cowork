@@ -321,6 +321,60 @@ describe('ProjectSettingsDialog', () => {
     });
   });
 
+  // The project's instructions and memory: two lines whose buttons open their windows over this one.
+  describe('the project instructions and memory', () => {
+    const group = () => within(ui.window()).getByRole('heading', { name: t().project.knowledgeSection });
+    // A window opened inside another takes the page from it: the settings stay open under it,
+    // out of the accessibility tree.
+    const settingsUnder = () => {
+      const box = windowBox(t().project.settingsTitle);
+      expect(box).toHaveAttribute('aria-hidden', 'true');
+      return box;
+    };
+
+    it('lists the two under their own group title, each with its explanation', () => {
+      seed(project());
+      open();
+
+      expect(group()).toHaveClass('text-label-tertiary');
+      const window = ui.window();
+      expect(within(window).getByText(t().panel.instructionsTitle)).toBeInTheDocument();
+      expect(within(window).getByText(t().panel.instructionsDesc)).toBeInTheDocument();
+      expect(within(window).getByText(t().panel.memoryTitle)).toBeInTheDocument();
+      expect(within(window).getByText(t().panel.memoryDesc)).toBeInTheDocument();
+    });
+
+    it('opens the instructions window of the project folder over the settings on 编辑', async () => {
+      seed(project());
+      open();
+
+      fireEvent.click(within(ui.window()).getByRole('button', { name: t().project.editInstructions }));
+
+      const editor = await screen.findByRole('dialog', { name: t().panel.instructionsTitle });
+      expect(editor).toHaveAttribute('data-state', 'open');
+      expect(settingsUnder()).toHaveAttribute('data-state', 'open');
+      expect(h.log).toEqual([]);
+    });
+
+    it('opens the memory window over the settings on 查看, and closing it leaves the settings open', async () => {
+      seed(project());
+      open();
+
+      fireEvent.click(within(ui.window()).getByRole('button', { name: t().project.viewMemory }));
+      const memory = await screen.findByRole('dialog', { name: t().panel.memoryTitle });
+      expect(memory).toHaveAttribute('data-state', 'open');
+      expect(settingsUnder()).toHaveAttribute('data-state', 'open');
+
+      // Its footer button and its corner button both close it.
+      fireEvent.click(within(memory).getAllByRole('button', { name: t().common.close })[0]);
+      await settle();
+
+      expect(memory).toHaveAttribute('data-state', 'closed');
+      expect(windowBox(t().project.settingsTitle)).toHaveAttribute('data-state', 'open');
+      expect(h.log).toEqual([]);
+    });
+  });
+
   describe('as a design-system window', () => {
     const providers = [
       { id: 'one', name: 'One', enabled: true, models: [{ id: 'model-a', label: 'Model A' }, { id: 'model-b' }] },

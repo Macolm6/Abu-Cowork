@@ -29,9 +29,6 @@ vi.mock('./workspace/TabStrip', () => ({
 vi.mock('./workspace/SummaryBody', () => ({
   default: () => <div>Summary body</div>,
 }));
-vi.mock('./workspace/FilesTab', () => ({
-  default: () => <div>Files body</div>,
-}));
 vi.mock('./workspace/TerminalTab', () => ({
   default: () => <div>Terminal</div>,
 }));
@@ -195,12 +192,12 @@ describe('RightPanel', () => {
       expect(panel()).toHaveAttribute('hidden');
     });
 
-    it('shows the file list opened from the launcher at the narrow width', async () => {
+    it('shows the summary opened from the launcher at the narrow width', async () => {
       startWithoutMessages('/workspace/render-count');
       await renderPanel();
       act(() => usePreviewStore.getState().showEmptyPanel());
 
-      act(() => { usePreviewStore.getState().openFiles(); });
+      act(() => { usePreviewStore.getState().openSummary(); });
 
       expect(panel()).not.toHaveAttribute('hidden');
       expect(panel().style.width).toBe('320px');

@@ -9,14 +9,14 @@ import { useConfirm } from '@/components/ds/confirm-context';
 import { ContextMenu } from '@/components/ds/context-menu';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
-import { Menu, MenuItem, MenuSeparator } from '@/components/ds/menu';
+import { Menu, MenuItem, MenuLabel, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuSub } from '@/components/ds/menu';
 import { Pressable } from '@/components/ds/pressable';
-import { ScrollArea } from '@/components/ds/scroll-area';
 import { TextField } from '@/components/ds/text-field';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useToastStore } from '@/stores/toastStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
+import { getFolderName, useWorkspaceStore } from '@/stores/workspaceStore';
 import { getComposerDraftKey, getComposerDraftScopeForEnterpriseMode } from '@/stores/composerDraftStore';
 import { useWorkspaceTree, type UseWorkspaceTreeResult, type WorkspaceTreeEntry } from '@/hooks/useWorkspaceTree';
 import { joinPath, getBaseName, getParentDir, normalizeSeparators } from '@/utils/pathUtils';
@@ -71,9 +71,20 @@ type RowEntry = Pick<WorkspaceTreeEntry, 'name' | 'path' | 'isDirectory'>;
 type CreateKind = 'file' | 'folder';
 
 // What a menu was asked to do that takes the focus; carried out once the menu has closed.
-type PendingAction =
-  | { kind: 'rename' | 'newFile' | 'newFolder' | 'delete'; entry: RowEntry }
-  | { kind: 'newRootFolder' };
+type PendingAction = { kind: 'rename' | 'newFile' | 'newFolder' | 'delete'; entry: RowEntry };
+
+// What the menu of the workspace folder's own row was asked to do that takes the focus or
+// the keyboard; carried out once the menu has closed.
+type RootMenuAction = { kind: 'newFolder' | 'addFile' } | { kind: 'recent'; path: string } | { kind: 'browse' };
+
+interface WorkspaceFileTreeProps {
+  /** Ask the system folder picker for a workspace folder. */
+  onSelectWorkspace: () => void;
+  /** Make `path` the workspace; the owner asks for access first when the folder has none. */
+  onSwitchFolder: (path: string) => void;
+  /** Whether switching to `path` opens the access dialog, which takes the focus. */
+  folderNeedsAccess: (path: string) => boolean;
+}
 
 // One line of the tree as it shows: a file or folder, the name field for a new entry,
 // or what an open folder has to say about its content.
@@ -271,17 +282,21 @@ const TreeRow = memo(function TreeRow({
 });
 
 /**
- * Lightweight, lazily-expanding file tree of the workspace folder: the body of the right
- * panel's workspace files tab. Deliberately NOT a full IDE explorer: no drag/drop, no
+ * Lightweight, lazily-expanding file tree of the workspace folder: the content of the
+ * 「所有文件」 section of the task summary. The folder itself is the first row, and its menu
+ * (right-click, or the 「更多操作」 button the row shows on hover) re-reads it, reveals it in
+ * the file manager, adds entries to it and changes the workspace (the recent folders and the
+ * system folder picker). Deliberately NOT a full IDE explorer: no drag/drop, no
  * multi-select — but each row does support a right-click context menu (reveal in Finder /
  * add to chat / copy path / rename / delete / new file & folder inside a directory),
  * mirroring TRAE Work. `onSelectWorkspace` serves the state with no workspace folder.
  */
-function WorkspaceFileTree({ onSelectWorkspace }: { onSelectWorkspace: () => void }) {
+function WorkspaceFileTree({ onSelectWorkspace, onSwitchFolder, folderNeedsAccess }: WorkspaceFileTreeProps) {
   const { t } = useI18n();
   const confirm = useConfirm();
   const openPreview = usePreviewStore((s) => s.openPreview);
   const previewFilePath = usePreviewStore((s) => s.previewFilePath);
+  const recentPaths = useWorkspaceStore((s) => s.recentPaths);
   const {
     rootPath,
     rootEntries,
@@ -296,15 +311,18 @@ function WorkspaceFileTree({ onSelectWorkspace }: { onSelectWorkspace: () => voi
     refresh,
   } = useWorkspaceTree();
 
-  // Header "more actions" menu (new folder / add file) — TRAE-style.
-  // New items land in the workspace root; the fs-watch auto-refresh + manual
-  // refresh keep the tree in sync.
+  // The workspace folder's own row folds the whole tree away and opens it again.
+  const [rootExpanded, setRootExpanded] = useState(true);
+  // New folders and added files from the folder row's menu land in the workspace root; the
+  // fs-watch auto-refresh + manual refresh keep the tree in sync.
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [creatingInFolder, setCreatingInFolder] = useState<{ folderPath: string; kind: CreateKind } | null>(null);
   // Rename, new file, new folder and the delete confirmation all take the focus, so a
   // menu item only records them here; the menu's close hook carries them out.
   const pendingActionRef = useRef<PendingAction | null>(null);
+  // The folder row menu's choice, carried out by that menu's close hook.
+  const pendingRootRef = useRef<RootMenuAction | null>(null);
   // One right-click menu serves every row: thousands of files stay one menu. It shows
   // the actions of the row its opening gesture began on.
   const [menuTarget, setMenuTarget] = useState<RowEntry | null>(null);
@@ -382,6 +400,45 @@ function WorkspaceFileTree({ onSelectWorkspace }: { onSelectWorkspace: () => voi
       console.error('[WorkspaceFileTree] revealItemInDir failed:', err);
     }
   }, []);
+
+  const handleRevealRoot = async () => {
+    if (!rootPath) return;
+    await revealItemInDir(rootPath);
+  };
+
+  // A menu opened again, or another menu of the tree opened, before a close hook ran would
+  // leave the earlier choice waiting. Drop the choices of both menus whenever one opens, or
+  // the next Escape would carry them out.
+  const handleRootMenuOpenChange = (open: boolean) => {
+    if (!open) return;
+    pendingRootRef.current = null;
+    pendingActionRef.current = null;
+  };
+
+  // The name field, the system folder picker and the access dialog take the keyboard, so
+  // they open only after the menu has gone, with the menu's focus return cancelled.
+  // Switching to a folder that already has access opens nothing: the focus goes back to
+  // where the menu was opened from.
+  const handleRootMenuCloseAutoFocus = (event: Event) => {
+    const action = pendingRootRef.current;
+    pendingRootRef.current = null;
+    if (!action) return;
+    if (action.kind === 'recent' && !folderNeedsAccess(action.path)) {
+      onSwitchFolder(action.path);
+      return;
+    }
+    event.preventDefault();
+    if (action.kind === 'newFolder') {
+      setRootExpanded(true);
+      setCreatingFolder(true);
+    } else if (action.kind === 'addFile') {
+      void handleAddFile();
+    } else if (action.kind === 'recent') {
+      onSwitchFolder(action.path);
+    } else {
+      onSelectWorkspace();
+    }
+  };
 
   // "Add to chat" — pushes an explicitly workspace-scoped path into
   // chatStore's ephemeral pendingAttachmentRequests buffer. ChatInput drains
@@ -522,16 +579,11 @@ function WorkspaceFileTree({ onSelectWorkspace }: { onSelectWorkspace: () => voi
     if (confirmed) await handleDeleteConfirmed(entry);
   };
 
-  // A menu opened again before its close hook ran would leave the earlier choice
-  // waiting. Drop that choice whenever a menu of the tree opens, or the next Escape
-  // would carry it out.
-  const handleHeaderMenuOpenChange = (open: boolean) => {
-    if (open) pendingActionRef.current = null;
-  };
-
+  // As for the folder row's menu: whenever the row menu opens, the choices of both menus go.
   const handleRowMenuOpenChange = (open: boolean) => {
     if (open) {
       pendingActionRef.current = null;
+      pendingRootRef.current = null;
       const row = gestureRow.current;
       if (!row) throw new Error('The row menu opens only for a gesture that began on a row');
       menuRowRef.current = row.element;
@@ -553,7 +605,7 @@ function WorkspaceFileTree({ onSelectWorkspace }: { onSelectWorkspace: () => voi
   // menu's own focus return cancelled so they keep the focus they take.
   const handleRowMenuCloseAutoFocus = (event: Event) => {
     const action = pendingActionRef.current;
-    if (!action || action.kind === 'newRootFolder') return;
+    if (!action) return;
     pendingActionRef.current = null;
     const { entry } = action;
     // The file went away (deleted, moved, its folder re-read) while its menu was open.
@@ -574,12 +626,48 @@ function WorkspaceFileTree({ onSelectWorkspace }: { onSelectWorkspace: () => voi
     setCreatingInFolder({ folderPath: entry.path, kind: action.kind === 'newFolder' ? 'folder' : 'file' });
   };
 
-  const handleHeaderMenuCloseAutoFocus = (event: Event) => {
-    if (pendingActionRef.current?.kind !== 'newRootFolder') return;
-    pendingActionRef.current = null;
-    event.preventDefault();
-    setCreatingFolder(true);
-  };
+  // ── The workspace folder's own menu (its 「更多操作」 button and a right-click) ──
+  const renderRootMenu = (path: string) => (
+    <>
+      <MenuItem icon={AppIcons.reload} onSelect={refresh}>
+        {t.panel.fileTree.refresh}
+      </MenuItem>
+      <MenuItem icon={AppIcons.openIn} onSelect={() => { void handleRevealRoot(); }}>
+        {t.panel.openInFinder}
+      </MenuItem>
+      <MenuSeparator />
+      <MenuItem icon={AppIcons.newFolder} onSelect={() => { pendingRootRef.current = { kind: 'newFolder' }; }}>
+        {t.panel.fileTree.newFolder}
+      </MenuItem>
+      <MenuItem icon={AppIcons.fileCreate} onSelect={() => { pendingRootRef.current = { kind: 'addFile' }; }}>
+        {t.panel.fileTree.addFile}
+      </MenuItem>
+      <MenuSeparator />
+      <MenuSub icon={AppIcons.folderOpen} label={t.panel.fileTree.changeFolder}>
+        <MenuLabel>
+          <span className="block max-w-64 whitespace-normal break-all">{path}</span>
+        </MenuLabel>
+        <MenuSeparator />
+        {recentPaths.length > 0 && (
+          <>
+            <MenuLabel>{t.panel.recentlyUsed}</MenuLabel>
+            <MenuRadioGroup
+              value={path}
+              onValueChange={(next) => { pendingRootRef.current = { kind: 'recent', path: next }; }}
+            >
+              {recentPaths.map((recent) => (
+                <MenuRadioItem key={recent} value={recent}>{getFolderName(recent)}</MenuRadioItem>
+              ))}
+            </MenuRadioGroup>
+            <MenuSeparator />
+          </>
+        )}
+        <MenuItem onSelect={() => { pendingRootRef.current = { kind: 'browse' }; }}>
+          {t.panel.selectOtherFolder}
+        </MenuItem>
+      </MenuSub>
+    </>
+  );
 
   // ── Per-node context menu (right-click) ──────────────────────────────
   const renderRowMenu = (entry: RowEntry) => (
@@ -617,7 +705,8 @@ function WorkspaceFileTree({ onSelectWorkspace }: { onSelectWorkspace: () => voi
 
   const items = useMemo(() => {
     const list: TreeItem[] = [];
-    appendVisibleItems(list, rootEntries, 0, { childrenByPath, expandedPaths, loadingPaths, errorsByPath }, creatingInFolder);
+    // Depth 0 is the workspace folder's own row; its entries start one level in.
+    appendVisibleItems(list, rootEntries, 1, { childrenByPath, expandedPaths, loadingPaths, errorsByPath }, creatingInFolder);
     return list;
   }, [rootEntries, childrenByPath, expandedPaths, loadingPaths, errorsByPath, creatingInFolder]);
 
@@ -628,7 +717,7 @@ function WorkspaceFileTree({ onSelectWorkspace }: { onSelectWorkspace: () => voi
     for (const item of items) if (item.kind === 'row') paths.add(item.entry.path);
     visiblePathsRef.current = paths;
     const action = pendingActionRef.current;
-    if (action && action.kind !== 'newRootFolder' && !paths.has(action.entry.path)) pendingActionRef.current = null;
+    if (action && !paths.has(action.entry.path)) pendingActionRef.current = null;
   }, [items]);
 
   const hintText = { loading: t.panel.fileTree.loading, loadError: t.panel.fileTree.loadError, empty: t.panel.fileTree.empty };
@@ -692,35 +781,59 @@ function WorkspaceFileTree({ onSelectWorkspace }: { onSelectWorkspace: () => voi
     );
   };
 
-  return (
-    <div className="flex h-full min-h-0 flex-col gap-2 px-3 pt-3">
-      <div className="flex shrink-0 items-center gap-1">
-        {/* The tab above already says what this is; the header says which folder. */}
-        <h4 className="min-w-0 flex-1 truncate text-ui-sm font-medium text-label-tertiary">
-          {rootPath ? getBaseName(rootPath) : t.panel.fileTree.title}
-        </h4>
-        {rootPath && (
-          <>
-            <IconButton size="sm" icon={AppIcons.reload} label={t.panel.fileTree.refresh} onClick={refresh} />
-            <Menu
-              align="end"
-              onOpenChange={handleHeaderMenuOpenChange}
-              onCloseAutoFocus={handleHeaderMenuCloseAutoFocus}
-              trigger={<IconButton size="sm" icon={AppIcons.more} label={t.panel.fileTree.moreActions} />}
-            >
-              <MenuItem icon={AppIcons.newFolder} onSelect={() => { pendingActionRef.current = { kind: 'newRootFolder' }; }}>
-                {t.panel.fileTree.newFolder}
-              </MenuItem>
-              <MenuItem icon={AppIcons.fileCreate} onSelect={() => { void handleAddFile(); }}>
-                {t.panel.fileTree.addFile}
-              </MenuItem>
-            </Menu>
-          </>
-        )}
+  if (!rootPath) {
+    return (
+      <div className="flex flex-col items-start gap-2 py-1">
+        <Button size="sm" onClick={onSelectWorkspace}>{t.panel.selectWorkspace}</Button>
       </div>
+    );
+  }
 
-      {creatingFolder && (
-        <div className="flex shrink-0 items-center gap-1 px-1">
+  // What the workspace folder has to say about itself, one level in, where its entries go.
+  const rootHint = (text: string) => (
+    <p style={{ paddingLeft: indentOf(1) }} className="py-1 text-caption text-label-tertiary">{text}</p>
+  );
+
+  return (
+    <div>
+      {/* The workspace folder's own row: it folds the tree, and its menu holds the folder's
+          actions. The 「更多操作」 button shows on hover and on keyboard focus. */}
+      <ContextMenu
+        content={renderRootMenu(rootPath)}
+        onOpenChange={handleRootMenuOpenChange}
+        onCloseAutoFocus={handleRootMenuCloseAutoFocus}
+      >
+        <div className="group flex items-center rounded-control hover:bg-fill-hover">
+          <Pressable
+            onClick={() => setRootExpanded(!rootExpanded)}
+            aria-expanded={rootExpanded}
+            style={{ paddingLeft: indentOf(0) }}
+            className="flex min-w-0 flex-1 items-center gap-1 py-1 text-left text-ui focus-visible:ring-inset"
+          >
+            <Icon icon={rootExpanded ? AppIcons.expand : AppIcons.disclose} size="sm" className="text-label-tertiary" />
+            <Icon icon={rootExpanded ? AppIcons.folderOpen : AppIcons.folder} size="sm" className="text-label-tertiary" />
+            <span className="min-w-0 flex-1 truncate font-medium text-label">{getFolderName(rootPath)}</span>
+          </Pressable>
+          <Menu
+            align="end"
+            onOpenChange={handleRootMenuOpenChange}
+            onCloseAutoFocus={handleRootMenuCloseAutoFocus}
+            trigger={(
+              <IconButton
+                size="sm"
+                icon={AppIcons.more}
+                label={t.panel.fileTree.moreActions}
+                className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
+              />
+            )}
+          >
+            {renderRootMenu(rootPath)}
+          </Menu>
+        </div>
+      </ContextMenu>
+
+      {rootExpanded && creatingFolder && (
+        <div className="flex items-center gap-1" style={{ paddingLeft: indentOf(1), paddingRight: BASE_PADDING_PX }}>
           <Icon icon={AppIcons.newFolder} size="sm" className="text-label-tertiary" />
           <InlineNameInput
             placeholder={t.panel.fileTree.newFolderPlaceholder}
@@ -730,46 +843,38 @@ function WorkspaceFileTree({ onSelectWorkspace }: { onSelectWorkspace: () => voi
         </div>
       )}
 
-      {!rootPath ? (
-        <div className="flex flex-col items-start gap-2 py-1">
-          <p className="text-ui-sm text-label-tertiary">{t.panel.fileTree.noWorkspace}</p>
-          <Button size="sm" onClick={onSelectWorkspace}>{t.panel.selectWorkspace}</Button>
-        </div>
-      ) : rootMissing ? (
-        <p className="py-1 text-ui-sm text-label-tertiary">{t.panel.fileTree.folderDeleted}</p>
+      {!rootExpanded ? null : rootMissing ? (
+        rootHint(t.panel.fileTree.folderDeleted)
       ) : rootError ? (
-        <div className="flex flex-col items-start gap-2 py-1">
-          <p className="text-ui-sm text-label-tertiary">{t.panel.fileTree.loadError}</p>
+        <div style={{ paddingLeft: indentOf(1) }} className="flex flex-col items-start gap-2 py-1">
+          <p className="text-caption text-label-tertiary">{t.panel.fileTree.loadError}</p>
           <Button size="sm" onClick={refresh}>{t.panel.fileTree.refresh}</Button>
         </div>
       ) : isRootLoading && rootEntries.length === 0 ? (
-        <p className="py-1 text-ui-sm text-label-tertiary">{t.panel.fileTree.loading}</p>
+        rootHint(t.panel.fileTree.loading)
       ) : rootEntries.length === 0 ? (
-        <p className="py-1 text-ui-sm text-label-tertiary">{t.panel.fileTree.empty}</p>
+        rootHint(t.panel.fileTree.empty)
       ) : (
-        <ScrollArea className="flex-1 min-h-0">
-          <ContextMenu
-            content={menuTarget ? renderRowMenu(menuTarget) : null}
-            // A long press between the rows, on a hint or in a name field has no row.
-            canOpen={() => gestureRow.current !== null}
-            onOpenChange={handleRowMenuOpenChange}
-            onCloseAutoFocus={handleRowMenuCloseAutoFocus}
+        <ContextMenu
+          content={menuTarget ? renderRowMenu(menuTarget) : null}
+          // A long press between the rows, on a hint or in a name field has no row.
+          canOpen={() => gestureRow.current !== null}
+          onOpenChange={handleRowMenuOpenChange}
+          onCloseAutoFocus={handleRowMenuCloseAutoFocus}
+        >
+          <div
+            // A new touch or pen press starts with no row; the row it lands on reports itself next.
+            onPointerDownCapture={(event) => { if (event.pointerType !== 'mouse') gestureRow.current = null; }}
+            // The menu writes its open state on its trigger, and a changed attribute here
+            // makes the browser restyle every row below (60 ms with 2000 files). Nothing
+            // reads that attribute, so the list declines it.
+            data-state={undefined}
+            // Only a right-click that came through a row opens the menu.
+            onContextMenu={(event) => { if (rowRightClick.current !== event.nativeEvent) event.preventDefault(); }}
           >
-            <div
-              className="pr-2 pb-2"
-              // A new touch or pen press starts with no row; the row it lands on reports itself next.
-              onPointerDownCapture={(event) => { if (event.pointerType !== 'mouse') gestureRow.current = null; }}
-              // The menu writes its open state on its trigger, and a changed attribute here
-              // makes the browser restyle every row below (60 ms with 2000 files). Nothing
-              // reads that attribute, so the list declines it.
-              data-state={undefined}
-              // Only a right-click that came through a row opens the menu.
-              onContextMenu={(event) => { if (rowRightClick.current !== event.nativeEvent) event.preventDefault(); }}
-            >
-              {items.map(renderItem)}
-            </div>
-          </ContextMenu>
-        </ScrollArea>
+            {items.map(renderItem)}
+          </div>
+        </ContextMenu>
       )}
     </div>
   );
