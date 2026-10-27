@@ -8,7 +8,7 @@
  * command did not run. The model is the loopback mock; the watcher, the agent run, the permission
  * gate and the command tool are real.
  */
-import { expect, test } from '@playwright/test';
+import { expect, test, type Frame } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -77,7 +77,23 @@ test('a file-watch run under a global 完全自主 mode refuses a risky command 
     const page = await launched.app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForApp(page);
     // The global mode the run must not follow.
-    await configureLocalMockProvider(page, mock.baseUrl, { permissionMode: 'autonomous', supportsTools: true });
+    let configuredDocument = false;
+    const onNavigation = (frame: Frame) => {
+      if (frame === page.mainFrame()) configuredDocument = true;
+    };
+    page.on('framenavigated', onNavigation);
+    try {
+      await Promise.all([
+        page.waitForEvent('console', {
+          predicate: (message) => configuredDocument
+            && message.text() === `[FileWatcher] Started watching: ${watched} (rule: e2e-watch-rule)`,
+          timeout: READY_TIMEOUT,
+        }),
+        configureLocalMockProvider(page, mock.baseUrl, { permissionMode: 'autonomous', supportsTools: true }),
+      ]);
+    } finally {
+      page.off('framenavigated', onNavigation);
+    }
 
     fs.writeFileSync(path.join(watched, `arrival-${randomUUID().slice(0, 8)}.txt`), 'new\n');
 

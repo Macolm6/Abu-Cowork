@@ -617,7 +617,7 @@ test.describe.serial('Electron infra hygiene batch', () => {
     ]);
 
     dataRoot = createElectronDataRoot();
-    const launched = await launchAbuElectron(dataRoot);
+    const launched = await launchAbuElectron(dataRoot, { temporaryDirectory: os.tmpdir() });
     app = launched.app;
     const page = await app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForApp(page);
