@@ -31,22 +31,29 @@ describe('DesignPreview', () => {
     }
   });
 
-  it('forces dark and the three accessibility appearances, and restores them when closed', async () => {
-    const user = userEvent.setup();
-    const { unmount } = render(<DesignPreview />);
-    await user.click(within(screen.getByRole('group', { name: 'Appearance' })).getByRole('radio', { name: 'Dark' }));
-    await user.click(screen.getByRole('switch', { name: 'Increase contrast' }));
-    await user.click(screen.getByRole('switch', { name: 'Reduce transparency' }));
-    await user.click(screen.getByRole('switch', { name: 'Reduce motion' }));
-    expect(root).toHaveClass('dark');
-    expect(root.getAttribute('data-contrast')).toBe('more');
-    expect(root.getAttribute('data-transparency')).toBe('reduced');
-    expect(root.getAttribute('data-motion')).toBe('reduced');
-    unmount();
-    expect(root).not.toHaveClass('dark');
-    expect(root.hasAttribute('data-contrast')).toBe(false);
-    expect(root.hasAttribute('data-transparency')).toBe(false);
-    expect(root.hasAttribute('data-motion')).toBe(false);
+  describe('appearance overrides', () => {
+    let preview: ReturnType<typeof render>;
+
+    beforeEach(() => {
+      preview = render(<DesignPreview />);
+    });
+
+    it('forces dark and the three accessibility appearances, and restores them when closed', async () => {
+      const user = userEvent.setup();
+      await user.click(within(screen.getByRole('group', { name: 'Appearance' })).getByRole('radio', { name: 'Dark' }));
+      await user.click(screen.getByRole('switch', { name: 'Increase contrast' }));
+      await user.click(screen.getByRole('switch', { name: 'Reduce transparency' }));
+      await user.click(screen.getByRole('switch', { name: 'Reduce motion' }));
+      expect(root).toHaveClass('dark');
+      expect(root.getAttribute('data-contrast')).toBe('more');
+      expect(root.getAttribute('data-transparency')).toBe('reduced');
+      expect(root.getAttribute('data-motion')).toBe('reduced');
+      preview.unmount();
+      expect(root).not.toHaveClass('dark');
+      expect(root.hasAttribute('data-contrast')).toBe(false);
+      expect(root.hasAttribute('data-transparency')).toBe(false);
+      expect(root.hasAttribute('data-motion')).toBe(false);
+    });
   });
 
   it('shows every color token with a value that follows the appearance', async () => {
