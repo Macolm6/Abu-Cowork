@@ -252,9 +252,22 @@ describe('Sidebar — frame and navigation', () => {
     expect(within(mainNav()).getAllByRole('button').filter((button) => button.hasAttribute('aria-current'))).toEqual([]);
   });
 
-  it('shows the Recents header and its import action by name', () => {
+  it('lists the task the user last wrote in first, whenever it was created', () => {
+    resetChat({
+      conversationIndex: {
+        c1: { ...CONVERSATION, lastUserMessageAt: 900 },
+        c2: { id: 'c2', title: 'Travel plan', createdAt: 500, lastUserMessageAt: 500, messageCount: 1 },
+      },
+    });
     renderSidebar();
-    expect(screen.getByRole('button', { name: '最近' })).toHaveClass('text-ui-sm', 'font-medium', 'text-label-tertiary');
+    const older = screen.getByText('Quarterly summary');
+    const newer = screen.getByText('Travel plan');
+    expect(older.compareDocumentPosition(newer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('shows the Tasks header and its import action by name', () => {
+    renderSidebar();
+    expect(screen.getByRole('button', { name: '任务' })).toHaveClass('text-ui-sm', 'font-medium', 'text-label-tertiary');
     // The hover reveal only adds opacity classes; the button keeps its own colour transition.
     expect(screen.getByRole('button', { name: '导入会话' })).toHaveClass('opacity-0', 'transition-colors', 'duration-fast');
   });

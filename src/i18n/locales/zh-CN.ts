@@ -116,7 +116,7 @@ const zhCN: TranslationDict = {
     triggers: '监听事件',
     extensions: '扩展',
     team: '专家',
-    recents: '最近',
+    recents: '任务',
     searchPlaceholder: '搜索对话...',
     noSearchResults: '没有匹配的对话',
     searchMoreResults: '还有更多结果，请输入更具体的词',

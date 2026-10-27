@@ -38,6 +38,7 @@ export function keepExistingChildSteps(
 import type { ShareBundle } from '../core/session/shareBundle';
 import type { PermissionMode } from '../core/permissions/permissionMode';
 import { acceptConversationPermissionMode } from '../core/session/conversationPermissionMode';
+import { compareByRecentActivity, lastUserMessageAt, withLastUserMessageAt } from '../core/session/conversationActivity';
 import type { ChatReference } from '@/types/chatReference';
 import type { ExpertContact, ExpertContactReceipt } from '@/types/expertContact';
 import type { ConversationAppBinding } from '@/types/app';
@@ -222,11 +223,13 @@ function buildImportedFromShareBundle(bundle: ShareBundle): { conv: Conversation
     status: 'idle',
     importedFrom,
   };
+  const userMessageAt = lastUserMessageAt(conv.messages);
   const meta: ConversationMeta = {
     id: newId,
     title: conv.title,
     createdAt: conv.createdAt,
     updatedAt: conv.updatedAt,
+    lastUserMessageAt: userMessageAt ?? null,
     messageCount: conv.messages.length,
     importedFrom,
   };
@@ -241,14 +244,15 @@ export function getDefaultConvTitle(): string {
 
 /**
  * Pick the next active conversation when the currently-active one is being
- * deleted. Mirrors the visual order the sidebar renders (`createdAt` desc),
+ * deleted. Mirrors the visual order the sidebar renders (most recently used
+ * first, `compareByRecentActivity`),
  * scoped to the same "section" the deleted conversation belonged to (project
  * vs recent vs scheduled vs trigger), so focus moves to a neighbor the user
  * would expect — not a random conversation from a different section.
  *
  * Selection rule:
  *   1. Same scope = same projectId / scheduledTaskId / triggerId tuple.
- *   2. Sort by createdAt desc (matches Sidebar.tsx).
+ *   2. Sort by `compareByRecentActivity` (matches Sidebar.tsx).
  *   3. Prefer the entry directly *above* the deleted one (newer, "上一个").
  *   4. Fall back to the entry directly *below* (older, "下一个").
  *   5. If nothing else is in scope, return null.
@@ -268,7 +272,7 @@ export function findNextActiveConversation(
       && c.triggerId === deleted.triggerId
       && c.projectId === deleted.projectId,
     )
-    .sort((a, b) => b.createdAt - a.createdAt);
+    .sort(compareByRecentActivity);
 
   const pos = sorted.findIndex((c) => c.id === deletedId);
   if (pos === -1) return null;
@@ -1015,6 +1019,7 @@ export const useChatStore = create<ChatStore>()(
           title: getDefaultConvTitle(),
           createdAt: now,
           updatedAt: now,
+          lastUserMessageAt: null,
           messageCount: 0,
           workspacePath: workspacePath ?? null,
           ...(options?.scheduledTaskId ? { scheduledTaskId: options.scheduledTaskId } : {}),
@@ -1506,6 +1511,9 @@ export const useChatStore = create<ChatStore>()(
             if (state.conversationIndex[convId]) {
               state.conversationIndex[convId].messageCount = conv.messages.length;
               state.conversationIndex[convId].updatedAt = conv.updatedAt;
+              if (message.role === 'user' && !message.isSystem) {
+                state.conversationIndex[convId].lastUserMessageAt = message.timestamp;
+              }
               if (newTitle) state.conversationIndex[convId].title = newTitle;
             }
           }
@@ -2898,11 +2906,13 @@ export const useChatStore = create<ChatStore>()(
             })(),
           };
 
+          const userMessageAt = lastUserMessageAt(imported.messages);
           const meta: ConversationMeta = {
             id: newId,
             title: imported.title,
             createdAt: imported.createdAt,
             updatedAt: imported.updatedAt,
+            lastUserMessageAt: userMessageAt ?? null,
             messageCount: imported.messages.length,
             ...(imported.workspacePath !== undefined ? { workspacePath: imported.workspacePath } : {}),
             ...(imported.imChannelId !== undefined ? { imChannelId: imported.imChannelId } : {}),
@@ -3092,7 +3102,7 @@ export const useChatStore = create<ChatStore>()(
     })),
     {
       name: 'abu-chat',
-      version: 16,
+      version: 17,
       migrate: (persisted, version) => {
         const state = persisted as Record<string, unknown>;
         // v1 → v2: added executionSteps on Message (optional field, no-op migration)
@@ -3169,6 +3179,15 @@ export const useChatStore = create<ChatStore>()(
           }
           // Clear conversations from persisted state — they'll be on disk
           state.conversations = {};
+        }
+        // v16 → v17: keep the sidebar's activity time in the persisted index.
+        if (version < 17) {
+          const index = state.conversationIndex as Record<string, ConversationMeta> | undefined;
+          if (index) {
+            for (const [id, meta] of Object.entries(index)) {
+              index[id] = withLastUserMessageAt(meta);
+            }
+          }
         }
         return state;
       },

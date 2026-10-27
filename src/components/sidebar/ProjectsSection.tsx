@@ -6,6 +6,7 @@ import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { useI18n } from '@/i18n';
 import { format } from '@/i18n';
 import { appHomePicks } from '@/core/app/appHomePicks';
+import { compareByRecentActivity } from '@/core/session/conversationActivity';
 import { Button, IconButton } from '@/components/ds/button';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
@@ -67,9 +68,9 @@ export default function ProjectsSection({ onCreateProject }: { onCreateProject: 
         map[conv.projectId].push(conv);
       }
     }
-    // Sort each group by createdAt desc
+    // Put the task with the latest user message first in each project.
     for (const key of Object.keys(map)) {
-      map[key].sort((a, b) => b.createdAt - a.createdAt);
+      map[key].sort(compareByRecentActivity);
     }
     return map;
   }, [conversationIndex]);

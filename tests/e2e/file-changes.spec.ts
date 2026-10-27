@@ -171,11 +171,8 @@ function stepDiffRows(page: Page, kind?: 'added' | 'deleted' | 'context'): Locat
 }
 
 function findLedgers(dir: string): string[] {
-  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-    const entryPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) return findLedgers(entryPath);
-    return entry.name === 'messages.jsonl' ? [entryPath] : [];
-  });
+  return fs.globSync('app-data/*/conversations/*/messages.jsonl', { cwd: dir })
+    .map((entryPath) => path.join(dir, entryPath));
 }
 
 /**

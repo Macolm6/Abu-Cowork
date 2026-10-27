@@ -47,19 +47,13 @@ let mock: OpenAiMock | undefined;
 /** The run states the ledger holds for the user row that carries `text`, in the order they were written. */
 function runStatesOnDisk(root: ElectronDataRoot, text: string): string[] {
   const states: string[] = [];
-  const visit = (dir: string): void => {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const entryPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) visit(entryPath);
-      if (!entry.isFile() || entry.name !== 'messages.jsonl') continue;
-      for (const line of fs.readFileSync(entryPath, 'utf8').split('\n')) {
-        if (!line.trim()) continue;
-        const row = JSON.parse(line) as { role?: unknown; content?: unknown; runState?: unknown };
-        if (row.role === 'user' && row.content === text && typeof row.runState === 'string') states.push(row.runState);
-      }
+  for (const entryPath of fs.globSync('*/conversations/*/messages.jsonl', { cwd: root.appDataDir })) {
+    for (const line of fs.readFileSync(path.join(root.appDataDir, entryPath), 'utf8').split('\n')) {
+      if (!line.trim()) continue;
+      const row = JSON.parse(line) as { role?: unknown; content?: unknown; runState?: unknown };
+      if (row.role === 'user' && row.content === text && typeof row.runState === 'string') states.push(row.runState);
     }
-  };
-  visit(root.appDataDir);
+  }
   return states;
 }
 

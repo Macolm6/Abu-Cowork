@@ -57,12 +57,9 @@ test.afterEach(async () => {
 
 /** The copies of `fileName` kept under a conversation's `outputs/files` folder. */
 function keptCopies(dir: string, fileName: string): string[] {
-  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-    const entryPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) return keptCopies(entryPath, fileName);
-    const folders = path.dirname(entryPath).split(path.sep);
-    return entry.name === fileName && folders.at(-2) === 'files' && folders.at(-3) === 'outputs' ? [entryPath] : [];
-  });
+  return fs.globSync('app-data/*/conversations/*/outputs/files/*/*', { cwd: dir })
+    .filter((entryPath) => path.basename(entryPath) === fileName)
+    .map((entryPath) => path.join(dir, entryPath));
 }
 
 /** The tab panel in view. */
