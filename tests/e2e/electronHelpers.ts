@@ -73,7 +73,7 @@ export interface WindowShowRecord {
  * again after closing its first app instance.
  */
 export function createElectronDataRoot(): ElectronDataRoot {
-  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), `abu-e2e-${randomUUID().slice(0, 8)}-`));
+  const rootDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `abu-e2e-${randomUUID().slice(0, 8)}-`)));
   return {
     rootDir,
     userDataDir: path.join(rootDir, 'user-data'),

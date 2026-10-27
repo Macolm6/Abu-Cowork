@@ -21,6 +21,7 @@ import { runtimeErrorType, traceRuntimeEvent } from '@/core/observability/runtim
 import { findToolResultImageSnapshot, refreshOutputManifest } from './outputSnapshots';
 import { APP_VERSION } from '@/utils/version';
 import { acceptConversationPermissionMode } from './conversationPermissionMode';
+import { lastUserMessageAt } from './conversationActivity';
 import { rendererConversationFs } from './conversationFsRenderer';
 import {
   createConversationWriter,
@@ -460,7 +461,7 @@ export function buildMeta(conv: {
   title: string;
   createdAt: number;
   updatedAt: number;
-  messages: { length: number };
+  messages: readonly Pick<Message, 'role' | 'isSystem' | 'timestamp'>[];
   workspacePath?: string | null;
   model?: { providerId: string; modelId: string };
   permissionMode?: PermissionMode;
@@ -476,11 +477,13 @@ export function buildMeta(conv: {
   importedFrom?: { schemaVersion: number; importedAt: number };
 }): ConversationMeta {
   const permissionMode = acceptConversationPermissionMode(conv.permissionMode);
+  const userMessageAt = lastUserMessageAt(conv.messages);
   return {
     id: conv.id,
     title: conv.title,
     createdAt: conv.createdAt,
     updatedAt: conv.updatedAt,
+    lastUserMessageAt: userMessageAt ?? null,
     messageCount: conv.messages.length,
     workspacePath: conv.workspacePath,
     model: conv.model,

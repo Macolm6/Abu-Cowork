@@ -56,6 +56,7 @@
 import { parsePayloadTooLargeError } from '@/core/ipc/payloadTooLarge';
 import type { PermissionMode } from '../permissions/permissionMode';
 import { withAcceptedPermissionMode } from './conversationPermissionMode';
+import { withLastUserMessageAt } from './conversationActivity';
 import { createLedgerEvent, type LedgerLine } from './messageLedger';
 import { projectLedger, STREAM_SNAPSHOT_FILENAME, type StreamSnapshotEntry } from './ledgerReader';
 import {
@@ -83,6 +84,8 @@ export interface ConversationMeta {
   title: string;
   createdAt: number;
   updatedAt: number;
+  /** Last user message time, null before one is sent, absent in legacy indexes. Orders the sidebar lists. */
+  lastUserMessageAt?: number | null;
   messageCount: number;
   workspacePath?: string | null;
   model?: { providerId: string; modelId: string };  // Model pinned to this conversation (undefined = inherit global)
@@ -1215,15 +1218,16 @@ export function createConversationWriter(deps: {
   /**
    * A conversation's permission mode is read tolerantly: a value this build
    * does not accept is left out of the entry, every other field stays as it
-   * was read. Runs outside the parse `try`, and never throws, so it cannot
-   * turn a readable index into an empty one.
+   * was read. An entry from before `lastUserMessageAt` takes its `updatedAt`
+   * (`withLastUserMessageAt`). Runs outside the parse `try`, and never throws,
+   * so it cannot turn a readable index into an empty one.
    */
   function normalizeIndexEntries(index: ConversationIndex): void {
     const entries: unknown = index.entries;
     if (typeof entries !== 'object' || entries === null) return;
     for (const [id, entry] of Object.entries(entries as Record<string, unknown>)) {
       if (typeof entry !== 'object' || entry === null) continue;
-      index.entries[id] = withAcceptedPermissionMode(entry as ConversationMeta);
+      index.entries[id] = withLastUserMessageAt(withAcceptedPermissionMode(entry as ConversationMeta));
     }
   }
 

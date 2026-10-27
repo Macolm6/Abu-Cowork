@@ -89,6 +89,19 @@ describe('ConversationSearchModal', () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
+  it('orders recent tasks and name matches by the last user message time', async () => {
+    const user = userEvent.setup();
+    mocks.chat.conversationIndex = {
+      newer: conv('newer', 'Report newer', 500, { lastUserMessageAt: 500 }),
+      older: conv('older', 'Report older', 100, { lastUserMessageAt: 900 }),
+    };
+    renderSearch();
+    const titles = () => within(screen.getByRole('dialog')).getAllByRole('button').map((button) => button.textContent);
+    expect(titles()).toEqual(['Report older', 'Report newer']);
+    await user.type(screen.getByPlaceholderText('搜索对话...'), 'report');
+    expect(titles()).toEqual(['Report older', 'Report newer']);
+  });
+
   it('moves between the field and the results with the arrow keys, and Enter opens the focused one', async () => {
     const onClose = vi.fn();
     const user = userEvent.setup();

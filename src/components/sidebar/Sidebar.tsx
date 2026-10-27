@@ -30,6 +30,7 @@ import ProfileEditModal from '@/components/common/ProfileEditModal';
 import AccountMenu from '@/components/sidebar/AccountMenu';
 import { cn } from '@/lib/utils';
 import { getPlatformShortLabel } from '@/core/im/platformLabels';
+import { compareByRecentActivity } from '@/core/session/conversationActivity';
 import type { ConversationStatus } from '@/types';
 import ProjectsSection from '@/components/sidebar/ProjectsSection';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
@@ -169,7 +170,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   const [profileOpen, setProfileOpen] = useState(false);
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
 
-  // Sort by createdAt to keep positions stable during status updates
+  // Most recently used first: the time the user last sent a message, which status updates and replies leave alone
   // Filter out conversations belonging to projects, scheduled tasks, or triggers — they appear in their own sections
   // Use conversationIndex (lightweight metadata) instead of full conversations for listing
   const sortedConvs = Object.values(conversationIndex)
@@ -187,7 +188,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
     // with skipActivate before its inbound message is appended; the earlier
     // filter only excludes project/scheduled/trigger, not imChannelId).
     .filter((c) => c.messageCount !== 0 || c.id === activeConversationId || !!c.imChannelId)
-    .sort((a, b) => b.createdAt - a.createdAt);
+    .sort(compareByRecentActivity);
 
   const handleClearCompletedStatus = useCallback((convId: string) => {
     clearCompletedStatus(convId);

@@ -116,7 +116,7 @@ const enUS: TranslationDict = {
     triggers: 'Triggers',
     extensions: 'Extensions',
     team: 'Experts',
-    recents: 'Recents',
+    recents: 'Tasks',
     searchPlaceholder: 'Search chats...',
     noSearchResults: 'No matching conversations',
     searchMoreResults: 'There are more results. Try a more specific search.',

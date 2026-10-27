@@ -8,6 +8,7 @@ import {
   sanitizeLoadedMessages,
   sanitizeImportedMessage,
   collectAnsweredLoopIds,
+  findNextActiveConversation,
   waitForConversationPersistence,
 } from './chatStore';
 import type { Conversation } from '../types';
@@ -77,9 +78,7 @@ vi.mock('../core/agent/sidecarRunPredicate', () => ({
   registerSidecarRunPredicate: () => {},
 }));
 
-// Filler timestamp (TESTING.md §3) — used for Message/Conversation fields that
-// are structurally required but whose exact value is never asserted on below
-// (no test in this file compares timestamps for ordering/recency).
+// Fixed timestamp for deterministic Message/Conversation fixtures (TESTING.md §3).
 const FIXED_TIMESTAMP = 1_700_000_000_000;
 
 // Minimal valid binding for the enterprise-mode createConversation case.
@@ -100,6 +99,39 @@ const TEST_BINDING: EnterpriseBinding = {
 };
 
 describe('chatStore', () => {
+  it('writes version 17 and migrates the activity time of existing index entries', async () => {
+    const options = useChatStore.persist.getOptions();
+    expect(options.version).toBe(17);
+    expect(JSON.parse(localStorage.getItem('abu-chat')!).version).toBe(17);
+    const migrated = await options.migrate!({
+      conversationIndex: {
+        previous: { id: 'previous', title: 'Previous', createdAt: 1, updatedAt: 30, messageCount: 2 },
+        current: { id: 'current', title: 'Current', createdAt: 1, updatedAt: 40, lastUserMessageAt: 20, messageCount: 2 },
+        systemOnly: { id: 'systemOnly', title: 'System only', createdAt: 1, updatedAt: 40, lastUserMessageAt: null, messageCount: 2 },
+        empty: { id: 'empty', title: 'Empty', createdAt: 1, updatedAt: 1, messageCount: 0 },
+      },
+    }, 16);
+    expect(migrated).toMatchObject({
+      conversationIndex: {
+        previous: { lastUserMessageAt: 30 },
+        current: { lastUserMessageAt: 20 },
+        systemOnly: { lastUserMessageAt: null },
+        empty: { messageCount: 0 },
+      },
+    });
+    const index = (migrated as { conversationIndex: Record<string, { lastUserMessageAt?: number | null }> }).conversationIndex;
+    expect(index.empty.lastUserMessageAt).toBeUndefined();
+  });
+
+  it('selects the neighbor in activity order after deleting the active task', () => {
+    const index = {
+      old: { id: 'old', title: 'Old', createdAt: 1, updatedAt: 900, lastUserMessageAt: 900, messageCount: 2 },
+      middle: { id: 'middle', title: 'Middle', createdAt: 2, updatedAt: 500, lastUserMessageAt: 500, messageCount: 2 },
+      newest: { id: 'newest', title: 'Newest', createdAt: 3, updatedAt: 100, lastUserMessageAt: 100, messageCount: 2 },
+    };
+    expect(findNextActiveConversation(index, 'middle')).toBe('old');
+  });
+
   beforeEach(() => {
     usePreviewStore.getState().closeAllTabs();
     for (const entry of Object.values(useBatchProgressStore.getState().batches)) {
@@ -1137,6 +1169,21 @@ describe('chatStore', () => {
       store.addMessage(id, { id: 'm2', role: 'assistant', content: 'b', timestamp: 2 });
       store.addMessage(id, { id: 'm3', role: 'user', content: 'c', timestamp: 3 });
       expect(useChatStore.getState().conversationIndex[id].messageCount).toBe(3);
+    });
+
+    it('records the time of the last message the user sent; replies and system rows leave it', async () => {
+      const id = useChatStore.getState().createConversation();
+      const store = useChatStore.getState();
+      expect(store.conversationIndex[id].lastUserMessageAt).toBeNull();
+      store.addMessage(id, { id: 'm1', role: 'user', content: 'a', timestamp: 10 });
+      store.addMessage(id, { id: 'm2', role: 'assistant', content: 'b', timestamp: 20 });
+      store.addMessage(id, { id: 'm3', role: 'user', content: 'goal', isSystem: true, timestamp: 30 });
+      store.setConversationStatus(id, 'running');
+      store.setConversationStatus(id, 'completed');
+      expect(useChatStore.getState().conversationIndex[id].lastUserMessageAt).toBe(10);
+      store.addMessage(id, { id: 'm4', role: 'user', content: 'c', timestamp: 40 });
+      expect(useChatStore.getState().conversationIndex[id].lastUserMessageAt).toBe(40);
+      await waitForConversationPersistence(id);
     });
 
     // Regression (code-review fix #1, message-storage P0): messageCount must be
@@ -2573,6 +2620,18 @@ describe('chatStore', () => {
       expect(useChatStore.getState().conversations[newId!].messages[0].content).toBe('Imported');
     });
 
+    it('restores the user message time when undoing a deleted conversation', () => {
+      const raw: Conversation = {
+        id: 'restored', title: 'Restored', createdAt: 100, updatedAt: 900, status: 'idle',
+        messages: [
+          { id: 'user', role: 'user', content: 'Continue', timestamp: 500 },
+          { id: 'reply', role: 'assistant', content: 'Done', timestamp: 900 },
+        ],
+      };
+      const id = useChatStore.getState().importConversation(JSON.stringify(raw), { restoringDeleted: true })!;
+      expect(useChatStore.getState().conversationIndex[id].lastUserMessageAt).toBe(500);
+    });
+
     it('returns null for invalid JSON', () => {
       expect(useChatStore.getState().importConversation('not json')).toBeNull();
     });
@@ -2691,6 +2750,11 @@ describe('chatStore', () => {
         const meta = useChatStore.getState().conversationIndex[newId];
         expect(meta.importedFrom?.schemaVersion).toBe(1);
         expect(meta.importedFrom?.importedAt).toBeGreaterThan(0);
+      });
+
+      it('keeps the last user message time in the imported index before any restart', () => {
+        const newId = useChatStore.getState().importConversation(JSON.stringify(makeBundle()))!;
+        expect(useChatStore.getState().conversationIndex[newId].lastUserMessageAt).toBe(1_700_000_000_100);
       });
 
       it('does not set readOnly — imported conversations remain continuable', () => {
