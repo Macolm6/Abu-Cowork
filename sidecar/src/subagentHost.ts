@@ -48,6 +48,7 @@ import { RpcError } from './protocol';
 import { sidecarRuntimeErrorType, traceSidecarRuntimeEvent } from './runtimeTrace';
 import { sendRequest, sendNotification } from './rpcClient';
 import { findActiveRunDeltaForConversation } from './agentLoopHost';
+import { unwrapToolInvokeResult } from './toolInvokeResult';
 import { getSettingsMirrorReader, seedSettingsMirrorIfEmpty } from './settingsMirror';
 import { subagentRunContext, type SubagentRunContext } from './subagentRunContext';
 import { SUBAGENT_RUN_WIRE_FIELDS as SHARED_SUBAGENT_RUN_WIRE_FIELDS } from '@/core/agent/subagentWireContract';
@@ -72,6 +73,8 @@ function toWireToolContext(context: ToolExecutionContext | undefined): ToolExecu
   const {
     abortSignal: _abortSignal,
     operationOwner: _operationOwner,
+    files: _files,
+    reportMetadata: _reportMetadata,
     reportBrowserDenial: _reportBrowserDenial,
     reportBrowserAllow: _reportBrowserAllow,
     ...wireContext
@@ -402,12 +405,13 @@ function createReverseToolInvoker(
   return {
     getAllTools: () => fullTools,
     executeAnyTool: async (name, input, _onConfirm, _onFilePerm, context) => {
-      const result = (await sendRequest('tool.invoke', {
+      const response = await sendRequest('tool.invoke', {
         runId,
         toolName: name,
         input,
         context: toWireToolContext(context as ToolExecutionContext | undefined),
-      })) as ToolResult;
+      });
+      const result = unwrapToolInvokeResult(response, context as ToolExecutionContext | undefined);
       if (!sidecarValueHasOpaqueMediaRefs(result)) return result;
       if (!mediaOriginConversationId) {
         throw new Error('Cannot materialize sidecar tool media: media origin is missing');

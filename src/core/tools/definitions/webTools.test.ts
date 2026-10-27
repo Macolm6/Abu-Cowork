@@ -145,17 +145,6 @@ describe('http fetch outcome record', () => {
     expect(result.slice(...outcome.body).split('\n').some((line) => CHARS_OMITTED_LINE.test(line))).toBe(true);
   });
 
-  it('shrinks the body under context pressure', async () => {
-    respondWith('x'.repeat(60000));
-
-    const result = await httpFetchTool.execute(
-      { url },
-      { reportMetadata: vi.fn(), contextUsagePercent: 90 },
-    ) as string;
-
-    expect(result.length).toBeLessThanOrEqual(1500);
-  });
-
   it('keeps a short body whole', async () => {
     respondWith('hello');
     const reportMetadata = vi.fn();

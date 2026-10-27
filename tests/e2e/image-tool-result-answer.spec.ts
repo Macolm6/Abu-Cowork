@@ -80,7 +80,7 @@ function classifyRequest(body: unknown): MockRequest['purpose'] {
   for (const message of requestMessages(body)) {
     if (typeof message.content !== 'string') continue;
     if (message.role === 'system' && message.content.includes('你是一个记忆提取助手')) return 'memory';
-    if (message.content.includes('请将以下对话内容压缩为一段简洁的摘要')) return 'compression';
+    if (message.content.startsWith('Stop working on the task for a moment.')) return 'compression';
   }
   return 'task';
 }

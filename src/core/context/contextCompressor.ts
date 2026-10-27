@@ -1,364 +1,111 @@
 /**
- * Context Compressor — LLM-based semantic summarization
+ * The summary request of a compaction.
  *
- * When the conversation context approaches the context window limit,
- * uses a fast LLM call to generate a semantic summary of older messages
- * instead of hard-truncating them.
+ * The request is the conversation itself — the model's current view up to the
+ * retained tail — followed by one instruction. It reuses the conversation's
+ * own request options (model, credentials, system prompt, tools, reasoning
+ * settings), so it shares the conversation's cached prefix and costs about as
+ * much as one ordinary request. DSH's `summarizer.ts` builds its request the
+ * same way.
  *
- * Strategy:
- * 1. Check if context usage > threshold (default 65%)
- * 2. Identify older messages that can be summarized (keep first + recent)
- * 3. Call LLM to generate a concise summary
- * 4. Replace older messages with a single summary message
- * 5. Fall back to hard truncation if LLM summarization fails
+ * Transient provider errors are retried like every other request; an error
+ * that survives the retries is thrown to the caller, which stops the run.
  */
 
 import type { Message } from '../../types';
-import { LLMError, type LLMAdapter, type LLMErrorCode } from '../llm/adapter';
-import type { ChatOptions } from '../llm/adapter';
-import { estimateTokens, estimateMessageTokens } from './tokenEstimator';
-import { getMessageText, identifyRounds, RECENT_ROUNDS_TO_KEEP } from './contextUtils';
-import { createLogger } from '../logging/logger';
-import { anySignal } from '../llm/heartbeat';
+import { LLMError, type ChatOptions, type LLMAdapter } from '../llm/adapter';
+import { withRetry } from '../agent/retry';
 
-const logger = createLogger('contextCompressor');
-
-const COMPRESSION_THRESHOLD = 0.65; // Trigger at 65% — compress early to avoid context_too_long errors
-const SUMMARY_MAX_TOKENS = 1024;
-// Independent hard ceiling for a single summarization call. Compression is a
-// best-effort optimization — it must NEVER block the agent loop waiting on a
-// slow/flaky provider. On timeout we abort the request and fall back to
-// deterministic truncation downstream (Bug: 计划同意后死寂).
-const DEFAULT_COMPRESSION_TIMEOUT_MS = 30_000;
-
-/** Configuration for context compression */
-export interface CompressionConfig {
+/** Everything the summary request needs besides the conversation. */
+export interface SummaryRequest {
   adapter: LLMAdapter;
-  model: string;
-  apiKey: string;
-  baseUrl?: string;
+  /**
+   * The conversation's own request options. `maxTokens` and the reasoning
+   * settings are kept as they are, so a thinking budget stays below the
+   * output budget it belongs to.
+   */
+  chatOptions: ChatOptions;
+  /** Accounting: whose usage the summary is. The source is always `compaction`. */
+  conversationId: string | null;
+  providerInstanceId: string;
   signal?: AbortSignal;
-  /** Independent timeout for the summarization LLM call. Defaults to 30s. */
-  timeoutMs?: number;
-  /** 记账归属：压缩的用量算在哪条会话名下。来源恒为 compaction，由本模块给出。 */
-  conversationId?: string | null;
-  /** 记账归属：Abu 自己的服务商配置 id。 */
-  providerInstanceId?: string;
-  /** 与主请求相同：用户填写的上下文长度，只有 Ollama 按它运行。 */
-  requestedContextLength?: number;
-  /** 与主请求相同：本地服务首次回答前最多等 10 分钟，超时不重试。 */
-  localServer?: boolean;
 }
 
-/**
- * 压缩调用的记账身份。来源在这里统一给出 `compaction`：摘要请求全部从本模块发出，
- * 各个调用方不必各自声明（任务书 U02）。
- */
-function compactionAccounting(config: CompressionConfig) {
-  return {
-    source: 'compaction' as const,
-    conversationId: config.conversationId ?? null,
-    skill: null,
-    providerInstanceId: config.providerInstanceId ?? 'unknown',
-  };
-}
+const SUMMARY_INSTRUCTION = `Stop working on the task for a moment. The conversation is close to the context limit, so write a summary that another assistant will continue the task from. The summary replaces every message above, so include everything needed to carry on.
 
-/** Result of compression attempt */
-export interface CompressionResult {
-  messages: Message[];
-  compressed: boolean;
-  savedTokens: number;
-  /** True when the summarization attempt failed (timeout / error), so the
-   *  caller can record it against the auto-compact circuit breaker. */
-  failed?: boolean;
-  /** Provider code when available; otherwise a coarse timeout/error reason. */
-  failureCode?: LLMErrorCode | 'timeout' | 'error';
-}
+Do not call any tools. Reply with the summary only, in Markdown, with these sections:
 
-/**
- * Build a text representation of messages for the summarization prompt
- */
-function messagesToText(messages: Message[]): string {
-  return messages.map((msg) => {
-    const role = msg.role === 'user' ? '用户' : '助手';
-    const text = getMessageText(msg.content);
-    const toolNames = msg.toolCalls?.map(tc => tc.name).join(', ');
-    const toolResults = msg.toolCallsForContext?.map(tc =>
-      `[${tc.name}: ${tc.result.slice(0, 100)}${tc.result.length > 100 ? '...' : ''}]`
-    ).join(', ');
+1. Primary request and intent — what the user asked for, quoting their exact words where they matter.
+2. Key concepts — technical facts, decisions and constraints the work depends on.
+3. Files and code — every file read, created or changed, with the parts that matter and why.
+4. Errors and fixes — what went wrong and how it was resolved.
+5. Done so far — the steps that are complete, so they are not repeated.
+6. Still to do — the remaining work.
+7. Current work — exactly what was being done when this summary was requested.
+8. Next step — the very next action, in line with the user's latest request.
+9. Data to keep — values, identifiers, paths, numbers and results the next steps need.
 
-    let line = `${role}: ${text}`;
-    if (toolNames) line += ` [调用工具: ${toolNames}]`;
-    if (toolResults) line += ` [工具结果: ${toolResults}]`;
-    return line;
-  }).join('\n');
-}
+If an earlier summary appears above, merge it into this one. If the assistant said it could not do something or lacked a tool, do not record that as a fact: tools may have been installed since.`;
 
-/**
- * Summarize a set of (already-selected) messages into a single summary string
- * via the LLM. Shared by the send-only compression path and the persistent
- * compact-boundary path (agentLoop Step 2.1 / manual /compact). Best-effort:
- * returns `{ text: '' }` on empty / timeout / error and never throws, so it can
- * never block or crash the agent loop. Applies the same independent timeout as
- * the send-only path.
- */
-export async function summarizeConversation(
-  middleMessages: Message[],
-  config: CompressionConfig,
-): Promise<string> {
-  const middleText = messagesToText(middleMessages);
-
-  const summaryPrompt = `请将以下对话内容压缩为一段简洁的摘要，保留关键信息：
-- 用户的核心需求和意图
-- 重要的文件路径、变量名、代码片段
-- 关键决策和结论
-- 已完成的操作和结果
-- 未解决的问题
-
-注意：如果对话中 AI 曾声称"不支持"、"无法执行"或"没有某工具"，不要将此作为事实保留在摘要中。这类能力声明可能已过时，后续可能已安装了相关工具。
-
-对话内容：
-${middleText}
-
-请直接输出摘要，不要添加额外的标题或格式说明。摘要应当简洁明了，供 AI 助手理解上下文使用。`;
-
-  const summaryMessages: Message[] = [{
-    id: 'compress-prompt',
-    role: 'user',
-    content: summaryPrompt,
-    timestamp: Date.now(),
-  }];
-
-  let summaryText = '';
-  const timeoutMs = config.timeoutMs ?? DEFAULT_COMPRESSION_TIMEOUT_MS;
-  const timeoutController = new AbortController();
-  const combinedSignal = config.signal
-    ? anySignal([config.signal, timeoutController.signal])
-    : timeoutController.signal;
-  const chatOptions: ChatOptions = {
-    model: config.model,
-    apiKey: config.apiKey,
-    baseUrl: config.baseUrl,
-    maxTokens: SUMMARY_MAX_TOKENS,
-    requestedContextLength: config.requestedContextLength,
-    localServer: config.localServer,
-    signal: combinedSignal,
-    accounting: compactionAccounting(config),
-  };
-
-  let timedOut = false;
-  let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const chatPromise = config.adapter.chat(summaryMessages, chatOptions, (event) => {
-      if (event.type === 'text') {
-        summaryText += event.text;
-      }
-    });
-    chatPromise.catch(() => { /* swallowed — handled via the race below */ });
-    await Promise.race([
-      chatPromise,
-      new Promise<never>((_, reject) => {
-        timeoutTimer = setTimeout(() => {
-          timedOut = true;
-          timeoutController.abort();
-          reject(new Error('summarization timeout'));
-        }, timeoutMs);
-      }),
-    ]);
-  } catch (err) {
-    if (timedOut) {
-      logger.warn('Conversation summarization timed out', { timeoutMs });
-      return '';
-    }
-    const errorMessage = err instanceof Error ? err.message : String(err);
-    logger.warn('Conversation summarization failed', { error: errorMessage });
-    return '';
-  } finally {
-    if (timeoutTimer) clearTimeout(timeoutTimer);
-  }
-
-  return summaryText.trim();
-}
-
-/**
- * Check if context needs compression and compress if needed.
- *
- * Returns compressed messages if compression was performed, or original messages if not needed.
- * Falls back gracefully on LLM errors — never blocks the agent loop.
- */
-export async function compressContextIfNeeded(
+export async function writeCompactionSummary(
   messages: Message[],
-  systemPrompt: string,
-  contextWindowSize: number,
-  reserveForOutput: number,
-  config: CompressionConfig,
-  toolSchemaTokens?: number
-): Promise<CompressionResult> {
-  const maxInputTokens = contextWindowSize - reserveForOutput;
-  const systemTokens = estimateTokens(systemPrompt);
-  const messageTokens = estimateMessageTokens(messages);
-  const totalTokens = systemTokens + messageTokens + (toolSchemaTokens ?? 0);
-
-  // Check if compression is needed
-  if (totalTokens <= maxInputTokens * COMPRESSION_THRESHOLD) {
-    return { messages, compressed: false, savedTokens: 0 };
+  request: SummaryRequest,
+  fitInput?: (messages: Message[]) => Message[],
+): Promise<string> {
+  const instruction: Message = {
+    id: 'compaction-instruction',
+    role: 'user',
+    content: SUMMARY_INSTRUCTION,
+    timestamp: 0,
+  };
+  const requestedMessages = [...messages, instruction];
+  const sentMessages = fitInput ? fitInput(requestedMessages) : requestedMessages;
+  let summary = '';
+  let streamError: string | undefined;
+  let cancelled = false;
+  let usedTools = false;
+  await withRetry(
+    async () => {
+      summary = '';
+      streamError = undefined;
+      cancelled = false;
+      usedTools = false;
+      await request.adapter.chat(
+        sentMessages,
+        {
+          ...request.chatOptions,
+          volatileContextTail: undefined,
+          signal: request.signal,
+          accounting: {
+            source: 'compaction',
+            conversationId: request.conversationId,
+            skill: null,
+            providerInstanceId: request.providerInstanceId,
+          },
+        },
+        (event) => {
+          if (event.type === 'text') summary += event.text;
+          if (event.type === 'error') streamError = event.error;
+          if (event.type === 'tool_use') usedTools = true;
+          if (event.type === 'done' && event.stopReason === 'cancelled') cancelled = true;
+        },
+      );
+    },
+    { maxRetries: 3, baseDelayMs: 1000, maxDelayMs: 30000 },
+    request.signal,
+  );
+  if (request.signal?.aborted || cancelled) {
+    throw new LLMError('The compaction summary request was cancelled', 'cancelled', { retryable: false });
   }
-
-  const usagePercent = Math.round((totalTokens / maxInputTokens) * 100);
-  logger.info('Context compression triggered', {
-    systemTokens,
-    messageTokens,
-    toolSchemaTokens: toolSchemaTokens ?? 0,
-    totalTokens,
-    maxInputTokens,
-    usagePercent,
-    threshold: COMPRESSION_THRESHOLD,
-  });
-
-  const rounds = identifyRounds(messages);
-  if (rounds.length <= RECENT_ROUNDS_TO_KEEP + 1) {
-    // Not enough rounds to compress
-    return { messages, compressed: false, savedTokens: 0 };
+  if (streamError !== undefined) {
+    throw new LLMError(`The compaction summary request failed: ${streamError}`, 'network_error', { retryable: false });
   }
-
-  // Split into: first round (task context) + middle (to summarize) + recent (to keep)
-  const firstRound = rounds[0];
-  const recentRounds = rounds.slice(-RECENT_ROUNDS_TO_KEEP);
-  const middleRounds = rounds.slice(1, -RECENT_ROUNDS_TO_KEEP);
-
-  if (middleRounds.length === 0) {
-    return { messages, compressed: false, savedTokens: 0 };
+  if (usedTools) {
+    throw new LLMError('The compaction summary response contained a tool call', 'invalid_request', { retryable: false });
   }
-
-  const middleMessages = middleRounds.flat();
-  const middleTokens = estimateMessageTokens(middleMessages);
-
-  // Only compress if middle messages are substantial enough to be worth it
-  if (middleTokens < 500) {
-    return { messages, compressed: false, savedTokens: 0 };
+  const text = summary.trim();
+  if (!text) {
+    throw new LLMError('The compaction summary came back empty', 'invalid_request', { retryable: false });
   }
-
-  try {
-    // Generate summary using LLM
-    const middleText = messagesToText(middleMessages);
-
-    const summaryPrompt = `请将以下对话内容压缩为一段简洁的摘要，保留关键信息：
-- 用户的核心需求和意图
-- 重要的文件路径、变量名、代码片段
-- 关键决策和结论
-- 已完成的操作和结果
-- 未解决的问题
-
-注意：如果对话中 AI 曾声称"不支持"、"无法执行"或"没有某工具"，不要将此作为事实保留在摘要中。这类能力声明可能已过时，后续可能已安装了相关工具。
-
-对话内容：
-${middleText}
-
-请直接输出摘要，不要添加额外的标题或格式说明。摘要应当简洁明了，供 AI 助手理解上下文使用。`;
-
-    const summaryMessages: Message[] = [{
-      id: 'compress-prompt',
-      role: 'user',
-      content: summaryPrompt,
-      timestamp: Date.now(),
-    }];
-
-    let summaryText = '';
-    // Independent timeout: abort the summarization if the provider stalls, so a
-    // flaky pool can never hang the agent loop on the pre-work compaction step.
-    const timeoutMs = config.timeoutMs ?? DEFAULT_COMPRESSION_TIMEOUT_MS;
-    const timeoutController = new AbortController();
-    const combinedSignal = config.signal
-      ? anySignal([config.signal, timeoutController.signal])
-      : timeoutController.signal;
-    const chatOptions: ChatOptions = {
-      model: config.model,
-      apiKey: config.apiKey,
-      baseUrl: config.baseUrl,
-      maxTokens: SUMMARY_MAX_TOKENS,
-      requestedContextLength: config.requestedContextLength,
-      localServer: config.localServer,
-      signal: combinedSignal,
-      accounting: compactionAccounting(config),
-    };
-
-    let timedOut = false;
-    let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const chatPromise = config.adapter.chat(summaryMessages, chatOptions, (event) => {
-        if (event.type === 'text') {
-          summaryText += event.text;
-        }
-      });
-      // Prevent an unhandled rejection if the timeout wins the race and the
-      // aborted request rejects later.
-      chatPromise.catch(() => { /* swallowed — handled via the race below */ });
-      await Promise.race([
-        chatPromise,
-        new Promise<never>((_, reject) => {
-          timeoutTimer = setTimeout(() => {
-            timedOut = true;
-            timeoutController.abort();
-            reject(new Error('compression timeout'));
-          }, timeoutMs);
-        }),
-      ]);
-    } catch (err) {
-      if (timedOut) {
-        logger.warn('Context compression timed out — falling back to truncation', { timeoutMs });
-        return { messages, compressed: false, savedTokens: 0, failed: true, failureCode: 'timeout' };
-      }
-      throw err; // non-timeout error — let the outer catch handle it
-    } finally {
-      if (timeoutTimer) clearTimeout(timeoutTimer);
-    }
-
-    if (!summaryText.trim()) {
-      // LLM returned empty — fall back
-      return { messages, compressed: false, savedTokens: 0 };
-    }
-
-    // Build compressed message array
-    const summaryMessage: Message = {
-      id: `context-summary-${Date.now().toString(36)}`,
-      role: 'user',
-      content: `[对话历史摘要]\n${summaryText.trim()}`,
-      timestamp: middleMessages[0]?.timestamp ?? Date.now(),
-    };
-
-    const compressedMessages = [
-      ...firstRound,
-      summaryMessage,
-      ...recentRounds.flat(),
-    ];
-
-    const compressedTokens = estimateMessageTokens(compressedMessages);
-    const savedTokens = messageTokens - compressedTokens;
-    const savingsRatio = messageTokens > 0 ? savedTokens / messageTokens : 0;
-
-    // Reject low-efficiency compression — not worth the LLM call cost
-    if (savingsRatio < 0.10) {
-      logger.warn('Compression rejected: too few savings', { savingsRatio: `${(savingsRatio * 100).toFixed(1)}%`, savedTokens });
-      return { messages, compressed: false, savedTokens: 0 };
-    }
-
-    logger.info('Context compressed', { savedTokens: Math.max(0, savedTokens), savingsRatio: `${(savingsRatio * 100).toFixed(1)}%`, originalCount: middleMessages.length, compressedCount: compressedMessages.length });
-
-    return {
-      messages: compressedMessages,
-      compressed: true,
-      savedTokens: Math.max(0, savedTokens),
-    };
-  } catch (err) {
-    // LLM call failed — fall back gracefully, don't block the agent
-    const errorMessage = err instanceof Error ? err.message : String(err);
-    logger.warn('Context compression failed', { error: errorMessage });
-    return {
-      messages,
-      compressed: false,
-      savedTokens: 0,
-      failed: true,
-      failureCode: err instanceof LLMError ? err.code : 'error',
-    };
-  }
+  return text;
 }

@@ -3,7 +3,8 @@
  * Validates file paths to prevent access to sensitive locations
  */
 
-import { homeDir, tempDir } from '@tauri-apps/api/path';
+import { appDataDir, homeDir, tempDir } from '@tauri-apps/api/path';
+import { createConversationPaths } from '../session/conversationPaths';
 import { lstat } from '@tauri-apps/plugin-fs';
 import { canonicalizeElectronPathForPolicy } from '../../utils/electronHost';
 import { isMissingPathError } from '../../utils/fsErrors';
@@ -958,6 +959,22 @@ export async function isCatastrophicDeleteTarget(path: string): Promise<boolean>
 /**
  * Check if a path is safe for reading
  */
+export async function checkConversationResultRead(path: string, conversationId: string | undefined): Promise<PathCheckResult | null> {
+  if (!conversationId || !isAbsolutePolicyPath(path) || isUNCPath(path)) return null;
+  const appData = await appDataDir();
+  const root = createConversationPaths(appData).resultsDir(conversationId);
+  if (!isPathWithin(normalizePath(path), normalizePath(root))) return null;
+  const resolved = await resolvePathForPolicy(path);
+  if (!resolved.ok) return { allowed: false, reason: resolved.reason };
+  const canonicalAppData = await canonicalizePolicyAnchor(appData);
+  if (!canonicalAppData) return { allowed: false, reason: '无法安全解析会话目录' };
+  const expectedRoot = createConversationPaths(canonicalAppData).resultsDir(conversationId);
+  if (!isPathWithin(resolved.canonicalPath, normalizePath(expectedRoot))) return canonicalScopeEscapeResult();
+  const blocked = await isBlockedPath(resolved.canonicalPath);
+  if (blocked.blocked) return { allowed: false, reason: blocked.reason, denialKind: 'blocked' };
+  return { allowed: true, resolvedPath: resolved.canonicalPath };
+}
+
 export async function checkReadPath(path: string, scopeId?: AuthorizationScopeId): Promise<PathCheckResult> {
   // Block UNC network paths
   if (isUNCPath(path)) {

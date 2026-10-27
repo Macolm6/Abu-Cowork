@@ -3602,11 +3602,25 @@ describe('chatStore', () => {
     });
 
     it('setIsCompressing toggles isCompressing on the conversation', () => {
-      useChatStore.getState().setIsCompressing('c1', true);
+      useChatStore.getState().setIsCompressing('c1', true, 'loop-1');
       expect(useChatStore.getState().conversations.c1.isCompressing).toBe(true);
+      expect(useChatStore.getState().conversations.c1.compressingAtMessageCount).toBe(0);
+      expect(useChatStore.getState().conversations.c1.compressingLoopId).toBe('loop-1');
 
       useChatStore.getState().setIsCompressing('c1', false);
       expect(useChatStore.getState().conversations.c1.isCompressing).toBe(false);
+      expect(useChatStore.getState().conversations.c1.compressingAtMessageCount).toBeUndefined();
+      expect(useChatStore.getState().conversations.c1.compressingLoopId).toBeUndefined();
+    });
+
+    it('clears the temporary summary row when the run is stopped', () => {
+      useChatStore.getState().setIsCompressing('c1', true, 'loop-1');
+      useChatStore.getState().cancelStreaming('c1');
+      const conversation = useChatStore.getState().conversations.c1;
+      expect(conversation.isCompressing).toBe(false);
+      expect(conversation.compressingAtMessageCount).toBeUndefined();
+      expect(conversation.compressingLoopId).toBeUndefined();
+      expect(conversation.messages).toEqual([]);
     });
 
     it('actions are no-ops for unknown conversation id', () => {

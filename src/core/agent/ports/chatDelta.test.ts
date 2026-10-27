@@ -206,6 +206,9 @@ describe('createInProcessChatDelta', () => {
       useChatStore.getState().addMessage(id, { id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP });
       delta.updateMessageUsage(id, { inputTokens: 10, outputTokens: 20 }, 'a1');
       expect(useChatStore.getState().conversations[id].messages[0].usage).toEqual({ inputTokens: 10, outputTokens: 20 });
+      // The whole prompt size is kept for the context ring of a reopened conversation.
+      delta.updateMessageUsage(id, { inputTokens: 10, outputTokens: 20, cacheReadInputTokens: 900, promptTokens: 910 }, 'a1');
+      expect(useChatStore.getState().conversations[id].messages[0].usage).toEqual({ inputTokens: 10, outputTokens: 20, promptTokens: 910 });
     });
 
     it('setExecutionStepsSnapshot() forwards to chatStore.setExecutionStepsSnapshot', () => {
@@ -264,25 +267,26 @@ describe('createInProcessChatDelta', () => {
       expect(useChatStore.getState().conversations[id].contextUsage).toEqual({ percent: 10, tokensUsed: 100, tokensMax: 1000 });
     });
 
-    it('setContextCache() / clearContextCache() forward to chatStore', () => {
-      const delta = createInProcessChatDelta();
-      const id = useChatStore.getState().createConversation();
-      const cache = {
-        summaryMessage: { id: 'sum1', role: 'assistant' as const, content: 'summary', timestamp: FIXED_TIMESTAMP },
-        summarizedRange: [0, 5] as [number, number],
-        messageCountAtCompression: 5,
-      };
-      delta.setContextCache(id, cache);
-      expect(useChatStore.getState().conversations[id].contextCache).toEqual(cache);
-      delta.clearContextCache(id);
-      expect(useChatStore.getState().conversations[id].contextCache).toBeUndefined();
-    });
-
     it('setIsCompressing() forwards to chatStore.setIsCompressing', () => {
       const delta = createInProcessChatDelta();
       const id = useChatStore.getState().createConversation();
       delta.setIsCompressing(id, true);
       expect(useChatStore.getState().conversations[id].isCompressing).toBe(true);
+    });
+
+    it('locates an automatic summary request and clears the temporary location when it ends', () => {
+      const delta = createInProcessChatDelta();
+      const id = useChatStore.getState().createConversation();
+      delta.addMessage(id, { id: 'user-1', role: 'user', content: 'Continue', timestamp: FIXED_TIMESTAMP, loopId: 'loop-1' });
+      delta.setIsCompressing(id, true, 'loop-1');
+      expect(useChatStore.getState().conversations[id]).toMatchObject({
+        isCompressing: true, compressingLoopId: 'loop-1', compressingAtMessageCount: 1,
+      });
+      delta.setIsCompressing(id, false);
+      const conversation = useChatStore.getState().conversations[id];
+      expect(conversation.isCompressing).toBe(false);
+      expect(conversation.compressingLoopId).toBeUndefined();
+      expect(conversation.compressingAtMessageCount).toBeUndefined();
     });
 
     it('setConversationModel() forwards to chatStore.setConversationModel', () => {
@@ -356,8 +360,6 @@ describe('getChatDelta / setChatDelta', () => {
       setCurrentUsage: () => calls.push('setCurrentUsage'),
       setRetryInfo: () => calls.push('setRetryInfo'),
       setContextUsage: () => calls.push('setContextUsage'),
-      setContextCache: () => calls.push('setContextCache'),
-      clearContextCache: () => calls.push('clearContextCache'),
       setIsCompressing: () => calls.push('setIsCompressing'),
       setConversationModel: () => calls.push('setConversationModel'),
       setPendingProposalSignal: () => calls.push('setPendingProposalSignal'),

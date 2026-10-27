@@ -699,20 +699,21 @@ describe('createFrameChatDelta', () => {
     delta.setCurrentUsage(null);
     delta.setRetryInfo('c1', null);
     delta.setContextUsage('c1', undefined);
-    delta.setContextCache('c1', { compressed: true } as never);
-    delta.clearContextCache('c1');
-    delta.setIsCompressing('c1', true);
+    delta.setIsCompressing('c1', true, 'loop1');
     delta.setConversationModel('c1', { providerId: 'p', modelId: 'm' });
     delta.setPendingProposalSignal('c1', undefined);
     delta.removeActiveAgent('c1', 'agent1');
 
-    expect(frames).toHaveLength(29);
+    expect(frames).toHaveLength(27);
     for (const f of frames) {
       expect(f.p).toBe('chat');
       expect(typeof f.m).toBe('string');
       expect(Array.isArray(f.a)).toBe(true);
     }
     expect(frames[0]).toEqual({ p: 'chat', m: 'appendText', a: ['c1', 'tok', 'm1'] });
+    expect(frames.find((frame) => frame.m === 'setIsCompressing')).toEqual({
+      p: 'chat', m: 'setIsCompressing', a: ['c1', true, 'loop1'],
+    });
     expect(frames.find((frame) => frame.m === 'updateToolCall')?.a.at(-1)).toEqual({
       sandboxRecovery: { kind: 'app-automation', targetApp: 'Notes' },
     });

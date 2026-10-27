@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { toolRegistry, FILE_TOOL_PATH_MAP, executeAnyTool } from './registry';
 import { FILE_TOOL_NAMES } from './osPermissionGuide';
-import type { ToolDefinition, ToolExecutionContext } from '../../types';
+import type { ToolDefinition } from '../../types';
 
 // Test tool with required params
 const testTool: ToolDefinition = {
@@ -140,22 +140,11 @@ describe('ToolRegistry', () => {
   });
 
   describe('executeAnyTool', () => {
-    it('hands the context usage to the tool', async () => {
-      const contexts: Array<ToolExecutionContext | undefined> = [];
-      toolRegistry.register({
-        ...noRequiredTool,
-        execute: async (_input, context) => {
-          contexts.push(context);
-          return 'info result';
-        },
-      });
+    it('hands a long result back whole: the agent loop decides what reaches the model', async () => {
+      const long = 'line\n'.repeat(5_000);
+      toolRegistry.register({ ...noRequiredTool, execute: async () => long });
 
-      await executeAnyTool('test_info', {}, undefined, undefined, { conversationId: 'c1' }, 72);
-      await executeAnyTool('test_info', {}, undefined, undefined, { conversationId: 'c1' });
-
-      expect(contexts).toHaveLength(2);
-      expect(contexts[0]?.contextUsagePercent).toBe(72);
-      expect(contexts[1]).not.toHaveProperty('contextUsagePercent');
+      expect(await executeAnyTool('test_info', {}, undefined, undefined, { conversationId: 'c1' })).toBe(long);
     });
   });
 });

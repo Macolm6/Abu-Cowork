@@ -8,7 +8,6 @@ import type {
   ConversationStatus,
   AgentStatus,
   RetryInfo,
-  ContextCache,
   Conversation,
   ToolExecutionMetadata,
 } from '@/types';
@@ -114,7 +113,7 @@ export interface ChatDelta {
   /** Mirrors chatStore's `appendMessageToolCall` (subagent image persistence — see that action's doc). */
   appendMessageToolCall(convId: string, loopId: string, toolCall: ToolCall): void;
   /** Mirrors chatStore's `updateMessageUsage`. */
-  updateMessageUsage(convId: string, usage: TokenUsage, msgId?: string): void;
+  updateMessageUsage(convId: string, usage: TokenUsage & { promptTokens?: number }, msgId?: string): void;
   /** Mirrors chatStore's `setExecutionStepsSnapshot`. */
   setExecutionStepsSnapshot(convId: string, loopId: string, steps: ExecutionStepSnapshot[]): void;
   /** Mirrors chatStore's `setPlannedStepsSnapshot`. */
@@ -129,12 +128,8 @@ export interface ChatDelta {
   setRetryInfo(convId: string, info: RetryInfo | null): void;
   /** Mirrors chatStore's `setContextUsage`. */
   setContextUsage(convId: string, usage: NonNullable<Conversation['contextUsage']> | undefined): void;
-  /** Mirrors chatStore's `setContextCache`. */
-  setContextCache(convId: string, cache: ContextCache): void;
-  /** Mirrors chatStore's `clearContextCache`. */
-  clearContextCache(convId: string): void;
   /** Mirrors chatStore's `setIsCompressing`. */
-  setIsCompressing(convId: string, value: boolean): void;
+  setIsCompressing(convId: string, value: boolean, loopId?: string): void;
   /** Mirrors chatStore's `setConversationModel`. */
   setConversationModel(convId: string, model: { providerId: string; modelId: string } | undefined): void;
   /** Mirrors chatStore's `setPendingProposalSignal`. */
@@ -208,9 +203,7 @@ export function createInProcessChatDelta(): ChatDelta {
     setCurrentUsage: (usage) => useChatStore.getState().setCurrentUsage(usage),
     setRetryInfo: (convId, info) => useChatStore.getState().setRetryInfo(convId, info),
     setContextUsage: (convId, usage) => useChatStore.getState().setContextUsage(convId, usage),
-    setContextCache: (convId, cache) => useChatStore.getState().setContextCache(convId, cache),
-    clearContextCache: (convId) => useChatStore.getState().clearContextCache(convId),
-    setIsCompressing: (convId, value) => useChatStore.getState().setIsCompressing(convId, value),
+    setIsCompressing: (convId, value, loopId) => useChatStore.getState().setIsCompressing(convId, value, loopId),
     setConversationModel: (convId, model) => useChatStore.getState().setConversationModel(convId, model),
     setPendingProposalSignal: (convId, signal) =>
       useChatStore.getState().setPendingProposalSignal(convId, signal),

@@ -1,23 +1,41 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { exists, writeTextFile } from '@tauri-apps/plugin-fs';
+import { appDataDir } from '@tauri-apps/api/path';
+import { createConversationPaths } from './conversationPaths';
 import {
-  shouldOffload,
   isDiskRef,
   extractRefId,
-  createDiskRef,
   DISK_REF_PREFIX,
   DISK_REF_SUFFIX,
+  writeToolResultFile,
 } from './sessionMemory';
 
 describe('sessionMemory', () => {
-  describe('shouldOffload', () => {
-    it('returns false for small results', () => {
-      expect(shouldOffload('hello')).toBe(false);
-      expect(shouldOffload('x'.repeat(8192))).toBe(false);
+  beforeEach(() => {
+    vi.mocked(exists).mockResolvedValue(true);
+    vi.mocked(writeTextFile).mockClear();
+  });
+
+  describe('writeToolResultFile', () => {
+    it.each(['../escape', '../../other/results/call', '/absolute/path', '..\\escape', 'C:\\outside\\call', 'call\u0000suffix'])('keeps provider ids inside the conversation results directory: %s', async (toolCallId) => {
+      const dir = createConversationPaths(await appDataDir()).resultsDir('conversation-1');
+      const path = await writeToolResultFile('conversation-1', toolCallId, 'complete result');
+      expect(path.slice(0, dir.length + 1)).toBe(`${dir}/`);
+      expect(path.slice(dir.length + 1)).toMatch(/^[0-9a-f]{64}\.txt$/);
+      expect(writeTextFile).toHaveBeenCalledExactlyOnceWith(path, 'complete result');
     });
 
-    it('returns true for large results', () => {
-      expect(shouldOffload('x'.repeat(8193))).toBe(true);
-      expect(shouldOffload('x'.repeat(50000))).toBe(true);
+    it('preserves earlier references when a later run repeats a tool call id with new content', async () => {
+      const first = await writeToolResultFile('conversation-1', 'reused-id', 'first result');
+      const second = await writeToolResultFile('conversation-1', 'reused-id', 'second result');
+      expect(first).not.toBe(second);
+      expect(writeTextFile).toHaveBeenNthCalledWith(1, first, 'first result');
+      expect(writeTextFile).toHaveBeenNthCalledWith(2, second, 'second result');
+    });
+
+    it('propagates a failed write', async () => {
+      vi.mocked(writeTextFile).mockRejectedValueOnce(new Error('disk full'));
+      await expect(writeToolResultFile('conversation-1', 'call', 'result')).rejects.toThrow('disk full');
     });
   });
 
@@ -41,37 +59,6 @@ describe('sessionMemory', () => {
 
     it('returns null for non-references', () => {
       expect(extractRefId('not a reference')).toBeNull();
-    });
-  });
-
-  describe('createDiskRef', () => {
-    it('creates reference with preview', () => {
-      const result = 'a'.repeat(1000);
-      const ref = createDiskRef('tc_001', result);
-      expect(isDiskRef(ref)).toBe(true);
-      expect(extractRefId(ref)).toBe('tc_001');
-      expect(ref.length).toBeLessThan(result.length);
-    });
-
-    it('includes full output size in reference', () => {
-      const result = 'a'.repeat(10000);
-      const ref = createDiskRef('tc_size', result);
-      expect(ref).toContain('Full output: 10000 chars');
-      expect(ref).toContain('showing first 500 chars');
-    });
-
-    it('shows actual length when content is shorter than preview limit', () => {
-      const ref = createDiskRef('tc_short', 'short');
-      expect(ref).toContain('Full output: 5 chars');
-      expect(ref).toContain('showing first 5 chars');
-      expect(ref).not.toContain('...');
-    });
-
-    it('truncates long content with ellipsis', () => {
-      const longContent = 'x'.repeat(600);
-      const ref = createDiskRef('tc_003', longContent);
-      expect(ref).toContain('...');
-      expect(ref).toContain('Full output: 600 chars');
     });
   });
 });

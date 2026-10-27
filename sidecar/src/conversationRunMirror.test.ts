@@ -545,35 +545,6 @@ describe('conversationRunMirror', () => {
       expect(mirror.reader.getThinkingStartTime('conv-1')).toBeNull();
     });
 
-    describe('context cache', () => {
-      const cache = {
-        summaryMessage: makeMessage({ id: 'context-summary-1', role: 'user', content: 'summary' }),
-        summarizedRange: [2, 10] as [number, number],
-        messageCountAtCompression: 14,
-      };
-
-      it('setContextCache is readable back through the reader', () => {
-        const mirror = createConversationRunMirror('conv-1', { conversation: makeConversation() });
-        mirror.applyChatDeltaWrite('setContextCache', ['conv-1', cache]);
-        expect(mirror.reader.getConversation('conv-1')?.contextCache).toEqual(cache);
-      });
-
-      it('clearContextCache drops the cache', () => {
-        const mirror = createConversationRunMirror('conv-1', { conversation: makeConversation() });
-        mirror.applyChatDeltaWrite('setContextCache', ['conv-1', cache]);
-        mirror.applyChatDeltaWrite('clearContextCache', ['conv-1']);
-        expect(mirror.reader.getConversation('conv-1')?.contextCache).toBeUndefined();
-      });
-
-      it('deleteMessagesFrom invalidates the cache, as chatStore does', () => {
-        const conv = makeConversation({ messages: [makeMessage({ id: 'a' }), makeMessage({ id: 'b' })] });
-        const mirror = createConversationRunMirror('conv-1', { conversation: conv });
-        mirror.applyChatDeltaWrite('setContextCache', ['conv-1', cache]);
-        mirror.applyChatDeltaWrite('deleteMessagesFrom', ['conv-1', 'b']);
-        expect(mirror.reader.getConversation('conv-1')?.contextCache).toBeUndefined();
-      });
-    });
-
     describe('updateMessageUsage', () => {
       it('writes usage onto the targeted message so a read-back for persistence carries it', () => {
         const conv = makeConversation({ messages: [makeMessage({ id: 'm1' }), makeMessage({ id: 'm2' })] });
@@ -589,6 +560,13 @@ describe('conversationRunMirror', () => {
         const mirror = createConversationRunMirror('conv-1', { conversation: conv });
         mirror.applyChatDeltaWrite('updateMessageUsage', ['conv-1', { inputTokens: 1, outputTokens: 2 }, undefined]);
         expect(mirror.reader.getConversation('conv-1')?.messages[1].usage).toEqual({ inputTokens: 1, outputTokens: 2 });
+      });
+
+      it('keeps the whole prompt size, as chatStore does', () => {
+        const conv = makeConversation({ messages: [makeMessage({ id: 'm1' })] });
+        const mirror = createConversationRunMirror('conv-1', { conversation: conv });
+        mirror.applyChatDeltaWrite('updateMessageUsage', ['conv-1', { inputTokens: 1, outputTokens: 2, promptTokens: 900 }, 'm1']);
+        expect(mirror.reader.getConversation('conv-1')?.messages[0].usage).toEqual({ inputTokens: 1, outputTokens: 2, promptTokens: 900 });
       });
     });
 

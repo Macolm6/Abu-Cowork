@@ -46,73 +46,52 @@ describe('contextManager', () => {
     });
   });
 
-  // ── Round identification ──
-  describe('round identification and compression', () => {
-    it('keeps first and last rounds, compresses middle', () => {
-      // Create 8 rounds to trigger compression
-      const messages: Message[] = [];
-      for (let i = 0; i < 8; i++) {
-        messages.push(makeMsg('user', `Question ${i} ${'x'.repeat(500)}`));
-        messages.push(makeMsg('assistant', `Answer ${i} ${'y'.repeat(500)}`));
+  // ── Dropping whole steps ──
+  describe('dropping steps', () => {
+    it('drops the oldest steps, keeps every user message and the newest step, and says how many went', () => {
+      const messages: Message[] = [makeMsg('user', 'The one task of this run')];
+      for (let i = 0; i < 20; i++) {
+        messages.push(makeMsg('assistant', `Step ${i} ${'s'.repeat(400)}`));
       }
+      messages.push(makeMsg('user', 'A follow-up'));
+      messages.push(makeMsg('assistant', `Newest step ${'n'.repeat(400)}`));
 
-      // Set a limit that forces compression
-      const result = prepareContextMessages(messages, systemPrompt, 3000, 500);
-      // Should have fewer messages/shorter content than original
-      expect(result.length).toBeLessThanOrEqual(messages.length);
+      const result = enforceContextBudget(messages, systemPrompt, 2_000, 200);
+
+      expect(result.strategy).toBe('dropped_steps');
+      expect(result.tokensAfter).toBeLessThanOrEqual(result.inputBudget);
+      const ids = result.messages.map((m) => m.id);
+      expect(ids).toContain(messages[0].id);
+      expect(ids).toContain(messages[21].id);
+      expect(ids.at(-1)).toBe(messages[22].id);
+      // The oldest step is the first to go, and a note takes its place.
+      expect(ids).not.toContain(messages[1].id);
+      expect(result.messages[1]).toMatchObject({ role: 'user', isSystem: true });
+      expect(result.messages[1].content).toMatch(/^\[\d+ earlier step\(s\) were removed here/);
+      // No more steps are dropped than needed: the newest of the kept old steps survive.
+      expect(ids).toContain(messages[20].id);
+    });
+
+    it('drops only whole steps, so a tool call stays with its result', () => {
+      const messages: Message[] = [makeMsg('user', 'Run the checks')];
+      for (let i = 0; i < 12; i++) {
+        messages.push({
+          ...makeMsg('assistant', `Check ${i}`),
+          toolCallsForContext: [{ id: `tc-${i}`, name: 'run_command', input: { command: `check ${i}` }, result: 'r'.repeat(600) }],
+        });
+      }
+      const result = enforceContextBudget(messages, systemPrompt, 2_000, 200);
+      for (const message of result.messages) {
+        for (const call of message.toolCallsForContext ?? []) {
+          expect(call.result).toBe('r'.repeat(600));
+        }
+      }
+      expect(result.tokensAfter).toBeLessThanOrEqual(result.inputBudget);
     });
   });
 
-  // ── Compression of assistant messages ──
-  describe('assistant message compression', () => {
-    it('truncates long assistant messages in middle rounds', () => {
-      const messages: Message[] = [];
-      // First round
-      messages.push(makeMsg('user', 'Task: do something important'));
-      messages.push(makeMsg('assistant', 'A'.repeat(2000)));
-      // Middle rounds with long content (need enough to exceed limit)
-      for (let i = 0; i < 8; i++) {
-        messages.push(makeMsg('user', `Follow up ${i} with some extra context`));
-        messages.push(makeMsg('assistant', `Response ${i}: ${'B'.repeat(2000)}`));
-      }
-      // Last rounds
-      messages.push(makeMsg('user', 'Final question'));
-      messages.push(makeMsg('assistant', 'Final answer'));
-
-      // Token limit tight enough to force compression
-      // Total ~18000 chars / 4 = ~4500 tokens for content + overhead
-      // Set contextWindow small enough to force compression
-      const result = prepareContextMessages(messages, systemPrompt, 3000, 500);
-      // Result should be shorter than input
-      const totalContentLength = result
-        .filter((m) => m.role === 'assistant')
-        .reduce((acc, m) => acc + (typeof m.content === 'string' ? m.content.length : 0), 0);
-      const originalContentLength = messages
-        .filter((m) => m.role === 'assistant')
-        .reduce((acc, m) => acc + (typeof m.content === 'string' ? m.content.length : 0), 0);
-      expect(totalContentLength).toBeLessThan(originalContentLength);
-    });
-  });
-
-  // ── Aggressive mode ──
-  describe('aggressive mode — drop middle entirely', () => {
-    it('falls back to first + last 2 rounds when very constrained', () => {
-      const messages: Message[] = [];
-      for (let i = 0; i < 10; i++) {
-        messages.push(makeMsg('user', `Q${i} ${'x'.repeat(200)}`));
-        messages.push(makeMsg('assistant', `A${i} ${'y'.repeat(200)}`));
-      }
-
-      // Very tight limit
-      const result = prepareContextMessages(messages, systemPrompt, 500, 100);
-      const safeBudget = enforceContextBudget(messages, systemPrompt, 500, 100);
-      expect(safeBudget.tokensAfter).toBeLessThanOrEqual(safeBudget.inputBudget);
-      expect(result.length).toBeLessThan(messages.length);
-    });
-  });
-
-  // ── Single round ──
-  describe('single round', () => {
+  // ── Newest step alone too large ──
+  describe('newest step too large', () => {
     it('compacts an oversized assistant response instead of returning it over budget', () => {
       const messages = [
         makeMsg('user', 'Hello'),
@@ -120,7 +99,7 @@ describe('contextManager', () => {
       ];
       const result = enforceContextBudget(messages, systemPrompt, 1_000, 200);
 
-      expect(result.strategy).toMatch(/last_round_compacted|latest_user_only/);
+      expect(result.strategy).toMatch(/latest_step_compacted|latest_user_only/);
       expect(result.tokensAfter).toBeLessThanOrEqual(result.inputBudget);
       expect(result.messages[0]).toEqual(messages[0]);
       expect(estimateMessageTokens(result.messages)).toBeLessThan(estimateMessageTokens(messages));
@@ -141,7 +120,7 @@ describe('contextManager', () => {
 
   // ── Preserves first user message ──
   describe('user message preservation', () => {
-    it('prefers the latest user instruction when only one message can fit', () => {
+    it('preserves every user instruction while reducing the newest step', () => {
       const messages: Message[] = [];
       messages.push(makeMsg('user', 'TASK_CONTEXT_IMPORTANT'));
       for (let i = 0; i < 10; i++) {
@@ -150,73 +129,34 @@ describe('contextManager', () => {
       }
       messages.push(makeMsg('assistant', `Final ${'y'.repeat(20_000)}`));
 
-      const result = enforceContextBudget(messages, systemPrompt, 500, 100);
+      const result = enforceContextBudget(messages, systemPrompt, 2_000, 100);
       const latestUser = [...result.messages].reverse().find((message) => message.role === 'user');
       expect(latestUser?.content).toContain('Q10');
+      for (const message of messages.filter((entry) => entry.role === 'user')) {
+        expect(result.messages).toContainEqual(message);
+      }
       expect(result.tokensAfter).toBeLessThanOrEqual(result.inputBudget);
+    });
+    it('keeps summary and restored file context when the newest step needs truncation', () => {
+      const fixed = [
+        makeMsg('user', 'Original task'),
+        { ...makeMsg('user', 'Summary: retain this decision'), isSystem: true },
+        { ...makeMsg('user', 'Restored file contents'), isSystem: true },
+        makeMsg('user', 'Follow-up requirement'),
+      ];
+      const result = enforceContextBudget([...fixed, makeMsg('assistant', 'x'.repeat(20_000))], systemPrompt, 2_000, 200);
+      expect(result.strategy).toBe('latest_step_compacted');
+      expect(result.messages.slice(0, fixed.length)).toEqual(fixed);
+      expect(result.tokensAfter).toBeLessThanOrEqual(result.inputBudget);
+    });
+    it('rejects fixed user and summary content that exceeds the input budget', () => {
+      const messages = [makeMsg('user', 'x'.repeat(8_000)), makeMsg('user', 'Newest request'), makeMsg('assistant', 'step')];
+      expect(() => enforceContextBudget(messages, systemPrompt, 1_000, 200)).toThrow(/INPUT_TOO_LARGE/);
     });
   });
 
   // ── Tool calls in context ──
   describe('tool call context compression', () => {
-    it('strips tool calls from compressed assistant messages', () => {
-      const messages: Message[] = [];
-      messages.push(makeMsg('user', 'Start'));
-      messages.push({
-        ...makeMsg('assistant', 'Running tools'),
-        toolCalls: [{ id: 'tc1', name: 'read_file', input: { path: '/tmp/a.txt' }, result: 'content' }],
-        toolCallsForContext: [{ name: 'read_file', input: { path: '/tmp/a.txt' }, result: 'content' }],
-      });
-      // Add enough rounds to trigger compression
-      for (let i = 0; i < 6; i++) {
-        messages.push(makeMsg('user', `Q${i} ${'x'.repeat(300)}`));
-        messages.push(makeMsg('assistant', `A${i} ${'y'.repeat(300)}`));
-      }
-
-      const result = prepareContextMessages(messages, systemPrompt, 2000, 500);
-      // The compressed assistant messages in middle should not have toolCalls
-      const compressed = result.find(
-        (m) => m.role === 'assistant' && m.content !== 'Running tools' && !m.toolCalls
-      );
-      // At least some assistant messages should be stripped
-      expect(compressed?.toolCalls).toBeUndefined();
-    });
-
-    it('excludes subagent-recorded tool calls from fallback compression summaries', () => {
-      const messages: Message[] = [];
-      for (let i = 0; i < 7; i++) {
-        messages.push(makeMsg('user', `Question ${i}`));
-        const assistant = makeMsg('assistant', `Answer ${i}: ${'x'.repeat(1_000)}`);
-        if (i === 1) {
-          messages.push({
-            ...assistant,
-            toolCalls: [
-              { id: 'parent-tool', name: 'read_file', input: {}, result: 'parent result' },
-              {
-                id: 'child-tool',
-                name: 'computer_screenshot',
-                input: {},
-                result: 'child result',
-                hidden: true,
-                fromSubagent: true,
-              },
-            ],
-          });
-        } else {
-          messages.push(assistant);
-        }
-      }
-
-      const result = prepareContextMessages(messages, systemPrompt, 2_000, 100);
-      const compressed = result.find((message) => (
-        message.role === 'assistant' && typeof message.content === 'string'
-          && message.content.includes('Answer 1:')
-      ));
-
-      expect(compressed?.content).toContain('[read_file]');
-      expect(compressed?.content).not.toContain('[computer_screenshot]');
-    });
-
     it('does not summarize orphaned subagent-recorded tool calls into LLM context', () => {
       const messages: Message[] = [
         makeMsg('user', 'Start'),
@@ -328,6 +268,10 @@ describe('contextManager', () => {
         messages.push(makeMsg('assistant', `Answer ${index} ${'a'.repeat(1_500)}`));
       }
 
+      if (contextWindow === 500) {
+        expect(() => enforceContextBudget(messages, systemPrompt, contextWindow, 100)).toThrow(/INPUT_TOO_LARGE/);
+        return;
+      }
       const result = enforceContextBudget(messages, systemPrompt, contextWindow, 100);
       const independentlyEstimated = estimateTokens(systemPrompt) + estimateMessageTokens(result.messages);
       expect(result.tokensAfter).toBeLessThanOrEqual(result.inputBudget);

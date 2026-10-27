@@ -96,6 +96,35 @@ function makeThinkingAssistant(
 }
 
 describe('buildRenderSegments', () => {
+  it('keeps summary markers between their surrounding steps inside one segment', () => {
+    const marker: Message = {
+      id: 'compact-boundary-1', role: 'system', content: '', timestamp: 0, loopId: 'loop-1',
+      compactBoundary: { summaryText: 'Earlier work', summarizedFromId: 'a1', summarizedToId: 'a1', createdAt: 0, source: 'auto' },
+    };
+    const segments = buildRenderSegments(
+      [makeAssistant('a1', '', 1), marker, makeAssistant('a2', '', 1)],
+      [makeExecStep('step-1'), makeExecStep('step-2')],
+      [],
+    );
+    expect(segments).toHaveLength(1);
+    expect(segments[0].kind).toBe('steps');
+    if (segments[0].kind !== 'steps') throw new Error('Expected steps');
+    expect(segments[0].executionSteps.map((step) => step.id)).toEqual(['step-1', 'step-2']);
+    expect(segments[0].compactRows).toEqual([{ message: marker, executionIndex: 1, legacyIndex: 0 }]);
+  });
+
+  it('retains multiple summary requests in order before the closing answer', () => {
+    const pending: Message = { id: 'compressing-loop-1', role: 'system', content: '', timestamp: 0, loopId: 'loop-1' };
+    const failed: Message = {
+      ...pending, id: 'compact-boundary-failed',
+      compactBoundary: { status: 'failed', summaryText: '', summarizedFromId: 'a1', summarizedToId: 'a1', createdAt: 0, source: 'auto' },
+    };
+    const segments = buildRenderSegments([makeAssistant('a1', '', 1), pending, failed, makeAssistant('a2', 'Finished')], [makeExecStep('step-1')], []);
+    expect(segments.map((segment) => segment.kind)).toEqual(['steps', 'text']);
+    if (segments[0].kind !== 'steps') throw new Error('Expected steps');
+    expect(segments[0].compactRows?.map((row) => row.message.id)).toEqual([pending.id, failed.id]);
+    expect(computeWorkProcessFold(segments, true)).toBe(1);
+  });
   it('leading user message is NOT in segments (rendered by top bubble)', () => {
     const msgs: Message[] = [
       makeUser('u1', 'user start'),

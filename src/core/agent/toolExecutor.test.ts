@@ -35,10 +35,7 @@ vi.mock('./planMode', () => ({
 }));
 
 vi.mock('../session/sessionMemory', () => ({
-  processToolResult: async (_conversationId: string, _toolCallId: string, result: string) => ({
-    stored: result,
-    offloaded: false,
-  }),
+  writeToolResultFile: async (conversationId: string, toolCallId: string) => `/data/conversations/${conversationId}/results/${toolCallId}.txt`,
 }));
 
 vi.mock('../session/outputSnapshots', () => ({
@@ -152,6 +149,40 @@ describe('executeToolBatch · hard run restrictions', () => {
     expect(executeAnyTool).not.toHaveBeenCalled();
   });
 
+  it('records the image data of an image-only result in its observation', async () => {
+    const executeAnyTool = vi.fn().mockResolvedValue([
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'PIXELS' } },
+    ]);
+    const result = await executeToolBatch(
+      makeParams(makeToolCall('read_file', { path: '/ws/shot.png' }), makeInvoker(executeAnyTool)),
+    );
+    expect(executeAnyTool).toHaveBeenCalledTimes(1);
+    expect(result.observations[0]).toMatchObject({ name: 'read_file', images: ['PIXELS'], error: false });
+  });
+
+  it.each([false, true])('routes the bounded result into model history when isError=%s', async (isError) => {
+    const payload = `first line\n${'payload '.repeat(10_000)}\nlast line`;
+    const fullResult = `${isError ? 'Error: ' : ''}${payload}`;
+    const toolCall = makeToolCall('search_files', { pattern: 'payload' });
+    const params = makeParams(toolCall, makeInvoker(async () => {
+      if (isError) throw new Error(payload);
+      return payload;
+    }));
+    params.toolCallToStepId.set(toolCall.id, 'step-1');
+
+    const result = await executeToolBatch(params);
+
+    const boundedResult = mocks.updateToolCall.mock.calls[0][3] as string;
+    expect(boundedResult).toContain('first line');
+    expect(boundedResult).toContain('last line');
+    expect(boundedResult).toContain('/data/conversations/conv-1/results/tc-search_files.txt');
+    expect(boundedResult.length).toBeLessThan(fullResult.length);
+    expect(mocks.route).toHaveBeenCalledWith(isError
+      ? { type: 'step-error', loopId: 'loop-1', stepId: 'step-1', error: boundedResult }
+      : { type: 'step-end', loopId: 'loop-1', stepId: 'step-1', result: boundedResult, resultContent: undefined });
+    expect(result.observations[0]).toMatchObject({ result: fullResult, error: isError });
+  });
+
   it('lists the offered tools when the refused name was never offered', async () => {
     const executeAnyTool = vi.fn();
     const result = await executeToolBatch({
@@ -238,6 +269,7 @@ describe('executeToolBatch · hard run restrictions', () => {
         name: 'run_command',
         input: {},
         result: 'Error: tool "run_command" is blocked for this agent run',
+        images: [],
         error: true,
       }],
     });
@@ -263,6 +295,7 @@ describe('executeToolBatch · hard run restrictions', () => {
         name: 'abu-browser__click',
         input: {},
         result: 'Error: tool "abu-browser__click" is blocked for this agent run',
+        images: [],
         error: true,
       }],
     });
@@ -286,6 +319,7 @@ describe('executeToolBatch · hard run restrictions', () => {
       name: 'run_command',
       input: { command: 'touch marker', cwd: '/tmp/ws' },
       result: 'Error: tool "run_command" is not allowed for this agent run',
+      images: [],
       error: true,
     }]);
   });
@@ -524,6 +558,7 @@ describe('executeToolBatch · hard run restrictions', () => {
         name: 'run_command',
         input: {},
         result: 'blocked',
+        images: [],
         error: true,
       }],
     });
@@ -938,6 +973,7 @@ describe('executeToolBatch · Computer Use target recovery', () => {
       name: 'computer',
       input: { action: 'get_window_state', consequence: '' },
       result: 'Error: This computer request is invalid. Nothing was executed.',
+      images: [],
       error: true,
     }]);
     expect(mocks.updateToolCall).toHaveBeenCalledWith(

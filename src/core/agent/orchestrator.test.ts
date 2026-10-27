@@ -85,6 +85,7 @@ import { loadMemoryIndex, scanMemoryFiles } from '../memdir/scan';
 import { agentRegistry } from './registry';
 import { skillLoader } from '../skill/loader';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { executeInlineCommands } from '../skill/preprocessor';
 
 const mockLoadAllRules = vi.mocked(loadAllRules);
 const mockLoadMemoryIndex = vi.mocked(loadMemoryIndex);
@@ -106,6 +107,27 @@ describe('routeInput expert entry', () => {
     expect(routeInput('@专家 检查文档')).toEqual({
       type: 'delegate', name: '专家', cleanInput: '检查文档', delegateAgent: expert,
     });
+  });
+});
+
+describe('buildSystemPromptSections compaction purpose', () => {
+  it('keeps skill text without executing embedded commands and uses the conversation workspace', async () => {
+    const original = useSettingsStore.getState();
+    const setSoulInitialized = vi.fn();
+    vi.mocked(useSettingsStore.getState).mockReturnValue({ ...original, allowSkillCommands: true, soulInitialized: false, setSoulInitialized });
+    try {
+      const content = 'Instructions with !`echo command-output`';
+      const sections = await buildSystemPromptSections({
+        type: 'skill', name: 'report', cleanInput: 'Report', skillContent: content,
+        skill: { name: 'report', description: 'Report', content, filePath: '/skills/report/SKILL.md', skillDir: '/skills/report' },
+      }, 'Assistant', 'test-conv', undefined, 0, { workspacePath: '/task/workspace' }, undefined, 'compaction');
+      expect(executeInlineCommands).not.toHaveBeenCalled();
+      expect(sections.map((section) => section.text).join('\n')).toContain(content);
+      expect(sections.find((section) => section.name === 'workspace')?.text).toContain('/task/workspace');
+      expect(setSoulInitialized).not.toHaveBeenCalled();
+    } finally {
+      vi.mocked(useSettingsStore.getState).mockReturnValue(original);
+    }
   });
 });
 

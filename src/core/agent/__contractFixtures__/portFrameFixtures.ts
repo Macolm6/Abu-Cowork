@@ -120,8 +120,6 @@ const sampleLegacyContextUsage = {
   messageCountAtPublish: 1,
 };
 
-const sampleContextCache = { compressed: true, summary: 'compressed history' };
-
 const sampleModel = { providerId: 'anthropic', modelId: 'claude-sonnet-5' };
 
 const sampleProposalSignal = { kind: 'todo' as const, count: 2 };
@@ -162,7 +160,7 @@ const sampleDetailBlock = {
   isExpanded: false,
 };
 
-/** All 28 generic-dispatch ChatDelta methods (29 total minus cancelStreaming),
+/** All 29 generic-dispatch ChatDelta methods (30 total minus cancelStreaming),
  * plus a second setContextUsage case for the legacy payload shape. */
 export const CHAT_CONTRACT_FIXTURES: ContractFixtureEntry[] = [
   { port: 'chat', method: 'appendText', args: ['conv-1', 'tok', 'msg-1'] },
@@ -199,9 +197,8 @@ export const CHAT_CONTRACT_FIXTURES: ContractFixtureEntry[] = [
   { port: 'chat', method: 'setRetryInfo', args: ['conv-1', { attempt: 2, maxAttempts: 5, delayMs: 1000 }] },
   { port: 'chat', method: 'setContextUsage', args: ['conv-1', sampleContextUsage] },
   { port: 'chat', method: 'setContextUsage', args: ['conv-legacy', sampleLegacyContextUsage] },
-  { port: 'chat', method: 'setContextCache', args: ['conv-1', sampleContextCache] },
-  { port: 'chat', method: 'clearContextCache', args: ['conv-1'] },
   { port: 'chat', method: 'setIsCompressing', args: ['conv-1', true] },
+  { port: 'chat', method: 'setIsCompressing', args: ['conv-1', true, 'loop-1'] },
   { port: 'chat', method: 'setConversationModel', args: ['conv-1', sampleModel] },
   { port: 'chat', method: 'setPendingProposalSignal', args: ['conv-1', sampleProposalSignal] },
   { port: 'chat', method: 'removeActiveAgent', args: ['conv-1', 'agent-1'] },

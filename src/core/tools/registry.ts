@@ -8,6 +8,7 @@ import { parseNamespacedToolName } from '../mcp/toolName';
 import { analyzeCommand, type ConfirmationInfo, type DangerLevel } from './commandSafety';
 import {
   checkReadPath,
+  checkConversationResultRead,
   checkWritePath,
   checkListPath,
   authorizeWorkspace,
@@ -22,7 +23,6 @@ import { getI18n, format } from '../../i18n';
 import { offeredToolsHint } from './offeredToolsHint';
 import { useMCPStore } from '@/stores/mcpStore';
 import { mergeToolInventory, summarizeMcpConnectionError, type InventoryCandidate, type InventoryReason } from './toolInventory';
-import { truncateToolResult } from '../context/truncation';
 import { getSettingsReader } from '../agent/ports/settingsReader';
 import { useChatStore } from '../../stores/chatStore';
 import { getPermissionStrategy } from '../permissions/permissionMode';
@@ -1402,13 +1402,19 @@ export async function checkToolApproval(
           id,
           { followFinalSymlink: pathInfo.followFinalSymlink },
         )
-        : (pathInfo.listing ? checkListPath : checkReadPath);
+        : async (candidate: string, id?: AuthorizationScopeId) => (
+          await checkConversationResultRead(candidate, conversation ? toolContext?.conversationId : undefined)
+          ?? await (pathInfo.listing ? checkListPath : checkReadPath)(candidate, id)
+        );
 
       const scopeId = teamFileScope ?? toolContext?.authorizationScopeId;
+      const resultRead = pathInfo.capability === 'read'
+        ? await checkConversationResultRead(pathInfo.path, conversation ? toolContext?.conversationId : undefined)
+        : null;
       const fileCeilingDecision = decideFileUnderRunPermissionCeiling(
         runPermissionCeiling,
         pathInfo.capability,
-        isInScopedAuthorizedWorkspace(pathInfo.path, pathInfo.capability, scopeId),
+        resultRead?.allowed === true || isInScopedAuthorizedWorkspace(pathInfo.path, pathInfo.capability, scopeId),
       );
       if (fileCeilingDecision.decision === 'deny') {
         return fileCeilingDecision;
@@ -1417,6 +1423,9 @@ export async function checkToolApproval(
 
       if (!pathCheck.allowed) {
         if (pathCheck.needsPermission && pathCheck.permissionPath) {
+          if (toolContext?.allowPermissionPrompts === false) {
+            return { decision: 'deny', reason: `Error: ${t.toolErrors.needsAuthorization} ${pathCheck.permissionPath}` };
+          }
           // Decide gating based on permission mode.
           const cap = pathCheck.capability || pathInfo.capability;
           let fileDecision = strategy.decideFileAccess(cap, true);
@@ -2596,8 +2605,6 @@ export async function executeAnyTool(
   onRequireConfirmation?: CommandConfirmCallback,
   onRequireFilePermission?: FilePermissionCallback,
   toolContext?: ToolExecutionContext,
-  /** Current context window usage (0-100). Scales truncation limits under pressure. */
-  contextUsagePercent?: number
 ): Promise<ToolResult> {
   // `apply_patch <<'EOF' … EOF` typed as a shell command becomes an
   // apply_patch call while the patch tool is offered (see applyPatchCommand.ts).
@@ -2681,22 +2688,12 @@ export async function executeAnyTool(
   // is treated as absent here too, so a stale/hallucinated tool_use falls
   // through to the "Unknown tool" fail-safe instead of silently executing.
   if (toolRegistry.has(name) && !isToolGatedOff(name)) {
-    const result = await toolRegistry.execute(
-      name,
-      executionInput,
-      contextUsagePercent !== undefined ? { ...toolContext, contextUsagePercent } : toolContext,
-    );
+    const result = await toolRegistry.execute(name, executionInput, toolContext);
     await files?.assertCurrent();
     await captureOutputs(result);
-    // Only truncate string results; rich content (images) passes through
-    if (typeof result === 'string') {
-      // File-tool OS-permission errors get a friendly grant-guide (not
-      // truncated — the raw error is short). See applyOSPermissionGuideIfNeeded.
-      const guided = applyOSPermissionGuideIfNeeded(name, result);
-      if (guided !== result) return guided;
-      return truncateToolResult(name, result, contextUsagePercent);
-    }
-    return result;
+    // File-tool OS-permission errors get a friendly grant-guide.
+    // See applyOSPermissionGuideIfNeeded.
+    return typeof result === 'string' ? applyOSPermissionGuideIfNeeded(name, result) : result;
   }
 
   // Check MCP tools (format: serverName__toolName).
@@ -2817,11 +2814,7 @@ export async function executeAnyTool(
       if (isBrowserTool && approval.browserExecution?.loginRequired && typeof result === 'string') {
         result = `${result}\n\n${getI18n().commandConfirm.browserLoginRequiredHint}`;
       }
-      // Only truncate string results; rich content (images) passes through
       await captureOutputs(result);
-      if (typeof result === 'string') {
-        return truncateToolResult(name, result, contextUsagePercent);
-      }
       return result;
     }
   }

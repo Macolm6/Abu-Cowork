@@ -30,8 +30,8 @@ import {
 
 const SUMMARY = '## 已确认\n- 保持接口不变';
 const SUMMARY_ITEM = '保持接口不变';
-const MANUAL_ROW = /上下文已压缩（手动）/;
-// Manual /compact needs three rounds: the first and the last stay, the middle one is summarized.
+const MANUAL_ROW = /已整理前面的内容（手动）/;
+// Three completed turns provide earlier steps to summarize and a newest step to retain.
 const ROUNDS = [
   { prompt: 'E2E压缩第一轮', reply: 'E2E压缩第一轮答复' },
   { prompt: 'E2E压缩第二轮', reply: 'E2E压缩第二轮答复' },
@@ -52,12 +52,7 @@ test.afterEach(async () => {
 });
 
 function findLedgers(dir: string): string[] {
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
   return entries.flatMap((entry) => {
     const entryPath = path.join(dir, entry.name);
     if (entry.isDirectory()) return findLedgers(entryPath);
@@ -216,5 +211,5 @@ test('cannot open an empty summary', async () => {
   await page.getByText(ROUNDS[0].prompt).first().click();
   await expect(page.getByText(ROUNDS[0].reply, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
   await expect(page.getByText('没有摘要', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: /上下文已压缩/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /已整理前面的内容/ })).toHaveCount(0);
 });

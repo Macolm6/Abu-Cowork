@@ -1194,7 +1194,7 @@ describe('launch_app', () => {
         }],
       },
     ], 'Inspect the requested window.', 2_000, 400);
-    expect(budget.strategy).toBe('last_round_compacted');
+    expect(budget.strategy).toBe('latest_step_compacted');
     expect(budget.tokensAfter).toBeLessThanOrEqual(budget.inputBudget);
     const toolCall = budget.messages[1]?.toolCallsForContext?.[0];
     const compactedResults = [toolCall?.result,

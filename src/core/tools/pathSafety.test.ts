@@ -4,6 +4,7 @@ import { lstat } from '@tauri-apps/plugin-fs';
 import { canonicalizeElectronPathForPolicy } from '../../utils/electronHost';
 import {
   checkReadPath,
+  checkConversationResultRead,
   checkWritePath,
   checkListPath,
   authorizeWorkspace,
@@ -34,6 +35,27 @@ describe('pathSafety', () => {
     // Clear any authorized workspaces by revoking known ones
     revokeWorkspace('/Users/testuser/Projects/myapp');
     revokeWorkspace('/tmp/test');
+  });
+
+  describe('conversation result reads', () => {
+    const path = '/Users/testuser/.abu/conversations/current/results/output.txt';
+    it('allows only the current conversation result directory', async () => {
+      expect(await checkConversationResultRead(path, 'current')).toMatchObject({ allowed: true, resolvedPath: path });
+      expect(await checkConversationResultRead(path, 'other')).toBeNull();
+      expect(await checkConversationResultRead(path, undefined)).toBeNull();
+      expect(await checkConversationResultRead('/Users/testuser/.abu/settings.json', 'current')).toBeNull();
+      expect(await checkReadPath(path)).toMatchObject({ allowed: false });
+      expect(await checkWritePath(path)).toMatchObject({ allowed: false });
+    });
+    it('rejects a result symlink to another conversation or outside the result directory', async () => {
+      for (const target of [
+        '/Users/testuser/.abu/conversations/other/results/output.txt',
+        '/Users/testuser/Documents/private.txt',
+      ]) {
+        vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (candidate) => candidate === path ? target : candidate);
+        expect(await checkConversationResultRead(path, 'current')).toMatchObject({ allowed: false });
+      }
+    });
   });
 
   // ── Blocked paths ──

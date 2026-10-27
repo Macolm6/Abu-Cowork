@@ -65,6 +65,8 @@ export interface OpenAiMockOptions {
   getRoutes?: Readonly<Record<string, unknown>>;
   /** The text every compression request is answered with. */
   compressionResponseText?: string;
+  /** Controls the compression response for cancellation and failure journeys. */
+  compressionReply?: MockReplyPlan;
 }
 
 /** Which kind of model call a request body is: memory extraction, compression, or the task itself. */
@@ -77,7 +79,7 @@ export function classifyMockRequestPurpose(body: unknown): MockRequest['purpose'
 }
 
 export async function startOpenAiMock(
-  replyPlans: readonly MockReplyPlan[],
+  replyPlans: readonly (MockReplyPlan | ((request: MockRequest) => MockReplyPlan))[],
   options: OpenAiMockOptions = {},
 ): Promise<OpenAiMock> {
   const requests: MockRequest[] = [];
@@ -120,15 +122,16 @@ export async function startOpenAiMock(
     }
 
     requests.push(mockRequest);
-    const replyPlan =
+    const replySource =
       purpose === 'memory'
         ? { kind: 'complete' as const, responseText: '[]' }
         : purpose === 'compression'
-          ? {
+          ? options.compressionReply ?? {
               kind: 'complete' as const,
               responseText: options.compressionResponseText ?? 'Abu E2E compacted conversation summary.',
             }
         : replyPlans[taskRequestCount++];
+    const replyPlan = typeof replySource === 'function' ? replySource(mockRequest) : replySource;
     if (!replyPlan) {
       res.writeHead(500, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'unexpected extra local E2E mock request' }));
@@ -278,15 +281,19 @@ function isMemoryExtractionRequest(body: unknown): boolean {
   });
 }
 
+/** A compaction's summary request ends with the summary instruction (contextCompressor.ts). */
 function isCompressionRequest(body: unknown): boolean {
   if (!body || typeof body !== 'object' || !('messages' in body)) return false;
   const messages = (body as { messages?: unknown }).messages;
-  return Array.isArray(messages) && messages.some((message) => {
-    if (!message || typeof message !== 'object') return false;
-    const content = (message as { content?: unknown }).content;
-    return typeof content === 'string'
-      && content.includes('请将以下对话内容压缩为一段简洁的摘要');
-  });
+  if (!Array.isArray(messages) || messages.length === 0) return false;
+  const last = messages[messages.length - 1] as { role?: unknown; content?: unknown } | null;
+  if (!last || last.role !== 'user') return false;
+  const text = typeof last.content === 'string'
+    ? last.content
+    : Array.isArray(last.content)
+      ? last.content.map((part) => (part && typeof part === 'object' && 'text' in part ? String(part.text) : '')).join('')
+      : '';
+  return text.startsWith('Stop working on the task for a moment.');
 }
 
 export function taskRequests(mock: OpenAiMock): MockRequest[] {

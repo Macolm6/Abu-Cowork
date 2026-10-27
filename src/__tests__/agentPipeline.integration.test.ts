@@ -116,37 +116,13 @@ vi.mock('../core/context/contextManager', () => ({
     strategy: 'unchanged',
   })),
   trimOldScreenshots: vi.fn().mockImplementation((msgs) => msgs),
-}));
-
-vi.mock('../core/context/contextCompressor', () => ({
-  compressContextIfNeeded: vi.fn().mockResolvedValue(false),
-}));
-
-vi.mock('../core/context/microCompactor', () => ({
-  applyMicroCompaction: vi.fn().mockImplementation((msgs) => msgs),
+  computeInputBudget: (contextWindowSize: number, reserveForOutput: number) => ({
+    inputBudget: contextWindowSize - reserveForOutput,
+    safetyMarginTokens: 0,
+  }),
 }));
 
 vi.mock('../core/context/autoCompact', () => ({
-  AutoCompactTracker: class {
-    recordUsage = vi.fn();
-    recordSuccess = vi.fn();
-    recordFailure = vi.fn();
-    shouldCompact = vi.fn().mockReturnValue(false);
-    shouldForceHardTruncation = vi.fn().mockReturnValue(false);
-    isDisabled = vi.fn().mockReturnValue(false);
-    getLastLevel = vi.fn().mockReturnValue(0);
-    // updateLevel mirrors the real calculateWarningLevel thresholds so that
-    // token-count-based tests (like the post-compression warning level test)
-    // get the correct 0/1/2/3 output instead of a hardcoded stub value.
-    updateLevel = vi.fn().mockImplementation((tokens: number, maxInput: number): 0 | 1 | 2 | 3 => {
-      if (maxInput <= 0) return 0;
-      const ratio = tokens / maxInput;
-      if (ratio >= 0.85) return 3;
-      if (ratio >= 0.75) return 2;
-      if (ratio >= 0.60) return 1;
-      return 0;
-    });
-  },
   getUsagePercent: vi.fn().mockReturnValue(0.3),
   // Real clamped math rather than a fixed stub: the published `percent` is what
   // the compression tests read back, so it has to track the actual token counts.
@@ -167,8 +143,6 @@ vi.mock('../core/context/tokenEstimator', () => ({
 }));
 
 vi.mock('../core/context/contextUtils', () => ({
-  identifyRounds: vi.fn().mockReturnValue([]),
-  RECENT_ROUNDS_TO_KEEP: 4,
   getMessageText: vi.fn().mockImplementation((content: unknown) => (
     typeof content === 'string'
       ? content
@@ -413,6 +387,7 @@ import { notifyTaskCompleted } from '@/utils/notifications';
 import { joinPath } from '@/utils/pathUtils';
 import { isWindows } from '@/utils/platform';
 import { isMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
+import { createCompactBoundaryMarker } from '@/core/context/compactBoundary';
 
 const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLkwwAAAABJRU5ErkJggg==';
 
@@ -1091,6 +1066,7 @@ describe('Agent Pipeline Integration', () => {
           name: 'tool_search',
           input: { query: 'computer' },
           result: 'no deferred tools',
+          images: [],
           error: false,
         }],
       };
@@ -1142,6 +1118,7 @@ describe('Agent Pipeline Integration', () => {
           name: 'tool_search',
           input: { query: 'clipboard' },
           result: '### rare_clipboard\nRead clipboard',
+          images: [],
           error: false,
         }],
       });
@@ -1624,31 +1601,20 @@ describe('Agent Pipeline Integration', () => {
       vi.mocked(tokenEstimatorModule.estimateMessageTokens).mockReturnValue(200);
     });
 
-    it('drops warningLevel to 0 when cache-hit compression brings payload under threshold', async () => {
-      // Regression test for the bug where contextWarningLevel was computed on
-      // pre-compression tokens, causing a stuck Critical banner even after
-      // cached compression brought the actual payload below the threshold.
-      //
+    it('publishes the provider\'s input count of what was sent, not the size of the raw history', async () => {
       // Setup:
-      //  - A conversation with 10 history messages (would be Level 3 / Critical
-      //    without compression: estimateMessageTokens returns 180 000 for large arrays)
-      //  - A contextCache covering messages 0-7, so the post-compression payload
-      //    is tiny: [summaryMessage, msg8, msg9] — 3 messages → Level 0
-      //  - The LLM does 2 tool-use turns (so turnCount reaches 3 in the loop
-      //    where the cache-hit check fires), then returns end_turn on turn 3
+      //  - A conversation with 10 history messages (would be Critical by the
+      //    local estimate: estimateMessageTokens returns 180 000 for large arrays)
+      //  - A compaction divider covering messages 0-7, so what is sent is tiny:
+      //    [summary, msg8, msg9, the new turn] → well under every threshold
+      //  - The LLM does 2 tool-use turns, then returns end_turn; every reply
+      //    reports 1 234 input tokens
       //
-      // Expected: after runAgentLoop, contextUsage.percent < 60 (Level 0 threshold)
+      // Expected: the ring shows 1 234, and its categories add up to it.
 
       // --- Token estimator override ------------------------------------------
-      // Large message array (pre-cache history, turns 1+2, ≥ 8 msgs) → 180 000 tokens → Level 3
-      // Small message array (post-cache, turn 3, 6 msgs) → 200 tokens → Level 0
-      // maxInputTokens = 200 000 - 8 192 = 191 808
-      // Level-3 threshold = 85% × 191 808 ≈ 163 000
-      // 180 000 + 100 (sys) + 500 (tools) = 180 600 > 163 000 → Level 3 pre-cache
-      // 200 + 100 + 500 = 800 / 191 808 ≈ 0.4% → Level 0 post-cache
-      // Turn 1 & 2 have 11/12 history messages (≥ 8) → 180 000 tokens → Level 3.
-      // Turn 3 cache-hit yields 6 messages (summaryMessage + slice(8) of 13) → Level 0.
-      // Threshold 8 sits between post-cache (6) and pre-cache (11/12) counts.
+      // Large message array (raw history, ≥ 8 msgs) → 180 000 tokens.
+      // What is sent (summary + the messages after the divider) stays below 8.
       vi.mocked(tokenEstimatorModule.estimateMessageTokens).mockImplementation(
         (msgs: Message[]) => (msgs.length >= 8 ? 180_000 : 200),
       );
@@ -1657,9 +1623,6 @@ describe('Agent Pipeline Integration', () => {
       const convId = useChatStore.getState().createConversation();
       const chatStoreState = useChatStore.getState();
 
-      // Build a history of 10 messages so the cache check fires correctly.
-      // runAgentLoop appends the user message, making the effective history
-      // 10 messages when it slices messages.slice(0, -1) on each turn.
       // Fixed anchor (TESTING.md §3) — only the relative spacing between
       // messages matters here, not the absolute value.
       const now = 1_700_000_000_000;
@@ -1670,37 +1633,26 @@ describe('Agent Pipeline Integration', () => {
         timestamp: now - (10 - i) * 1000,
       }));
 
-      // summaryMessage stands in for the cached compression output
-      const summaryMessage: Message = {
-        id: 'context-summary-cached',
-        role: 'assistant',
-        content: '[Compressed summary of earlier conversation]',
-        timestamp: now - 5000,
-      };
-
       // Inject history messages using the proper store action
       for (const msg of historyMsgs) {
         chatStoreState.addMessage(convId, msg);
       }
-
-      // Attach contextCache using the proper store action.
-      // messageCountAtCompression = 5 ≤ 10 → cache is considered valid.
-      // summarizedRange = [0, 8] → newMessages = historyMessages.slice(8) = msgs 8 & 9 (2 msgs)
-      // post-compression messagesForContext = [] + summaryMessage + [msg8, msg9] = 3 msgs
-      chatStoreState.setContextCache(convId, {
-        summaryMessage,
-        summarizedRange: [0, 8],
-        messageCountAtCompression: 5,
-      });
+      chatStoreState.addMessage(convId, createCompactBoundaryMarker({
+        summaryText: 'Compressed summary of earlier conversation',
+        summarizedFromId: 'hist-0',
+        summarizedToId: 'hist-7',
+        keptUserMessageIds: [],
+        restoredFiles: [],
+        source: 'manual',
+        timestamp: now - 500,
+      }));
 
       // --- LLM mock ----------------------------------------------------------
-      // Turn 1: tool_use → continueLoop = true (turnCount = 1)
-      // Turn 2: tool_use → continueLoop = true (turnCount = 2)
-      // Turn 3: end_turn  → loop ends      (turnCount = 3 → cache check fires)
       let llmCallCount = 0;
       mockClaudeChat.mockImplementation(
         async (_msgs: unknown, _opts: unknown, onEvent: (e: StreamEvent) => void) => {
           llmCallCount++;
+          onEvent({ type: 'usage', usage: { inputTokens: 1_234, outputTokens: 10 } });
           if (llmCallCount <= 2) {
             // Emit one tool call so the loop continues
             onEvent({
@@ -1722,22 +1674,19 @@ describe('Agent Pipeline Integration', () => {
       await runAgentLoop(convId, 'Summarize the history');
 
       // --- Assertion ---------------------------------------------------------
-      // The post-compression payload is 6 messages → ~800 tokens → Level 0.
-      // Before the T2 bug fix this would have been Level 3 because the warning
-      // level was computed on the pre-compression (10+) message history.
       const conv = useChatStore.getState().conversations[convId];
       expect(conv.contextUsage?.percent).toBeLessThan(60);
 
       // --- Anchor invariant --------------------------------------------------
       // The published snapshot must ALSO say how much of the conversation its
-      // token count stands for. Here `tokensUsed` measures the compressed
-      // 3-message payload, but the anchor spans the full raw history — that
+      // token count stands for. Here `tokensUsed` is the provider's count of the
+      // compacted request, but the anchor spans the full raw history — that
       // pairing is what stops ContextIndicator from re-counting (and thereby
       // un-compressing) the history and rendering a >100% water level.
       const usage = conv.contextUsage!;
       expect(usage.messageCountAtPublish).toBeGreaterThanOrEqual(historyMsgs.length);
       expect(usage.messageCountAtPublish).toBeLessThanOrEqual(conv.messages.length);
-      expect(usage.tokensUsed).toBeLessThan(180_000); // post-compression, not raw history
+      expect(usage.tokensUsed).toBe(1_234);
 
       expect(usage.breakdown?.version).toBe(1);
       const breakdown = usage.breakdown!;

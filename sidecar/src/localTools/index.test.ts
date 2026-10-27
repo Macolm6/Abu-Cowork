@@ -34,7 +34,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readDir, readTextFile, writeTextFile, exists, stat } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { hasLocalTool, isLocalToolReadOnly, executeLocalTool } from './index';
-import { runCommandTool } from '@/core/tools/definitions/commandTools';
 
 const snapshotBeforeAiEditMock = vi.fn().mockResolvedValue(undefined);
 const captureTurnFileBeforeMock = vi.fn().mockResolvedValue(undefined);
@@ -128,7 +127,6 @@ describe('executeLocalTool — show_widget', () => {
       'show_widget',
       { title: 'Sales chart', widget_code: '<div>hi</div>', loading_messages: ['Rendering…'] },
       undefined,
-      undefined,
     );
     expect(typeof result).toBe('string');
     expect(result as string).toContain('Sales chart');
@@ -139,14 +137,13 @@ describe('executeLocalTool — show_widget', () => {
       'show_widget',
       { title: '', widget_code: '<div>hi</div>', loading_messages: ['x'] },
       undefined,
-      undefined,
     );
     expect(typeof result).toBe('string');
     expect(result as string).toContain('Error executing tool "show_widget"');
   });
 
   it('rejects a call missing a required field BEFORE ever invoking execute() (pre-flight validation)', async () => {
-    const result = await executeLocalTool('show_widget', { widget_code: '<div>hi</div>' }, undefined, undefined);
+    const result = await executeLocalTool('show_widget', { widget_code: '<div>hi</div>' }, undefined);
     expect(typeof result).toBe('string');
     expect(result as string).toContain('missing required parameter');
     expect(result as string).toContain('title');
@@ -155,7 +152,7 @@ describe('executeLocalTool — show_widget', () => {
 
 describe('executeLocalTool — read_me', () => {
   it('returns the widget guidelines text for a valid (empty) input', async () => {
-    const result = await executeLocalTool('read_me', {}, undefined, undefined);
+    const result = await executeLocalTool('read_me', {}, undefined);
     expect(typeof result).toBe('string');
     expect((result as string).length).toBeGreaterThan(0);
   });
@@ -164,12 +161,12 @@ describe('executeLocalTool — read_me', () => {
 describe('executeLocalTool — http_fetch', () => {
   it('runs the tool\'s pre-flight guard locally with no network call (URL too long)', async () => {
     const longUrl = 'https://example.com/' + 'a'.repeat(2100);
-    const result = await executeLocalTool('http_fetch', { url: longUrl }, undefined, undefined);
+    const result = await executeLocalTool('http_fetch', { url: longUrl }, undefined);
     expect(result).toContain('URL too long');
   });
 
   it('rejects a call missing the required url field', async () => {
-    const result = await executeLocalTool('http_fetch', {}, undefined, undefined);
+    const result = await executeLocalTool('http_fetch', {}, undefined);
     expect(result as string).toContain('missing required parameter');
     expect(result as string).toContain('url');
   });
@@ -177,7 +174,7 @@ describe('executeLocalTool — http_fetch', () => {
 
 describe('executeLocalTool — fail-closed on an unregistered tool name', () => {
   it('throws (dispatch-layer bug signal) rather than silently no-op-ing — caller must check hasLocalTool() first', async () => {
-    await expect(executeLocalTool('not_a_real_tool', {}, undefined, undefined)).rejects.toThrow(
+    await expect(executeLocalTool('not_a_real_tool', {}, undefined)).rejects.toThrow(
       /unregistered tool/,
     );
   });
@@ -195,7 +192,7 @@ describe('executeLocalTool — list_directory', () => {
       { name: 'b.txt', isDirectory: false, isFile: true, isSymlink: false },
       { name: 'a-dir', isDirectory: true, isFile: false, isSymlink: false },
     ]);
-    const result = await executeLocalTool('list_directory', { path: '/tmp/x' }, undefined, undefined);
+    const result = await executeLocalTool('list_directory', { path: '/tmp/x' }, undefined);
     expect(typeof result).toBe('string');
     expect(result as string).toContain('a-dir');
     expect(result as string).toContain('b.txt');
@@ -203,7 +200,7 @@ describe('executeLocalTool — list_directory', () => {
 
   it('catches a real fs error and returns it as an error STRING (never throws)', async () => {
     vi.mocked(readDir).mockRejectedValueOnce(new Error('ENOENT: no such file or directory'));
-    const result = await executeLocalTool('list_directory', { path: '/tmp/missing' }, undefined, undefined);
+    const result = await executeLocalTool('list_directory', { path: '/tmp/missing' }, undefined);
     expect(result as string).toContain('Error listing directory');
   });
 });
@@ -222,7 +219,7 @@ describe('executeLocalTool — read_file (text)', () => {
   it('runs locally and returns file content for a plain text file', async () => {
     vi.mocked(stat).mockResolvedValue({ size: 5 } as unknown as Awaited<ReturnType<typeof stat>>);
     vi.mocked(readTextFile).mockResolvedValueOnce('hello');
-    const result = await executeLocalTool('read_file', { path: '/tmp/x.txt' }, undefined, undefined);
+    const result = await executeLocalTool('read_file', { path: '/tmp/x.txt' }, undefined);
     expect(result).toBe('hello');
   });
 });
@@ -249,7 +246,7 @@ describe('executeLocalTool — read_file PDF/PPTX/archive escalation (P1-3d-4)',
     // the escalation pre-check didn't fire BEFORE calling the real tool,
     // this would fall through to whatever the default mock returns instead
     // of throwing, silently masking the bug this test guards against.
-    await expect(executeLocalTool('read_file', { path }, undefined, undefined)).rejects.toThrow(
+    await expect(executeLocalTool('read_file', { path }, undefined)).rejects.toThrow(
       /run_argv_command/,
     );
     // Confirms the escalation happens BEFORE any fs work — the real tool's
@@ -258,7 +255,7 @@ describe('executeLocalTool — read_file PDF/PPTX/archive escalation (P1-3d-4)',
   });
 
   it('does NOT escalate a .7z path — listArchiveContents has no run_argv_command branch for it, so it returns its normal "not supported" string locally (identical to what the reverse/shell path would return, no invoke call either way)', async () => {
-    const result = await executeLocalTool('read_file', { path: '/tmp/archive.7z' }, undefined, undefined);
+    const result = await executeLocalTool('read_file', { path: '/tmp/archive.7z' }, undefined);
     expect(result).toBe('Archive listing not supported for .7z. Use run_command to extract.');
     // No escalation happened (this returned normally, not via a throw), and
     // no fs read was needed either — confirms the .7z branch never reaches
@@ -274,14 +271,14 @@ describe('executeLocalTool — search_files / find_files', () => {
 
   it('search_files runs locally via the mocked native invoke("run_shell_command")', async () => {
     vi.mocked(invoke).mockResolvedValueOnce({ code: 0, stdout: '/tmp/x/a.ts:1:match\n', stderr: '' });
-    const result = await executeLocalTool('search_files', { pattern: 'match', path: '/tmp/x' }, undefined, undefined);
+    const result = await executeLocalTool('search_files', { pattern: 'match', path: '/tmp/x' }, undefined);
     expect(result as string).toContain('a.ts');
     expect(invoke).toHaveBeenCalledWith('run_shell_command', expect.objectContaining({ command: expect.stringContaining('grep') }));
   });
 
   it('find_files runs locally via the mocked native invoke("run_shell_command")', async () => {
     vi.mocked(invoke).mockResolvedValueOnce({ code: 0, stdout: '/tmp/x/a.ts\n', stderr: '' });
-    const result = await executeLocalTool('find_files', { pattern: '*.ts', path: '/tmp/x' }, undefined, undefined);
+    const result = await executeLocalTool('find_files', { pattern: '*.ts', path: '/tmp/x' }, undefined);
     expect(result as string).toContain('a.ts');
     expect(invoke).toHaveBeenCalledWith('run_shell_command', expect.objectContaining({ command: expect.stringContaining('find') }));
   });
@@ -296,13 +293,13 @@ describe('executeLocalTool — write_file (P1-3d A-write)', () => {
   });
 
   it('runs locally: writes via the mocked fsBridge->plugin-fs fallback and returns the success marker', async () => {
-    const result = await executeLocalTool('write_file', { path: '/tmp/x/out.txt', content: 'hello world' }, undefined, undefined);
+    const result = await executeLocalTool('write_file', { path: '/tmp/x/out.txt', content: 'hello world' }, undefined);
     expect(result).toBe('Successfully wrote 11 characters to /tmp/x/out.txt');
     expect(writeTextFile).toHaveBeenCalledWith('/tmp/x/out.txt', 'hello world');
   });
 
   it('calls the REAL snapshotBeforeAiEdit (mocked here) before writing — pre-edit snapshot semantics unchanged locally', async () => {
-    await executeLocalTool('write_file', { path: '/tmp/x/out.txt', content: 'hi' }, { conversationId: 'conv-1', loopId: 'loop-1' }, undefined);
+    await executeLocalTool('write_file', { path: '/tmp/x/out.txt', content: 'hi' }, { conversationId: 'conv-1', loopId: 'loop-1' });
     expect(snapshotBeforeAiEditMock).toHaveBeenCalledWith('/tmp/x/out.txt', { loopId: 'loop-1', conversationId: 'conv-1' });
     // snapshot happens BEFORE the write — assert call order via mock invocation timestamps is
     // brittle, so instead assert both were called (temporal order is exercised end-to-end by
@@ -313,7 +310,7 @@ describe('executeLocalTool — write_file (P1-3d A-write)', () => {
 
   it('catches a real fs error and returns it as an error STRING (never throws) — matches the readOnly:false dispatch-layer/tool-level distinction', async () => {
     vi.mocked(writeTextFile).mockRejectedValueOnce(new Error('EACCES: permission denied'));
-    const result = await executeLocalTool('write_file', { path: '/tmp/x/out.txt', content: 'hi' }, undefined, undefined);
+    const result = await executeLocalTool('write_file', { path: '/tmp/x/out.txt', content: 'hi' }, undefined);
     expect(result as string).toContain('Error writing file');
     expect(result as string).toContain('EACCES');
     // Parity with the reverse executeAnyTool path: an OS-permission error on a
@@ -324,13 +321,13 @@ describe('executeLocalTool — write_file (P1-3d A-write)', () => {
   });
 
   it('rejects a binary extension locally with the same guard the reverse path uses (no fsBridge call at all)', async () => {
-    const result = await executeLocalTool('write_file', { path: '/tmp/x/out.docx', content: 'hi' }, undefined, undefined);
+    const result = await executeLocalTool('write_file', { path: '/tmp/x/out.docx', content: 'hi' }, undefined);
     expect(result as string).toContain('write_file only writes plain text');
     expect(writeTextFile).not.toHaveBeenCalled();
   });
 
   it('rejects a call missing required fields BEFORE ever invoking execute() (pre-flight validation)', async () => {
-    const result = await executeLocalTool('write_file', { path: '/tmp/x/out.txt' }, undefined, undefined);
+    const result = await executeLocalTool('write_file', { path: '/tmp/x/out.txt' }, undefined);
     expect(result as string).toContain('missing required parameter');
     expect(result as string).toContain('content');
     expect(writeTextFile).not.toHaveBeenCalled();
@@ -350,7 +347,6 @@ describe('executeLocalTool — process_image (P1-3d-5 slice 1)', () => {
       'process_image',
       { input_path: '/tmp/in.png', output_path: '/tmp/out.png', action: 'resize', width: 100, height: 100 },
       undefined,
-      undefined,
     );
     expect(result).toBe('Image processed successfully: /tmp/out.png');
     expect(invoke).toHaveBeenCalledWith('run_shell_command', expect.objectContaining({ command: expect.stringContaining('sips') }));
@@ -362,13 +358,12 @@ describe('executeLocalTool — process_image (P1-3d-5 slice 1)', () => {
       'process_image',
       { input_path: '/tmp/in.png', output_path: '/tmp/out.png', action: 'convert', format: 'png' },
       undefined,
-      undefined,
     );
     expect(result as string).toContain('Error processing image');
   });
 
   it('rejects a call missing required fields BEFORE ever invoking execute() (pre-flight validation)', async () => {
-    const result = await executeLocalTool('process_image', { input_path: '/tmp/in.png' }, undefined, undefined);
+    const result = await executeLocalTool('process_image', { input_path: '/tmp/in.png' }, undefined);
     expect(result as string).toContain('missing required parameter');
     expect(invoke).not.toHaveBeenCalled();
   });
@@ -400,7 +395,7 @@ describe('executeLocalTool — run_command (P1-3d-5 slice 2b)', () => {
   it('runs locally via the mocked native invoke("run_shell_command") and returns the formatted output', async () => {
     vi.mocked(invoke).mockResolvedValueOnce({ code: 0, stdout: 'hello', stderr: '' });
 
-    const result = await executeLocalTool('run_command', { command: 'echo hello' }, undefined, undefined);
+    const result = await executeLocalTool('run_command', { command: 'echo hello' }, undefined);
 
     expect(result as string).toContain('stdout:\nhello');
     expect(result as string).toContain('exit code: 0');
@@ -427,7 +422,6 @@ describe('executeLocalTool — run_command (P1-3d-5 slice 2b)', () => {
       'run_command',
       { command: 'sleep 60' },
       { abortSignal: controller.signal, workspacePath: '/ws' },
-      undefined,
     );
 
     await vi.waitFor(() => {
@@ -450,7 +444,7 @@ describe('executeLocalTool — run_command (P1-3d-5 slice 2b)', () => {
   });
 
   it('rejects a call missing required fields BEFORE ever invoking execute() (pre-flight validation)', async () => {
-    const result = await executeLocalTool('run_command', {}, undefined, undefined);
+    const result = await executeLocalTool('run_command', {}, undefined);
     expect(result as string).toContain('missing required parameter');
     expect(invoke).not.toHaveBeenCalled();
   });
@@ -458,22 +452,9 @@ describe('executeLocalTool — run_command (P1-3d-5 slice 2b)', () => {
   it('catches an invoke rejection and returns it as an error STRING (never throws) — same dispatch-layer contract as every other local tool in this file', async () => {
     vi.mocked(invoke).mockRejectedValueOnce(new Error('spawn failed'));
 
-    const result = await executeLocalTool('run_command', { command: 'ls' }, undefined, undefined);
+    const result = await executeLocalTool('run_command', { command: 'ls' }, undefined);
 
     expect(result as string).toContain('Error executing command');
-  });
-
-  it('hands the context usage to the tool', async () => {
-    vi.mocked(invoke).mockResolvedValue({ code: 0, stdout: 'hello', stderr: '' });
-    const execute = vi.spyOn(runCommandTool, 'execute');
-
-    await executeLocalTool('run_command', { command: 'echo hello' }, { workspacePath: '/ws' }, 72);
-    await executeLocalTool('run_command', { command: 'echo hello' }, { workspacePath: '/ws' }, undefined);
-
-    expect(execute).toHaveBeenCalledTimes(2);
-    expect(execute.mock.calls[0][1]?.contextUsagePercent).toBe(72);
-    expect(execute.mock.calls[1][1]).not.toHaveProperty('contextUsagePercent');
-    execute.mockRestore();
   });
 });
 
@@ -491,7 +472,6 @@ describe('executeLocalTool — edit_file (P1-3d A-write)', () => {
       'edit_file',
       { path: '/tmp/x/a.ts', old_content: 'const x = 1;', new_content: 'const x = 100;' },
       undefined,
-      undefined,
     );
     expect(result as string).toContain('Successfully edited');
     expect(writeTextFile).toHaveBeenCalledWith('/tmp/x/a.ts', 'const x = 100;\nconst y = 2;\n');
@@ -499,20 +479,20 @@ describe('executeLocalTool — edit_file (P1-3d A-write)', () => {
 
   it('returns an error STRING (never throws) when the file does not exist', async () => {
     vi.mocked(exists).mockResolvedValueOnce(false);
-    const result = await executeLocalTool('edit_file', { path: '/tmp/x/missing.ts', old_content: 'a', new_content: 'b' }, undefined, undefined);
+    const result = await executeLocalTool('edit_file', { path: '/tmp/x/missing.ts', old_content: 'a', new_content: 'b' }, undefined);
     expect(result as string).toContain('File not found');
     expect(writeTextFile).not.toHaveBeenCalled();
   });
 
   it('returns an error STRING (never throws) when old_content does not match uniquely', async () => {
     vi.mocked(readTextFile).mockResolvedValueOnce('no match here');
-    const result = await executeLocalTool('edit_file', { path: '/tmp/x/a.ts', old_content: 'nope', new_content: 'b' }, undefined, undefined);
+    const result = await executeLocalTool('edit_file', { path: '/tmp/x/a.ts', old_content: 'nope', new_content: 'b' }, undefined);
     expect(result as string).toContain('old_content not found');
     expect(writeTextFile).not.toHaveBeenCalled();
   });
 
   it('rejects a call missing required fields BEFORE ever invoking execute() (pre-flight validation)', async () => {
-    const result = await executeLocalTool('edit_file', { path: '/tmp/x/a.ts' }, undefined, undefined);
+    const result = await executeLocalTool('edit_file', { path: '/tmp/x/a.ts' }, undefined);
     expect(result as string).toContain('missing required parameter');
     expect(exists).not.toHaveBeenCalled();
   });
@@ -537,20 +517,20 @@ describe('executeLocalTool — delete_file (P1-3d-5 slice 3)', () => {
   });
 
   it('reverses move_to_trash (recoverable) for a normal path', async () => {
-    const result = await executeLocalTool('delete_file', { path: '/tmp/x/f.txt' }, undefined, undefined);
+    const result = await executeLocalTool('delete_file', { path: '/tmp/x/f.txt' }, undefined);
     expect(typeof result).toBe('string');
     expect(invoke).toHaveBeenCalledWith('move_to_trash', { path: '/tmp/x/f.txt' });
     expect(captureTurnFileBeforeMock).toHaveBeenCalledWith('/tmp/x/f.txt', undefined);
   });
 
   it('🔴 refuses a catastrophic target (filesystem root) via local dispatch and NEVER calls move_to_trash', async () => {
-    const result = await executeLocalTool('delete_file', { path: '/' }, undefined, undefined);
+    const result = await executeLocalTool('delete_file', { path: '/' }, undefined);
     expect(typeof result).toBe('string');
     expect(invoke).not.toHaveBeenCalledWith('move_to_trash', expect.anything());
   });
 
   it('rejects a call missing required fields BEFORE ever invoking execute() (pre-flight validation)', async () => {
-    const result = await executeLocalTool('delete_file', {}, undefined, undefined);
+    const result = await executeLocalTool('delete_file', {}, undefined);
     expect(result as string).toContain('missing required parameter');
     expect(invoke).not.toHaveBeenCalled();
   });

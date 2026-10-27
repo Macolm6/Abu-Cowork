@@ -813,7 +813,7 @@ interface ChatActions {
   updateMessageThinkingSignature: (convId: string, signature: string, msgId?: string) => void;
   /** Appends one opaque `redacted_thinking` payload (see `Message.redactedThinking`). */
   appendMessageRedactedThinking: (convId: string, data: string, msgId?: string) => void;
-  updateMessageUsage: (convId: string, usage: TokenUsage, msgId?: string) => void;
+  updateMessageUsage: (convId: string, usage: TokenUsage & { promptTokens?: number }, msgId?: string) => void;
   /**
    * Force a specific message's `isStreaming` flag directly (looked up by exact
    * `messageId`, no FALLBACK_LAST fanout like `finishStreaming`/`appendToLastMessage`).
@@ -903,11 +903,8 @@ interface ChatActions {
   /** Update loaded per-session MCP filters after a custom server rename. */
   renameMCPServerReferences: (oldName: string, newName: string) => void;
 
-  // Context compression cache
-  setContextCache: (convId: string, cache: import('../types').ContextCache) => void;
-  clearContextCache: (convId: string) => void;
   setContextUsage: (convId: string, usage: NonNullable<Conversation['contextUsage']> | undefined) => void;
-  setIsCompressing: (convId: string, value: boolean) => void;
+  setIsCompressing: (convId: string, value: boolean, loopId?: string) => void;
 
   // Export/Import
   exportConversation: (convId: string) => string | null;
@@ -1944,7 +1941,6 @@ export const useChatStore = create<ChatStore>()(
           if ('skill' in patch) message.skill = patch.skill;
           if ('delegateAgent' in patch) message.delegateAgent = patch.delegateAgent;
           conv.updatedAt = Date.now();
-          conv.contextCache = undefined;
           // `current`, not a spread: `message` is an immer draft, and a shallow
           // copy keeps nested values (a multimodal `content` ARRAY) as draft
           // proxies that are revoked the moment this producer returns. The
@@ -1996,7 +1992,6 @@ export const useChatStore = create<ChatStore>()(
               msg.content = newContent;
             }
             state.conversations[convId].updatedAt = Date.now();
-            state.conversations[convId].contextCache = undefined;  // Invalidate compression cache
           }
         });
       },
@@ -2017,7 +2012,6 @@ export const useChatStore = create<ChatStore>()(
               survivingTailId = idx > 0 ? conv.messages[idx - 1].id : undefined;
               conv.messages = conv.messages.slice(0, idx);
               conv.updatedAt = Date.now();
-              conv.contextCache = undefined;  // Invalidate compression cache
               const meta = state.conversationIndex[convId];
               if (meta) {
                 meta.messageCount = conv.messages.length;
@@ -2177,6 +2171,7 @@ export const useChatStore = create<ChatStore>()(
             target.usage = {
               inputTokens: usage.inputTokens,
               outputTokens: usage.outputTokens,
+              ...(usage.promptTokens !== undefined ? { promptTokens: usage.promptTokens } : {}),
             };
           }
         });
@@ -2317,6 +2312,7 @@ export const useChatStore = create<ChatStore>()(
       hasAbortController: (convId) => abortControllers.has(convId),
 
       cancelStreaming: (convId, opts) => {
+        get().setIsCompressing(convId, false);
         // P1-3c-1 (design doc §3, "conversation-authority"): while a
         // sidecar-hosted run owns this conversation, it remains authoritative
         // for in-flight frames. A direct Stop therefore cannot decorate
@@ -2759,29 +2755,20 @@ export const useChatStore = create<ChatStore>()(
         });
       },
 
-      // Context compression cache
-      setContextCache: (convId, cache) => {
-        set((state) => {
-          const conv = state.conversations[convId];
-          if (conv) conv.contextCache = cache;
-        });
-      },
-      clearContextCache: (convId) => {
-        set((state) => {
-          const conv = state.conversations[convId];
-          if (conv) conv.contextCache = undefined;
-        });
-      },
       setContextUsage: (convId, usage) => {
         set((state) => {
           const conv = state.conversations[convId];
           if (conv) conv.contextUsage = usage;
         });
       },
-      setIsCompressing: (convId, value) => {
+      setIsCompressing: (convId, value, loopId) => {
         set((state) => {
           const conv = state.conversations[convId];
-          if (conv) conv.isCompressing = value;
+          if (conv) {
+            conv.isCompressing = value;
+            conv.compressingAtMessageCount = value ? conv.messages.length : undefined;
+            conv.compressingLoopId = value ? loopId : undefined;
+          }
         });
       },
 

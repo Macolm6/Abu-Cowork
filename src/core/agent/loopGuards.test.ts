@@ -14,7 +14,8 @@ describe('detectSemanticToolLoop', () => {
     name: string,
     input: Record<string, unknown> = {},
     result = 'same-result',
-  ) => ({ name, input, result, error: false });
+    images: string[] = [],
+  ) => ({ name, input, result, images, error: false });
 
   it('detects the same normalized call with an unchanged result three times', () => {
     expect(detectSemanticToolLoop([
@@ -80,11 +81,41 @@ describe('detectSemanticToolLoop', () => {
     ])).toBeNull();
   });
 
-  it('retains only hashes, not raw tool input or output content', () => {
+  it('does not flag repeated screenshots of the same tab when the pictures differ', () => {
+    const screenshot = { action: 'screenshot', tabId: 7 };
+    expect(detectSemanticToolLoop([
+      observed('abu-browser__screenshot', screenshot, '[image]', ['picture-1']),
+      observed('abu-browser__screenshot', screenshot, '[image]', ['picture-2']),
+      observed('abu-browser__screenshot', screenshot, '[image]', ['picture-3']),
+    ].map(minimizeToolLoopObservation))).toBeNull();
+  });
+
+  it('flags repeated screenshots whose pictures are identical', () => {
+    const screenshot = { action: 'screenshot', tabId: 7 };
+    expect(detectSemanticToolLoop([
+      observed('abu-browser__screenshot', screenshot, '[image]', ['same-picture']),
+      observed('abu-browser__screenshot', screenshot, '[image]', ['same-picture']),
+      observed('abu-browser__screenshot', screenshot, '[image]', ['same-picture']),
+    ].map(minimizeToolLoopObservation))).toBe('repeated_call');
+  });
+
+  it('does not flag alternating screenshots of two tabs while both pictures change', () => {
+    const tabA = { action: 'screenshot', tabId: 1 };
+    const tabB = { action: 'screenshot', tabId: 2 };
+    expect(detectSemanticToolLoop([
+      observed('abu-browser__screenshot', tabA, '[image]', ['a-1']),
+      observed('abu-browser__screenshot', tabB, '[image]', ['b-1']),
+      observed('abu-browser__screenshot', tabA, '[image]', ['a-2']),
+      observed('abu-browser__screenshot', tabB, '[image]', ['b-2']),
+    ].map(minimizeToolLoopObservation))).toBeNull();
+  });
+
+  it('retains only hashes, not raw tool input, output or image content', () => {
     const minimized = minimizeToolLoopObservation({
       name: 'read_file',
       input: { path: '/private/customer-secret.txt' },
       result: 'customer secret body',
+      images: ['customer-secret-picture-data'],
       error: false,
     });
     const serialized = JSON.stringify(minimized);
@@ -92,6 +123,7 @@ describe('detectSemanticToolLoop', () => {
     expect(minimized.name).toBe('read_file');
     expect(serialized).not.toContain('customer-secret');
     expect(serialized).not.toContain('customer secret body');
+    expect(serialized).not.toContain('picture-data');
   });
 
   it('still detects repetition after observations are minimized', () => {

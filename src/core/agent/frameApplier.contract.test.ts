@@ -29,7 +29,7 @@ const CHAT_METHOD_NAMES: (keyof ChatDelta)[] = [
   'finishStreaming', 'cancelStreaming', 'deactivateSkills', 'setMessageStreamingFlag', 'setMessageToolCalls',
   'addMessage', 'deleteMessagesFrom', 'updateToolCall', 'checkpointToolCallMetadata', 'appendToolCallContext', 'appendMessageToolCall', 'updateMessageUsage',
   'setExecutionStepsSnapshot', 'setPlannedStepsSnapshot', 'setConversationStatus', 'setAgentStatus',
-  'setCurrentUsage', 'setRetryInfo', 'setContextUsage', 'setContextCache', 'clearContextCache',
+  'setCurrentUsage', 'setRetryInfo', 'setContextUsage',
   'setIsCompressing', 'setConversationModel', 'setPendingProposalSignal', 'removeActiveAgent',
 ];
 

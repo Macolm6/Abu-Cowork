@@ -1691,6 +1691,15 @@ export default function ChatView({
             totalListHeightChanged={handleTotalListHeightChanged}
             keepsBottom={keepsBottomPinned}
             footer={(
+              <>
+              {activeConv.isCompressing && !activeConv.compressingLoopId && (
+                <CompactDivider
+                  message={{ id: `compressing-${activeConv.id}`, role: 'system', content: '', timestamp: 0 }}
+                  pending
+                  expanded={false}
+                  onToggle={() => {}}
+                />
+              )}
               <TypingFooter
                 // Covers the gap before the next assistant placeholder is created.
                 // This occurs both on a normal send and when a staged queue item
@@ -1707,6 +1716,7 @@ export default function ChatView({
                 // placeholder hand-off, and reads odd before the animated dots.
                 thinkingLabel={t.status.thinking}
               />
+              </>
             )}
             itemContent={(index, group) =>
               group.length === 1 && isCompactBoundary(group[0]) ? (
@@ -1736,6 +1746,8 @@ export default function ChatView({
                       isLastGroup={index === messageGroups.length - 1}
                       isLastGroupOfLoop={lastGroupOfLoop.get(group[0].loopId ?? '') === index}
                       highlightMessageId={highlightedMessageId}
+                      expandedCompactIds={expandedCompactIds}
+                      onToggleCompactSummary={toggleCompactSummary}
                     />
                   )}
                 </>
@@ -1752,6 +1764,8 @@ export default function ChatView({
                   isLastGroup={index === messageGroups.length - 1}
                   isLastGroupOfLoop={lastGroupOfLoop.get(group[0].loopId ?? '') === index}
                   highlightMessageId={highlightedMessageId}
+                  expandedCompactIds={expandedCompactIds}
+                  onToggleCompactSummary={toggleCompactSummary}
                 />
               )
             }

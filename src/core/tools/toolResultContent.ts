@@ -12,6 +12,21 @@ export interface ToolResultImage {
 }
 
 /**
+ * One value per image block of a tool result: the base64 data, or the
+ * snapshot path for a block that carries only an output reference.
+ * The semantic loop guard hashes these values along with the result text.
+ */
+export function imageIdentities(resultContent: ToolResultContent[] | undefined): string[] {
+  if (!resultContent) return [];
+  return resultContent.flatMap((block) => {
+    if (block.type !== 'image') return [];
+    if (block.source?.data) return [block.source.data];
+    if (block.outputRef?.relPath) return [`ref:${block.outputRef.relPath}`];
+    throw new Error('Tool result image block has neither data nor an output reference');
+  });
+}
+
+/**
  * The first renderable image block in a tool result, or `undefined`.
  *
  * Single source of truth for "pull the image out of a tool result". Four

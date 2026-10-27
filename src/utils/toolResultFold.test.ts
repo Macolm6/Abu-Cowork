@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { charsOmittedMarker, linesOmittedMarker, scaledTruncationRule, truncateText, truncateToolResult } from '@/core/context/truncation';
+import { COMMAND_OUTPUT_RULE, HTTP_FETCH_RULE, charsOmittedMarker, linesOmittedMarker, truncateText } from '@/core/context/truncation';
+import { boundToolResult } from '@/core/context/toolResultSpill';
 import { DURABLE_RESULT_OMITTED_NOTE } from '@/core/session/durableToolResultContent';
 import { COMMAND_OUTPUT_CUT_NOTE, foldResultRows, foldRowList, foldToolResult, toResultRows } from './toolResultFold';
 
@@ -8,15 +9,27 @@ const lines = (n: number) => Array.from({ length: n }, (_, i) => `line ${i + 1}`
 
 describe('toResultRows', () => {
   it('turns the line-omission marker and its blank padding into one note row', () => {
-    const rows = toResultRows(truncateText(lines(5000), scaledTruncationRule('run_command')));
+    const rows = toResultRows(truncateText(lines(5000), COMMAND_OUTPUT_RULE));
     expect(rows.filter((row) => row.kind === 'note')).toEqual([{ kind: 'note', note: 'linesNotRead', count: 4820 }]);
     expect(rows.filter((row) => row.kind === 'text')).toHaveLength(180);
   });
 
   it('reads the character-omission marker with its count', () => {
-    const note = toResultRows(truncateToolResult('web_fetch', 'x'.repeat(10_000))).find((row) => row.kind === 'note');
+    const note = toResultRows(truncateText('x'.repeat(10_000), HTTP_FETCH_RULE)).find((row) => row.kind === 'note');
     expect(note).toEqual({ kind: 'note', note: 'charsNotRead', count: expect.any(Number) });
     expect(note?.kind === 'note' ? note.count : 0).toBeGreaterThan(6000);
+  });
+
+  it('shows a long result written to a file as its beginning, one note and its end, without the line meant for the model', async () => {
+    const long = lines(20_000);
+    const bounded = await boundToolResult({
+      toolCallId: 'tc', toolName: 'search_files', input: {}, result: long, writeFile: async () => '/data/results/tc.txt',
+    });
+    const rows = toResultRows(bounded);
+    expect(rows.filter((row) => row.kind === 'note')).toEqual([{ kind: 'note', note: 'charsNotRead', count: expect.any(Number) }]);
+    expect(rows[0]).toEqual({ kind: 'text', text: 'line 1' });
+    expect(rows.at(-1)).toEqual({ kind: 'text', text: 'line 20000' });
+    expect(rows.some((row) => row.kind === 'text' && row.text.includes('/data/results/tc.txt'))).toBe(false);
   });
 
   it('reads the command cut note as the rest not kept', () => {
@@ -62,7 +75,7 @@ describe('foldToolResult', () => {
   });
 
   it('counts only the lines Abu read, without the note', () => {
-    expect(foldToolResult(truncateText(lines(5000), scaledTruncationRule('run_command'))).hidden).toEqual({ unit: 'lines', count: 180 });
+    expect(foldToolResult(truncateText(lines(5000), COMMAND_OUTPUT_RULE)).hidden).toEqual({ unit: 'lines', count: 180 });
   });
 
   it('keeps a note that ends the result in the folded tail', () => {
@@ -105,7 +118,7 @@ describe('foldRowList', () => {
   });
 
   it('gives foldToolResult the same answer as before', () => {
-    const text = truncateText(lines(5000), scaledTruncationRule('run_command'));
+    const text = truncateText(lines(5000), COMMAND_OUTPUT_RULE);
     expect(foldToolResult(text)).toEqual(foldRowList(toResultRows(text), (row) => row.kind === 'text'));
   });
 });
@@ -134,7 +147,7 @@ describe('foldResultRows', () => {
     const texts = [
       lines(9),
       lines(10),
-      truncateText(lines(5000), scaledTruncationRule('run_command')),
+      truncateText(lines(5000), COMMAND_OUTPUT_RULE),
       'a'.repeat(1000),
       `${'a'.repeat(700)}b${'c'.repeat(300)}`,
       `stdout:\n${'x'.repeat(3000)}\n\nexit code: 0`,

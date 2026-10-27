@@ -343,7 +343,7 @@ test.describe.serial('Electron product task lifecycle', () => {
     const beforeConversation = Number(
       await popover.getByTestId('context-breakdown-row-conversation').getAttribute('data-tokens'),
     );
-    expect(beforeTokens).toBeGreaterThan(50_000 * 0.65);
+    const beforeCompressionCount = compressionRequests(mock).length;
     expect(beforeBucketTokens.reduce((sum, value) => sum + value, 0)).toBe(beforeTokens);
     expect(beforeConversation).toBe(Math.max(...beforeBucketTokens));
     await page.keyboard.press('Escape');
@@ -356,7 +356,7 @@ test.describe.serial('Electron product task lifecycle', () => {
     await expect(page.getByText(finalResponse, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(input).toBeEditable({ timeout: READY_TIMEOUT });
 
-    expect(compressionRequests(mock).length).toBeGreaterThan(0);
+    expect(compressionRequests(mock).length).toBeGreaterThan(beforeCompressionCount);
     const requests = taskRequests(mock);
     expect(requests).toHaveLength(9);
     expect(JSON.stringify(requests[7].body)).toContain(firstFixtureMarker);
@@ -372,7 +372,8 @@ test.describe.serial('Electron product task lifecycle', () => {
     const afterConversation = Number(
       await popover.getByTestId('context-breakdown-row-conversation').getAttribute('data-tokens'),
     );
-    expect(afterTokens).toBeLessThan(beforeTokens);
+    // Reserve the output allowance and the 2% context safety margin.
+    expect(afterTokens).toBeLessThan((50_000 - 4_096 - 1_000) * 0.9);
     expect(afterBucketTokens.reduce((sum, value) => sum + value, 0)).toBe(afterTokens);
     expect(afterConversation).toBe(Math.max(...afterBucketTokens));
 

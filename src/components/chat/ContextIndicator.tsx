@@ -113,18 +113,16 @@ export default function ContextIndicator({ conversationId }: { conversationId: s
   const discoveredWindow = useDiscoveredCapsStore((s) => (provider ? s.get(provider.id, activeModelId)?.contextWindow : undefined));
   const discoveredProbe = useDiscoveredCapsStore((s) => (provider ? s.get(provider.id, activeModelId)?.contextWindowProbe : undefined));
 
-  // agentLoop's published snapshot is the truth: it measures the payload actually
-  // sent, so it already reflects compaction, micro-compaction and the hard budget
-  // gate. On top of it we estimate ONLY the messages appended since the publish
-  // anchor — the assistant reply currently streaming — which keeps the ring live.
+  // agentLoop's published snapshot is the truth: the size of what was sent (after
+  // compaction and the budget gate), the provider's own count once the request
+  // returned usage. On top of it we estimate ONLY the messages appended since the
+  // publish anchor — the assistant reply currently streaming — which keeps the
+  // ring live without re-counting, and thereby un-compacting, the history.
   //
-  // Re-counting `messages` wholesale (the previous behaviour) silently undid every
-  // compression the loop had applied, so a long conversation climbed past its own
-  // window and rendered "108% 已用" while the real request fit comfortably.
-  //
-  // Only when nothing has been published at all — a history conversation reopened
-  // after restart — do we fall back to counting the raw history, since there is no
-  // better number available and a blank ring is worse than a rough one.
+  // A conversation reopened after restart has no published snapshot: the ring
+  // starts from the prompt size the provider reported for the newest answer that
+  // recorded one, plus an estimate of what came after it. Only a conversation
+  // with no such answer is estimated from its raw history.
   const usage = useMemo(() => {
     if (publishedUsage) {
       // Validate the persisted/imported snapshot before any arithmetic. JSON can
@@ -161,7 +159,13 @@ export default function ContextIndicator({ conversationId }: { conversationId: s
     if (!messages || messages.length === 0) return undefined;
     // Resolve the denominator locally so the indicator never overstates capacity
     // (e.g. a 200k user setting on a 128k mimo model).
-    const tokensUsed = FALLBACK_OVERHEAD_TOKENS + estimateMessageTokens(messages);
+    let lastMeasured = messages.length - 1;
+    while (lastMeasured >= 0 && messages[lastMeasured].usage?.promptTokens === undefined) lastMeasured -= 1;
+    const tokensUsed = lastMeasured >= 0
+      ? messages[lastMeasured].usage!.promptTokens! + estimateMessageTokens(
+          messages.slice(lastMeasured).filter((message) => !isCompactBoundary(message)),
+        )
+      : FALLBACK_OVERHEAD_TOKENS + estimateMessageTokens(messages);
     const tokensMax = resolveContextWindow({
       modelId: activeModelId,
       userSetting: resolveModelDeclared(provider, activeModelId)?.maxInputTokens,

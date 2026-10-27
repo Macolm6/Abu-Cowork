@@ -7,6 +7,7 @@ import type { SubagentHostRunParams } from './subagentHost';
 import { materializeSidecarMediaRefsForShell, sidecarValueHasOpaqueMediaRefs } from '@/core/subagent/delegatedUserTurnMaterializer';
 import { canonicalizeActiveToolResultContent } from '@/core/agent/activeToolResultContent';
 import { firstImageContent } from '@/core/tools/toolResultContent';
+import { readFileThroughTool } from '@/core/context/compaction';
 
 // ── Mocked dependencies ─────────────────────────────────────────────────
 
@@ -224,6 +225,23 @@ describe('subagentHost', () => {
   });
 
   describe('per-run isolation (AsyncLocalStorage context + tool.invoke reverse channel)', () => {
+    it('returns successful restored file text through the reverse tool channel', async () => {
+      sendRequestMock.mockResolvedValue({
+        result: 'restored body',
+        metadata: { fileReadOutcome: { kind: 'text', startLine: 1, lineCount: 1, totalLines: 1, bodyStart: 0 } },
+      });
+      runSubagentLoopMock.mockImplementation(async (options: { toolInvoker: ToolInvoker }) => {
+        const read = readFileThroughTool(async (input, context) => options.toolInvoker.toolResultToString(
+          await options.toolInvoker.executeAnyTool('read_file', input, undefined, undefined, context),
+        ), { conversationId: 'conv-parent' });
+        expect(await read('/workspace/file.txt')).toBe('restored body');
+        return resultShape('ok');
+      });
+      await handleSubagentRun(baseParams({ parentConversationId: 'conv-parent' }));
+      expect(sendRequestMock).toHaveBeenCalledWith('tool.invoke', expect.objectContaining({
+        context: { conversationId: 'conv-parent', allowPermissionPrompts: false },
+      }));
+    });
     it('concurrent runs never see each other\'s context, even when interleaved', async () => {
       const seen: Record<string, unknown> = {};
       let releaseA: () => void = () => {};

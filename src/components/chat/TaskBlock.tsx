@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef, type ComponentProps, type ReactNode } from 'react';
+import { Fragment, useState, useMemo, useEffect, useRef, type ComponentProps, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ds/button';
 import { Icon } from '@/components/ds/icon';
@@ -352,6 +352,7 @@ export function hasBatchTaggedChildren(step: UnifiedStep): boolean {
 }
 
 interface TaskBlockProps {
+  compactRows?: { index: number; content: ReactNode }[];
   steps?: WorkflowStep[];
   executionSteps?: ExecutionStep[];
   isActive: boolean;
@@ -379,7 +380,7 @@ const STEP_LIST_FADE_BOTTOM = 'mask-b-from-(--ds-scroll-fade-start)';
  * TaskBlock component - Cowork-style workflow display with timeline
  * Supports both legacy WorkflowStep[] and new ExecutionStep[]
  */
-export default function TaskBlock({ steps, executionSteps, isActive, isStopped = false, onRetry, fileChanges, toolResults, backgroundCommands, toolViewRecords }: TaskBlockProps) {
+export default function TaskBlock({ steps, executionSteps, isActive, isStopped = false, onRetry, fileChanges, toolResults, backgroundCommands, toolViewRecords, compactRows }: TaskBlockProps) {
   const { t, locale } = useI18n();
 
   // Convert to unified steps
@@ -441,7 +442,7 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
     setDisplayMode(displayMode === 'collapsed' ? 'expanded' : 'collapsed');
   };
 
-  if (unifiedSteps.length === 0) return null;
+  if (unifiedSteps.length === 0) return <>{compactRows?.map((row) => row.content)}</>;
 
   return (
     <div className="task-block mb-4">
@@ -462,6 +463,7 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
           className={cn('text-label-tertiary transition-transform', !isOpen && '-rotate-90')}
         />
       </Pressable>
+      {!isOpen && compactRows?.map((row) => row.content)}
 
       {/* Flow Timeline. block-expand-enter animates the height open when this
           mounts mid-stream (the "思考中" dots swapping to the first thinking/
@@ -504,8 +506,9 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
                   .some((s) => s.type !== 'thinking');
 
                 return (
+                  <Fragment key={step.id}>
+                  {isOpen && compactRows?.filter((row) => row.index === index).map((row) => row.content)}
                   <TaskStepItem
-                    key={step.id}
                     step={step}
                     showConnector={showConnector}
                     hasLaterToolStep={hasLaterToolStep}
@@ -516,8 +519,10 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
                     toolViewRecord={step.toolCallId ? toolViewRecords?.get(step.toolCallId) : undefined}
                     timelineOpen={isOpen}
                   />
+                  </Fragment>
                 );
               })}
+              {isOpen && compactRows?.filter((row) => row.index >= unifiedSteps.length).map((row) => row.content)}
 
               {/* Done node */}
               {allCompleted && !isStopped && (

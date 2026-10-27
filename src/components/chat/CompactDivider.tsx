@@ -5,6 +5,7 @@ import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
 import { IconButton } from '@/components/ds/button';
 import { Pressable } from '@/components/ds/pressable';
+import { Spinner } from '@/components/ds/spinner';
 import MarkdownRenderer from './MarkdownRenderer';
 import { useEntersAfterRowMount } from './rowMount';
 import type { Message } from '@/types';
@@ -17,19 +18,23 @@ const COPIED_MS = 2000;
  * them below it. The expanded state is owned by the caller because the list
  * unmounts rows that scroll far out of view.
  */
-export default function CompactDivider({ message, expanded, onToggle }: {
+export default function CompactDivider({ message, pending = false, expanded, onToggle }: {
   message: Message;
+  pending?: boolean;
   expanded: boolean;
   onToggle: () => void;
 }) {
   const { t } = useI18n();
   const source = message.compactBoundary?.source;
+  const failed = message.compactBoundary?.status === 'failed';
   const label =
-    source === 'manual'
+    pending ? t.chat.compactDivider.compressing
+      : failed ? t.chat.compactDivider.failed
+      : source === 'manual'
       ? t.chat.compactDivider.compactedManual
       : t.chat.compactDivider.compacted;
   const summary = message.compactBoundary?.summaryText ?? '';
-  const hasSummary = summary.trim() !== '';
+  const hasSummary = !pending && !failed && summary.trim() !== '';
   const open = hasSummary && expanded;
   const summaryEnters = useEntersAfterRowMount(open);
 
@@ -47,18 +52,20 @@ export default function CompactDivider({ message, expanded, onToggle }: {
 
   if (!hasSummary) {
     return (
-      <div className="my-3 flex items-center gap-2 px-2 text-label-tertiary">
+      <div data-compact-divider data-compact-status={pending ? 'pending' : failed ? 'failed' : 'done'} className="my-3 flex items-center gap-2 px-2 text-label-tertiary">
         <div className="h-px flex-1 bg-separator" />
-        <Icon icon={AppIcons.compact} size="sm" />
-        <span className="select-none text-ui-sm">{label}</span>
-        <span className="select-none text-ui-sm">{t.chat.compactDivider.noSummary}</span>
+        {pending ? <Spinner size="sm" label={label} /> : <>
+          <Icon icon={AppIcons.compact} size="sm" />
+          <span className="select-none text-ui-sm">{label}</span>
+        </>}
+        {!pending && !failed && <span className="select-none text-ui-sm">{t.chat.compactDivider.noSummary}</span>}
         <div className="h-px flex-1 bg-separator" />
       </div>
     );
   }
 
   return (
-    <div className="my-3">
+    <div data-compact-divider data-compact-status="done" className="my-3">
       <Pressable
         aria-expanded={open}
         onClick={onToggle}

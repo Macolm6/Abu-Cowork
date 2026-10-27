@@ -712,19 +712,6 @@ describe('runCommandTool', () => {
       expect(result.slice(...outcome.stdout!).length).toBeLessThanOrEqual(15000 - 5);
     });
 
-    it('shrinks the sections under context pressure', async () => {
-      vi.mocked(invoke).mockResolvedValue({ code: 1, stdout: numberedLines('out', 400), stderr: numberedLines('err', 400) });
-      const reportMetadata = vi.fn();
-
-      const result = await runCommandTool.execute(
-        { command: 'ls' },
-        { reportMetadata, contextUsagePercent: 90 },
-      ) as string;
-
-      const outcome = outcomeOf(reportMetadata);
-      expect(result.slice(...outcome.stdout!).length + result.slice(...outcome.stderr!).length).toBeLessThanOrEqual(3750);
-    });
-
     it('keeps a short output whole', async () => {
       vi.mocked(invoke).mockResolvedValue({ code: 0, stdout: 'a\nb', stderr: 'c' });
 

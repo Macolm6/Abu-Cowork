@@ -1,85 +1,118 @@
 import { describe, it, expect, vi } from 'vitest';
-import { compressContextIfNeeded } from './contextCompressor';
-import type { Message } from '../../types';
+import { writeCompactionSummary, type SummaryRequest } from './contextCompressor';
+import type { Message, StreamEvent } from '../../types';
 import { LLMError, type LLMAdapter } from '../llm/adapter';
 
-/** Build `rounds` user/assistant pairs with enough text to cross the 65% threshold. */
-function makeMessages(rounds: number): Message[] {
-  const msgs: Message[] = [];
-  for (let i = 0; i < rounds; i++) {
-    msgs.push({ id: `u${i}`, role: 'user', content: 'user message body '.repeat(30) + i, timestamp: 1 });
-    msgs.push({ id: `a${i}`, role: 'assistant', content: 'assistant reply body '.repeat(30) + i, timestamp: 2 });
-  }
-  return msgs;
+const conversation: Message[] = [
+  { id: 'u1', role: 'user', content: 'Refactor the parser', timestamp: 1 },
+  { id: 'a1', role: 'assistant', content: 'Reading the files', timestamp: 2 },
+];
+
+function request(chat: LLMAdapter['chat'], overrides: Partial<SummaryRequest> = {}): SummaryRequest {
+  return {
+    adapter: { chat } as LLMAdapter,
+    chatOptions: {
+      model: 'm',
+      apiKey: 'k',
+      systemPrompt: 'SYSTEM',
+      tools: [{ name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} } }],
+      maxTokens: 8_000,
+      thinkingBudget: 4_000,
+      enableThinking: true,
+      volatileContextTail: 'TODOS',
+    },
+    conversationId: 'conv-1',
+    providerInstanceId: 'p1',
+    ...overrides,
+  };
 }
 
-describe('compressContextIfNeeded — independent timeout (Bug 1: 同意后死寂)', () => {
-  it('resolves to a graceful failure when the summarization LLM call hangs — never blocks the loop', async () => {
-    // Adapter whose chat() never resolves — simulates the flaky pool stalling.
-    const hangingAdapter = {
-      chat: vi.fn(() => new Promise<void>(() => { /* never resolves */ })),
-    } as unknown as LLMAdapter;
+function replying(...events: StreamEvent[]) {
+  return vi.fn(async (_messages: Message[], _options: unknown, onEvent: (event: StreamEvent) => void) => {
+    for (const event of events) onEvent(event);
+  });
+}
 
-    // Genuinely needs real wall-clock time: this measures actual elapsed time across a
-    // real setTimeout-driven Promise.race inside compressContextIfNeeded to prove the
-    // timeout mechanism itself resolves within budget (not just that a computed value is
-    // what we expect). Faking the clock would make the assertion trivially true without
-    // exercising the real timer/race behavior under test.
-    // eslint-disable-next-line no-restricted-syntax -- see rationale above
-    const start = Date.now();
-    const result = await compressContextIfNeeded(
-      makeMessages(8),        // 8 rounds > RECENT_ROUNDS_TO_KEEP + 1
-      'system',
-      2000,                   // contextWindowSize
-      500,                    // reserveForOutput → maxInput 1500, threshold ~975
-      { adapter: hangingAdapter, model: 'm', apiKey: 'k', timeoutMs: 50 },
-    );
-    // Paired with the real Date.now() read above.
-    // eslint-disable-next-line no-restricted-syntax -- see rationale above
-    const elapsed = Date.now() - start;
+describe('writeCompactionSummary', () => {
+  it('sends the conversation itself, then one instruction, with the conversation\'s own options', async () => {
+    const chat = replying({ type: 'text', text: '  The summary.  ' }, { type: 'done', stopReason: 'end_turn' });
 
-    expect(hangingAdapter.chat).toHaveBeenCalled();   // compression WAS attempted (over threshold)
-    expect(result.compressed).toBe(false);            // fell back gracefully
-    expect(result.failed).toBe(true);
-    expect(result.failureCode).toBe('timeout');
-    expect(result.messages).toHaveLength(16);         // original messages returned intact
-    expect(elapsed).toBeLessThan(2000);               // did NOT hang for 90s
+    const summary = await writeCompactionSummary(conversation, request(chat));
+
+    expect(summary).toBe('The summary.');
+    const [messages, options] = chat.mock.calls[0];
+    expect(messages.slice(0, 2)).toEqual(conversation);
+    expect(messages).toHaveLength(3);
+    expect(messages[2]).toMatchObject({ role: 'user' });
+    expect(messages[2].content).toContain('Do not call any tools');
+    // Same prefix as the conversation's requests, so its cache is reused;
+    // the output and thinking budgets stay a matched pair.
+    expect(options).toMatchObject({
+      model: 'm',
+      systemPrompt: 'SYSTEM',
+      maxTokens: 8_000,
+      thinkingBudget: 4_000,
+      accounting: { source: 'compaction', conversationId: 'conv-1', skill: null, providerInstanceId: 'p1' },
+    });
+    expect((options as { tools: unknown[] }).tools).toHaveLength(1);
+    // The per-step tail (todos, memories) is not part of what is summarized.
+    expect((options as { volatileContextTail?: string }).volatileContextTail).toBeUndefined();
   });
 
-  it('does not call the LLM when below the compression threshold', async () => {
-    const adapter = { chat: vi.fn() } as unknown as LLMAdapter;
-    const result = await compressContextIfNeeded(
-      makeMessages(2),
-      'system',
-      1_000_000,              // huge window → far below threshold
-      500,
-      { adapter, model: 'm', apiKey: 'k', timeoutMs: 50 },
-    );
-    expect(adapter.chat).not.toHaveBeenCalled();
-    expect(result.compressed).toBe(false);
-    expect(result.failed).toBeFalsy();
-  });
-
-  it.each(['content_policy', 'authentication'] as const)(
-    'preserves the %s provider code for the auto-compact breaker',
-    async (code) => {
-      const adapter = {
-        chat: vi.fn().mockRejectedValue(new LLMError('provider rejected summary', code, { retryable: false })),
-      } as unknown as LLMAdapter;
-
-      const result = await compressContextIfNeeded(
-        makeMessages(8),
-        'system',
-        2000,
-        500,
-        { adapter, model: 'm', apiKey: 'k', timeoutMs: 50 },
-      );
-
-      expect(result).toMatchObject({
-        compressed: false,
-        failed: true,
-        failureCode: code,
+  it('retries a transient provider error and returns the summary of the attempt that succeeded', async () => {
+    vi.useFakeTimers();
+    const chat = vi.fn()
+      .mockRejectedValueOnce(new LLMError('overloaded', 'overloaded', { retryable: true }))
+      .mockImplementationOnce(async (_m: Message[], _o: unknown, onEvent: (event: StreamEvent) => void) => {
+        onEvent({ type: 'text', text: 'second try' });
       });
-    },
-  );
+    try {
+      const pending = writeCompactionSummary(conversation, request(chat));
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(await pending).toBe('second try');
+      expect(chat).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('throws an error the provider will not retry', async () => {
+    const chat = vi.fn().mockRejectedValue(new LLMError('rejected', 'content_policy', { retryable: false }));
+    await expect(writeCompactionSummary(conversation, request(chat))).rejects.toThrow('rejected');
+  });
+
+  it('throws when the summary comes back empty', async () => {
+    const chat = replying({ type: 'text', text: '   ' }, { type: 'done', stopReason: 'end_turn' });
+    await expect(writeCompactionSummary(conversation, request(chat))).rejects.toThrow('empty');
+  });
+
+  it('throws when the stream reports an error', async () => {
+    const chat = replying({ type: 'text', text: 'partial' }, { type: 'error', error: 'stream broke' });
+    await expect(writeCompactionSummary(conversation, request(chat))).rejects.toThrow('stream broke');
+  });
+
+  it('rejects a partial summary when the adapter reports cancellation', async () => {
+    const chat = replying({ type: 'text', text: 'partial summary' }, { type: 'done', stopReason: 'cancelled' });
+    await expect(writeCompactionSummary(conversation, request(chat))).rejects.toMatchObject({ code: 'cancelled' });
+  });
+
+  it('rejects a partial summary when the signal is aborted before the adapter returns', async () => {
+    const controller = new AbortController();
+    const chat = vi.fn(async (_messages: Message[], _options: unknown, onEvent: (event: StreamEvent) => void) => {
+      onEvent({ type: 'text', text: 'partial summary' });
+      controller.abort();
+      onEvent({ type: 'done', stopReason: 'end_turn' });
+    });
+    await expect(writeCompactionSummary(conversation, request(chat, { signal: controller.signal })))
+      .rejects.toMatchObject({ code: 'cancelled' });
+  });
+
+  it('rejects a summary that also calls a tool', async () => {
+    const chat = replying(
+      { type: 'text', text: 'partial summary' },
+      { type: 'tool_use', id: 'call-1', name: 'read_file', input: { path: '/work/a.ts' } },
+      { type: 'done', stopReason: 'tool_use' },
+    );
+    await expect(writeCompactionSummary(conversation, request(chat))).rejects.toThrow('contained a tool call');
+  });
 });

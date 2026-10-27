@@ -2893,6 +2893,22 @@ describe('agentLoopRunner', () => {
   // ── tool.invoke (main-loop) handler ─────────────────────────────────────
 
   describe('tool.invoke (main-loop) handler', () => {
+    it('returns restoration read metadata without a displayed tool call', async () => {
+      const outcome = { kind: 'text' as const, startLine: 1, lineCount: 1, totalLines: 1, bodyStart: 0 };
+      executeAnyToolMock.mockImplementationOnce(async (_name, _input, _confirm, _permission, context) => {
+        expect(context.allowPermissionPrompts).toBe(false);
+        context.reportMetadata({ fileReadOutcome: outcome });
+        return 'file body';
+      });
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+      const result = await handlerFor(onSidecarRequest, 'tool.invoke')({
+        runId: 'run-1', toolName: 'read_file', input: { path: '/workspace/report.pdf' },
+        context: { allowPermissionPrompts: false },
+      });
+      expect(result).toEqual({ result: 'file body', metadata: { fileReadOutcome: outcome } });
+    });
     it('executes via getToolInvoker().executeAnyTool, threading the session callbacks', async () => {
       const { ensureHandlersRegistered, registerRunSession } = await importFresh();
       ensureHandlersRegistered();

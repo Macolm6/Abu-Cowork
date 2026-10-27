@@ -396,7 +396,7 @@ describe('ChatView active-turn scroll state machine', () => {
       },
     }));
 
-    await user.click(screen.getByRole('button', { name: /Context compacted/ }));
+    await user.click(screen.getByRole('button', { name: /Earlier content organized/ }));
     // The opened summary grows the tail past the spacer.
     geometry.contentHeight = 320;
     act(() => harness.props?.totalListHeightChanged?.(520));

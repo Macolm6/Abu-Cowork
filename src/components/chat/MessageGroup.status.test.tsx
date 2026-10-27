@@ -37,6 +37,71 @@ function setConversationState(
   }
 }
 
+describe('MessageGroup summary dividers', () => {
+  const userMessage: Message = { id: 'summary-user', role: 'user', content: 'Inspect files', timestamp: 1000, loopId: 'summary-loop' };
+  const toolMessage: Message = {
+    id: 'summary-tool', role: 'assistant', content: '', timestamp: 2000, loopId: 'summary-loop',
+    toolCalls: [{ id: 'summary-read', name: 'read_file', input: { path: '/workspace/report.md' }, result: 'Report content' }],
+  };
+  const marker: Message = {
+    id: 'compact-boundary-summary', role: 'system', content: '', timestamp: 3000, loopId: 'summary-loop',
+    compactBoundary: { summaryText: 'The report has been read.', summarizedFromId: userMessage.id, summarizedToId: toolMessage.id, createdAt: 3000, source: 'auto' },
+  };
+
+  beforeEach(() => {
+    initLanguage('en-US');
+    vi.useFakeTimers();
+    vi.setSystemTime(4000);
+    useWorkProcessFoldStore.getState().reset();
+  });
+
+  afterEach(() => {
+    cleanup();
+    useWorkProcessFoldStore.getState().reset();
+    vi.useRealTimers();
+  });
+
+  it('shows progress after the last tool step and removes it on cancellation', () => {
+    const placeholder: Message = {
+      id: 'summary-placeholder', role: 'assistant', content: '', timestamp: 3000,
+      loopId: 'summary-loop', isStreaming: true,
+    };
+    const conversation: Conversation = {
+      id: 'summary-conversation', title: 'Summary', messages: [userMessage, toolMessage, placeholder],
+      createdAt: 1000, updatedAt: 3000, status: 'running',
+    };
+    setConversationState(conversation, 'tool-calling');
+    useChatStore.getState().setIsCompressing(conversation.id, true, 'summary-loop');
+    const { container } = render(<MessageGroup conversationId={conversation.id} messages={conversation.messages} isLastGroup />);
+    expect(container.querySelectorAll('.task-block')).toHaveLength(1);
+    const stepList = container.querySelector('[data-step-list]');
+    expect(stepList).not.toBeNull();
+    expect(stepList!.querySelector('[data-compact-status="pending"]')).not.toBeNull();
+    expect(stepList!.textContent.indexOf('report.md')).toBeLessThan(stepList!.textContent.indexOf('Organizing earlier content'));
+    act(() => useChatStore.getState().setIsCompressing(conversation.id, false));
+    expect(container.querySelector('[data-compact-status="pending"]')).toBeNull();
+    expect(container.querySelector('[data-step-list]')?.textContent).toContain('report.md');
+  });
+
+  it('keeps each summary visible and expandable below a collapsed work process', () => {
+    const answer: Message = { id: 'summary-answer', role: 'assistant', content: 'Finished', timestamp: 4000, loopId: 'summary-loop' };
+    const messages = [userMessage, toolMessage, marker, { ...marker, id: 'compact-boundary-summary-2', compactBoundary: { ...marker.compactBoundary!, summaryText: 'The second summary.' } }, answer];
+    const conversation: Conversation = { id: 'summary-conversation', title: 'Summary', messages, createdAt: 1000, updatedAt: 4000, status: 'idle' };
+    setConversationState(conversation);
+    render(<MessageGroup conversationId={conversation.id} messages={messages} isLastGroup />);
+    expect(screen.getByRole('button', { name: /Worked for/ })).toHaveAttribute('aria-expanded', 'false');
+    const dividers = screen.getAllByRole('button', { name: /Earlier content organized/ });
+    expect(dividers).toHaveLength(2);
+    fireEvent.click(dividers[0]);
+    expect(screen.getByText('The report has been read.')).toBeVisible();
+    expect(screen.queryByText('The second summary.')).toBeNull();
+    fireEvent.click(dividers[1]);
+    expect(screen.getByText('The second summary.')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: /Worked for/ }));
+    expect(screen.getByText('The report has been read.')).toBeVisible();
+  });
+});
+
 describe('MessageGroup stopped terminal', () => {
   beforeEach(() => {
     initLanguage('en-US');

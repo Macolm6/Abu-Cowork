@@ -1,29 +1,29 @@
 /**
- * Integration test: contextManager + tokenEstimator + truncation
- * Validates the full pipeline of context preparation with truncation
+ * Integration test: contextManager + tokenEstimator + the long-result rule
+ * Validates the full pipeline of context preparation with bounded tool results
  */
 import { describe, it, expect } from 'vitest';
 import { enforceContextBudget } from '../core/context/contextManager';
 import { estimateTokens, estimateMessageTokens } from '../core/context/tokenEstimator';
-import { truncateToolResult } from '../core/context/truncation';
+import { boundToolResult } from '../core/context/toolResultSpill';
 import type { Message } from '../types';
 
 function makeMsg(role: 'user' | 'assistant', content: string): Message {
   return { id: `${role}-${content.slice(0, 12)}`, role, content, timestamp: 1_800_000_000_000 };
 }
 
+const writeFile = async (toolCallId: string) => `/data/results/${toolCallId}.txt`;
+
 describe('contextManager integration', () => {
-  it('truncated tool results reduce token count', () => {
-    const longResult = 'x'.repeat(50000);
-    const truncated = truncateToolResult('read_file', longResult);
+  it('a long tool result keeps far fewer tokens in the conversation', async () => {
+    const longResult = 'x'.repeat(200_000);
+    const bounded = await boundToolResult({ toolCallId: 'tc', toolName: 'search_files', input: {}, result: longResult, writeFile });
 
-    const original = estimateTokens(longResult);
-    const afterTruncation = estimateTokens(truncated);
-
-    expect(afterTruncation).toBeLessThan(original);
+    expect(estimateTokens(bounded)).toBeLessThan(estimateTokens(longResult) / 10);
+    expect(bounded).toContain('/data/results/tc.txt');
   });
 
-  it('context preparation with tool-heavy messages stays within limits', () => {
+  it('context preparation with tool-heavy messages stays within limits and keeps the user\'s messages', () => {
     const systemPrompt = 'You are an assistant.';
     const messages: Message[] = [];
 
@@ -32,13 +32,12 @@ describe('contextManager integration', () => {
 
     // Multiple rounds with tool results
     for (let i = 0; i < 10; i++) {
-      const toolResult = truncateToolResult('read_file', `File ${i} content: ${'data '.repeat(500)}`);
       messages.push({
         ...makeMsg('assistant', `Reading file ${i}...`),
         toolCallsForContext: [{
           name: 'read_file',
           input: { path: `/tmp/file${i}.txt` },
-          result: toolResult,
+          result: `File ${i} content: ${'data '.repeat(500)}`,
         }],
       });
       messages.push(makeMsg('user', `Good, continue with file ${i + 1}`));
@@ -53,9 +52,9 @@ describe('contextManager integration', () => {
     const resultTokens = estimateTokens(systemPrompt) + estimateMessageTokens(result);
     expect(resultTokens).toBeLessThanOrEqual(budgetResult.inputBudget);
 
-    // First user message should be preserved
-    const firstUser = result.find((m) => m.role === 'user');
-    expect(firstUser?.content).toContain('Analyze');
+    // Every user message is kept; whole steps are what goes
+    const userContents = result.filter((m) => m.role === 'user' && !m.isSystem).map((m) => m.content);
+    expect(userContents).toEqual(messages.filter((m) => m.role === 'user').map((m) => m.content));
   });
 
   it('token estimator handles various message content types consistently', () => {
@@ -90,17 +89,5 @@ describe('contextManager integration', () => {
     // Both are similar but Chinese per-char ratio is higher
     expect(chineseTokens).toBeGreaterThan(0);
     expect(englishTokens).toBeGreaterThan(0);
-  });
-
-  it('truncation rules are applied per-tool-type', () => {
-    const longContent = 'x'.repeat(50000);
-
-    const readResult = truncateToolResult('read_file', longContent);
-    const defaultResult = truncateToolResult('unknown_tool', longContent);
-
-    // read_file has maxChars=20000, unknown has maxChars=3500
-    expect(readResult.length).toBeGreaterThan(defaultResult.length);
-    expect(readResult.length).toBeLessThanOrEqual(21000);
-    expect(defaultResult.length).toBeLessThanOrEqual(4000);
   });
 });

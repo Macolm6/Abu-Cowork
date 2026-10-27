@@ -17,7 +17,7 @@ import { isReadOnlyCommand } from '../readOnlyDetector';
 import { TOOL_NAMES } from '../toolNames';
 import { format, getI18n } from '../../../i18n';
 import { hasElectronCommandHost } from '../../../utils/electronHost';
-import { scaledTruncationRule, truncateText, type TruncationRule } from '../../context/truncation';
+import { COMMAND_OUTPUT_RULE, truncateText, type TruncationRule } from '../../context/truncation';
 
 const PART_SEPARATOR = '\n\n';
 const STDOUT_HEADING = 'stdout:\n';
@@ -212,7 +212,7 @@ Use it for: moving/copying/renaming files (mv/cp), package management (npm/pip/b
       const { stdout, stderr } = boundCommandOutput(
         output.stdout.trim(),
         output.stderr.trim(),
-        scaledTruncationRule(TOOL_NAMES.RUN_COMMAND, context?.contextUsagePercent),
+        COMMAND_OUTPUT_RULE,
       );
       const commandOutcome: CommandOutcome = { exitCode: output.code };
       const parts: string[] = [];

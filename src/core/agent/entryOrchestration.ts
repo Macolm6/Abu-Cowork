@@ -98,7 +98,7 @@ export async function precomputeOrchestration(
   conversationId: string,
   userMessage: string,
   imContext: IMContext | undefined,
-  entry: { settingsForModel: SettingsState },
+  entry: { settingsForModel: SettingsState; purpose?: 'run' | 'compaction' },
   abortSignal?: AbortSignal,
   toolContext?: ToolExecutionContext,
 ): Promise<PrecomputedOrchestration> {
@@ -163,6 +163,7 @@ export async function precomputeOrchestration(
     0,
     { ...toolContext, abortSignal, computerUseTier },
     entryProfile,
+    entry.purpose,
   );
 
   // Skills already active when the run starts (a project's default skills)

@@ -28,6 +28,12 @@ export interface ToolLoopObservation {
   name: string;
   input: Record<string, unknown>;
   result: string;
+  /**
+   * The data of every image the result carries, in order. The text of an
+   * image-only result is a fixed placeholder, so without these two different
+   * screenshots would look like the same observation.
+   */
+  images: string[];
   error: boolean;
 }
 
@@ -68,7 +74,8 @@ function hashText(value: string): string {
 
 function observationFingerprint(observation: ToolLoopObservation): string {
   const input = JSON.stringify(stableValue(observation.input));
-  return `${observation.name}:${hashText(input)}:${hashText(observation.result)}:${observation.error ? 1 : 0}`;
+  const images = observation.images.map(hashText).join(',');
+  return `${observation.name}:${hashText(input)}:${hashText(observation.result)}:${images}:${observation.error ? 1 : 0}`;
 }
 
 /**
@@ -85,6 +92,7 @@ export function minimizeToolLoopObservation(
       fingerprint: hashText(JSON.stringify(stableValue(observation.input))),
     },
     result: hashText(observation.result),
+    images: observation.images.map(hashText),
     error: observation.error,
   };
 }

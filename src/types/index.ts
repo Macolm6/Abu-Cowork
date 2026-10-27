@@ -530,6 +530,12 @@ export interface Message {
   usage?: {
     inputTokens?: number;
     outputTokens?: number;
+    /**
+     * The whole prompt of the request that produced this message, as the
+     * provider counted it (cache reads and writes included). The context ring
+     * starts from it when a conversation is reopened.
+     */
+    promptTokens?: number;
   };
   // Loop identifier - messages in the same agent loop share this ID
   loopId?: string;
@@ -596,16 +602,38 @@ export interface Message {
  * marker cleanly instead of silently shifting the summarized window.
  */
 export interface CompactBoundary {
+  /**
+   * 2 for markers written by step compaction. Markers without it were written
+   * by round compaction and are rebuilt with their first round kept whole.
+   */
+  version?: 2;
+  /**
+   * 'failed' records a summary request that did not succeed: the divider stays
+   * where it happened, and the context ignores the marker. Absent means done.
+   */
+  status?: 'done' | 'failed';
   /** LLM-generated summary of the messages between the two anchors (inclusive). */
   summaryText: string;
   /** id of the first summarized message. */
   summarizedFromId: string;
   /** id of the last summarized message. */
   summarizedToId: string;
+  /** Version 2: user messages up to `summarizedToId` that are sent verbatim before the summary. */
+  keptUserMessageIds?: string[];
+  /** Version 2: the oldest kept user message when only the beginning of its text fits; sent as this text. */
+  cutUserMessage?: { id: string; text: string };
+  /** Version 2: files read before the summary, with their content when it was written. */
+  restoredFiles?: RestoredFile[];
   /** Marker creation time (ms). */
   createdAt: number;
   /** Whether this boundary was created automatically or via manual /compact. */
   source: 'auto' | 'manual';
+}
+
+/** A file re-read when a summary was written, as it was sent to the model. */
+export interface RestoredFile {
+  path: string;
+  content: string;
 }
 
 // Simplified tool call info for LLM context building
@@ -621,14 +649,6 @@ export interface ToolCallForContext {
 
 export type ConversationStatus = 'idle' | 'running' | 'completed' | 'error';
 
-/** Cached context compression result (ephemeral, not persisted) */
-export interface ContextCache {
-  summaryMessage: Message;
-  /** Index range [start, end) of original messages covered by the summary */
-  summarizedRange: [number, number];
-  /** messages.length at the time of compression — cache is stale if messages shrink */
-  messageCountAtCompression: number;
-}
 
 export interface Conversation {
   id: string;
@@ -652,7 +672,6 @@ export interface Conversation {
   imChannelId?: string;  // If set, this conversation was created by an IM channel
   imPlatform?: string;  // IM platform name (dchat/feishu/dingtalk/wecom/slack)
   projectId?: string;  // If set, this conversation belongs to a project
-  contextCache?: ContextCache;  // Ephemeral compression cache (not persisted)
   // Ephemeral context usage state — NOT persisted (excluded by JSONL writer + chatStore partialize).
   // Published by agentLoop each turn from POST-compression tokens: the size of the
   // payload actually sent, not of the raw history kept for the UI. This is the single
@@ -678,6 +697,9 @@ export interface Conversation {
     };
   };
   isCompressing?: boolean;  // True while compressContextIfNeeded is awaiting LLM
+  /** Ephemeral location of the summary request in the visible transcript. */
+  compressingAtMessageCount?: number;
+  compressingLoopId?: string;
   /**
    * Post-loop proposal nudge, stashed by agentLoop completion when the
    * last loop was "sink-worthy" (see `proposalSignal.ts`). Read by the
@@ -760,6 +782,8 @@ export interface ToolExecutionContext {
   loopId?: string;
   /** Conversation ID — tools should prefer this over activeConversationId */
   conversationId?: string;
+  /** False restricts maintenance reads to existing permissions, including across RPC. */
+  allowPermissionPrompts?: false;
   /**
    * The app-owned subagent run (`sar-*`) this tool call belongs to, or absent
    * for the conversation's own agent loop.
@@ -872,12 +896,6 @@ export interface ToolExecutionContext {
    * lose its live behavior.
    */
   abortSignal?: AbortSignal;
-  /**
-   * Context window usage (0-100) of the run that called this tool. Set only by
-   * `executeAnyTool` and `executeLocalTool`; tools that bound their own output
-   * scale it with `scaledTruncationRule`.
-   */
-  contextUsagePercent?: number;
   /**
    * Local execution-only metadata channel. Functions are deliberately omitted
    * from reverse-RPC serialization; Electron's sidecar-local run_command and
