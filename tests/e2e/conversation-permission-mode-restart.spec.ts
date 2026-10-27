@@ -260,12 +260,12 @@ test.describe.serial('#549 P2b per-conversation permission mode — real Electro
     const commandDefault = `rm -- '${sentinelDefault}'`;
     const plans: MockReplyPlan[] = [
       { kind: 'complete', responseText: replyOpen },
-      { kind: 'tool-call', toolName: 'run_command', toolCallId: `call-restart-${randomUUID()}`, arguments: { command: commandRestart } },
+      { kind: 'tool-call', toolName: 'run_command', toolCallId: `call-restart-${randomUUID()}`, arguments: { command: commandRestart, cwd: dataRoot.rootDir } },
       { kind: 'complete', responseText: replyAfterRestart },
       ...fillerReplies.map((responseText) => ({ kind: 'complete' as const, responseText })),
-      { kind: 'tool-call', toolName: 'run_command', toolCallId: `call-unload-${randomUUID()}`, arguments: { command: commandUnload } },
+      { kind: 'tool-call', toolName: 'run_command', toolCallId: `call-unload-${randomUUID()}`, arguments: { command: commandUnload, cwd: dataRoot.rootDir } },
       { kind: 'complete', responseText: replyAfterUnload },
-      { kind: 'tool-call', toolName: 'run_command', toolCallId: `call-default-${randomUUID()}`, arguments: { command: commandDefault } },
+      { kind: 'tool-call', toolName: 'run_command', toolCallId: `call-default-${randomUUID()}`, arguments: { command: commandDefault, cwd: dataRoot.rootDir } },
       { kind: 'complete', responseText: replyDefault },
     ];
     mock = await startOpenAiMock(plans);

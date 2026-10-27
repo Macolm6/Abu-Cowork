@@ -71,6 +71,7 @@ const RESTORE_B = 'b.md恢复为修改前的内容';
 const TRASH_C = 'c.md移到废纸篓';
 
 let launched: LaunchedProject | undefined;
+let outsideFixtureDir: string | undefined;
 
 test.afterEach(async () => {
   if (launched) {
@@ -79,6 +80,8 @@ test.afterEach(async () => {
     removeElectronDataRoot(launched.dataRoot);
   }
   launched = undefined;
+  if (outsideFixtureDir) fs.rmSync(outsideFixtureDir, { recursive: true, force: true });
+  outsideFixtureDir = undefined;
 });
 
 async function launch(
@@ -570,9 +573,9 @@ function changesDirs(): string[] {
 }
 
 /** Restarts the app and opens the conversation again; `whileClosed` runs between the two. */
-async function reopenConversation(whileClosed: () => void): Promise<Page> {
+async function reopenConversation(whileClosed?: () => void): Promise<Page> {
   await closeAbuElectron(launched!.app);
-  whileClosed();
+  whileClosed?.();
   launched!.app = (await launchAbuElectron(launched!.dataRoot)).app;
   const reopened = await launched!.app.firstWindow({ timeout: READY_TIMEOUT });
   await waitForApp(reopened);
@@ -669,38 +672,45 @@ test.describe('story 3: knowing before the redo which files cannot be restored',
   });
 
   test('a file where Abu has no write authorization now is listed as not restored, with the reason, and keeps its content', async () => {
-    // The turn writes a file beside the project folder. Both sit in the system's temporary
-    // folder, which macOS reaches through a link: the turn records the file's resolved path,
-    // and the write check refuses that spelling outside the project folder.
-    test.skip(process.platform !== 'darwin', 'the temporary folder is reached through a link on macOS only');
     test.setTimeout(240_000);
     const memo = '备忘一\n备忘二\n';
     const { page, workspace } = await launch(
       (folder) => [
         editFileCall('call-edit-a', path.join(folder, 'a.md'), 'a 第一版', 'a 第二版'),
-        writeFileCall('call-write-memo', path.join(path.dirname(folder), 'elsewhere', '备忘.md'), memo),
+        writeFileCall('call-write-memo', path.join(outsideFixtureDir!, '备忘.md'), memo),
         finalReply(),
         finalReply(REDONE_TEXT),
       ],
       (folder) => {
         fs.writeFileSync(path.join(folder, 'a.md'), A_BEFORE);
-        fs.mkdirSync(path.join(path.dirname(folder), 'elsewhere'));
+        outsideFixtureDir = fs.mkdtempSync(path.join(path.dirname(path.dirname(folder)), 'permission-'));
       },
     );
-    const memoPath = path.join(path.dirname(workspace), 'elsewhere', '备忘.md');
-    await runTurn(page, PROMPT, FINAL_TEXT, 1);
+    const memoPath = path.join(outsideFixtureDir!, '备忘.md');
+    await Promise.all([
+      runTurn(page, PROMPT, FINAL_TEXT, 1),
+      (async () => {
+        const permission = page.getByRole('alertdialog', { name: '文件写入权限' });
+        await expect(permission).toBeVisible({ timeout: READY_TIMEOUT });
+        await expect(permission).toContainText(memoPath.split(path.sep).join('/'));
+        await pressWhenSettled(permission.getByRole('button', { name: '允许本次会话', exact: true }));
+        await expect(permission).toBeHidden();
+      })(),
+    ]);
     expect(fs.readFileSync(memoPath, 'utf8')).toBe(memo);
-    const recordedMemoPath = fs.realpathSync(memoPath);
-    expect(recordedMemoPath).not.toBe(memoPath);
+    const recordedMemoPath = fs.realpathSync(memoPath).split(path.sep).join('/');
+    await changedFilesCards(page).getByRole('button', { name: /^已编辑 2 个文件/ }).click();
+    await expect(page.locator('[role="tabpanel"]:not([hidden])').getByTestId('changes-tab')).toBeVisible();
+    const reopened = await reopenConversation();
 
-    await regenerate(page, 0);
-    const dialog = question(page, REGENERATE_QUESTION);
+    await regenerate(reopened, 0);
+    const dialog = question(reopened, REGENERATE_QUESTION);
     await expect(willLines(dialog)).toHaveText([RESTORE_A]);
     await expect(wontLines(dialog)).toHaveText([`${recordedMemoPath}阿布现在没有这个位置的写入授权`]);
-    await shot(page, 'redo-2-e-not-restored-no-authorization');
+    await shot(reopened, 'redo-2-e-not-restored-no-authorization');
     await pressWhenSettled(dialog.getByRole('button', { name: '重新生成', exact: true }));
 
-    await expectTurnEnded(page, REDONE_TEXT);
+    await expectTurnEnded(reopened, REDONE_TEXT);
     expect(read(workspace, 'a.md')).toBe(A_BEFORE);
     expect(fs.readFileSync(memoPath, 'utf8')).toBe(memo);
   });

@@ -154,6 +154,7 @@ test('summarizes earlier steps in the middle of one task and finishes it', async
   await divider.getByRole('button', { name: /已整理前面的内容/ }).click();
   await expect(divider.getByText(SUMMARY, { exact: true })).toBeVisible();
   await divider.getByRole('button', { name: '复制', exact: true }).click();
+  await expect(divider.getByRole('button', { name: '已复制', exact: true })).toBeVisible();
   expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe(SUMMARY);
 
   // At least one summary request happened inside the run, and the run kept going.

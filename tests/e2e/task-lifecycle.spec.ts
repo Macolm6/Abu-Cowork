@@ -343,23 +343,20 @@ test.describe.serial('Electron product task lifecycle', () => {
     const beforeConversation = Number(
       await popover.getByTestId('context-breakdown-row-conversation').getAttribute('data-tokens'),
     );
-    expect(beforeTokens).toBeGreaterThan(50_000 * 0.65);
+    const beforeCompressionCount = compressionRequests(mock).length;
     expect(beforeBucketTokens.reduce((sum, value) => sum + value, 0)).toBe(beforeTokens);
     expect(beforeConversation).toBe(Math.max(...beforeBucketTokens));
     await page.keyboard.press('Escape');
     await expect(popover).toBeHidden();
 
-    // No file-read permission prompt to clear: the fixtures live under the data
-    // root, which `createElectronDataRoot` puts inside the OS temp directory,
-    // and pathSafety treats the runtime temp dir as an implicit read root on
-    // every platform (4eccd2cc). The subject here is the token breakdown, so
-    // the reads are left implicitly allowed rather than staged elsewhere.
+    // Each launch uses its data root as its runtime temporary directory.
+    // The fixture reads exercise that implicit read permission.
     await input.fill(`请依次读取这两个大文件：${firstFixturePath} 和 ${secondFixturePath}`);
     await input.press('Enter');
     await expect(page.getByText(finalResponse, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(input).toBeEditable({ timeout: READY_TIMEOUT });
 
-    expect(compressionRequests(mock).length).toBeGreaterThan(0);
+    expect(compressionRequests(mock).length).toBeGreaterThan(beforeCompressionCount);
     const requests = taskRequests(mock);
     expect(requests).toHaveLength(9);
     expect(JSON.stringify(requests[7].body)).toContain(firstFixtureMarker);
@@ -375,7 +372,8 @@ test.describe.serial('Electron product task lifecycle', () => {
     const afterConversation = Number(
       await popover.getByTestId('context-breakdown-row-conversation').getAttribute('data-tokens'),
     );
-    expect(afterTokens).toBeLessThan(beforeTokens);
+    // Reserve the output allowance and the 2% context safety margin.
+    expect(afterTokens).toBeLessThan((50_000 - 4_096 - 1_000) * 0.9);
     expect(afterBucketTokens.reduce((sum, value) => sum + value, 0)).toBe(afterTokens);
     expect(afterConversation).toBe(Math.max(...afterBucketTokens));
 

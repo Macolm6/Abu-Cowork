@@ -31,7 +31,6 @@ import { expect, test } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server, type ServerResponse } from 'node:http';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import type { ElectronApplication, Page } from 'playwright';
@@ -1827,7 +1826,8 @@ test.describe('Electron browser view lifecycle E2E', () => {
     const uploadCallId = `call-upload-${randomUUID()}`;
     // A Chinese name with a space in it — the shape the field reports were
     // about, and the one a naive path split gets wrong.
-    const uploadDir = mkdtempSync(join(tmpdir(), 'abu-e2e-upload-'));
+    dataRoot = createElectronDataRoot();
+    const uploadDir = mkdtempSync(join(dataRoot.rootDir, 'upload-'));
     const uploadName = '排班表 2026.csv';
     const uploadPath = join(uploadDir, uploadName);
     writeFileSync(uploadPath, 'name,shift\nabu,late\n');
@@ -1839,8 +1839,6 @@ test.describe('Electron browser view lifecycle E2E', () => {
       '<input type="file" id="attach" '
       + 'onchange="window.__abuE2eLivePageMarker = this.files[0] ? this.files[0].name : \'(empty)\'" />',
     );
-    dataRoot = createElectronDataRoot();
-
     mock = await startOpenAiMock([
       { kind: 'tool-call', arguments: {}, toolCallId: getTabsCallId, toolName: 'abu-browser__get_tabs' },
       (body) => ({
