@@ -1,12 +1,14 @@
+// @vitest-environment happy-dom
 /**
  * Store Integration Tests — cross-store state consistency
  *
  * Validates that chatStore, taskExecutionStore, and related stores
  * maintain consistent state during common workflows.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { useChatStore } from '../stores/chatStore';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { useChatStore, waitForAllConversationPersistence } from '../stores/chatStore';
 import { useTaskExecutionStore } from '../stores/taskExecutionStore';
+import { shutdownConversationStorage } from '../core/session/conversationStorage';
 
 // Mock workspaceStore
 vi.mock('../stores/workspaceStore', () => ({
@@ -24,8 +26,11 @@ const FIXED_TIMESTAMP = 1_700_000_000_000;
 
 describe('Store Integration', () => {
   beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     useChatStore.setState({
       conversations: {},
+      conversationIndex: {},
+      loadFailures: {},
       activeConversationId: null,
       currentUsage: null,
       pendingInput: null,
@@ -34,6 +39,19 @@ describe('Store Integration', () => {
     useTaskExecutionStore.setState({
       executions: {},
     });
+  });
+
+  afterEach(async () => {
+    try {
+      await vi.dynamicImportSettled();
+      await vi.runAllTimersAsync();
+      await waitForAllConversationPersistence();
+      await vi.dynamicImportSettled();
+      await shutdownConversationStorage();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // ── Conversation + Execution lifecycle ──
@@ -130,6 +148,8 @@ describe('Store Integration', () => {
       // Delete conversation — execution store should not throw
       useChatStore.getState().deleteConversation(convId);
       expect(useChatStore.getState().conversations[convId]).toBeUndefined();
+      expect(useChatStore.getState().conversationIndex).toEqual({});
+      expect(useChatStore.getState().activeConversationId).toBeNull();
     });
   });
 

@@ -526,7 +526,7 @@ describe('PersonalMemorySection', () => {
         await showList();
         expect(screen.queryByText('个人记忆（本页）')).toBeNull();
         await user.click(screen.getByRole('button', { name: '阿布的三层记忆' }));
-        for (const name of ['个人记忆（本页）', '项目记忆（右侧面板）', '项目指令（右侧面板）']) {
+        for (const name of ['个人记忆（本页）', '项目记忆（项目设置）', '项目指令（项目设置）']) {
           expect(screen.getByText(name)).toHaveClass('font-medium');
           expect(screen.getByText(name)).toHaveClass('text-label');
         }

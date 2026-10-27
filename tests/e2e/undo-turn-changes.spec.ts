@@ -63,6 +63,7 @@ const REAPPLY_QUESTION = '把这一轮的改动放回来？';
 let app: ElectronApplication | undefined;
 let dataRoot: ElectronDataRoot | undefined;
 let mock: { close: () => Promise<void> } | undefined;
+let outsideFixtureDir: string | undefined;
 
 test.afterEach(async () => {
   if (app) await closeAbuElectron(app);
@@ -71,6 +72,8 @@ test.afterEach(async () => {
   mock = undefined;
   if (dataRoot) removeElectronDataRoot(dataRoot);
   dataRoot = undefined;
+  if (outsideFixtureDir) fs.rmSync(outsideFixtureDir, { recursive: true, force: true });
+  outsideFixtureDir = undefined;
 });
 
 /** A turn that edits 方案.md and 预算.md and creates 提纲.md. */
@@ -424,38 +427,46 @@ test.describe('story 2: seeing beforehand which files change and which do not', 
   });
 
   test('a file where Abu has no write authorization now is listed as not restored, with the reason, and stays as it is', async () => {
-    // The turn writes a file beside the project folder. Both sit in the system's temporary
-    // folder, which macOS reaches through a link: the turn records the file's resolved path,
-    // and the write check refuses that spelling outside the project folder.
-    test.skip(process.platform !== 'darwin', 'the temporary folder is reached through a link on macOS only');
     test.setTimeout(200_000);
     const memo = '备忘一\n备忘二\n';
     const { page, workspace } = await launchInProject(
       (folder) => [
         editFileCall('call-edit-plan', path.join(folder, '方案.md'), PLAN_GOALS_BEFORE, PLAN_GOALS_AFTER),
-        writeFileCall('call-write-memo', path.join(path.dirname(folder), 'elsewhere', '备忘.md'), memo),
+        writeFileCall('call-write-memo', path.join(outsideFixtureDir!, '备忘.md'), memo),
         finalReply(),
       ],
       (folder) => {
         fs.writeFileSync(path.join(folder, '方案.md'), PLAN_BEFORE);
-        fs.mkdirSync(path.join(path.dirname(folder), 'elsewhere'));
+        outsideFixtureDir = fs.mkdtempSync(path.join(path.dirname(path.dirname(folder)), 'permission-'));
       },
     );
-    const memoPath = path.join(path.dirname(workspace), 'elsewhere', '备忘.md');
-    const card = await runTurn(page);
+    const memoPath = path.join(outsideFixtureDir!, '备忘.md');
+    await Promise.all([
+      runTurn(page),
+      (async () => {
+        const permission = page.getByRole('alertdialog', { name: '文件写入权限' });
+        await expect(permission).toBeVisible({ timeout: READY_TIMEOUT });
+        await expect(permission).toContainText(memoPath.split(path.sep).join('/'));
+        await pressWhenSettled(permission.getByRole('button', { name: '允许本次会话', exact: true }));
+        await expect(permission).toBeHidden();
+      })(),
+    ]);
     expect(fs.readFileSync(memoPath, 'utf8')).toBe(memo);
-    const recordedMemoPath = fs.realpathSync(memoPath);
-    expect(recordedMemoPath).not.toBe(memoPath);
+    const recordedMemoPath = fs.realpathSync(memoPath).split(path.sep).join('/');
+    await page.getByTestId('changed-files-card').getByRole('button', { name: /^已编辑 2 个文件/ }).click();
+    await expect(panel(page).getByTestId('changes-tab')).toBeVisible();
+    const reopened = await reopenConversation();
+    const card = reopened.getByTestId('changed-files-card');
     await expect(card.getByRole('button', { name: /^已编辑 2 个文件/ })).toBeVisible();
 
     await undoButton(card).click();
-    const dialog = page.getByRole('alertdialog', { name: UNDO_QUESTION });
+    const dialog = reopened.getByRole('alertdialog', { name: UNDO_QUESTION });
     await expect(dialog).toContainText('1 个文件会恢复到这一轮开始之前');
     await expect(willLines(dialog)).toHaveText(['方案.md恢复为修改前的内容']);
     await expect(dialog.getByRole('list', { name: '不会恢复' }).getByRole('listitem')).toHaveText([
       `${recordedMemoPath}阿布现在没有这个位置的写入授权`,
     ]);
-    await shot(page, '06-undo-question-not-authorized');
+    await shot(reopened, '06-undo-question-not-authorized');
     await pressWhenSettled(dialog.getByRole('button', { name: '撤销', exact: true }));
 
     await expect(card.getByRole('button', { name: /^已撤销 方案\.md 的改动/ })).toBeVisible();
@@ -463,7 +474,7 @@ test.describe('story 2: seeing beforehand which files change and which do not', 
     expect(fs.readFileSync(memoPath, 'utf8')).toBe(memo);
     await expect(card.getByRole('listitem').filter({ hasText: '备忘.md' })).toContainText('没有恢复');
     // The question already said this file is not restored, so no notice repeats it.
-    await expect(notices(page)).toHaveCount(0);
+    await expect(notices(reopened)).toHaveCount(0);
   });
 
   test('a file that cannot be written is marked as not restored and counted in a notice, and the others are restored', async () => {

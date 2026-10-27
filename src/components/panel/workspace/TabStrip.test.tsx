@@ -143,7 +143,7 @@ describe('TabStrip pointer interactions', () => {
     });
   });
 
-  it('lists the four things a new tab can be', async () => {
+  it('lists the three things a new tab can be', async () => {
     const user = userEvent.setup();
     renderTabs();
 
@@ -151,29 +151,9 @@ describe('TabStrip pointer interactions', () => {
 
     expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
       'Task Summary',
-      'Workspace Files',
       'New Browser',
       'New Terminal',
     ]);
-  });
-
-  it('opens the workspace file list from the new-tab menu and returns to it the second time', async () => {
-    const user = userEvent.setup();
-    renderTabs();
-
-    await user.click(screen.getByRole('button', { name: 'New tab' }));
-    await user.click(screen.getByRole('menuitem', { name: 'Workspace Files' }));
-
-    const filesTab = screen.getByRole('tab', { name: 'Workspace Files' });
-    expect(filesTab).toHaveAttribute('aria-selected', 'true');
-    expect(usePreviewStore.getState().tabs.map((tab) => tab.kind)).toEqual(['summary', 'terminal', 'files']);
-
-    await user.click(screen.getByRole('tab', { name: /Task Summary/ }));
-    await user.click(screen.getByRole('button', { name: 'New tab' }));
-    await user.click(screen.getByRole('menuitem', { name: 'Workspace Files' }));
-
-    expect(usePreviewStore.getState().tabs.map((tab) => tab.kind)).toEqual(['summary', 'terminal', 'files']);
-    expect(screen.getByRole('tab', { name: 'Workspace Files' })).toHaveAttribute('aria-selected', 'true');
   });
 
   it('activates the existing summary from the new-tab menu', async () => {
@@ -205,7 +185,7 @@ describe('TabStrip pointer interactions', () => {
     renderTabs();
 
     await user.click(screen.getByRole('button', { name: 'New tab' }));
-    await user.keyboard('{ArrowDown}{ArrowDown}{ArrowDown}');
+    await user.keyboard('{ArrowDown}{ArrowDown}');
 
     expect(screen.getByRole('menuitem', { name: 'New Browser' })).toHaveAttribute('data-highlighted');
     expect(tabIds()).toEqual([SUMMARY_ID, TERMINAL_ID]);

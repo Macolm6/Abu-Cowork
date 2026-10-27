@@ -349,11 +349,8 @@ test.describe.serial('Electron product task lifecycle', () => {
     await page.keyboard.press('Escape');
     await expect(popover).toBeHidden();
 
-    // No file-read permission prompt to clear: the fixtures live under the data
-    // root, which `createElectronDataRoot` puts inside the OS temp directory,
-    // and pathSafety treats the runtime temp dir as an implicit read root on
-    // every platform (4eccd2cc). The subject here is the token breakdown, so
-    // the reads are left implicitly allowed rather than staged elsewhere.
+    // Each launch uses its data root as its runtime temporary directory.
+    // The fixture reads exercise that implicit read permission.
     await input.fill(`请依次读取这两个大文件：${firstFixturePath} 和 ${secondFixturePath}`);
     await input.press('Enter');
     await expect(page.getByText(finalResponse, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
