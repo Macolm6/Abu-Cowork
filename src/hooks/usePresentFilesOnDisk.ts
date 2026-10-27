@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { exists } from '@/core/tools/fsBridge';
+import { useRenderMemoryStore } from '@/stores/renderMemoryStore';
 import type { PresentedFile } from '@/utils/presentedFiles';
 
 const NO_FILES: PresentedFile[] = [];
@@ -9,20 +10,20 @@ interface DiskCheck {
   files: PresentedFile[];
 }
 
-// The last answer for each list, kept across mounts: a message row mounted
-// again (switching back to a conversation, scrolling it back into view) shows
-// the cards it showed before while it checks again, instead of adding them a
-// moment later and pushing the transcript.
-const lastAnswers = new Map<string, PresentedFile[]>();
-const LAST_ANSWERS_LIMIT = 500;
+// The last answer for each list is remembered across launches: a message row
+// mounted again (switching back to a conversation, scrolling it back into
+// view, opening it after a restart) shows the cards it showed before while it
+// checks again, instead of adding them a moment later and pushing the
+// transcript.
+function listKey(files: readonly PresentedFile[]): string {
+  return JSON.stringify(files.map((file) => file.path));
+}
 
-function rememberAnswer(key: string, files: PresentedFile[]): void {
-  lastAnswers.delete(key);
-  lastAnswers.set(key, files);
-  if (lastAnswers.size > LAST_ANSWERS_LIMIT) {
-    const oldest = lastAnswers.keys().next().value;
-    if (oldest !== undefined) lastAnswers.delete(oldest);
-  }
+function rememberedAnswer(key: string, declared: readonly PresentedFile[]): PresentedFile[] | null {
+  const paths = useRenderMemoryStore.getState().presentFiles[key];
+  if (!paths) return null;
+  const onDisk = new Set(paths);
+  return declared.filter((file) => onDisk.has(file.path));
 }
 
 export interface PresentFilesOnDisk {
@@ -43,13 +44,14 @@ export interface PresentFilesOnDisk {
  */
 export function usePresentFilesOnDisk(files: readonly PresentedFile[], enabled: boolean): PresentFilesOnDisk {
   // Callers pass a fresh array per render; the serialized list is the identity.
-  const key = JSON.stringify(files);
+  const serialized = JSON.stringify(files);
+  const key = listKey(files);
   const active = enabled && files.length > 0;
   const [check, setCheck] = useState<DiskCheck | null>(null);
 
   useEffect(() => {
     if (!active) return;
-    const declared = JSON.parse(key) as PresentedFile[];
+    const declared = JSON.parse(serialized) as PresentedFile[];
     let cancelled = false;
     let latestRun = 0;
 
@@ -58,8 +60,8 @@ export function usePresentFilesOnDisk(files: readonly PresentedFile[], enabled: 
       const present = await Promise.all(declared.map((file) => exists(file.path)));
       if (cancelled || runId !== latestRun) return;
       const onDisk = declared.filter((_, index) => present[index]);
-      rememberAnswer(key, onDisk);
-      setCheck({ key, files: onDisk });
+      useRenderMemoryStore.getState().rememberPresentFiles(key, onDisk.map((file) => file.path));
+      setCheck({ key: serialized, files: onDisk });
     };
 
     void run();
@@ -69,9 +71,9 @@ export function usePresentFilesOnDisk(files: readonly PresentedFile[], enabled: 
       cancelled = true;
       window.removeEventListener('focus', onFocus);
     };
-  }, [key, active]);
+  }, [serialized, key, active]);
 
   if (!active) return { files: NO_FILES, checked: true };
-  if (check !== null && check.key === key) return { files: check.files, checked: true };
-  return { files: lastAnswers.get(key) ?? null, checked: false };
+  if (check !== null && check.key === serialized) return { files: check.files, checked: true };
+  return { files: rememberedAnswer(key, files), checked: false };
 }

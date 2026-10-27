@@ -28,6 +28,9 @@ interface GestureEvent extends Event {
 }
 
 
+/** The top and bottom border of the bordered box, which a remembered block height includes. */
+const BORDERED_FRAME_PX = 2;
+
 type RenderState =
   | { status: 'loading' }
   | { status: 'previewing' }
@@ -67,6 +70,14 @@ export interface CodeBlockRendererConfig {
   preview?: {
     /** Lightweight preview render. Return false to skip (content not ready yet). */
     render: (code: string, container: HTMLDivElement) => void | boolean;
+  };
+  /** The height the block rendered at when it was last shown, kept across launches: the block holds
+   *  that height while it renders again, so the content arriving moves nothing below it. */
+  heightMemory?: {
+    /** The remembered height for `code`, or undefined when it was never shown. */
+    recall: (code: string) => number | undefined;
+    /** Told the height the rendered block has; absent for a renderer that remembers its own height. */
+    remember?: (code: string, height: number) => void;
   };
   /** i18n strings */
   i18n: {
@@ -129,6 +140,16 @@ export default function RenderableCodeBlock({
     if (cache.has(code)) return { status: 'success' };
     return { status: 'loading' };
   });
+  // The height the whole block had when this code was last shown: held while
+  // the block renders again, so the content arriving moves nothing below it.
+  // Read at mount, when the row around the block is measured for its first
+  // frame. The bordered box holds it inside its border.
+  const [reservedHeight] = useState(() => {
+    const remembered = config.heightMemory?.recall(code);
+    if (remembered === undefined) return null;
+    return Math.max(0, remembered - (config.seamless ? 0 : BORDERED_FRAME_PX));
+  });
+  const remembersHeight = Boolean(config.heightMemory?.remember);
   const [expanded, setExpanded] = useState(false);
   const [showSource, setShowSource] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -139,6 +160,8 @@ export default function RenderableCodeBlock({
 
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const outerRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const codeRef = useRef(code);
   const configRef = useRef(config);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -236,6 +259,18 @@ export default function RenderableCodeBlock({
   useEffect(() => {
     setScale(1);
   }, [code]);
+
+  // Remember the height the rendered block has, for the next time it is shown.
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!remembersHeight || state.status !== 'success' || !root || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      const height = Math.round(root.getBoundingClientRect().height);
+      if (height > 0) configRef.current.heightMemory?.remember?.(code, height);
+    });
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, [code, remembersHeight, state.status]);
 
   // Native wheel + WebKit gesture listeners for zoom. Attached once (not on every
   // scale/showSource change) to avoid thrashing; fresh state is read via refs.
@@ -372,13 +407,16 @@ export default function RenderableCodeBlock({
   const renderContainer = (
     // OUTER = scroll viewport + collapse clipper. Owns overflow + maxHeight + padding.
     <div
+      ref={outerRef}
       className={cn(
         'overflow-auto',
         seamless ? 'p-0' : 'p-4',
         isCollapsed && 'overflow-hidden',
         isLoading && 'min-h-[100px] invisible',
       )}
-      style={isCollapsed ? { maxHeight: `${maxHeight}px` } : undefined}
+      style={isCollapsed
+        ? { maxHeight: `${maxHeight}px` }
+        : isLoading && reservedHeight !== null ? { minHeight: `${reservedHeight}px` } : undefined}
     >
       {/* INNER = the element render() injects into. Owns the scale transform. */}
       <div
@@ -415,7 +453,10 @@ export default function RenderableCodeBlock({
   );
 
   const loadingOverlay = isLoading && (seamless ? (
-    <div className="flex justify-center rounded-panel bg-code p-6">
+    <div
+      className="flex justify-center rounded-panel bg-code p-6"
+      style={reservedHeight !== null ? { minHeight: `${reservedHeight}px` } : undefined}
+    >
       <Spinner label={config.i18n.loading} />
     </div>
   ) : (
@@ -496,7 +537,7 @@ export default function RenderableCodeBlock({
     );
 
     return (
-      <div className="my-3 group/widget">
+      <div ref={rootRef} className="my-3 group/widget">
         {seamlessErrorFallback}
         <div className={cn('overflow-hidden rounded-panel', isError && !showSource && 'hidden')}>
           <div ref={zoomHostRef} className="relative">
@@ -538,7 +579,7 @@ export default function RenderableCodeBlock({
   );
 
   return (
-    <div className="my-3 group/widget">
+    <div ref={rootRef} className="my-3 group/widget">
       {errorFallback}
       <div className={cn('overflow-hidden rounded-panel border border-separator bg-surface', isError && !showSource && 'hidden')}>
         <div ref={zoomHostRef} className="relative">

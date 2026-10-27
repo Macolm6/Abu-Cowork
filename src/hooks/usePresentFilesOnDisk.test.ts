@@ -8,6 +8,7 @@ vi.mock('@/core/tools/fsBridge', () => ({
   exists: (path: string) => exists(path),
 }));
 
+import { useRenderMemoryStore } from '@/stores/renderMemoryStore';
 import { usePresentFilesOnDisk } from './usePresentFilesOnDisk';
 
 const FILES: PresentedFile[] = [
@@ -23,6 +24,18 @@ describe('usePresentFilesOnDisk', () => {
     onDisk = new Set(['/ws/a.md', '/ws/c.md']);
     exists.mockReset();
     exists.mockImplementation(async (path) => onDisk.has(path));
+    useRenderMemoryStore.setState({ presentFiles: {} });
+  });
+
+  it('shows the answer remembered from an earlier launch at its first render, and checks again', async () => {
+    useRenderMemoryStore.getState().rememberPresentFiles(JSON.stringify(['/ws/a.md', '/ws/b.md', '/ws/c.md']), ['/ws/b.md']);
+    const { result } = renderHook(() => usePresentFilesOnDisk(FILES, true));
+
+    expect(result.current.files).toEqual([{ path: '/ws/b.md' }]);
+    expect(result.current.checked).toBe(false);
+    await waitFor(() => expect(result.current.checked).toBe(true));
+    expect(result.current.files?.map((file) => file.path)).toEqual(['/ws/a.md', '/ws/c.md']);
+    expect(useRenderMemoryStore.getState().presentFiles[JSON.stringify(['/ws/a.md', '/ws/b.md', '/ws/c.md'])]).toEqual(['/ws/a.md', '/ws/c.md']);
   });
 
   it('returns null until the check answers, then the files on disk in their order', async () => {

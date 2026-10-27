@@ -18,11 +18,7 @@ test('released skill cards keep switches, detail actions and creation', async ()
     const bounds = await card.boundingBox();
     expect(bounds!.height).toBe(120);
     expect(bounds!.width).toBeLessThan(500);
-    // 市场 says the bundled skill is installed; its switch sits on 我的.
-    await expect(card.getByTestId('skill-installed-badge')).toHaveText('已安装');
-    await expect(card.getByRole('switch')).toHaveCount(0);
-    await page.getByTestId('extensions-source-mine').click();
-    await expect(page.getByTestId('extensions-source-mine')).toHaveAttribute('aria-selected', 'true');
+    // The bundled skill sits on 市场 with its switch; a press on the switch opens no window.
     await card.getByRole('switch').click();
     await expect(page.getByTestId('skill-detail')).toHaveCount(0);
     await card.click();

@@ -27,6 +27,7 @@ const PERSISTED_STORES = [
   { key: 'abu-plugins', minVersion: 2 },
   { key: 'abu-extension-source', minVersion: 1 },
   { key: 'abu-voice-input', minVersion: 1 },
+  { key: 'abu-render-memory', minVersion: 1 },
 ] as const;
 
 // Import all stores to trigger persist initialization
@@ -55,6 +56,7 @@ beforeAll(async () => {
   await import('./voiceInputStore');
   await import('./appStore');
   await import('./appDraftStore');
+  await import('./renderMemoryStore');
 }, 120_000); // Store imports trigger on-the-fly transforms; under v8 coverage instrumentation a cold cache exceeds 30s, so allow a generous ceiling (inline timeout overrides global hookTimeout)
 
 describe('Store version compliance', () => {

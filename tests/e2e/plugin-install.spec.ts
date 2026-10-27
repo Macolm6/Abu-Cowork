@@ -1,6 +1,5 @@
 import { expect, test } from '@playwright/test';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import type { ElectronApplication, Page } from 'playwright';
 import {
@@ -52,7 +51,9 @@ const INSTALLED_EMPTY = /还没有安装任何插件|No plugins installed yet/;
 
 /** A self-contained marketplace + plugin written to a temp dir for this run. */
 function seedMarketplace(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-e2e-market-'));
+  const fixtureParent = path.join(REPO_ROOT, '.agent', 'e2e');
+  fs.mkdirSync(fixtureParent, { recursive: true });
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(fixtureParent, 'market-')));
   const pkg = path.join(dir, 'plugins', 'e2e-weather');
 
   fs.mkdirSync(path.join(dir, '.claude-plugin'), { recursive: true });
@@ -199,9 +200,9 @@ test('loads custom skill directories and standalone MCP configuration in Electro
     expect(persisted.state.servers['e2e-config-server'].config).toMatchObject({
       enabled: true, command: 'abu-e2e-must-not-run', args: ['--stdio'], env: { REGION: 'cn east', OPTIONAL: '' },
     });
-    // A plugin's skill is the user's — it lists under 「技能 → 我的」.
+    // A plugin's skill lists under 「技能 → 市场」, with its switch.
     await page.getByRole('main').getByRole('button', { name: /^(技能|Skills)$/ }).click();
-    await page.getByTestId('extensions-source-mine').click();
+    await page.getByTestId('extensions-source-market').click();
     await expect(page.getByText('e2e-custom-skill', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'e2e-plugin-custom-components.png') });
 
@@ -224,7 +225,7 @@ test('loads custom skill directories and standalone MCP configuration in Electro
     await page.getByTestId('extensions-source-mine').click();
     await expect(mineRow.getByRole('switch')).toHaveAttribute('aria-checked', 'false', { timeout: READY_TIMEOUT });
     await page.getByRole('main').getByRole('button', { name: /^(技能|Skills)$/ }).click();
-    await page.getByTestId('extensions-source-mine').click();
+    await page.getByTestId('extensions-source-market').click();
     await expect(customCard.getByRole('switch')).toHaveAttribute('aria-checked', 'false');
     await page.getByRole('main').getByRole('button', { name: PLUGINS_TAB }).click();
     await page.getByTestId('extensions-source-mine').click();
@@ -239,7 +240,7 @@ test('loads custom skill directories and standalone MCP configuration in Electro
     await waitForWelcomeScreen(page);
     await openPluginsTab(page);
     await page.getByRole('main').getByRole('button', { name: /^(技能|Skills)$/ }).click();
-    await page.getByTestId('extensions-source-mine').click();
+    await page.getByTestId('extensions-source-market').click();
     await expect(page.getByText('e2e-custom-skill', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await page.getByRole('main').getByRole('button', { name: /^(连接器|Connectors)$/ }).click();
     await page.getByText('e2e-config-server', { exact: true }).click();
@@ -347,10 +348,10 @@ test.describe('plugin install loop', () => {
     await page.getByTestId('extensions-source-mine').click();
     await expect(mine.getByTestId('plugin-mine-row')).toContainText('e2e-weather');
     await expect(mine.getByTestId('plugin-mine-row').getByRole('switch')).toHaveAttribute('aria-checked', 'true');
-    // The skill it brought in is on 「技能 → 我的」 with its provenance, and the
+    // The skill it brought in is on 「技能 → 市场」 with its provenance, and the
     // card offers no edit or delete — removing it is uninstalling the plugin.
     await page.getByRole('main').getByRole('button', { name: /^(技能|Skills)$/ }).click();
-    await page.getByTestId('extensions-source-mine').click();
+    await page.getByTestId('extensions-source-market').click();
     const pluginSkillCard = page.getByRole('button').filter({ has: page.getByText('today', { exact: true }) });
     await expect(pluginSkillCard).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(pluginSkillCard.getByTestId('source-badge')).toHaveAttribute('data-source-kind', 'plugin');

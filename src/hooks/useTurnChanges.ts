@@ -66,11 +66,12 @@ function errorKind(error: unknown): string {
   return error instanceof Error ? error.name : typeof error;
 }
 
-function loadIndex(conversationId: string): void {
+/** Resolves once the read has settled, whichever way. */
+function loadIndex(conversationId: string): Promise<void> {
   const request = (indexRequests.get(conversationId) ?? 0) + 1;
   indexRequests.set(conversationId, request);
   if (!indexRecords.has(conversationId)) indexRecords.set(conversationId, null);
-  readTurnIndex(conversationId).then(
+  return readTurnIndex(conversationId).then(
     (index) => {
       if (indexRequests.get(conversationId) !== request) return;
       indexRecords.set(conversationId, index);
@@ -81,6 +82,16 @@ function loadIndex(conversationId: string): void {
       logger.warn('turn changes index could not be read', { conversationId, errorKind: errorKind(error) });
     },
   );
+}
+
+/**
+ * Reads a conversation's changes index before its transcript is shown, so the
+ * cards of what each turn changed are in the first frame the transcript paints.
+ * Resolves once the read has settled; a read that fails leaves the index unread.
+ */
+export function preloadTurnIndex(conversationId: string): Promise<void> {
+  if (indexRecords.get(conversationId)) return Promise.resolve();
+  return loadIndex(conversationId);
 }
 
 /** `keepShown` leaves what readers see in place until the new read settles. */
@@ -123,7 +134,7 @@ function loadUndoRecord(conversationId: string, loopId: string): void {
 function subscribe(onChange: () => void): () => void {
   subscribers.add(onChange);
   stopListening ??= onTurnChangesSaved((conversationId, loopId) => {
-    if (indexRecords.has(conversationId)) loadIndex(conversationId);
+    if (indexRecords.has(conversationId)) void loadIndex(conversationId);
     if (turnRecords.has(turnKey(conversationId, loopId))) loadTurn(conversationId, loopId, true);
     if (undoRecords.has(turnKey(conversationId, loopId))) loadUndoRecord(conversationId, loopId);
   });
@@ -145,7 +156,7 @@ export function useTurnChangesEntry(
 ): TurnIndexEntry | null {
   const active = enabled && Boolean(loopId);
   useEffect(() => {
-    if (active && !indexRecords.has(conversationId)) loadIndex(conversationId);
+    if (active && !indexRecords.has(conversationId)) void loadIndex(conversationId);
   }, [active, conversationId]);
   return useSyncExternalStore(subscribe, () => (
     active ? indexRecords.get(conversationId)?.[loopId as string] ?? null : null
@@ -215,7 +226,7 @@ function turnsOf(facts: MessageFact[]): TurnsOfMessages {
  */
 export function useConversationChangedFiles(conversationId: string): { status: 'loading' | 'ready'; files: ConversationChangedFile[] } {
   useEffect(() => {
-    if (!indexRecords.has(conversationId)) loadIndex(conversationId);
+    if (!indexRecords.has(conversationId)) void loadIndex(conversationId);
   }, [conversationId]);
   const index = useSyncExternalStore(subscribe, () => indexRecords.get(conversationId) ?? null);
   const facts = useChatStore(useShallow((s) => messageFacts(s.conversations[conversationId])));

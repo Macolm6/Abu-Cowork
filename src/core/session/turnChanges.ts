@@ -99,6 +99,9 @@ export interface TurnIndexFile {
   path: string;
   display: string;
   status: TurnChangedFile['status'];
+  /** The line counts of `TurnChangedFile`; absent for a file without a line comparison. */
+  added?: number;
+  deleted?: number;
 }
 
 export interface TurnIndexEntry {
@@ -303,13 +306,30 @@ function isIndexFile(value: unknown): value is TurnIndexFile {
     && typeof value.path === 'string'
     && isAbsoluteFilePath(value.path)
     && typeof value.display === 'string'
-    && (value.status === 'created' || value.status === 'modified' || value.status === 'deleted');
+    && (value.status === 'created' || value.status === 'modified' || value.status === 'deleted')
+    && (value.added === undefined || isCount(value.added))
+    && (value.deleted === undefined || isCount(value.deleted));
+}
+
+function indexFileOf(value: TurnIndexFile): TurnIndexFile {
+  return {
+    path: value.path,
+    display: value.display,
+    status: value.status,
+    ...(value.added !== undefined ? { added: value.added } : {}),
+    ...(value.deleted !== undefined ? { deleted: value.deleted } : {}),
+  };
 }
 
 interface ParsedTurnIndex {
   index: TurnIndex;
   /** Turns of an index written before entries had a file list; theirs is empty until it is filled in. */
   withoutFiles: string[];
+  /**
+   * Turns of an index written before the file list carried line counts: the
+   * entry counts lines, and no file of its list does.
+   */
+  withoutCounts: string[];
 }
 
 /** The index `text` holds, or null when it is no JSON or not in the saved format. */
@@ -318,6 +338,7 @@ function parseTurnIndex(text: string): ParsedTurnIndex | null {
   if (!isRecord(value) || value.version !== FORMAT_VERSION || !isRecord(value.turns)) return null;
   const index: TurnIndex = {};
   const withoutFiles: string[] = [];
+  const withoutCounts: string[] = [];
   for (const [loopId, entry] of Object.entries(value.turns)) {
     if (
       !isRecord(entry)
@@ -336,7 +357,10 @@ function parseTurnIndex(text: string): ParsedTurnIndex | null {
       return null;
     }
     if (entry.files === undefined) withoutFiles.push(loopId);
-    const files = (entry.files as TurnIndexFile[] | undefined)?.map(({ path, display, status }) => ({ path, display, status })) ?? [];
+    const files = (entry.files as TurnIndexFile[] | undefined)?.map(indexFileOf) ?? [];
+    if (files.length > 0 && entry.added + entry.deleted > 0 && files.every((file) => file.added === undefined && file.deleted === undefined)) {
+      withoutCounts.push(loopId);
+    }
     const totals = { total: entry.total, added: entry.added, deleted: entry.deleted, firstFile: entry.firstFile, files };
     if (entry.restorable) {
       index[loopId] = {
@@ -357,7 +381,7 @@ function parseTurnIndex(text: string): ParsedTurnIndex | null {
       index[loopId] = totals;
     }
   }
-  return { index, withoutFiles };
+  return { index, withoutFiles, withoutCounts };
 }
 
 /** Whether `entry` is an undone turn that has no copies left, so nothing to restore. */
@@ -410,9 +434,15 @@ async function loadIndex(dir: string): Promise<TurnIndex> {
   if (!(await exists(path))) return {};
   const parsed = parseTurnIndex(await readTextFile(path));
   if (parsed) {
-    if (parsed.withoutFiles.length === 0) return parsed.index;
+    if (parsed.withoutFiles.length === 0 && parsed.withoutCounts.length === 0) return parsed.index;
     // An index written before entries had a file list gets it once, from the saved turns.
     for (const loopId of parsed.withoutFiles) parsed.index[loopId].files = await savedTurnFiles(dir, loopId);
+    // One written before the list carried line counts gets them the same way; a
+    // turn whose saved file is gone keeps the list it has.
+    for (const loopId of parsed.withoutCounts) {
+      const saved = await savedTurnFiles(dir, loopId);
+      if (saved.length > 0) parsed.index[loopId].files = saved;
+    }
     await saveIndex(dir, parsed.index);
     return parsed.index;
   }
@@ -507,7 +537,7 @@ async function saveIndexEntry(dir: string, loopId: string, entry: TurnIndexEntry
 }
 
 function indexFilesOf(turn: TurnChanges): TurnIndexFile[] {
-  return turn.files.map(({ path, display, status }) => ({ path, display, status }));
+  return turn.files.map(indexFileOf);
 }
 
 function indexEntryOf(turn: TurnChanges): TurnIndexEntry {

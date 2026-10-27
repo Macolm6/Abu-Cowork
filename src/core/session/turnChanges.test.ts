@@ -442,7 +442,7 @@ describe('turnChanges', () => {
       const saved = fs.readJson<{ files: unknown[]; total: number }>(`${CHANGES}/loop-1.json`);
       expect(saved.files).toMatchObject([{ display: 'plan.md', status: 'modified', added: 1, deleted: 1 }]);
       expect(saved.total).toBe(1);
-      const planFiles = [{ path: `${WS}/plan.md`, display: 'plan.md', status: 'modified' }];
+      const planFiles = [{ path: `${WS}/plan.md`, display: 'plan.md', status: 'modified', added: 1, deleted: 1 }];
       expect(fs.readJson(`${CHANGES}/index.json`)).toEqual({
         version: 1,
         turns: { 'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md', files: planFiles, restorable: 1, settledAt: 1, copyBytes: 4 } },
@@ -481,7 +481,7 @@ describe('turnChanges', () => {
           firstFile: 'by-command.md',
           files: [
             { path: `${WS}/by-command.md`, display: 'by-command.md', status: 'created' },
-            { path: `${WS}/plan.md`, display: 'plan.md', status: 'modified' },
+            { path: `${WS}/plan.md`, display: 'plan.md', status: 'modified', added: 1, deleted: 1 },
           ],
           restorable: 1,
           settledAt: 1,
@@ -653,7 +653,7 @@ describe('turnChanges', () => {
             added: 2,
             deleted: 1,
             firstFile: 'plan.md',
-            files: [{ path: `${WS}/docs/plan.md`, display: 'docs/plan.md', status: 'modified' }],
+            files: [{ path: `${WS}/docs/plan.md`, display: 'docs/plan.md', status: 'modified', added: 2, deleted: 1 }],
             restorable: 1,
             settledAt: 1,
             copyBytes: 4,
@@ -663,7 +663,7 @@ describe('turnChanges', () => {
             added: 1,
             deleted: 0,
             firstFile: 'b.md',
-            files: [{ path: `${WS}/b.md`, display: 'b.md', status: 'created' }],
+            files: [{ path: `${WS}/b.md`, display: 'b.md', status: 'created', added: 1, deleted: 0 }],
             restorable: 1,
             settledAt: 2,
             copyBytes: 0,
@@ -826,14 +826,14 @@ describe('turnChanges', () => {
         fs.delete(`${WS}/old.md`);
       });
 
-      const saved = fs.readJson<{ files: Array<{ path: string; display: string; status: string }> }>(`${CHANGES}/loop-1.json`);
+      const saved = fs.readJson<{ files: Array<{ path: string; display: string; status: string; added: number; deleted: number }> }>(`${CHANGES}/loop-1.json`);
       const index = fs.readJson<{ turns: Record<string, { files: unknown }> }>(`${CHANGES}/index.json`);
       expect(index.turns['loop-1'].files).toEqual([
-        { path: `${WS}/new.md`, display: 'new.md', status: 'created' },
-        { path: `${WS}/old.md`, display: 'old.md', status: 'deleted' },
-        { path: `${WS}/plan.md`, display: 'plan.md', status: 'modified' },
+        { path: `${WS}/new.md`, display: 'new.md', status: 'created', added: 1, deleted: 0 },
+        { path: `${WS}/old.md`, display: 'old.md', status: 'deleted', added: 0, deleted: 1 },
+        { path: `${WS}/plan.md`, display: 'plan.md', status: 'modified', added: 1, deleted: 1 },
       ]);
-      expect(index.turns['loop-1'].files).toEqual(saved.files.map(({ path, display, status }) => ({ path, display, status })));
+      expect(index.turns['loop-1'].files).toEqual(saved.files.map(({ path, display, status, added, deleted }) => ({ path, display, status, added, deleted })));
       await expect(mod.readTurnIndex('conv-1')).resolves.toMatchObject({ 'loop-1': { files: index.turns['loop-1'].files } });
     });
 
@@ -854,7 +854,7 @@ describe('turnChanges', () => {
         await capture(`${WS}/a.md`);
         fs.write(`${WS}/a.md`, 'changed');
       });
-      const files = [{ path: `${WS}/a.md`, display: 'a.md', status: 'modified' }];
+      const files = [{ path: `${WS}/a.md`, display: 'a.md', status: 'modified', added: 1, deleted: 1 }];
       const record = await mod.readTurnUndoRecord('conv-1', 'loop-1');
       await mod.saveUndoRecord('conv-1', CHANGES, { ...(record as NonNullable<typeof record>), state: 'undone' });
       await expect(mod.readTurnIndex('conv-1')).resolves.toMatchObject({ 'loop-1': { undone: true, files } });
@@ -879,7 +879,7 @@ describe('turnChanges', () => {
       fs.delete(`${CHANGES}/loop-1/undo.json`);
 
       await expect((await restart()).readTurnIndex('conv-1')).resolves.toEqual({
-        'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md', files: [{ path: `${WS}/plan.md`, display: 'plan.md', status: 'modified' }] },
+        'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md', files: [{ path: `${WS}/plan.md`, display: 'plan.md', status: 'modified', added: 1, deleted: 1 }] },
       });
     });
 
@@ -906,6 +906,41 @@ describe('turnChanges', () => {
       const reads = vi.spyOn(fs.pluginFs, 'readTextFile');
       await expect(afterRestart.readTurnIndex('conv-1')).resolves.toEqual(current.turns);
       expect(reads.mock.calls.map(([path]) => path).filter((path) => path.endsWith('/loop-1.json') || path.endsWith('/loop-2.json'))).toEqual([]);
+    });
+
+    it('fills in the line counts of a file list written before it carried them, once, from the saved turns', async () => {
+      fs.write(`${WS}/plan.md`, 'one\n');
+      await runTurn('loop-1', async (capture) => {
+        await capture(`${WS}/plan.md`);
+        fs.write(`${WS}/plan.md`, 'two\n');
+      });
+      // A turn whose file has no line comparison counts nothing: nothing to fill in.
+      await runTurn('loop-2', () => {
+        fs.write(`${WS}/by-command.md`, 'x\n');
+      });
+      const current = fs.readJson<{ version: number; turns: Record<string, { files: Array<Record<string, unknown>> }> }>(`${CHANGES}/index.json`);
+      const withoutCounts = Object.fromEntries(Object.entries(current.turns).map(([loopId, entry]) => [loopId, {
+        ...entry,
+        files: entry.files.map(({ added: _added, deleted: _deleted, ...rest }) => rest),
+      }]));
+      fs.write(`${CHANGES}/index.json`, JSON.stringify({ version: 1, turns: withoutCounts }));
+
+      const afterRestart = await restart();
+      await expect(afterRestart.readTurnIndex('conv-1')).resolves.toEqual(current.turns);
+      expect(fs.readJson(`${CHANGES}/index.json`)).toEqual(current);
+
+      const reads = vi.spyOn(fs.pluginFs, 'readTextFile');
+      await expect(afterRestart.readTurnIndex('conv-1')).resolves.toEqual(current.turns);
+      expect(reads.mock.calls.map(([path]) => path).filter((path) => path.endsWith('/loop-1.json') || path.endsWith('/loop-2.json'))).toEqual([]);
+    });
+
+    it('keeps the file list of an entry written before it carried line counts whose saved turn is gone', async () => {
+      const files = [{ path: `${WS}/a.md`, display: 'a.md', status: 'modified' }];
+      fs.write(`${CHANGES}/index.json`, JSON.stringify({ version: 1, turns: { 'loop-1': { total: 1, added: 2, deleted: 1, firstFile: 'a.md', files } } }));
+
+      await expect(mod.readTurnIndex('conv-1')).resolves.toEqual({
+        'loop-1': { total: 1, added: 2, deleted: 1, firstFile: 'a.md', files },
+      });
     });
 
     it('fills in an empty file list for an index entry written before it had one whose saved turn is gone', async () => {
@@ -1268,7 +1303,7 @@ describe('turnChanges', () => {
         fs.delete(`${CHANGES}/loop-1/undo.json`);
 
         await expect((await restart()).readTurnIndex('conv-1')).resolves.toEqual({
-          'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md', files: [{ path: `${WS}/plan.md`, display: 'plan.md', status: 'modified' }] },
+          'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md', files: [{ path: `${WS}/plan.md`, display: 'plan.md', status: 'modified', added: 1, deleted: 1 }] },
         });
         expect(fs.has(`${CHANGES}/loop-1`)).toBe(false);
       });
@@ -1289,13 +1324,13 @@ describe('turnChanges', () => {
           fs.write(`${CHANGES}/loop-1/undo.json`, unreadable);
           const kept = fs.list(`${CHANGES}/loop-1/`).map((path) => [path, fs.read(path)]);
           const expected = {
-            'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md', files: [{ path: `${WS}/plan.md`, display: 'plan.md', status: 'modified' }] },
+            'loop-1': { total: 1, added: 1, deleted: 1, firstFile: 'plan.md', files: [{ path: `${WS}/plan.md`, display: 'plan.md', status: 'modified', added: 1, deleted: 1 }] },
             'loop-2': {
               total: 1,
               added: 1,
               deleted: 1,
               firstFile: 'notes.md',
-              files: [{ path: `${WS}/notes.md`, display: 'notes.md', status: 'modified' }],
+              files: [{ path: `${WS}/notes.md`, display: 'notes.md', status: 'modified', added: 1, deleted: 1 }],
               restorable: 1,
               settledAt: 2,
               copyBytes: 3,
@@ -1377,7 +1412,7 @@ describe('turnChanges', () => {
         added: 1,
         deleted: 1,
         firstFile: 'c.md',
-        files: [{ path: `${WS}/c.md`, display: 'c.md', status: 'modified' }],
+        files: [{ path: `${WS}/c.md`, display: 'c.md', status: 'modified', added: 1, deleted: 1 }],
       });
       expect(index['loop-a']).toMatchObject({ restorable: 1 });
       expect(index['loop-b']).toMatchObject({ restorable: 1 });
@@ -1421,7 +1456,7 @@ describe('turnChanges', () => {
           deleted: 1,
           firstFile: 'a.md',
           files: [
-            { path: `${WS}/a.md`, display: 'a.md', status: 'modified' },
+            { path: `${WS}/a.md`, display: 'a.md', status: 'modified', added: 1, deleted: 1 },
             { path: `${WS}/by-command.md`, display: 'by-command.md', status: 'created' },
           ],
         },
@@ -1464,8 +1499,8 @@ describe('turnChanges', () => {
           deleted: 1,
           firstFile: 'new.md',
           files: [
-            { path: `${WS}/new.md`, display: 'new.md', status: 'created' },
-            { path: `${WS}/plan.md`, display: 'plan.md', status: 'modified' },
+            { path: `${WS}/new.md`, display: 'new.md', status: 'created', added: 1, deleted: 0 },
+            { path: `${WS}/plan.md`, display: 'plan.md', status: 'modified', added: 1, deleted: 1 },
           ],
           restorable: 2,
           settledAt: 1,
@@ -1554,7 +1589,7 @@ describe('turnChanges', () => {
       fs.write(`${CHANGES}/loop-2/before/manifest.json`, JSON.stringify({ version: 1, loopId: 'loop-2', workspaceRoots: [WS], entries: [] }));
 
       await expect(mod.readTurnIndex('conv-1')).resolves.toEqual({
-        'loop-2': { total: 1, added: 3, deleted: 0, firstFile: 'a.md', files: [{ path: `${WS}/docs/a.md`, display: 'docs/a.md', status: 'created' }] },
+        'loop-2': { total: 1, added: 3, deleted: 0, firstFile: 'a.md', files: [{ path: `${WS}/docs/a.md`, display: 'docs/a.md', status: 'created', added: 3, deleted: 0 }] },
       });
     });
 

@@ -2,6 +2,7 @@ import { memo } from 'react';
 import { useI18n } from '@/i18n';
 import RenderableCodeBlock, { type CodeBlockRendererConfig } from './RenderableCodeBlock';
 import { MERMAID_THEME_VARIABLES } from './mermaidTheme';
+import { diagramHeightKey, recallDiagramHeight, useRenderMemoryStore } from '@/stores/renderMemoryStore';
 
 // --- Mermaid-specific rendering logic ---
 
@@ -174,6 +175,10 @@ export default memo(function MermaidBlock({ code }: { code: string }) {
     debounceMs: 300,
     errorSettleMs: 1000,
     maxHeight: 400,
+    heightMemory: {
+      recall: (diagram) => recallDiagramHeight('mermaid', diagram),
+      remember: (diagram, height) => useRenderMemoryStore.getState().rememberDiagramHeight(diagramHeightKey('mermaid', diagram), height),
+    },
     i18n: {
       loading: t.chat.mermaidLoading,
       renderError: t.chat.mermaidRenderError,

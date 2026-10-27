@@ -40,6 +40,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import { createServer, type Server, type ServerResponse } from 'node:http';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type { ElectronApplication, Page } from 'playwright';
 import {
   closeAbuElectron,
@@ -70,7 +71,7 @@ const PLUGIN_VERSION = '1.0.0';
 // silent wording change has to be acknowledged here.
 const NOT_CONNECTED = new RegExp(`^(连接 ${SERVER_NAME} 以显示界面|Connect ${SERVER_NAME} to show the app view)$`);
 const FIXTURE_ENTRY = path.join(REPO_ROOT, 'tests', 'fixtures', 'mcp-app-demo', 'server.ts');
-const TSX_CLI = path.join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
+const TSX_LOADER = pathToFileURL(path.join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'loader.mjs')).href;
 
 const LOCAL_MOCK_PROVIDER_OPTIONS = {
   apiKey: TEST_API_KEY,
@@ -222,7 +223,7 @@ async function seedDemoConnector(page: Page, readyFile: string): Promise<void> {
       },
       version: 1,
     }));
-  }, { name: SERVER_NAME, command: process.execPath, args: [TSX_CLI, FIXTURE_ENTRY], readyFile });
+  }, { name: SERVER_NAME, command: process.execPath, args: ['--import', TSX_LOADER, FIXTURE_ENTRY], readyFile });
 }
 
 /**

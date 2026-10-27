@@ -2298,7 +2298,7 @@ const enUS: TranslationDict = {
     skillSourceProject: 'Project',
     skillSourceWorkspaceAuto: 'Self-evolved',
     skillShadowedBadge: 'Covered',
-    skillShadowedHint: 'A skill under Mine has the same name and is the one in use',
+    skillShadowedHint: 'Another skill has the same name and is the one in use',
     skillsMarketHintTitle: 'Skills arrive with plugins',
     skillsMarketHintBody: 'Install a plugin and the skills it brings show up here; the ones you write yourself live under Mine.',
     skillsMarketGoPlugins: 'Go to the plugin marketplace',

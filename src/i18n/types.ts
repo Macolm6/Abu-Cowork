@@ -2911,9 +2911,9 @@ export interface TranslationDict {
     skillsMarketHintTitle: string;
     skillsMarketHintBody: string;
     skillsMarketGoPlugins: string;
-    /** Skills 「我的」 empty state — nothing the user wrote themselves yet. */
-    /** 市场 card state — bundled items ship installed; the switch is on 我的. */
+    /** 市场 plugin row state — the plugin is installed; its switch is on 我的. */
     installedMark: string;
+    /** Skills 「我的」 empty state — nothing the user wrote themselves yet. */
     skillsMineEmptyTitle: string;
     skillsMineEmptyHint: string;
     /** Connectors 「市场」 — the curated catalog plus the servers plugins brought in. */

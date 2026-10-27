@@ -9,7 +9,6 @@
  */
 import { createServer, type Server } from 'node:http';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test';
 import {
@@ -97,7 +96,9 @@ function closeServer(server: Server): Promise<void> {
 
 /** A private copy of the example market, the app's page pointed at the loopback server. */
 function seedExampleMarket(pageOrigin: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-e2e-app-market-'));
+  const fixtureParent = path.join(REPO_ROOT, '.agent', 'e2e');
+  fs.mkdirSync(fixtureParent, { recursive: true });
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(fixtureParent, 'app-market-')));
   fs.cpSync(path.join(REPO_ROOT, 'examples', 'plugin-market'), dir, { recursive: true });
   const appPath = path.join(dir, 'apps', 'shop-ops', '.abu-app', 'app.json');
   const appFile = JSON.parse(fs.readFileSync(appPath, 'utf8')) as { allowedOrigins: string[]; nav: { items: Array<{ id: string; target: string }> } };
