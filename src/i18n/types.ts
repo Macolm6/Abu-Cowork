@@ -1535,6 +1535,9 @@ export interface TranslationDict {
     labsExpTodosInboxWhere: string;
     labsExpPetWhere: string;
     labsExpPetDesc: string;
+    labsExpStateCompressionTitle: string;
+    labsExpStateCompressionDesc: string;
+    labsExpStateCompressionWhere: string;
     labsExpAppsTitle: string;
     labsExpAppsDesc: string;
     labsExpAppsWhere: string;

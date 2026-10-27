@@ -56,11 +56,10 @@ import {
   createFailedCompactBoundaryMarker,
 } from '../context/compactBoundary';
 import {
-  COMPACTION_TRIGGER_RATIO,
-  RETAINED_TAIL_RATIO,
   compactHistory,
   readFileThroughTool,
 } from '../context/compaction';
+import { compactionTriggerRatio, retainedTailRatio, anchorPreservationEnabled } from '../context/compressionTuning';
 import { measureInputTokens, usageContext, type UsageAnchor } from '../context/contextMeasure';
 import { getUsagePercent, getDisplayPercent } from '../context/autoCompact';
 import { estimateTokens, estimateMessageTokens, calibrateFromUsage, setActiveModel } from '../context/tokenEstimator';
@@ -2197,7 +2196,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               conversationId,
               providerInstanceId: activeProvider?.id ?? 'unknown',
               signal: abortController.signal,
+              preserveAnchors: anchorPreservationEnabled(),
             },
+            keepAnchors: anchorPreservationEnabled(),
             fitSummaryInput: (summaryMessages) => enforceContextBudget(
               summaryMessages,
               effectiveSystemPrompt,
@@ -2238,8 +2239,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       let requestEstimate = measureView();
       if (
         fixedPartOf(requestEstimate) < inputBudget
-        && measureInputTokens(requestEstimate.total, measurementContext(), usageAnchor) >= inputBudget * COMPACTION_TRIGGER_RATIO
-        && await compactBeforeRequest(contextWindowSize, baseChatOptions, Math.floor(inputBudget * RETAINED_TAIL_RATIO))
+        && measureInputTokens(requestEstimate.total, measurementContext(), usageAnchor) >= inputBudget * compactionTriggerRatio()
+        && await compactBeforeRequest(contextWindowSize, baseChatOptions, Math.floor(inputBudget * retainedTailRatio()))
       ) {
         requestEstimate = measureView();
       }

@@ -59,11 +59,10 @@ import { computeInputBudget, enforceContextBudget, trimOldScreenshots } from '..
 import { estimateMessageTokens, estimateTokens, estimateToolSchemaTokens } from '../context/tokenEstimator';
 import { buildContextFromBoundary } from '../context/compactBoundary';
 import {
-  COMPACTION_TRIGGER_RATIO,
-  RETAINED_TAIL_RATIO,
   compactHistory,
   readFileThroughTool,
 } from '../context/compaction';
+import { compactionTriggerRatio, retainedTailRatio, anchorPreservationEnabled } from '../context/compressionTuning';
 import { measureInputTokens, usageContext, type UsageAnchor } from '../context/contextMeasure';
 import { boundToolResult } from '../context/toolResultSpill';
 import { writeToolResultFile } from '../session/sessionMemory';
@@ -1131,12 +1130,12 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       if (
         estimateTokens(systemPrompt) + toolSchemaTokens < inputBudget
         && measureInputTokens(estimateView(buildContextFromBoundary(messages)), measurementContext(), usageAnchor)
-          >= inputBudget * COMPACTION_TRIGGER_RATIO
+          >= inputBudget * compactionTriggerRatio()
       ) {
         const marker = await compactHistory({
           history: messages,
           inputBudget,
-          retainTokens: Math.floor(inputBudget * RETAINED_TAIL_RATIO),
+          retainTokens: Math.floor(inputBudget * retainedTailRatio()),
           source: 'auto',
           fitSummaryInput: (summaryMessages) => enforceContextBudget(
             summaryMessages, systemPrompt, contextWindowSize, maxOutputTokens, toolSchemaTokens,
@@ -1147,7 +1146,9 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             conversationId: options.parentConversationId ?? null,
             providerInstanceId: provider?.id ?? 'unknown',
             signal,
+            preserveAnchors: anchorPreservationEnabled(),
           },
+          keepAnchors: anchorPreservationEnabled(),
           readFile: readFileThroughTool(
             async (input, context) => toolInvoker.toolResultToString(
               await toolInvoker.executeAnyTool(TOOL_NAMES.READ_FILE, input, async () => false, async () => false, context),
