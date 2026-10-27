@@ -712,6 +712,12 @@ export interface TranslationDict {
     contextFixedTooLarge: string;
     /** Same as contextFixedTooLarge, plus where to raise the length on a local server. {service} */
     contextFixedTooLargeLocal: string;
+    /** Same as contextFixedTooLarge, stating the numbers: the instructions need {needed} tokens but the model's window is {window}. */
+    contextFixedTooLargeWithNumbers: string;
+    /** Same as contextFixedTooLargeWithNumbers, plus where to raise the length on a local server. {service} */
+    contextFixedTooLargeWithNumbersLocal: string;
+    /** Streamed-inline notice when Abu raised the Ollama context length by itself and is retrying (to is a formatted token count). */
+    ollamaContextRaised: string;
     /** The model failed to send an operation even after one quiet rewrite. */
     malformedToolCall: string;
     /** A local model server gave no first output within its 10-minute wait; nothing retries it. */

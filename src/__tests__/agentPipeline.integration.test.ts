@@ -752,9 +752,14 @@ describe('Agent Pipeline Integration', () => {
   });
 
   it('explains a model whose window cannot hold the instructions in plain words', async () => {
-    vi.mocked(contextManagerModule.enforceContextBudget).mockImplementationOnce(() => {
+    // 同一轮里门跑两次：预检门（延迟抛出给逃逸链）+ chatFn 内的权威门；两次都抛，
+    // provider 依然一次都不会被碰
+    const fixedTooLarge = () => {
       throw new contextManagerModule.ContextBudgetError('FIXED_CONTEXT_TOO_LARGE', 20_000, 10_000);
-    });
+    };
+    vi.mocked(contextManagerModule.enforceContextBudget)
+      .mockImplementationOnce(fixedTooLarge)
+      .mockImplementationOnce(fixedTooLarge);
 
     const convId = useChatStore.getState().createConversation();
     await runAgentLoop(convId, 'hello');
@@ -764,7 +769,9 @@ describe('Agent Pipeline Integration', () => {
       .filter((message) => message.role === 'assistant')
       .map((message) => typeof message.content === 'string' ? message.content : '')
       .join('\n');
-    expect(assistantText).toContain('This model can remember too little at once to hold the instructions Abu needs. Switch to a model that can remember more.');
+    // 终态提示带上数字：说明约需 20K，窗口 = 20000 + 10000 = 30K
+    expect(assistantText).toContain('about 20K tokens');
+    expect(assistantText).toContain('only 30K');
     // 一句普通说明，前面不带错误前缀
     expect(assistantText).not.toContain('Error:');
     expect(assistantText).not.toContain('raise the context length');

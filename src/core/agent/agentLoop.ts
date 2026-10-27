@@ -49,6 +49,7 @@ import {
   computeInputBudget,
   enforceContextBudget,
   trimOldScreenshots,
+  type ContextBudgetResult,
 } from '../context/contextManager';
 import {
   buildContextFromBoundary,
@@ -125,7 +126,15 @@ import { resolveAgentModelCapabilities, resolveCapabilities, computeReasoningPar
 import { probeContextWindow } from '../llm/contextWindowProbe';
 import { localServerKind } from '../llm/localProvider';
 import { adapterKindFor, usageProtocolFor } from '../llm/adapterKind';
-import { contextTooSmallMessage } from './contextWindowMessages';
+import {
+  contextTooSmallMessage,
+  contextTooSmallMessageWithNumbers,
+  formatTokenCount,
+  planOllamaNumCtx,
+  canWindowHoldFixedCost,
+  OLLAMA_NUM_CTX_MIN,
+  OLLAMA_NUM_CTX_MAX,
+} from './contextWindowMessages';
 import { learnContextWindowAfterOverflow } from './contextOverflowRecovery';
 import { resolveImagePolicy } from '../llm/imagePolicy';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
@@ -1722,6 +1731,20 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   if (entryProvider && entryModelDeclared?.maxInputTokens === undefined) {
     runProbedContextWindow = await probeContextWindow(entryProvider, effectiveModelId);
   }
+  // Run-scoped Ollama num_ctx override (contextWindowMessages.ts): the
+  // window itself was too small for the system prompt + tool schemas and
+  // the user never pinned a length — Abu raises num_ctx by itself for the
+  // rest of this run instead of failing. The user's 「上下文长度」 stays
+  // untouched; once set it wins and no override is ever computed.
+  let runRequestedContextLength: number | undefined;
+  // One-shot guard: the raise is tried once per run. If the gate still throws
+  // afterwards (e.g. the probed window is clamped back down by the global
+  // ceiling), fall through to the failover/terminal escapes instead of
+  // re-raising the same value forever.
+  let numCtxRaisedForRun = false;
+  // Numbers carried out of a FIXED_CONTEXT_TOO_LARGE that no escape could
+  // clear; the terminal error handler renders them in the friendly note.
+  let contextBudgetNumbers: { needed: number; window: number } | undefined;
 
   // Phase 2 relevant-memory injection — content of memories most relevant to
   // *this* user message, surfaced as a dynamic system-prompt section. The
@@ -2010,9 +2033,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const discoveredCaps = activeProvider
         ? getCapsPort().get(activeProvider.id, effectiveModelId)
         : undefined;
-      const { effectiveCaps, contextWindowSize, reserveWindowSize, reasoningParams, requestedMaxOutputTokens, requestedContextLength, localServer, outputCeiling: effectiveModelCeiling } = resolveRequestBudget(
+      const {
+        effectiveCaps, contextWindowSize, reserveWindowSize, reasoningParams, requestedMaxOutputTokens,
+        requestedContextLength: userPinnedContextLength, localServer, outputCeiling: effectiveModelCeiling,
+      } = resolveRequestBudget(
         effectiveModelId, modelCaps, activeProvider, freshSettings, discoveredCaps, runProbedContextWindow,
       );
+      // Escape A's raise wins for the rest of the run; without it, the value
+      // is the user-pinned length exactly as resolveRequestBudget computed it.
+      const requestedContextLength = runRequestedContextLength ?? userPinnedContextLength;
       let maxOutputTokens = reasoningParams.maxTokens;
 
       // Escalate maxOutputTokens on max_tokens recovery (legacy CC pattern),
@@ -2222,13 +2251,33 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const trimmedMessages = trimOldScreenshots(boundaryView, usagePercent);
 
       // Step 3: Hard truncation as safety net
-      const initialBudgetResult = enforceContextBudget(
-        trimmedMessages,
-        effectiveSystemPrompt,
-        contextWindowSize,
-        maxOutputTokens,
-        toolTokens
-      );
+      let initialBudgetResult: ContextBudgetResult;
+      try {
+        initialBudgetResult = enforceContextBudget(
+          trimmedMessages,
+          effectiveSystemPrompt,
+          contextWindowSize,
+          maxOutputTokens,
+          toolTokens
+        );
+      } catch (gateErr) {
+        // The FIXED_CONTEXT_TOO_LARGE escapes (Ollama num_ctx raise / model
+        // failover) live in the retryErr catch below, which only sees errors
+        // thrown inside chatFn. Defer this one: chatFn's provider-bound gate
+        // re-runs the same check and re-raises it there, so the escapes get
+        // their chance. Any other gate error still fails fast.
+        if (!(gateErr instanceof ContextBudgetError && gateErr.code === 'FIXED_CONTEXT_TOO_LARGE')) {
+          throw gateErr;
+        }
+        initialBudgetResult = {
+          messages: trimmedMessages,
+          tokensBefore: 0,
+          tokensAfter: 0,
+          inputBudget: 0,
+          safetyMarginTokens: 0,
+          strategy: 'unchanged',
+        };
+      }
       let preparedMessages = initialBudgetResult.messages;
       let lastProviderMessages = preparedMessages;
       let primaryBudgetGateLogged = false;
@@ -2335,7 +2384,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       const chatFn = async () => {
         const providerBudgetResult = await buildProviderAttemptMessages(preparedMessages, contextWindowSize, maxOutputTokens);
-        publishContextUsage(sentTokens(), contextWindowSize);
+      publishContextUsage(sentTokens(), contextWindowSize);
         if (!primaryBudgetGateLogged && (
           initialBudgetResult.strategy !== 'unchanged'
           || providerBudgetResult.strategy !== 'unchanged'
@@ -2576,8 +2625,114 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           }
         );
       } catch (retryErr) {
-        // 服务说内容太长：读出真实上限并记住，按新上限整理后重试一次；仍失败就把错误交给外层显示
-        if (retryErr instanceof LLMError && retryErr.code === 'context_too_long') {
+        // Window-too-small self-rescue, BEFORE the provider-error branches
+        // below: the system prompt + tool schemas alone exceed the model's
+        // safe input budget (ContextBudgetError FIXED_CONTEXT_TOO_LARGE,
+        // thrown by the pre-flight budget gate, never reaches the provider).
+        // Two run-scoped escapes, in order:
+        //   A. Ollama without a user-pinned length → raise num_ctx ourselves
+        //      for the rest of this run (the adapter sends options.num_ctx and
+        //      Ollama reloads the model with the larger window).
+        //   B. Any provider → switch to the next failover candidate, the same
+        //      run-scoped switch the quota path uses.
+        // If neither applies, the error falls through to the original chain
+        // and the user sees the friendly contextFixedTooLarge note — now with
+        // the numbers when the throw carried them.
+        const budgetErr = retryErr instanceof ContextBudgetError && retryErr.code === 'FIXED_CONTEXT_TOO_LARGE'
+          ? retryErr
+          : undefined;
+        if (budgetErr) {
+          let numCtxRaised = false;
+          let windowFailoverSwitched = false;
+          if (
+            adapterKind === 'ollama' && !userPinnedContextLength
+            && !numCtxRaisedForRun && !abortController.signal.aborted
+          ) {
+            const planned = planOllamaNumCtx(budgetErr.estimatedTokens, budgetErr.inputBudget, {
+              min: OLLAMA_NUM_CTX_MIN,
+              max: OLLAMA_NUM_CTX_MAX,
+            });
+            // The override must clear the gate that just failed, or the next
+            // turn would die on the same throw: re-check fixedTokens against
+            // the planned window's budget before committing to it.
+            const plannedHolds = planned !== null
+              && canWindowHoldFixedCost(planned, maxOutputTokens, budgetErr.estimatedTokens);
+            if (planned !== null && !plannedHolds) {
+              logger.warn('Ollama num_ctx raise skipped: planned window still cannot hold the fixed cost', {
+                fixedTokens: budgetErr.estimatedTokens,
+                planned,
+              });
+            } else if (planned !== null) {
+              numCtxRaised = true;
+              numCtxRaisedForRun = true;
+              logger.warn('Context window too small for fixed cost: raising Ollama num_ctx for the rest of this run', {
+                from: contextWindowSize,
+                to: planned,
+                fixedTokens: budgetErr.estimatedTokens,
+                spentBudget: budgetErr.inputBudget,
+              });
+              chatDelta.flushTokens(conversationId, assistantMsgId);
+              chatDelta.setLastMessageContent(conversationId, '', assistantMsgId);
+              chatDelta.setMessageStreamingFlag(conversationId, assistantMsgId, false);
+              chatDelta.appendText(
+                conversationId,
+                format(getI18n().chat.ollamaContextRaised, { to: formatTokenCount(planned) }),
+                assistantMsgId,
+              );
+              chatDelta.finishStreaming(conversationId, assistantMsgId);
+              runRequestedContextLength = planned;
+              runProbedContextWindow = planned;
+              continueLoop = true;
+            }
+          }
+          if (!numCtxRaised && !abortController.signal.aborted) {
+            const candidate = nextFailoverCandidate(failoverState);
+            if (candidate) {
+              windowFailoverSwitched = true;
+              logger.warn('Context window too small for fixed cost: switching model for the rest of this run', {
+                from: `${activeProvider?.id ?? 'unknown'}/${effectiveModelId}`,
+                to: `${candidate.providerId}/${candidate.modelId}`,
+                fixedTokens: budgetErr.estimatedTokens,
+                spentBudget: budgetErr.inputBudget,
+              });
+              chatDelta.flushTokens(conversationId, assistantMsgId);
+              chatDelta.setLastMessageContent(conversationId, '', assistantMsgId);
+              chatDelta.setMessageStreamingFlag(conversationId, assistantMsgId, false);
+              chatDelta.appendText(
+                conversationId,
+                format(getI18n().chat.modelFailoverSwitched, {
+                  from: failoverModelLabel({ providerId: activeProvider?.id ?? 'unknown', modelId: effectiveModelId }),
+                  to: failoverModelLabel(candidate),
+                }),
+                assistantMsgId,
+              );
+              chatDelta.finishStreaming(conversationId, assistantMsgId);
+              runSettings = { ...settingsForModel, activeModel: candidate };
+              effectiveModelId = candidate.modelId;
+              adapterKind = adapterKindFor(getActiveProvider(runSettings), isEnterpriseGatewayMode);
+              adapter = selectChatAdapter(adapterKind);
+              // 探测到的窗口属于旧模型，不能带给新模型
+              runProbedContextWindow = undefined;
+              continueLoop = true;
+            }
+          }
+          if (numCtxRaised || windowFailoverSwitched) {
+            // The next turn continues the task on the enlarged window / new
+            // model; fall through to the end-of-turn bookkeeping with no tool
+            // calls pending.
+          } else {
+            // No escape available — record the numbers and rethrow; the
+            // terminal error handler below renders the friendly note with
+            // them (raise the length in the local server, or pick a bigger
+            // model).
+            contextBudgetNumbers = {
+              needed: budgetErr.estimatedTokens,
+              window: budgetErr.estimatedTokens + budgetErr.inputBudget,
+            };
+            throw budgetErr;
+          }
+        } else if (retryErr instanceof LLMError && retryErr.code === 'context_too_long') {
+          // 服务说内容太长：读出真实上限并记住，按新上限整理后重试一次；仍失败就把错误交给外层显示
           const learnedWindow = await learnContextWindowAfterOverflow({
             error: retryErr,
             provider: activeProvider,
@@ -3383,7 +3538,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         errorCode,
       );
       const isContextBudgetError = err instanceof ContextBudgetError;
-      const contextTooSmall = contextTooSmallMessage(getI18n().chat, localServerKind(getActiveProvider(runSettings)));
+      const contextTooSmall = contextBudgetNumbers !== undefined && err instanceof ContextBudgetError && err.code === 'FIXED_CONTEXT_TOO_LARGE'
+        ? contextTooSmallMessageWithNumbers(
+            getI18n().chat,
+            localServerKind(getActiveProvider(runSettings)),
+            contextBudgetNumbers.needed,
+            contextBudgetNumbers.window,
+          )
+        : contextTooSmallMessage(getI18n().chat, localServerKind(getActiveProvider(runSettings)));
       // 窗口放不下说明（含超长恢复后仍放不下）时给用户的是一句普通说明，不加错误前缀
       const showsContextTooSmall = !managedProviderUnreachable
         && !(isContextBudgetError && err.code === 'INPUT_TOO_LARGE')
