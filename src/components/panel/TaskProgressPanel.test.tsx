@@ -208,10 +208,15 @@ describe('TaskProgressPanel', () => {
       executions: { e1: makeExec('e1', 100, ['扫描目录']) },
     });
     render(<TaskProgressPanel />);
+    const step = screen.getByText('扫描目录');
     expect(titleButton()).toHaveAttribute('aria-expanded', 'true');
     fireEvent.click(titleButton());
     expect(titleButton()).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.queryByText('扫描目录')).not.toBeInTheDocument();
+    expect(step).not.toBeVisible();
+    fireEvent.click(titleButton());
+    expect(titleButton()).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('扫描目录')).toBe(step);
+    expect(step).toBeVisible();
   });
 
   it('keeps the owner of a step next to its text', () => {

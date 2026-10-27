@@ -2915,9 +2915,9 @@ export interface TranslationDict {
     skillsMarketHintTitle: string;
     skillsMarketHintBody: string;
     skillsMarketGoPlugins: string;
-    /** Skills 「我的」 empty state — nothing the user wrote themselves yet. */
-    /** 市场 card state — bundled items ship installed; the switch is on 我的. */
+    /** 市场 plugin row state — the plugin is installed; its switch is on 我的. */
     installedMark: string;
+    /** Skills 「我的」 empty state — nothing the user wrote themselves yet. */
     skillsMineEmptyTitle: string;
     skillsMineEmptyHint: string;
     /** Connectors 「市场」 — the curated catalog plus the servers plugins brought in. */
@@ -3170,7 +3170,6 @@ export interface TranslationDict {
 
   // Panels
   panel: {
-    workspace: string;
     preview: string;
     /** Title of the tab that compares the one file a turn changed; `{name}` is the file name. */
     changesTabSingle: string;
@@ -3187,22 +3186,15 @@ export interface TranslationDict {
     changesUnreadable: string;
     /** First line of the changes tab of a turn that is undone. */
     changesUndone: string;
-    noWorkspaceSelected: string;
     selectWorkspace: string;
-    viewFiles: string;
     noFilesModified: string;
-    selectWorkspaceHint: string;
     recentlyUsed: string;
     selectOtherFolder: string;
-    instructionFile: string;
-    instructions: string;
-    instructionsAdd: string;
     instructionsTitle: string;
     instructionsDesc: string;
     instructionsPlaceholder: string;
     instructionsSaving: string;
     instructionsSaveFailed: string;
-    memory: string;
     memoryEmpty: string;
     memoryTitle: string;
     memoryDesc: string;
@@ -3275,13 +3267,7 @@ export interface TranslationDict {
     // TaskProgressPanel
     progress: string;
     progressEmptyHint: string;
-    // ContextSection
-    context: string;
-    contextEmptyHint: string;
-    toolUsage: string;
     collapse: string;
-    connectors: string;
-    refreshing: string;
     // Preview: PDF
     pdfPage: string;
     pdfZoomIn: string;
@@ -3313,10 +3299,11 @@ export interface TranslationDict {
     imageCopy: string;
     imageCopied: string;
     imageCopyFailed: string;
-    // WorkspaceFileTree (the lazily loaded file tree of the workspace files tab)
+    // WorkspaceFileTree (the lazily loaded file tree of the task summary)
     fileTree: {
+      /** Nested list of the workspace folder's menu: the recent folders and the system folder picker. */
+      changeFolder: string;
       title: string;
-      noWorkspace: string;
       empty: string;
       loadError: string;
       folderDeleted: string;
@@ -3364,8 +3351,6 @@ export interface TranslationDict {
     agentTitle: string;
     summaryTitle: string;
     summaryDesc: string;
-    filesTitle: string;
-    filesDesc: string;
     browserDesc: string;
     terminalDesc: string;
     agentStatusQueued: string;
@@ -4296,6 +4281,11 @@ export interface TranslationDict {
     folderConflict: string;
     suggestMigrate: string;
     settingsTitle: string;
+    /** Group title of the project settings window for the project's instructions and memory. */
+    knowledgeSection: string;
+    /** The buttons of that group: open the instructions editor, open the memory window. */
+    editInstructions: string;
+    viewMemory: string;
     dangerZone: string;
     archiveProject: string;
     archiveConfirm: string;

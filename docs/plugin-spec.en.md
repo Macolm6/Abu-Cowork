@@ -215,7 +215,7 @@ How to write an expert reference:
 
 A `LocalizedText` can be a string or `{ "zh-CN": "…", "en-US": "…" }`. An object holds at least one language; when the current interface language has no text, Abu takes `zh-CN` first and then `en-US`.
 
-When a referenced expert does not exist, manifest validation fails. After installation, an expert team from a package appears under "Experts → Expert Teams → Market", and its card says "From a plugin". The user cannot edit or delete it, and it is removed when the plugin is uninstalled. The experts of a package likewise appear under "Experts → Market"; its skills appear under "Extensions → Skills → Mine", where they can be switched on and off.
+When a referenced expert does not exist, manifest validation fails. After installation, an expert team from a package appears under "Experts → Expert Teams → Market", and its card says "From a plugin". The user cannot edit or delete it, and it is removed when the plugin is uninstalled. The experts of a package likewise appear under "Experts → Market"; its skills appear under "Extensions → Skills → Market", each card with its switch.
 
 ## 7. Connectors
 

@@ -11,6 +11,7 @@ import { AppIcons } from '@/components/ds/icons';
 import { NavItem } from '@/components/ds/nav-item';
 import { TextField } from '@/components/ds/text-field';
 import { catalogSearch, type SearchHit, type ConversationMeta } from '@/core/session/conversationStorage';
+import { compareByRecentActivity } from '@/core/session/conversationActivity';
 import { renderMarkedText, highlightQuery } from '@/utils/searchHighlight';
 import type { Project } from '@/types/project';
 
@@ -134,7 +135,7 @@ export default function ConversationSearchModal({ open, onClose }: { open: boole
     () =>
       Object.values(conversationIndex)
         .filter((c) => isSearchable(c, projects))
-        .sort((a, b) => b.createdAt - a.createdAt)
+        .sort(compareByRecentActivity)
         .slice(0, 50),
     [conversationIndex, projects]
   );
@@ -149,7 +150,7 @@ export default function ConversationSearchModal({ open, onClose }: { open: boole
       .filter((c) =>
         cleanTitle(c.title).toLowerCase().includes(q)
         || (projectNameOf(c, projects)?.toLowerCase().includes(q) ?? false))
-      .sort((a, b) => b.createdAt - a.createdAt);
+      .sort(compareByRecentActivity);
   }, [conversationIndex, projects, trimmed, isSearching]);
 
   // FTS body-content hits, scoped to the searchable conversations and deduped against the

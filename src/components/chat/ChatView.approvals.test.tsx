@@ -8,7 +8,7 @@ import { Dialog } from '@/components/ds/dialog';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { TOAST_SETTLE_MS } from '@/components/ds/styles';
 import ChatView from './ChatView';
-import WorkspaceSection from '@/components/panel/WorkspaceSection';
+import WorkspaceFilesSection from '@/components/panel/WorkspaceFilesSection';
 import * as approvalBridge from '@/core/agent/ports/approvalBridge';
 import {
   drainConfirmationQueue,
@@ -1170,7 +1170,7 @@ describe('ChatView approvals', () => {
     const page = () => (
       <>
         <ChatView />
-        <WorkspaceSection />
+        <WorkspaceFilesSection />
       </>
     );
     const panelTitle = () => t().permission.workspace.title;
@@ -1184,9 +1184,12 @@ describe('ChatView approvals', () => {
       return id;
     }
 
+    // The workspace folder row's menu, then its list of folders to change to.
     async function pickInPanel(user: ReturnType<typeof userEvent.setup>) {
-      await user.click(screen.getByRole('button', { name: /alpha/ }));
-      await user.click(screen.getByRole('menuitemradio', { name: 'gamma' }));
+      await user.click(screen.getByRole('button', { name: t().panel.fileTree.moreActions }));
+      screen.getByRole('menuitem', { name: t().panel.fileTree.changeFolder }).focus();
+      await user.keyboard('{ArrowRight}');
+      await user.click(await screen.findByRole('menuitemradio', { name: 'gamma' }));
       await settle();
     }
 
@@ -1227,8 +1230,10 @@ describe('ChatView approvals', () => {
       render(page());
       await settle();
       // The system folder picker is open when the task asks.
-      await user.click(screen.getByRole('button', { name: /alpha/ }));
-      await user.click(screen.getByRole('menuitem', { name: t().folder.selectOtherFolder }));
+      await user.click(screen.getByRole('button', { name: t().panel.fileTree.moreActions }));
+      screen.getByRole('menuitem', { name: t().panel.fileTree.changeFolder }).focus();
+      await user.keyboard('{ArrowRight}');
+      await user.click(await screen.findByRole('menuitem', { name: t().panel.selectOtherFolder }));
       await settle();
       expect(openDialog).toHaveBeenCalledTimes(1);
 

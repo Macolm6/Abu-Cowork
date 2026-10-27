@@ -1073,9 +1073,9 @@ export type SkillSource =
  * `sourceToUXCategory()` first.
  */
 export type SkillUXCategory =
-  | 'mine'           // user / standard / project / project-standard
-  | 'agent-evolved'  // workspace-auto / draft
-  | 'builtin';       // bundled with Abu
+  | 'mine'           // user / standard / project / project-standard / workspace-auto / enterprise
+  | 'agent-evolved'  // draft
+  | 'market';        // bundled with Abu, or brought in by a plugin
 
 export interface SkillMetadata {
   name: string;

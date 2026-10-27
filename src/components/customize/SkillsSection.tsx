@@ -74,12 +74,11 @@ function focusSkillCard(root: ParentNode | null, place: CardPlace | null): void 
  * holds a switch, and the page renders for every window it opens and every character typed in
  * its search box.
  */
-const SkillCard = memo(function SkillCard({ skill, enabled, gated, market, pluginName, onOpen, onToggle }: {
+const SkillCard = memo(function SkillCard({ skill, enabled, gated, pluginName, onOpen, onToggle }: {
   skill: Skill;
   enabled: boolean;
   /** The plugin that owns the skill is switched off. */
   gated: boolean;
-  market: boolean;
   /** The display name of the plugin that brought the skill in, when one did and it is known. */
   pluginName: string | undefined;
   onOpen: (name: string) => void;
@@ -98,11 +97,7 @@ const SkillCard = memo(function SkillCard({ skill, enabled, gated, market, plugi
           description: localizedSkillDescription(skill, locale),
           avatar: <Icon icon={AppIcons.file} size="lg" className="text-label-tertiary" />,
           badge: provenance ?? (labelKey ? <Tag>{t.toolbox[labelKey]}</Tag> : undefined),
-          toggle: market ? (
-            <span data-testid="skill-installed-badge" className="flex">
-              <Tag>{t.toolbox.installedMark}</Tag>
-            </span>
-          ) : (
+          toggle: (
             <span className="flex" onClick={(event) => event.stopPropagation()} title={gated ? t.toolbox.skillPluginDisabled : undefined}>
               <Switch checked={enabled} disabled={gated} onCheckedChange={() => onToggle(skill.name)} aria-label={skill.name} />
             </span>
@@ -243,15 +238,11 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
   // is hidden rather than misfiled), so the two shelves read it rather than
   // keeping a second list of sources that can drift from it.
   const scopedSkills = useMemo(() => {
-    // 市场 is the catalogue: what Abu ships (and what an organization or a
-    // market offers later), each row saying whether it is installed. 我的 is
-    // everything installed — the bundled skills, which ship installed, plus
-    // the user's own, the plugins' and the organization's. The switch that
-    // decides whether Abu may use a skill lives on the 我的 card.
-    return installedSkills.filter((s) => {
-      const bucket = sourceToUXCategory(s.source);
-      return source === 'mine' ? bucket === 'mine' || bucket === 'builtin' : bucket === 'builtin';
-    });
+    // 市场 holds what someone else wrote: the skills Abu ships and the ones a
+    // plugin brought. 我的 holds the user's own and the organization's. Every
+    // card on either shelf carries the switch that decides whether Abu may use
+    // the skill.
+    return installedSkills.filter((s) => sourceToUXCategory(s.source) === (source === 'mine' ? 'mine' : 'market'));
   }, [installedSkills, source]);
 
   // Filter by search
@@ -275,7 +266,8 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
     if (source === 'mine') return [];
     const q = searchLower;
     // Whatever covered the built-in — a user's own file, a plugin's, the
-    // organization's — sits under 「我的」, which is where the hint points.
+    // organization's — is listed on its own shelf; the hint says only that
+    // another copy is the one in use.
     return skillLoader.getShadowedSkills().filter((s) => {
       if (s.source !== 'builtin') return false;
       return !q || s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q)
@@ -381,8 +373,8 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
 
   const renderSkillCard = (skill: Skill) => {
     const gated = !pluginAllowed(skill);
-    // Plugin and organization skills sit under 「我的」 with their provenance
-    // on the card, the same label the expert and team cards carry.
+    // Plugin and organization skills carry their provenance on the card, the
+    // same label the expert and team cards carry.
     const owner = skill.source === 'plugin' ? pluginOwnerForSkill(skill.skillDir) : undefined;
     return (
       <SkillCard
@@ -390,9 +382,6 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
         skill={skill}
         enabled={!disabledSet.has(skill.name) && !gated}
         gated={gated}
-        // On 市场 a card says whether the skill is installed; the switch belongs to
-        // 我的, where the user's installed skills are.
-        market={source !== 'mine'}
         pluginName={owner ? pluginDisplayName(installedPlugins, owner) : undefined}
         onOpen={openDetail}
         onToggle={toggleSkillEnabled}

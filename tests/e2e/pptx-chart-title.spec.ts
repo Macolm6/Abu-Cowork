@@ -16,7 +16,7 @@ import {
   createElectronDataRoot,
   dismissFirstRunOverlays,
   launchAbuElectron,
-  openWorkspaceFilesOfProject,
+  openTaskSummaryOfProject,
   removeElectronDataRoot,
   REPO_ROOT,
   type ElectronDataRoot,
@@ -57,7 +57,7 @@ test.describe('pptx chart titles', () => {
     }, { ws: workspace, name: PROJECT_NAME, version: persistedStoreVersion('abu-projects') });
     await dismissFirstRunOverlays(page);
 
-    await openWorkspaceFilesOfProject(page, PROJECT_NAME);
+    await openTaskSummaryOfProject(page, PROJECT_NAME);
   });
 
   test.afterAll(async () => {

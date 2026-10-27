@@ -118,13 +118,8 @@ async function waitForCompletedRuns(page: Page, count: number): Promise<void> {
 }
 
 function findLedgerFiles(root: string): string[] {
-  const found: string[] = [];
-  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-    const full = path.join(root, entry.name);
-    if (entry.isDirectory()) found.push(...findLedgerFiles(full));
-    else if (entry.name === 'messages.jsonl') found.push(full);
-  }
-  return found;
+  return fs.globSync('*/conversations/*/messages.jsonl', { cwd: root })
+    .map((entryPath) => path.join(root, entryPath));
 }
 
 interface LedgerImageBlock {

@@ -1422,13 +1422,30 @@ describe('conversationStorage', () => {
     });
 
     const INDEX_PATH = '/Users/testuser/.abu/conversations/index.json';
-    const BASE_ENTRY = { id: 'c1', title: 'T', createdAt: 1, updatedAt: 2, messageCount: 3 };
+    const BASE_ENTRY = { id: 'c1', title: 'T', createdAt: 1, updatedAt: 2, lastUserMessageAt: 2, messageCount: 3 };
 
     it('an entry without a permission mode is written without that key', async () => {
       await storage.updateIndexEntry({ ...BASE_ENTRY });
       await storage.flushIndex();
       const entry = JSON.parse(memFs.files.get(INDEX_PATH)!).entries.c1;
-      expect(Object.keys(entry).sort()).toEqual(['createdAt', 'id', 'messageCount', 'title', 'updatedAt']);
+      expect(Object.keys(entry).sort()).toEqual(['createdAt', 'id', 'lastUserMessageAt', 'messageCount', 'title', 'updatedAt']);
+    });
+
+    it('an entry from before lastUserMessageAt loads with its updatedAt there', async () => {
+      memFs.files.set(INDEX_PATH, JSON.stringify({
+        version: 1,
+        entries: {
+          used: { id: 'used', title: 'T', createdAt: 1, updatedAt: 9, messageCount: 4 },
+          empty: { id: 'empty', title: 'T', createdAt: 1, updatedAt: 1, messageCount: 0 },
+          current: { id: 'current', title: 'T', createdAt: 1, updatedAt: 9, lastUserMessageAt: 7, messageCount: 4 },
+          systemOnly: { id: 'systemOnly', title: 'T', createdAt: 1, updatedAt: 9, lastUserMessageAt: null, messageCount: 2 },
+        },
+      }));
+      const index = await storage.loadIndex();
+      expect(index.entries.used.lastUserMessageAt).toBe(9);
+      expect('lastUserMessageAt' in index.entries.empty).toBe(false);
+      expect(index.entries.current.lastUserMessageAt).toBe(7);
+      expect(index.entries.systemOnly.lastUserMessageAt).toBeNull();
     });
 
     it('a permission mode round-trips through index.json', async () => {
@@ -1521,6 +1538,18 @@ describe('conversationStorage', () => {
       expect(meta.messageCount).toBe(3);
       expect(meta.workspacePath).toBe('/workspace');
       expect(meta.projectId).toBe('proj-1');
+    });
+
+    it('carries the last user message time, and records null before one is sent', () => {
+      const base = { id: 'c1', title: 'T', createdAt: 1, updatedAt: 2 };
+      const messages = [
+        makeMsg({ role: 'user', timestamp: 10 }),
+        makeMsg({ role: 'assistant', timestamp: 20 }),
+        makeMsg({ role: 'user', isSystem: true, timestamp: 30 }),
+      ];
+      expect(storage.buildMeta({ ...base, messages }).lastUserMessageAt).toBe(10);
+      expect(storage.buildMeta({ ...base, messages: [] }).lastUserMessageAt).toBeNull();
+      expect(storage.buildMeta({ ...base, messages: [{ role: 'assistant', timestamp: 20 }] }).lastUserMessageAt).toBeNull();
     });
 
     it('carries an accepted permission mode and leaves the key out otherwise', () => {

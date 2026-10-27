@@ -18,6 +18,7 @@ import { usePreviewStore } from '@/stores/previewStore';
 import type { VersionMeta } from '@/utils/canvasVersions';
 import { getBaseName } from '@/utils/pathUtils';
 import { hasVersionHistory } from './previewToolbarConfig';
+import SummarySection from './SummarySection';
 import { VersionList, VersionRestoreDialog } from './VersionList';
 import { formatVersionTime } from './versionTime';
 
@@ -173,20 +174,18 @@ const ChangedFileRow = memo(function ChangedFileRow({ file, conversationId }: { 
 
 function SectionFrame({ count, children }: { count: number | null; children: ReactNode }) {
   const { t } = useI18n();
+  const meta = count !== null && <span className="text-caption text-label-tertiary">{format(t.panel.filesCount, { count })}</span>;
   return (
-    <section className="space-y-2" aria-label={t.panel.changedFiles}>
-      <div className="flex items-center justify-between">
-        <h4 className="text-ui-sm font-medium text-label-tertiary">{t.panel.changedFiles}</h4>
-        {count !== null && <span className="text-caption text-label-tertiary">{format(t.panel.filesCount, { count })}</span>}
-      </div>
+    <SummarySection icon={AppIcons.fileEdit} title={t.panel.changedFiles} meta={meta}>
       {children}
-    </section>
+    </SummarySection>
   );
 }
 
 function EmptyHint() {
   const { t } = useI18n();
-  return <p className="px-2 text-ui-sm text-label-tertiary">{t.panel.changedFilesEmpty}</p>;
+  // Placed as the progress section's own empty line is.
+  return <p className="py-4 text-center text-ui-sm text-label-tertiary">{t.panel.changedFilesEmpty}</p>;
 }
 
 function ChangedFilesList({ conversationId }: { conversationId: string }) {
